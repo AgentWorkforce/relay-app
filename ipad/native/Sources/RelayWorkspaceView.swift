@@ -116,6 +116,12 @@ struct RelayWorkspaceView: View {
     @State private var spawnNotice: String?
     @State private var releaseCandidate: RelayAgent?
     @State private var releasingAgent = false
+    @State private var forkSource: RelayAgent?
+    @State private var forkName = ""
+    @State private var forkTask = ""
+    @State private var forking = false
+    @State private var forkAccepted = false
+    @State private var forkNotice: String?
     @State private var showSettings = false
     @State private var showSummarySearch = false
     @State private var showScreenHistory = false
@@ -141,6 +147,7 @@ struct RelayWorkspaceView: View {
         }
         .sheet(isPresented: $showCompose) { compose }
         .sheet(isPresented: $showSpawn) { spawnSheet }
+        .sheet(item: $forkSource) { forkSheet($0) }
         .sheet(isPresented: $showScreenHistory) { screenHistoryView }
         .sheet(isPresented: $voiceCalls.screenPresented, onDismiss: { voiceCalls.screenClosed() }) {
             if let call = voiceCalls.current { VoiceCallView(call: call) }
@@ -538,6 +545,8 @@ struct RelayWorkspaceView: View {
                         .listRowInsets(EdgeInsets(top: 0.5, leading: 8, bottom: 0.5, trailing: 8))
                         .listRowSeparator(.hidden).listRowBackground(Color.clear)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) { hideAction(agent) }
+                        .swipeActions(edge: .leading) { forkSwipeAction(agent) }
+                        .contextMenu { forkContextMenu(agent) }
                 }
                 if filtered.isEmpty {
                     Text(emptyListText).font(.caption).foregroundStyle(.secondary)
@@ -753,6 +762,8 @@ struct RelayWorkspaceView: View {
                             .listRowInsets(EdgeInsets(top: 1.5, leading: 12, bottom: 1.5, trailing: 12))
                             .listRowSeparator(.hidden).listRowBackground(Color.clear)
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) { hideAction(agent) }
+                            .swipeActions(edge: .leading) { forkSwipeAction(agent) }
+                            .contextMenu { forkContextMenu(agent) }
                         }
                         if filtered.isEmpty {
                             Text(emptyListText).foregroundStyle(.secondary).padding(.top, 28)
@@ -796,10 +807,13 @@ struct RelayWorkspaceView: View {
             .navigationDestination(for: MobileConversationRoute.self) { route in
                 let destination = route.agent
                 let agent = selected?.id == route.id ? selected ?? destination : destination
-                agentDetail(agent)
+                agentDetail(agent, phone: true)
                     .navigationTitle(client.displayName(for: agent))
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
+                        if SessionFork.Placement.current == .menu {
+                            ToolbarItem(placement: .topBarTrailing) { forkMenu(agent) }
+                        }
                         // The navigation bar is never under the keyboard, so
                         // this stays reachable however the thread lays out.
                         if messageFocused {
@@ -957,11 +971,61 @@ struct RelayWorkspaceView: View {
                 Label("Call", systemImage: "phone.fill").font(.caption.weight(.medium))
             }
             .buttonStyle(.bordered)
+            .fixedSize()
             .accessibilityIdentifier("Voice call")
         }
     }
+    @ViewBuilder
+    private func forkButton(_ agent: RelayAgent, phone: Bool) -> some View {
+        if SessionFork.offered(for: agent) {
+            Button { openFork(agent) } label: {
+                if phone {
+                    Image(systemName: "arrow.triangle.branch").font(.caption.weight(.medium))
+                } else {
+                    Label("Fork", systemImage: "arrow.triangle.branch").font(.caption.weight(.medium))
+                }
+            }
+            .buttonStyle(.bordered)
+            .fixedSize()
+            .accessibilityLabel("Fork session")
+            .accessibilityIdentifier("Fork session")
+        }
+    }
+    @ViewBuilder
+    private func forkMenu(_ agent: RelayAgent) -> some View {
+        if SessionFork.offered(for: agent) {
+            Menu {
+                Button { openFork(agent) } label: { Label("Fork session", systemImage: "arrow.triangle.branch") }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 17))
+            }
+            .accessibilityLabel("More")
+            .accessibilityIdentifier("Agent actions")
+        }
+    }
+    @ViewBuilder
+    private func forkSwipeAction(_ agent: RelayAgent) -> some View {
+        if SessionFork.Placement.current == .row, page == .agents, SessionFork.offered(for: agent) {
+            Button { openFork(agent) } label: { Label("Fork", systemImage: "arrow.triangle.branch") }
+                .tint(accent)
+        }
+    }
+    @ViewBuilder
+    private func forkContextMenu(_ agent: RelayAgent) -> some View {
+        if SessionFork.Placement.current == .row, page == .agents, SessionFork.offered(for: agent) {
+            Button { openFork(agent) } label: { Label("Fork session", systemImage: "arrow.triangle.branch") }
+        }
+    }
+    private func openFork(_ agent: RelayAgent) {
+        forkName = SessionFork.suggestedName(for: agent.name, taken: Set(client.relayAgents.map(\.name)))
+        forkTask = ""
+        forkNotice = nil
+        forkAccepted = false
+        forkSource = agent
+    }
 
-    private func agentDetail(_ agent: RelayAgent) -> some View {
+    /// `phone`: in the iPhone's navigation stack, whose bar holds the actions menu.
+    private func agentDetail(_ agent: RelayAgent, phone: Bool = false) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 avatar(agent, size: 38, identifier: "Person header avatar")
@@ -992,11 +1056,22 @@ struct RelayWorkspaceView: View {
                 }
                 if let target = releasableFleetAgent(for: agent) {
                     Button { releaseCandidate = target } label: {
-                        Label("Release", systemImage: "stop.circle")
-                            .font(.caption.weight(.medium))
+                        if phone {
+                            Image(systemName: "stop.circle").font(.caption.weight(.medium))
+                        } else {
+                            Label("Release", systemImage: "stop.circle")
+                                .font(.caption.weight(.medium))
+                        }
                     }
                     .buttonStyle(.bordered).tint(.red)
+                    .fixedSize()
+                    .accessibilityLabel("Release")
                     .disabled(releasingAgent)
+                }
+                switch SessionFork.Placement.current {
+                case .header: forkButton(agent, phone: phone)
+                case .menu: if !phone { forkMenu(agent) }
+                case .row: EmptyView()
                 }
             }.padding(.horizontal, 16).frame(height: 70)
             if let notice = client.handoffNotice(for: agent) {
@@ -1796,6 +1871,59 @@ struct RelayWorkspaceView: View {
         }
         .frame(minWidth: 380, minHeight: 550)
         .interactiveDismissDisabled(spawning)
+    }
+    private func forkSheet(_ source: RelayAgent) -> some View {
+        SessionForkSheet(client: client, source: source, name: $forkName, task: $forkTask,
+                         forking: $forking, accepted: $forkAccepted, notice: $forkNotice) {
+            HStack(spacing: 11) {
+                avatar(source, size: 38)
+                VStack(alignment: .leading, spacing: 3) {
+                    agentName(source, font: .subheadline.weight(.medium), machineFont: .caption2)
+                    let title = source.sessionTitle.isEmpty ? source.objective : source.sessionTitle
+                    if !title.isEmpty {
+                        Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+            }
+        } start: {
+            startFork(source)
+        } close: {
+            forkSource = nil
+        }
+    }
+    private func startFork(_ source: RelayAgent) {
+        guard !forking else { return }
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        forking = true
+        forkNotice = nil
+        let name = forkName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let task = forkTask
+        Task {
+            do {
+                let (outcome, node) = try await client.forkAgent(source, name: name, task: task)
+                switch outcome {
+                case .ready, .running:
+                    forkSource = nil
+                    openForkedAgent(name)
+                case .unconfirmed:
+                    forkAccepted = true
+                    forkNotice = "\(node.name) accepted the fork but has not confirmed that \(name) started. "
+                        + "Check Agents in a minute before trying again."
+                }
+            } catch {
+                forkNotice = error.localizedDescription
+            }
+            forking = false
+        }
+    }
+    private func openForkedAgent(_ name: String) {
+        let agent = client.relayAgents.first { $0.name == name }
+            ?? client.fleetAgents.first { $0.name == name }
+            ?? RelayAgent.recipient(name, in: client.relayAgents)
+        page = .agents
+        search = ""
+        selectAgent(agent)
+        phonePath = [MobileConversationRoute(agent: agent)]
     }
     private func startSpawn() {
         guard let node = selectedSpawnNode, !spawning else { return }

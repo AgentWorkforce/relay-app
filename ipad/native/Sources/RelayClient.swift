@@ -261,6 +261,10 @@ struct RelayAttachment: Identifiable, Hashable {
 struct RelaySpawnNode: Identifiable, Hashable {
     let name: String
     let harnesses: [String]
+    /// Harnesses whose spawns here can start as a copy of a session (`SessionFork`).
+    var forkHarnesses: [String] = []
+    /// The computer's name as its agents' `host` metadata gives it.
+    var machine = ""
     var id: String { name }
 }
 
@@ -349,6 +353,8 @@ private enum SecureStore {
     @Published var relayAgents: [RelayAgent] = []
     @Published var fleetAgents: [RelayAgent] = []
     @Published var spawnNodes: [RelaySpawnNode] = []
+    /// Every online node that accepts forks, including a machine's second installation.
+    @Published var forkNodes: [RelaySpawnNode] = []
     @Published var conversations: [RelayAgent] = []
     @Published var channels: [RelayAgent] = []
     @Published var unreadConversationIDs: Set<String> = []
@@ -989,6 +995,7 @@ private enum SecureStore {
         relayAgents = []
         fleetAgents = []
         spawnNodes = []
+        forkNodes = []
         conversations = []
         channels = []
         joinedChannels = []
@@ -1083,10 +1090,14 @@ private enum SecureStore {
                     return String(value.dropFirst(6))
                 })
                 guard !name.isEmpty, !harnesses.isEmpty else { return nil }
-                return RelaySpawnNode(name: name, harnesses: harnesses.sorted())
+                let fork = object(objects(node["capabilities"]).first { string($0["name"]) == SessionFork.capability }?["metadata"])
+                return RelaySpawnNode(name: name, harnesses: harnesses.sorted(),
+                                      forkHarnesses: fork["harnesses"] as? [String] ?? [],
+                                      machine: string(fork["machine"]))
             }.sorted { ($0.name.lowercased(), $0.name) < ($1.name.lowercased(), $1.name) }
             var machineKeys: Set<String> = []
             spawnNodes = availableNodes.filter { machineKeys.insert(MobileMachineFilter.key($0.name)).inserted }
+            forkNodes = availableNodes.filter { !$0.forkHarnesses.isEmpty }
             let sessionIDs = Dictionary(relayAgents.map { ($0.name, $0.sessionID) }, uniquingKeysWith: { first, _ in first })
             var live: [RelayAgent] = []
             for node in nodes where string(node["status"]) == "online" &&
@@ -1806,12 +1817,13 @@ private enum SecureStore {
     /// receipt. An unconfirmed result means the request was accepted but its
     /// final status could not be observed yet; callers must not submit it again.
     func spawnAgent(on node: RelaySpawnNode, harness: String, name: String,
-                    task: String, workingDirectory: String, projectName: String? = nil) async throws -> SpawnOutcome {
+                    task: String, workingDirectory: String, projectName: String? = nil,
+                    forkFrom: String? = nil) async throws -> SpawnOutcome {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
         guard node.harnesses.contains(harness),
               name.range(of: "^[a-z][a-z0-9-]{1,47}$", options: .regularExpression) != nil,
-              !task.isEmpty else {
+              !task.isEmpty || forkFrom != nil else {
             throw RelayAPIError(message: "Choose an agent type, enter a valid name, and describe its task")
         }
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
@@ -1827,6 +1839,12 @@ private enum SecureStore {
         }
         if let projectName = projectName?.trimmingCharacters(in: .whitespacesAndNewlines), !projectName.isEmpty {
             input["project"] = projectName
+        }
+        if let forkFrom {
+            guard node.forkHarnesses.contains(harness) else {
+                throw RelayAPIError(message: "\(node.name) can't fork \(harness) sessions. Update Agent Relay on it, then try again.")
+            }
+            input["fork_from"] = forkFrom
         }
         let accepted: JSONObject
         do {
@@ -1875,6 +1893,25 @@ private enum SecureStore {
         await refresh()
         if fleetAgents.contains(where: { $0.name == name && $0.node == node.name }) { return .running }
         return .unconfirmed
+    }
+    /// Starts `name` on the agent's own computer as a copy of its session.
+    /// A node that doesn't hold the agent sends the request to the next
+    /// installation on that machine; any other failure ends the attempt.
+    func forkAgent(_ source: RelayAgent, name: String, task: String) async throws -> (SpawnOutcome, RelaySpawnNode) {
+        guard case let .available(harness, nodes) = SessionFork.availability(for: source, nodes: forkNodes) else {
+            throw RelayAPIError(message: "This session can't be forked right now. Refresh and try again.")
+        }
+        var lastError: Error?
+        for node in nodes {
+            do {
+                let outcome = try await spawnAgent(on: node, harness: harness, name: name, task: task,
+                                                   workingDirectory: "", forkFrom: source.name)
+                return (outcome, node)
+            } catch where SessionFork.triesNextNode(after: error) {
+                lastError = error
+            }
+        }
+        throw lastError ?? RelayAPIError(message: "No computer could fork \(source.name).")
     }
     /// Stops a broker-owned worker through the node that reported it as live.
     /// A request without a final receipt is left unconfirmed so the caller
