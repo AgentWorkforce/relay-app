@@ -14,23 +14,22 @@ impl ToolsUi {
     }
 
     /// What the chooser's line shows, as on the Mac: the person's edit, else
-    /// the saved state, else checked where nothing is saved yet.
+    /// the saved state, else unchecked where nothing is saved yet: the hook
+    /// is off by default.
     pub fn teammate_choice(&self) -> bool {
         self.teammate_draft
             .or_else(|| self.teammate_context())
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
-    /// What Continue saves: the person's edit, or the checked default the
-    /// line shows where nothing is saved yet. An untouched line that shows
-    /// the saved state saves nothing, so a reopened chooser never undoes
-    /// Settings.
+    /// What Continue saves: only the person's edit, as on the Mac. An
+    /// untouched line saves nothing, so the hook stays off by default and a
+    /// reopened chooser never undoes Settings.
     pub(super) fn teammate_to_save(&self) -> Option<bool> {
         if !self.offers_teammate_context() {
             return None;
         }
         self.teammate_draft
-            .or_else(|| self.teammate_context().is_none().then_some(true))
     }
 
     /// The teammate-context hook's state, or `None` where Claude Code is

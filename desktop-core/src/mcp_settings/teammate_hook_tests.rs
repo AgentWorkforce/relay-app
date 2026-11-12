@@ -52,16 +52,16 @@ fn read(path: &Path) -> Value {
 }
 
 #[test]
-fn off_until_chosen_and_on_by_default_once_claude_is_chosen() {
+fn off_by_default_even_once_claude_is_chosen_until_the_person_turns_it_on() {
     let root = tempfile::tempdir().unwrap();
     let (app, settings, others) = claude_chosen(root.path());
     let setting = crate::teammate_context::Setting::new(app.clone());
     // Write-only: settings.get never carries it.
     assert!(setting.get().is_empty());
     assert_eq!(setting.write_only(), &[SETTING]);
-    // No choice yet: nothing written, and the default pass may turn it on.
+    // No choice yet: nothing written, and no default pass turns it on.
     assert_eq!(app.report(None, None).teammate_context, Some(false));
-    assert_eq!(setting.default_on(), vec![SETTING]);
+    assert!(setting.default_on().is_empty());
     assert_eq!(
         read(&settings)["hooks"]["SessionStart"],
         others["hooks"]["SessionStart"]

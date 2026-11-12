@@ -55,18 +55,18 @@ final class ToolsModel {
     var offersTeammateContext: Bool { report?.teammateContext != nil || selectedIDs.contains("claude") }
 
     /// What the chooser's line shows: the person's edit, else the saved
-    /// state, else checked where nothing is saved yet (Claude Code just chosen).
-    var teammateContextChoice: Bool { teammateContextDraft ?? report?.teammateContext ?? true }
+    /// state, else unchecked where nothing is saved yet: the hook is off by
+    /// default.
+    var teammateContextChoice: Bool { teammateContextDraft ?? report?.teammateContext ?? false }
 
     func setTeammateContextChoice(_ on: Bool) { teammateContextDraft = on }
 
-    /// What Continue saves: the person's edit, or the checked default the
-    /// line shows where nothing is saved yet. An untouched line that shows the
-    /// saved state saves nothing, so a reopened chooser never undoes Settings.
+    /// What Continue saves: only the person's edit. An untouched line saves
+    /// nothing, so the hook stays off by default and a reopened chooser never
+    /// undoes Settings.
     private var teammateContextToSave: Bool? {
         guard offersTeammateContext else { return nil }
-        if let teammateContextDraft { return teammateContextDraft }
-        return report?.teammateContext == nil ? true : nil
+        return teammateContextDraft
     }
 
     /// Settings' Turn On and Turn Off for the teammate-context hook.

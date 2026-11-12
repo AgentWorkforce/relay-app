@@ -665,10 +665,14 @@ mod tests {
         ui.read(report(Some(true)));
         assert!(!ui.teammate_choice());
         assert_eq!(ui.teammate_to_save(), Some(false));
-        // Nothing saved yet (Claude Code just chosen): checked, and saved.
+        // Nothing saved yet (Claude Code just chosen): off by default, and an
+        // untouched line saves nothing; ticking it turns it on.
         let mut fresh = ToolsUi::default();
         fresh.read(report(None));
         fresh.selected.insert("claude".into());
+        assert!(!fresh.teammate_choice());
+        assert_eq!(fresh.teammate_to_save(), None);
+        fresh.teammate_draft = Some(true);
         assert!(fresh.teammate_choice());
         assert_eq!(fresh.teammate_to_save(), Some(true));
     }
