@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The package's modes must not depend on the caller's umask: dpkg-deb refuses a 700 DEBIAN dir, and the installed tree must be world-readable.
+umask 022
 
 usage() {
   cat <<'EOF'
