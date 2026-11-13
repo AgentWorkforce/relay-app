@@ -157,7 +157,7 @@ impl fmt::Debug for ScrubEngine {
 /// copy is scrubbed again on release only when the engine that scrubbed it has
 /// a different name, so every version bump must change this name too. A test
 /// checks it against the pin in desktop-core/Cargo.toml and gtk/Cargo.toml.
-pub const DEFAULT_ENGINE: &str = "relayscrubber-0.5.0-alpha.8";
+pub const DEFAULT_ENGINE: &str = "relayscrubber-0.5.0-alpha.9";
 
 /// The `relayscrubber` crate's Secrets policy.
 ///
@@ -326,6 +326,48 @@ mod tests {
             let twice = engine.scrub(&once, &context).unwrap();
             assert_eq!(once, twice);
         }
+    }
+
+    // alpha.9 keeps an exact `project_key` whose value is a repository
+    // identity (ai-hist's `Remote` method, `host.tld/owner/repo`), so History
+    // can tag a session with its project. A path fallback, a vendor-style key
+    // and a prefixed name stay redacted, as does a credential beside the key.
+    #[test]
+    fn the_default_engine_keeps_a_repository_project_key() {
+        const IDENTITY: &str = "github.com/example-org/example-repo";
+        let engine = ScrubEngine::default_engine();
+        let context = ScrubContext::new(ScrubSurface::Upload);
+        let record = serde_json::json!({
+            "project_key": IDENTITY,
+            "project_key_method": "remote",
+            "api_key": FAKE_KEY,
+        });
+        let scrubbed = engine.scrub_json(&record, &context).unwrap();
+        assert_eq!(scrubbed["project_key"], IDENTITY);
+        assert_eq!(scrubbed["project_key_method"], "remote");
+        assert_eq!(scrubbed["api_key"], "[REDACTED]");
+
+        let body = format!(
+            "{record}\n{}\n",
+            serde_json::json!({"note": "ordinary words"})
+        );
+        let scrubbed = String::from_utf8(engine.scrub(body.as_bytes(), &context).unwrap()).unwrap();
+        assert!(scrubbed.contains(IDENTITY), "{scrubbed}");
+        assert!(!scrubbed.contains(FAKE_KEY), "{scrubbed}");
+
+        for value in [
+            "/Users/someone/Projects/app",
+            "c0ab12cd_SYNTHaZ91bY82cX73dW64eV55",
+        ] {
+            let scrubbed = engine
+                .scrub_json(&serde_json::json!({"project_key": value}), &context)
+                .unwrap();
+            assert_eq!(scrubbed["project_key"], "[REDACTED]", "{value}");
+        }
+        let scrubbed = engine
+            .scrub_json(&serde_json::json!({"deta_project_key": IDENTITY}), &context)
+            .unwrap();
+        assert_eq!(scrubbed["deta_project_key"], "[REDACTED]");
     }
 
     #[test]
