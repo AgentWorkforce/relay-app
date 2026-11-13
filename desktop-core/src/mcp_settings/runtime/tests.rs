@@ -698,6 +698,7 @@ fn a_reload_rereads_unsettled_chats_once_without_reloading_again() {
             })
         },
         |pause| paused.set(Some(pause)),
+        Instant::now,
     )
     .unwrap();
     assert_eq!(result.verified, ids(&["a", "b"]));
@@ -726,6 +727,7 @@ fn settled_unreloaded_or_failed_attempts_are_not_reread() {
                 first.clone()
             },
             |_| panic!("no pause without a reread"),
+            Instant::now,
         );
         assert_eq!(result, expected);
         assert_eq!(calls, 1);
@@ -744,8 +746,79 @@ fn settled_unreloaded_or_failed_attempts_are_not_reread() {
             }
         },
         |_| {},
+        Instant::now,
     );
     assert_eq!(result, Err(()));
+}
+
+#[test]
+fn an_unsettled_first_read_without_time_for_a_reread_fails_the_attempt() {
+    // The first read takes 7.6 s: 2.4 s left cannot fit the pause and a read.
+    // With 3 s spent, 7 s left fits both.
+    for (spent, rereads) in [(7600, false), (3000, true)] {
+        let start = Instant::now();
+        let clock = std::cell::Cell::new(start);
+        let calls = std::cell::Cell::new(0);
+        let paused = std::cell::Cell::new(None);
+        let result = settle_attempt(
+            true,
+            |report| report.loaded != report.verified,
+            |_, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    clock.set(start + Duration::from_millis(spent));
+                    Ok(report(&["a", "b"], &["a"]))
+                } else {
+                    Ok(report(&["a", "b"], &["a", "b"]))
+                }
+            },
+            |pause| paused.set(Some(pause)),
+            || clock.get(),
+        );
+        if rereads {
+            assert_eq!(result.unwrap().verified, ids(&["a", "b"]));
+            assert_eq!(calls.get(), 2);
+            assert_eq!(paused.get(), Some(SETTLE_PAUSE));
+        } else {
+            assert_eq!(result, Err(()), "an unsettled first read is not judged");
+            assert_eq!(calls.get(), 1);
+            assert_eq!(paused.get(), None);
+        }
+    }
+}
+
+#[test]
+fn a_maintenance_failure_keeps_older_chat_counts_with_one_retry_note() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(
+            report(&["new", "old-a", "old-b"], &["new"]),
+            &["old-a", "old-b"],
+        )),
+    );
+    assert!(!runtime.unhealthy);
+    let last = runtime.detail.clone().unwrap();
+    assert!(last.contains("1 of 3"));
+    assert!(last.contains("2 chats were open before Agent Relay was set up"));
+    let expected = format!("{last} Agent Relay will try again automatically.");
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(30))
+        .unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(!runtime.unhealthy);
+    assert_eq!(runtime.detail.as_deref(), Some(expected.as_str()));
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(35))
+        .unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(!runtime.unhealthy);
+    let detail = runtime.detail.as_deref().unwrap();
+    assert_eq!(detail, expected);
+    assert_eq!(detail.matches("try again").count(), 1);
 }
 
 #[test]
