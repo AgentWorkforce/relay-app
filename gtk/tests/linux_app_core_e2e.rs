@@ -222,6 +222,7 @@ async fn the_app_hosts_the_core_and_drives_it() {
             probe: Some(home.isolated(&probe)),
             app_data_dir: Some(home.path().join("app-data")),
             version: None,
+            replace_older_core: false,
         }),
         service: None,
     };

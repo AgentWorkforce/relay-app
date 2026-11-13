@@ -221,6 +221,28 @@ class WindowsPackageTests(unittest.TestCase):
         post = iss.split('procedure CurStepChanged(CurStep: TSetupStep);', 1)[1]
         self.assertIn('RemoveReplacedProduct;', post.split('\nend;', 1)[0])
 
+    def test_setup_replaces_a_running_core_of_another_version(self):
+        # Upgrading over a running app: the window, its gdbus.exe and the
+        # core and probe of other versions are ended, so the new window
+        # cannot attach to the old core; the logon task restarts on the new
+        # version only if it was running before.
+        iss = (packaging.REPO / 'windows/installer/AgentRelay.iss').read_text()
+        prepare = iss.split('function PrepareToInstall(var NeedsRestart: Boolean): String;', 1)[1]
+        prepare = prepare.split('\nend;', 1)[0]
+        self.assertLess(prepare.index('TaskWasRunning := TaskRunning;'),
+                        prepare.index('StopForUpgrade;'))
+        stop = iss.split('procedure StopForUpgrade;', 1)[1].split('\nend;', 1)[0]
+        self.assertIn("ExpandConstant('{app}')", stop)
+        self.assertIn("$_.Name -ieq ''gdbus.exe''", stop)
+        self.assertIn("-not $_.ExecutablePath.ToLower().StartsWith($own)", stop)
+        self.assertIn("$_.Name -ieq ''agent-relay-probe.exe''", stop)
+        self.assertIn("$_.CommandLine -match ''--headless''", stop)
+        repoint = iss.split('function RepointTask: Boolean;', 1)[1].split('\nend;', 1)[0]
+        self.assertIn('if TaskWasRunning then', repoint)
+        self.assertNotIn('$running', repoint)
+        uninstall = iss.split('procedure CurUninstallStepChanged', 1)[1]
+        self.assertIn('StopRunning(True);', uninstall)
+
     def test_product_name_refuses_windows_file_name_characters(self):
         pattern = packaging.BUILD_PATTERNS['product_name']
         self.assertTrue(re.fullmatch(pattern, 'Acme Relay'))
