@@ -118,13 +118,11 @@ impl SettingsExtension for Setting {
         &[SETTING]
     }
 
-    /// On by default once Claude Code is on this computer or chosen.
+    /// Off by default: no default pass turns it on. The session summaries
+    /// and the MCP tools it points at are not live yet, so the hook is only
+    /// added when the person turns it on.
     fn default_on(&self) -> Vec<&'static str> {
-        if self.installer.teammate_context_available() {
-            vec![SETTING]
-        } else {
-            Vec::new()
-        }
+        Vec::new()
     }
 
     /// Puts the hook back in a shared login that lost it, while it is on.
