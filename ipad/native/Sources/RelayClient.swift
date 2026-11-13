@@ -1075,10 +1075,8 @@ private enum SecureStore {
             let roster = try objects(await rosterData)
             guard generation == refreshGeneration, paired else { return }
             applyRoster(roster)
-            if !rosterLoaded {
-                rosterLoaded = true
-                StartupTrace.firstRosterShown()
-            }
+            rosterLoaded = true
+            StartupTrace.firstRosterShown()
             let nodes = try objects(await nodeData)
             guard generation == refreshGeneration, paired else { return }
             let availableNodes = nodes.compactMap { node -> RelaySpawnNode? in
