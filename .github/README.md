@@ -76,6 +76,30 @@ native dependencies. Gate runners remain active to preserve the expanded
 architecture check names used by branch protection; missing/invalid flags,
 failed detection and unexpected dependency results fail validation.
 `Shell scripts` and `Probe` retain their names.
+
+Main also looks for the successful pre-landing snapshot gate for its exact Git
+tree. A squash changes the commit SHA, so reuse compares the tree hash from
+GitHub's run metadata and the run's `desktop-ci-evidence-<attempt>` artifact.
+The producer records proof only after every selected native lane and completion
+gate succeeds, on both architectures with the ordinary CI inputs. Main requires
+that proof to cover every lane its own last-green comparison selects, including
+Linux integration and packaging, with identical runner matrices. It checks the
+same repository, workflow, snapshot SHA, successful run and latest run attempt
+independently through the Actions API. Deleted snapshot branches are irrelevant.
+
+When proof matches, main avoids repeating the selected native work and links
+the original run in the Changed components summary. The public-source check
+and compatibility completion jobs still run; Desktop Release still receives a
+successful CI push on main and builds its signed packages as before. A failed
+or partial snapshot, changed tree/runner, missing lane, expired artifact, API
+error or missing proof leaves the original CI selection intact. Dispatches,
+pull requests and reusable release checks never use this shortcut. Evidence
+expires after seven days; lookup is limited to the latest 50 successful
+snapshot runs and three matching-tree artifacts, so older work is rerun.
+
+Verify the reuse contract with `python3 scripts/test_ci_reuse.py` and workflow
+syntax with `actionlint .github/workflows/desktop-ci.yml`.
+
 Both `Linux probe glibc 2.34 (arm64)` and `Linux probe glibc 2.34 (x64)` are
 also preserved as inexpensive compatibility gates over the selected Linux
 core builds in both representative and full-matrix modes. The actual producer

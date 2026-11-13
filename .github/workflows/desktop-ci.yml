@@ -155,21 +155,22 @@ jobs:
       # Reads earlier Desktop CI runs to find the last commit main passed.
       actions: read
     outputs:
-      shell: ${{ steps.changes.outputs.shell }}
-      probe: ${{ steps.changes.outputs.probe }}
-      macos: ${{ steps.changes.outputs.macos }}
-      macos_core: ${{ steps.changes.outputs.macos_core }}
-      macos_package: ${{ steps.changes.outputs.macos_package }}
+      reused-run: ${{ steps.reuse.outputs.reused-run }}
+      shell: ${{ steps.reuse.outputs.shell || steps.changes.outputs.shell }}
+      probe: ${{ steps.reuse.outputs.probe || steps.changes.outputs.probe }}
+      macos: ${{ steps.reuse.outputs.macos || steps.changes.outputs.macos }}
+      macos_core: ${{ steps.reuse.outputs.macos_core || steps.changes.outputs.macos_core }}
+      macos_package: ${{ steps.reuse.outputs.macos_package || steps.changes.outputs.macos_package }}
       macos-matrix: ${{ steps.matrices.outputs.macos }}
       linux-matrix: ${{ steps.matrices.outputs.linux }}
       linux-probe-matrix: ${{ steps.matrices.outputs.linux_probe }}
       windows-matrix: ${{ steps.matrices.outputs.windows }}
-      linux: ${{ steps.changes.outputs.linux }}
-      linux_core: ${{ steps.changes.outputs.linux_core }}
-      linux_integration: ${{ steps.changes.outputs.linux_integration }}
-      linux_package: ${{ steps.changes.outputs.linux_package }}
-      windows: ${{ steps.changes.outputs.windows }}
-      windows_package: ${{ steps.changes.outputs.windows_package }}
+      linux: ${{ steps.reuse.outputs.linux || steps.changes.outputs.linux }}
+      linux_core: ${{ steps.reuse.outputs.linux_core || steps.changes.outputs.linux_core }}
+      linux_integration: ${{ steps.reuse.outputs.linux_integration || steps.changes.outputs.linux_integration }}
+      linux_package: ${{ steps.reuse.outputs.linux_package || steps.changes.outputs.linux_package }}
+      windows: ${{ steps.reuse.outputs.windows || steps.changes.outputs.windows }}
+      windows_package: ${{ steps.reuse.outputs.windows_package || steps.changes.outputs.windows_package }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -276,6 +277,20 @@ jobs:
             python3 scripts/ci-changes.py --base unavailable --head unavailable >> "$GITHUB_OUTPUT"
           fi
 
+
+      # A squash changes the commit SHA, but not its source tree. Reuse only
+      # a completed snapshot gate proving all lanes main currently needs.
+      # Keep this main run (and its completion gates) for Desktop Release.
+      - name: Reuse an identical tested snapshot
+        id: reuse
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTION_JSON: ${{ toJSON(steps.changes.outputs) }}
+          MATRICES_JSON: ${{ toJSON(steps.matrices.outputs) }}
+        run: python3 scripts/ci-reuse.py find
+
   shellcheck:
     needs: changes
     if: needs.changes.outputs.shell == 'true'
@@ -302,8 +317,10 @@ jobs:
       - name: Test probe bridge validation
         run: bash scripts/test-probe-bridge.sh
 
-      - name: Test CI change detection
-        run: python3 scripts/test_ci_changes.py
+      - name: Test CI change detection and snapshot reuse
+        run: |
+          python3 scripts/test_ci_changes.py
+          python3 scripts/test_ci_reuse.py
 
       - name: Test the release notes tooling
         run: |
@@ -1447,3 +1464,40 @@ jobs:
           else
             test "$CORE_RESULT" = skipped
           fi
+
+  snapshot-evidence:
+    name: Record successful snapshot gate
+    # A run's successful conclusion is checked independently by the consumer.
+    # Reruns use a separate artifact per attempt; stale attempts never count.
+    needs: [changes, open-source, shellcheck, probe, linux-core, macos-package, macos-swift-tests, macos-core-tests, windows-package, windows-tests, linux-package, linux-tests, macos, windows, linux, linux-probe-glibc]
+    if: >-
+      always() && !failure() && !cancelled() &&
+      github.event_name == 'workflow_dispatch' && inputs.full-matrix &&
+      !inputs.skip-packages && !inputs.core-only && !inputs.reuse-linux-core &&
+      !inputs.release-analytics && (inputs.probe-version == '' || inputs.probe-version == '0.0.0') &&
+      startsWith(github.ref, 'refs/heads/ci/')
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bind successful lanes and runners to the exact source tree
+        env:
+          SELECTION_JSON: ${{ toJSON(needs.changes.outputs) }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          FULL_MATRIX: ${{ env.CI_FULL_MATRIX }}
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: python3 scripts/ci-reuse.py record --path evidence.json
+
+      - name: Save snapshot evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-ci-evidence-${{ github.run_attempt }}
+          path: evidence.json
+          if-no-files-found: error
+          retention-days: 7
