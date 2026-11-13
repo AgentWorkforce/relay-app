@@ -28,8 +28,9 @@ enum CloudDeviceGrantPoll: Equatable {
 
 /// Background time for one request whose response must not be lost. Cloud
 /// consumes the device code when it answers with tokens, so a token response
-/// dropped because iOS suspended the app (the person is approving in Safari)
-/// cannot be fetched again. Ends at most once.
+/// dropped because iOS suspended the app cannot be fetched again. Approval
+/// happens on an in-app page, but the person may still switch apps meanwhile
+/// (to read a sign-in email, say). Ends at most once.
 @MainActor final class BackgroundRequest {
     private var identifier: UIBackgroundTaskIdentifier = .invalid
 

@@ -1,1 +1,1 @@
-Access privacy and support links before signing in and from Settings. Settings now includes a direct link to request account deletion and bundled open-source license information.
+Access privacy and support links before signing in and from Settings. Sign-in now stays in the app. Settings now opens the account deletion page in the app and includes bundled open-source license information.

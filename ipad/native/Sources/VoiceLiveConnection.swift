@@ -53,6 +53,20 @@ final class VoiceLiveConnection: NSObject {
         #endif
     }
 
+    /// CallKit was turned off during the call and the app activated the audio
+    /// session itself: WebRTC runs its audio as it does without CallKit, for
+    /// this call and the ones after it.
+    static func audioSessionActivatedByApp(_ session: AVAudioSession) {
+        manualAudio = false
+        systemAudioActive = false
+        #if os(iOS)
+        let rtc = RTCAudioSession.sharedInstance()
+        rtc.audioSessionDidActivate(session)
+        rtc.isAudioEnabled = true
+        rtc.useManualAudio = false
+        #endif
+    }
+
     private var peer: RTCPeerConnection?
     private var channel: RTCDataChannel?
     private var microphone: RTCAudioTrack?
