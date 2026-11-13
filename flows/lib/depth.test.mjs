@@ -91,7 +91,7 @@ test("each depth has its plan: which flows, which model, and whether the whole c
 
 test("the evidence names the commits and files with their counts, puts the diff last, and stays under Jev's limit", () => {
   const text = evidence(change(["gtk/src/a.rs", "macos/Sources/A.swift"], { diff: "x".repeat(DIFF_CHARS), lines: 2 }));
-  assert.ok(text.startsWith("Repository: relay-desktop"));
+  assert.ok(text.startsWith("Repository: relay-app"));
   assert.ok(text.includes("Commits (1):\nFix the thing"));
   assert.ok(text.includes("Changed files (2, 2 lines):\ngtk/src/a.rs +1 -0\nmacos/Sources/A.swift +1 -0"));
   assert.ok(text.indexOf("Diff (truncated") > text.indexOf("Changed files"));

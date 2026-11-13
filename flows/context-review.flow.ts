@@ -76,7 +76,7 @@ const preamble = (intentPath: string, patch: string, files: string, stateRoot: s
   ].join("\n");
 
 export default flow<ContextReviewInput>(
-  "relay-desktop.context-review",
+  "relay-app.context-review",
   { budget: { wallclock: "45m" } },
   async (f, input) => {
     const base = input?.base ?? "origin/main";

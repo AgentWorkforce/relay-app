@@ -711,7 +711,7 @@ async function reviewOne(
 }
 
 export default flow<CloudReviewInput>(
-  "relay-desktop.cloud-review",
+  "relay-app.cloud-review",
   // Static: the deep cap. review.sh's --budget-minutes holds each depth to its own.
   { budget: { wallclock: "90m" } },
   async (f, input) => {

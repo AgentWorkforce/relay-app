@@ -5,7 +5,7 @@ maintainers and agents they assign. It applies only when the maintainers
 assigned you the work. Contributors outside the team, and any agent working in
 a fork, open a pull request instead; see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-`layered-relay-desktop` runs reviews, landing and releases for this repo, and
+`layered-relay-app` runs reviews, landing and releases for this repo, and
 keeps track of who is working on what. It is on Agent Relay; message it by name.
 The owner is the project's maintainer, `khaliq-gant` on Agent Relay.
 
@@ -14,14 +14,14 @@ The owner is the project's maintainer, `khaliq-gant` on Agent Relay.
 One thorough review, consolidated fixes, then CI decides. Repeated full
 reviews of the same change are not the process.
 
-1. **Before you start**, tell `layered-relay-desktop` what you are working on
+1. **Before you start**, tell `layered-relay-app` what you are working on
    and which paths it touches, or send it your session id. It checks your work
    against everyone else's and warns you about overlaps.
 2. **Commit and push** the change to `review/<your-name>-<slug>`. Never open a
    pull request: pull requests are switched off on this repository by
    the owner's decision (2026-11-03) and stay off. That includes the promoted
    changelog after a stable release, which lands through this workflow too.
-3. **Ask `layered-relay-desktop` to review it**, and say what was asked for.
+3. **Ask `layered-relay-app` to review it**, and say what was asked for.
    - It runs one review round at the size the change needs, together with
      local CI, and sends back the findings. It picks the size; you may ask
      for one.
@@ -43,7 +43,7 @@ reviews of the same change are not the process.
      review.
    - Only a blocker finding (something that must not ship) gets a re-review,
      and it covers just the fix.
-4. **Landing.** `layered-relay-desktop` squashes the change onto `main` when
+4. **Landing.** `layered-relay-app` squashes the change onto `main` when
    all three hold:
    - the change's one review round has reported. A refused or unfinished
      round is not a report; a refused Cloud run is retried or escalated to
@@ -76,7 +76,7 @@ GitHub gate does. To run them before asking for a review, see
 
 ## Releases
 
-Releases are `layered-relay-desktop`'s job:
+Releases are `layered-relay-app`'s job:
 - It keeps a signed candidate of `main` built.
 - It publishes a beta when you ask it to.
 - It publishes a stable only after confirming the request with the owner
@@ -85,13 +85,13 @@ Releases are `layered-relay-desktop`'s job:
 Don't publish yourself:
 - Don't dispatch Desktop Release, Desktop Promote or iOS TestFlight.
 - Don't push a `desktop-v*` tag. Pushing one starts a full build and publish.
-- Don't push a `released-v*` tag. `layered-relay-desktop` creates those.
+- Don't push a `released-v*` tag. `layered-relay-app` creates those.
 
 Every release it publishes is tagged `released-v<version>` on the commit that
 shipped.
 
 **Hotfix:**
-1. Ask `layered-relay-desktop` for the base of the release you are fixing; this
+1. Ask `layered-relay-app` for the base of the release you are fixing; this
    works for any release, older ones included.
    - It gives you a commit it has verified as shipped.
    - If it can't verify one, it confirms the base with the owner directly and gives
@@ -99,12 +99,12 @@ shipped.
    - Don't pick a base yourself, even from a tag.
 2. Branch `hotfix/<version>-<slug>` from that base, where `<version>` is the
    release you are fixing.
-3. Ask `layered-relay-desktop` to review it. A hotfix gets one review round
+3. Ask `layered-relay-app` to review it. A hotfix gets one review round
    and the GitHub gate, like any other change; fix pushes get CI and the
    GitHub gate.
 4. It publishes from the hotfix branch.
 5. The same fix lands on `main` before or right after the publish, under the
    landing rule above: push the fix rebased onto `main` to a `review/`
-   branch and `layered-relay-desktop` lands it once CI and the gate are
+   branch and `layered-relay-app` lands it once CI and the gate are
    green, unless you said you would. No second review, except a review of
    the conflicted files if you resolved conflicts by hand in the rebase.

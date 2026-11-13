@@ -8,7 +8,7 @@
 # loud in the journal; a missing session (first boot) is not a failure.
 set -euo pipefail
 PROBE=/usr/lib/agent-relay/agent-relay-probe
-PROJECT="$HOME/.claude/projects/-home-agent-src-relay-desktop"
+PROJECT="$HOME/.claude/projects/-home-agent-src-relay-app"
 latest="$(find "$PROJECT" -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
 if [ -z "$latest" ]; then
   echo "share-lead-session: no lead session yet in $PROJECT"

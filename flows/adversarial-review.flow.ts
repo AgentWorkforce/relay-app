@@ -80,7 +80,7 @@ const preamble = (patch: string, files: string, stateRoot: string, dir: string):
   ].join("\n");
 
 export default flow<ReviewInput>(
-  "relay-desktop.adversarial-review",
+  "relay-app.adversarial-review",
   { budget: { wallclock: "45m" } },
   async (f, input) => {
     const prepared = await prepare(f, "adversarial-review", input);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Agent Deploy's preview (.github/workflows/agent-deploy.yml, preview job):
-# before the reusable deploy runs, create a NON-EXECUTING CloudFormation
+# before the deploy action runs, create a NON-EXECUTING CloudFormation
 # change set on the compute stack from the template the AMI pin adoption
 # would deploy (AmiId pinned plus AgentHost's LayeredAgentAmiPin metadata
 # marker, as kit 0.1.15 builds it), and fail unless AgentHost is modified in
@@ -11,6 +11,12 @@
 # decide (which hot-updates the host over SSM) and never executes the change
 # set.
 #
+# A stack that verifiably does not exist yet (the first deploy of a fresh
+# agent) passes without a change set: there is no host to replace, and a fresh
+# create is what the preview protects. Only a ValidationError saying "does not
+# exist" counts, never one that is also an authorization error; any other
+# get-template error is printed and fails the run.
+#
 #   preview-change-set.sh run <change-set-name>
 #   preview-change-set.sh delete <change-set-name>
 #     exits 0 when the change set was deleted or verifiably does not exist
@@ -20,8 +26,8 @@
 #
 # AWS calls (the deploy role's credentials): cloudformation GetTemplate,
 # DescribeStacks, CreateChangeSet, DescribeChangeSet, DeleteChangeSet on the
-# compute stack. Any error fails the run (fail closed). The JSON checks live in
-# preview-change-set.ts (tested in test/preview-change-set.test.ts).
+# compute stack. Any other error fails the run (fail closed). The JSON checks
+# live in preview-change-set.ts (tested in test/preview-change-set.test.ts).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -57,7 +63,18 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-"${cfn[@]}" get-template --stack-name "$stack" --template-stage Original --query TemplateBody >"$work/deployed.json"
+if ! err=$("${cfn[@]}" get-template --stack-name "$stack" --template-stage Original --query TemplateBody 2>&1 >"$work/deployed.json"); then
+  # Only a verified not-found ("Stack with id <name> does not exist") is a
+  # fresh create; an authorization error never is, whatever else it says.
+  if [[ "$err" =~ ValidationError ]] && [[ "$err" =~ does\ not\ exist ]] && [[ ! "$err" =~ AccessDenied|not\ authorized ]]; then
+    echo "stack $stack does not exist yet: a fresh create, nothing to replace"
+    echo "Agent Deploy preview: stack $stack does not exist yet, fresh create, nothing to replace: PASS" >>"$summary"
+    exit 0
+  fi
+  echo "could not read the deployed template of $stack:" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+fi
 "${cfn[@]}" describe-stacks --stack-name "$stack" >"$work/stacks.json"
 kind=$(node preview-change-set.ts template "$work/deployed.json" "$work/stacks.json" "$work/pin.json")
 if [ "$kind" = adopted ]; then

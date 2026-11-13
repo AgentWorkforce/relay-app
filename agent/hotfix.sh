@@ -23,10 +23,10 @@ dir=$HOME/hotfix/$slug
 # same). The one tag that matters is then fetched by itself, forced, so a
 # stale local copy can never stand in for origin's: that fetch failing, or
 # the tag not existing on origin, stops the hotfix.
-git -C "$HOME/build/relay-desktop" fetch -q origin --tags 2>/dev/null || echo "warning: tag fetch failed (a local tag differs from origin?)" >&2
-git -C "$HOME/build/relay-desktop" fetch -q origin "+refs/tags/$tag:refs/tags/$tag" || { echo "no tag $tag on origin (or the fetch failed)" >&2; exit 1; }
+git -C "$HOME/build/relay-app" fetch -q origin --tags 2>/dev/null || echo "warning: tag fetch failed (a local tag differs from origin?)" >&2
+git -C "$HOME/build/relay-app" fetch -q origin "+refs/tags/$tag:refs/tags/$tag" || { echo "no tag $tag on origin (or the fetch failed)" >&2; exit 1; }
 mkdir -p "$HOME/hotfix"
-[ -d "$dir/.git" ] || git clone -q --reference "$HOME/build/relay-desktop" https://github.com/AgentWorkforce/relay-desktop.git "$dir"
+[ -d "$dir/.git" ] || git clone -q --reference "$HOME/build/relay-app" https://github.com/AgentWorkforce/relay-app.git "$dir"
 git -C "$dir" fetch -q origin "+refs/tags/$tag:refs/tags/$tag" || { echo "cannot fetch $tag into $dir" >&2; exit 1; }
 git -C "$dir" checkout -q -B "$branch" "$tag"
 git -C "$dir" push -q -u origin "$branch"

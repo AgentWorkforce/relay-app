@@ -1,8 +1,8 @@
 {
-  "name": "@agentworkforce/relay-desktop-agent",
+  "name": "@agentworkforce/relay-app-agent",
   "version": "0.0.0",
   "private": true,
-  "description": "layered-relay-desktop: this repo's layered agent (lane files + its Alchemy stack).",
+  "description": "layered-relay-app: this repo's layered agent (lane files + its Alchemy stack).",
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {

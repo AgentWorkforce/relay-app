@@ -16,7 +16,7 @@ test('release and tick switches preserve legacy, delegate cloud arguments and pr
       // Execute the real entry point through its dispatch boundary; the
       // unchanged legacy body is represented by a sentinel, not executed.
       const script = source(name);
-      const boundary = script.indexOf('REPO=AgentWorkforce/relay-desktop');
+      const boundary = script.indexOf('REPO=AgentWorkforce/relay-app');
       assert.ok(boundary > 0);
       const prefix = script.slice(0, boundary).replaceAll('/opt/agent-host/cloud-release.sh', bridge);
       for (const flag of [undefined, 'legacy', 'cloud']) {

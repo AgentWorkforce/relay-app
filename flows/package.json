@@ -1,5 +1,5 @@
 {
-  "name": "relay-desktop-flows",
+  "name": "relay-app-flows",
   "private": true,
   "type": "module",
   "description": "Relayflows that review and verify a finished change before it is squashed onto main (see AGENTS.md).",

@@ -38,7 +38,7 @@ interface PlanReviewInput {
 }
 
 export default flow<PlanReviewInput>(
-  "relay-desktop.plan-review",
+  "relay-app.plan-review",
   { budget: { wallclock: "15m" } },
   async (f, input) => {
     const base = input?.base ?? "origin/main";

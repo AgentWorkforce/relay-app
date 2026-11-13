@@ -75,7 +75,7 @@ export const POLL_MINUTES = 2;
 export const POLLS = Math.ceil((CI_MINUTES + 10) / POLL_MINUTES);
 
 export default flow<SizedReviewInput>(
-  "relay-desktop.sized-review",
+  "relay-app.sized-review",
   { budget: { wallclock: "160m" } },
   async (f, input) => {
     const base = input?.base ?? "origin/main";

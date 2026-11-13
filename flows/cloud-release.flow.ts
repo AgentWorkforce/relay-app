@@ -66,7 +66,7 @@ async function wait(f: Ctx, runId: number): Promise<void> {
   }
   throw Error(`worker ${runId} exceeded the two-hour wait; inspect its existing run`);
 }
-export default flow<ReleaseInput>('relay-desktop.cloud-release', { budget: { wallclock: '180m' } }, async (f, input) => {
+export default flow<ReleaseInput>('relay-app.cloud-release', { budget: { wallclock: '180m' } }, async (f, input) => {
   if (input.operation === 'inventory') {
     const candidates = await effect<unknown[]>(f, 'inventory', { input });
     await effect(f, 'result', { result: { status: 'inventory', candidates } });

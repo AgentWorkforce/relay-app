@@ -11,7 +11,7 @@
 #     changelog), there is nothing to build. Otherwise dispatch ONE
 #     prepare-only Desktop Release for the first channel that is behind.
 #     Stable candidates are prepared by the workflow itself (workflow_run after
-#     Desktop CI passes on main, since relay-desktop 4c14d5b0): the tick adopts
+#     Desktop CI passes on main): the tick adopts
 #     those runs instead of dispatching stable. Only beta is dispatched here.
 #  A sha whose candidate failed is not retried for that channel until main moves.
 #
@@ -31,13 +31,13 @@ if [ "${DESKTOP_RELEASE_ORCHESTRATOR:-legacy}" = cloud ]; then
   if [ "${1:-}" = --refresh ]; then exec /opt/agent-host/cloud-release.sh inventory beta; fi
   exec /opt/agent-host/cloud-release.sh tick beta
 fi
-REPO=AgentWorkforce/relay-desktop
+REPO=AgentWorkforce/relay-app
 WF=desktop-release.yml
 state=$HOME/state/candidates.json
 mkdir -p "$HOME/state"
 [ -f "$state" ] || echo '[]' > "$state"
 exec 9> "$HOME/state/.tick.lock"; flock -n 9 || { echo "tick already running"; exit 0; }
-cd "$HOME/build/relay-desktop"
+cd "$HOME/build/relay-app"
 git fetch -q origin main
 # Tags separately: a local tag that differs from origin's ("would clobber
 # existing tag") must not stop the run, but it is worth surfacing.

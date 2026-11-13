@@ -24,7 +24,7 @@ do not switch an in-flight incident release to a new orchestrator.
 
 1. The Cloud secret owner provisions `DESKTOP_RELEASE_GH_TOKEN` for the
    release flow's command steps. Use a dedicated GitHub App/service identity
-   restricted to `AgentWorkforce/relay-desktop`, Actions read/write and
+   restricted to `AgentWorkforce/relay-app`, Actions read/write and
    Contents read/write. It does not need access to releases repositories or
    any signing/publishing key. Ensure the credential remains usable throughout
    a run (up to 180 minutes); short-lived installation tokens need the secret
@@ -105,7 +105,7 @@ branch atomically. A lost POST response can therefore be discovered without
 issuing a second POST. A reservation with no visible worker is an ambiguous
 submission: the flow stops after bounded discovery for the lead to inspect.
 It must not delete that reservation and retry blindly. These refs are request
-receipts, not shipped tags. `layered-relay-desktop` owns their manual cleanup:
+receipts, not shipped tags. `layered-relay-app` owns their manual cleanup:
 retain each reservation for at least seven days and until its Cloud run is
 terminal and audited. Archive the request ID, payload identity, source SHA and
 worker run IDs under the lead's release records before deleting that exact

@@ -1,14 +1,14 @@
 #!/bin/bash
-# relay-desktop's lane step after the kit loads secrets and clones the repo:
+# relay-app's lane step after the kit loads secrets and clones the repo:
 # install the review and CI flows once in the lead's checkout.
 set -euo pipefail
-[ -d /home/agent/src/relay-desktop/flows ] || exit 0
-sudo -H -u agent bash -lc '[ -x ~/src/relay-desktop/flows/node_modules/.bin/flows ] || npm --prefix ~/src/relay-desktop/flows ci --no-audit --no-fund --ignore-scripts'
-# ~/build/relay-desktop: the reference clone tick.sh, release.sh, review.sh
+[ -d /home/agent/src/relay-app/flows ] || exit 0
+sudo -H -u agent bash -lc '[ -x ~/src/relay-app/flows/node_modules/.bin/flows ] || npm --prefix ~/src/relay-app/flows ci --no-audit --no-fund --ignore-scripts'
+# ~/build/relay-app: the reference clone tick.sh, release.sh, review.sh
 # and hotfix.sh work from (fetches, tags, --reference clones). A fresh host
 # has none; it is cloned from the lead's checkout and pointed at GitHub, so
 # later fetches use the same credentials the lead's checkout does.
-sudo -H -u agent bash -lc '[ -d ~/build/relay-desktop/.git ] || { mkdir -p ~/build && git clone -q ~/src/relay-desktop ~/build/relay-desktop && git -C ~/build/relay-desktop remote set-url origin https://github.com/AgentWorkforce/relay-desktop.git; }'
+sudo -H -u agent bash -lc '[ -d ~/build/relay-app/.git ] || { mkdir -p ~/build && git clone -q ~/src/relay-app ~/build/relay-app && git -C ~/build/relay-app remote set-url origin https://github.com/AgentWorkforce/relay-app.git; }'
 # tick.sh, review.sh, release.sh, hotfix.sh and disk-cleanup.sh are not in
 # the user data (EC2's 16 KiB raw cap): they come from main's agent/ in the
 # reference clone, fetched first, and from nowhere else (the lead's checkout
@@ -23,7 +23,7 @@ sudo -H -u agent bash -lc '[ -d ~/build/relay-desktop/.git ] || { mkdir -p ~/bui
 # Installed by atomic rename, so a tick already running keeps its file.
 install_lane_scripts() {
   local f tmp sha want
-  if [ ! -d /home/agent/build/relay-desktop/.git ]; then
+  if [ ! -d /home/agent/build/relay-app/.git ]; then
     echo "lane scripts not installed yet: no reference clone on this host" >&2
     lane_scripts_present
     return
@@ -42,7 +42,7 @@ install_lane_scripts() {
   # can hold the lock for minutes (dispatch polling, gh calls), so wait
   # longer than one.
   sudo -H -u agent mkdir -p /home/agent/state
-  if ! sudo -H -u agent flock -w 600 /home/agent/state/.tick.lock git -C /home/agent/build/relay-desktop fetch -q origin main; then
+  if ! sudo -H -u agent flock -w 600 /home/agent/state/.tick.lock git -C /home/agent/build/relay-app fetch -q origin main; then
     echo "warning: could not fetch main into the reference clone; lane scripts not installed this time" >&2
     lane_scripts_present
     return
@@ -51,7 +51,7 @@ install_lane_scripts() {
   for f in tick.sh review.sh release.sh hotfix.sh disk-cleanup.sh cloud-release.sh; do
     # This script runs as root: only git runs as agent, the redirect is root's.
     # shellcheck disable=SC2024
-    if ! sudo -H -u agent git -C /home/agent/build/relay-desktop --no-replace-objects show "origin/main:agent/$f" > "$tmp/$f" 2>/dev/null; then
+    if ! sudo -H -u agent git -C /home/agent/build/relay-app --no-replace-objects show "origin/main:agent/$f" > "$tmp/$f" 2>/dev/null; then
       echo "warning: agent/$f is not on origin/main; lane scripts not installed this time" >&2
       rm -rf "$tmp"
       lane_scripts_present

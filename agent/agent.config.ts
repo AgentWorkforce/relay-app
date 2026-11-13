@@ -1,28 +1,28 @@
 /**
- * layered-relay-desktop: the layered agent for this repo (ledger, sized review
+ * layered-relay-app: the layered agent for this repo (ledger, sized review
  * flows, releases). Built by @agentworkforce/layered-agent; lane files are the
  * rest of this folder.
  *
- * Adopted from relaycast-cloud/agent-host, so it keeps that host's names, tags,
- * descriptions and secret parameters: its compute template stays identical
- * apart from UserData and the pinned AmiId (test/agent.test.ts), and the move
- * is a stop/start of the instance, never a replacement. Adopting the AMI pin
- * does not touch the instance.
+ * A new stack, not an adoption: it creates its own host role and instance
+ * profile, log groups, compute stack and session document, and keeps its
+ * secrets under its own parameter prefix. Nothing it creates may share a name
+ * with the relay-desktop agent's live stack (relaycast-agent-host-<stage>-relay-desktop)
+ * or with the relaycast-agent-host-<stage> resources relaycast-cloud owns.
  */
 import { defineLayeredAgent } from "@agentworkforce/layered-agent";
 
 const stage = process.env.LAYERED_AGENT_STAGE ?? "dev";
 
 export default defineLayeredAgent({
-  name: "relay-desktop",
-  repo: "AgentWorkforce/relay-desktop",
+  name: "relay-app",
+  repo: "AgentWorkforce/relay-app",
   stage,
   accountId: process.env.LAYERED_AGENT_ACCOUNT_ID,
   // x64: Relayflows ships runtimes only for x64 Linux and Apple silicon.
   arch: "x64",
   instanceType: "m7i.2xlarge",
-  // Pinned to the AMI the adopted host runs (Canonical 24.04, serial 20261023),
-  // so Canonical's moving "current" pointer no longer makes every deploy full.
+  // Pinned (Canonical 24.04, serial 20261023), so Canonical's moving
+  // "current" pointer does not make every deploy full.
   // A new image is a deliberate change of this id: a full deploy, dispatched
   // with allow_restart.
   ami: "ami-08cf17e3856f70154",
@@ -50,28 +50,33 @@ export default defineLayeredAgent({
     { envVar: "FLOWS_CLOUD_URL_PARAM", param: "flows-cloud-url", exportAs: "FLOWS_CLOUD_URL" },
   ],
   // The Agent Relay sessions MCP (module 0.1.9): the lead can search and read
-  // the team's shared sessions as agent-relay-sessions. The host runs on the
-  // shared relaycast-agent-host-dev role, which relaycast-cloud owns, so the
-  // module grants nothing: relaycast-cloud's agent-host role must allow
+  // the team's shared sessions as agent-relay-sessions. The host role grants
   // ssm:GetParameter on exactly this parameter.
-  relaySessions: { tokenParam: `/relaycast-agent-host/${stage}/relay-sessions-token-relay-desktop` },
-  repos: ["AgentWorkforce/relay-desktop"],
+  relaySessions: { tokenParam: `/relaycast-agent-host/${stage}/relay-sessions-token-relay-app` },
+  repos: ["AgentWorkforce/relay-app"],
   env: { LEDGER_COUNTERPARTS: "macos=app-ui gtk=app-ui" },
-  relayDescription: "relay-desktop layered agent: ledger, sized review flows, releases (EC2, Fable 5.1)",
+  relayDescription: "relay-app layered agent: ledger, sized review flows, releases (EC2, Fable 5.1)",
+  // Names. The rule: everything this stack CREATES carries a -relay-app
+  // suffix or a /relay-app path segment, so it can never collide with the
+  // relay-desktop agent's live stack or relaycast-cloud's shared host
+  // resources. Only what it READS stays shared: platformPrefix holds the
+  // network ids and the kit secrets (anthropic-api-key, nango-secret-key)
+  // that the platform deploy publishes for every agent host. The default
+  // tags (layered-agent:name=relay-app) stay, because the deploy role's
+  // SendCommand grant is conditioned on that tag and must match this host only.
   names: {
-    computeStack: `relaycast-agent-host-${stage}-relay-desktop`,
-    role: `relaycast-agent-host-${stage}`,
-    sessionDocument: `relaycast-agent-host-${stage}-relay-desktop-session`,
-    sessionLogGroup: `/relaycast-agent-host/${stage}/ssm-sessions`,
-    telemetryEventsLogGroup: `/relaycast-agent-host/${stage}/claude-code-events`,
-    telemetryMetricsLogGroup: `/relaycast-agent-host/${stage}/claude-code-metrics`,
-    telemetryNamespace: "RelaycastAgentHost/ClaudeCode",
-    paramPrefix: `/relaycast-agent-host/${stage}`,
+    computeStack: `relaycast-agent-host-${stage}-relay-app`,
+    role: `relaycast-agent-host-${stage}-relay-app`,
+    sessionDocument: `relaycast-agent-host-${stage}-relay-app-session`,
+    sessionLogGroup: `/relaycast-agent-host/${stage}/relay-app/ssm-sessions`,
+    telemetryEventsLogGroup: `/relaycast-agent-host/${stage}/relay-app/claude-code-events`,
+    telemetryMetricsLogGroup: `/relaycast-agent-host/${stage}/relay-app/claude-code-metrics`,
+    telemetryNamespace: "RelaycastAgentHost/ClaudeCode/relay-app",
+    paramPrefix: `/relaycast-agent-host/${stage}/relay-app`,
     platformPrefix: `/relaycast-agent-host/${stage}`,
   },
-  tags: { "relaycast:component": "agent-host", "relaycast:stage": stage },
   description: {
-    stack: `relay-desktop layered agent host (${stage}): one x64 EC2 instance, SSM-only access`,
-    session: `relay-desktop layered agent host (${stage}): sessions logged to CloudWatch`,
+    stack: `relay-app layered agent host (${stage}): one x64 EC2 instance, SSM-only access`,
+    session: `relay-app layered agent host (${stage}): sessions logged to CloudWatch`,
   },
 });

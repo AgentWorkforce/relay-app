@@ -47,7 +47,7 @@ internal=(':!scripts/check-open-source.sh')
 hits "Reference to a private AgentWorkforce repository; point at a public one or describe it." \
   '(relaycontrol|hosted-docs|github\.com[/:]AgentWorkforce/relayhistory-cloud)' . "${internal[@]}" \
   ':!desktop-core/tests/fixtures/desktop-feed/specs'
-# The agent host deploys through layered-agents' reusable workflow and state
+# The agent host deploys through layered-agents' composite action and state
 # store; only the agent stack and its workflows may name it.
 hits "Reference to the private layered-agents repository outside the agent stack." \
   'layered-agents' . "${internal[@]}" ':!agent' ':!.github/workflows/agent-ci.yml' \

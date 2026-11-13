@@ -248,18 +248,19 @@ test("allow_restart mode lists a replacement instead of failing, and checks ever
 });
 
 // The wrapper against a fake aws that serves canned JSON and logs its calls.
-function runScript(changeSetJson: object, mode = "run", opts: { deleteError?: string; env?: Record<string, string>; deployed?: object; stacks?: object } = {}) {
+function runScript(changeSetJson: object, mode = "run", opts: { deleteError?: string; getTemplateError?: string; env?: Record<string, string>; deployed?: object; stacks?: object } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "preview-change-set-"));
   try {
     writeFileSync(join(dir, "deployed.json"), JSON.stringify(opts.deployed ?? prePin));
     writeFileSync(join(dir, "stacks.json"), JSON.stringify(opts.stacks ?? running(ami)));
     writeFileSync(join(dir, "change-set.json"), JSON.stringify(changeSetJson));
     if (opts.deleteError !== undefined) writeFileSync(join(dir, "delete-error"), opts.deleteError);
+    if (opts.getTemplateError !== undefined) writeFileSync(join(dir, "get-template-error"), opts.getTemplateError);
     writeFileSync(join(dir, "aws"), [
       "#!/usr/bin/env bash",
       'echo "$*" >>"$FAKE_DIR/calls"',
       'case " $* " in',
-      '  *" get-template "*) cat "$FAKE_DIR/deployed.json" ;;',
+      '  *" get-template "*) if [ -f "$FAKE_DIR/get-template-error" ]; then cat "$FAKE_DIR/get-template-error" >&2; exit 254; fi; cat "$FAKE_DIR/deployed.json" ;;',
       '  *" describe-stacks "*) cat "$FAKE_DIR/stacks.json" ;;',
       '  *" create-change-set "*) for a in "$@"; do case $a in file://*) cp "${a#file://}" "$FAKE_DIR/submitted.json" ;; esac; done; echo "{}" ;;',
       '  *" wait "*) exit 255 ;;',
@@ -286,12 +287,12 @@ test("the wrapper submits the pin template without AmiId, never executes, and pa
   const r = runScript(changeSet({ Action: "Modify", Replacement: "False" }));
   assert.equal(r.status, 0, r.stderr);
   const create = r.calls.split("\n").find((l) => l.includes("create-change-set"))!;
-  assert.match(create, /--stack-name relaycast-agent-host-dev-relay-desktop --change-set-name preview-1-1 --change-set-type UPDATE/);
+  assert.match(create, /--stack-name relaycast-agent-host-dev-relay-app --change-set-name preview-1-1 --change-set-type UPDATE/);
   assert.match(create, /--parameters ParameterKey=SubnetId,UsePreviousValue=true ParameterKey=SecurityGroupId,UsePreviousValue=true ParameterKey=InstanceProfileName,UsePreviousValue=true$/);
   assert.doesNotMatch(r.calls, /AmiId|execute-change-set|update-stack|ssm /);
   assert.deepEqual(JSON.parse(r.submitted).Parameters.AmiId, pinnedAmiParameter(ami));
   assert.deepEqual(JSON.parse(r.submitted).Resources.AgentHost.Metadata, { [AMI_PIN_MARKER]: ami });
-  assert.match(r.summary, /stack relaycast-agent-host-dev-relay-desktop, change set preview-1-1, status CREATE_COMPLETE, AgentHost Modify\/False, .*PASS/);
+  assert.match(r.summary, /stack relaycast-agent-host-dev-relay-app, change set preview-1-1, status CREATE_COMPLETE, AgentHost Modify\/False, .*PASS/);
 });
 
 test("the wrapper submits the marker for a 0.1.14 plain-pinned stack", () => {
@@ -316,7 +317,7 @@ test("the wrapper fails a no-changes change set and an AgentHost-less one", () =
 test("the wrapper passes without a change set once the pin and the marker are deployed", () => {
   const r = runScript({}, "run", { deployed: adoptedTemplate(), stacks: plainRunning(ami) });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /pin already adopted on relaycast-agent-host-dev-relay-desktop, nothing to preview/);
+  assert.match(r.stdout, /pin already adopted on relaycast-agent-host-dev-relay-app, nothing to preview/);
   assert.match(r.summary, /already carries the AMI pin, nothing to preview: PASS/);
   assert.doesNotMatch(r.calls, /create-change-set|describe-change-set/);
   // The parameter alone is not adopted: the change set runs.
@@ -354,7 +355,7 @@ test("delete exits 0 when the change set was deleted", () => {
   const r = runScript({}, "delete");
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /deleted change set preview-1-1/);
-  assert.match(r.calls, /delete-change-set --stack-name relaycast-agent-host-dev-relay-desktop --change-set-name preview-1-1/);
+  assert.match(r.calls, /delete-change-set --stack-name relaycast-agent-host-dev-relay-app --change-set-name preview-1-1/);
 });
 
 test("delete exits 0 only on a verified not-found", () => {
@@ -377,8 +378,35 @@ test("delete fails and prints the error on a denied deletion or any other failur
   ]) {
     const r = runScript({}, "delete", { deleteError: err });
     assert.equal(r.status, 1, JSON.stringify(err));
-    assert.match(r.stderr, /could not delete change set preview-1-1 on relaycast-agent-host-dev-relay-desktop:/);
+    assert.match(r.stderr, /could not delete change set preview-1-1 on relaycast-agent-host-dev-relay-app:/);
     if (err) assert.ok(r.stderr.includes(err.trim()), r.stderr);
     assert.doesNotMatch(r.stdout, /deleted|does not exist/);
+  }
+});
+
+test("a stack that verifiably does not exist yet passes as a fresh create, with no change set", () => {
+  const r = runScript({}, "run", { getTemplateError: "\nAn error occurred (ValidationError) when calling the GetTemplate operation: Stack with id relaycast-agent-host-dev-relay-app does not exist\n" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^stack relaycast-agent-host-dev-relay-app does not exist yet: a fresh create, nothing to replace$/m);
+  assert.match(r.calls, /get-template --stack-name relaycast-agent-host-dev-relay-app/);
+  assert.doesNotMatch(r.calls, /describe-stacks|create-change-set|describe-change-set|execute-change-set/);
+  assert.equal(r.summary, "Agent Deploy preview: stack relaycast-agent-host-dev-relay-app does not exist yet, fresh create, nothing to replace: PASS\n");
+});
+
+test("any other get-template error fails the run and prints it, a denied read included", () => {
+  for (const err of [
+    "\nAn error occurred (AccessDenied) when calling the GetTemplate operation: Stack with id relaycast-agent-host-dev-relay-app does not exist or you are not authorized\n",
+    "\nAn error occurred (ValidationError) when calling the GetTemplate operation: User: arn:aws:sts::1:assumed-role/x is not authorized to perform: cloudformation:GetTemplate; the stack does not exist\n",
+    "\nAn error occurred (ExpiredToken) when calling the GetTemplate operation: The security token included in the request is expired\n",
+    "\nCould not connect to the endpoint URL: \"https://cloudformation.us-west-2.amazonaws.com/\"\n",
+    "",
+  ]) {
+    const r = runScript({}, "run", { getTemplateError: err });
+    assert.equal(r.status, 1, JSON.stringify(err));
+    assert.match(r.stderr, /could not read the deployed template of relaycast-agent-host-dev-relay-app:/);
+    if (err) assert.ok(r.stderr.includes(err.trim()), r.stderr);
+    assert.doesNotMatch(r.stdout, /does not exist yet/);
+    assert.doesNotMatch(r.calls, /describe-stacks|create-change-set/);
+    assert.doesNotMatch(r.summary, /PASS/);
   }
 });

@@ -9,7 +9,7 @@ import type { ReviewerInput } from "./lib/review.ts";
 import { shellWord } from "./lib/shell.ts";
 
 export default flow<ReviewerInput>(
-  "relay-desktop.reviewer",
+  "relay-app.reviewer",
   { budget: { wallclock: "20m" } },
   async (f, input) => {
     await f

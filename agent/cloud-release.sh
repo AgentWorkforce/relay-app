@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
   else args+=("$1"); shift
   fi
 done
-repo=$HOME/build/relay-desktop
+repo=$HOME/build/relay-app
 state=$HOME/state/cloud-releases
 mkdir -p "$state"
 (

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const REPO = 'AgentWorkforce/relay-desktop';
+export const REPO = 'AgentWorkforce/relay-app';
 const sha = /^[0-9a-f]{40}$/;
 const id = /^[1-9][0-9]*$/;
 export function freshCiRun(run, now = Date.now()) {
@@ -194,7 +194,7 @@ export function perform(action, payload) {
       while (object.type === 'tag') object = api(`git/tags/${object.sha}`).object;
       if (object.sha !== plan.sourceSha) throw Error('released tag points elsewhere; refusing to move it');
     } else {
-      const annotated = api('git/tags', { tag, message: `relay-desktop v${plan.version}; candidate ${plan.candidateRunId}, promote ${runId}`, object: plan.sourceSha, type: 'commit' });
+      const annotated = api('git/tags', { tag, message: `relay-app v${plan.version}; candidate ${plan.candidateRunId}, promote ${runId}`, object: plan.sourceSha, type: 'commit' });
       api('git/refs', { ref: `refs/tags/${tag}`, sha: annotated.sha });
     }
     return { tagged: true, tag };

@@ -54,7 +54,7 @@ test("the lane scripts the user data does not carry are installed from the clone
     assert.match(text, new RegExp(`for f in ${list}; do`), lane);
     // Only the reference clone's fetched origin/main, never a checkout's HEAD,
     // and only when the fetched set matches the hash the user data carries.
-    assert.match(text, /git -C \/home\/agent\/build\/relay-desktop --no-replace-objects show "origin\/main:agent\/\$f"/, lane);
+    assert.match(text, /git -C \/home\/agent\/build\/relay-app --no-replace-objects show "origin\/main:agent\/\$f"/, lane);
     assert.doesNotMatch(text, /show "HEAD:agent\//, `${lane} must not install from a checkout's HEAD`);
     // The hash gate itself: compare, and only then move the files into place.
     assert.match(text, /if \[ "\$sha" != "\$want" \]; then/, lane);
@@ -62,7 +62,7 @@ test("the lane scripts the user data does not carry are installed from the clone
     assert.match(text, /sha256sum tick\.sh review\.sh release\.sh hotfix\.sh disk-cleanup\.sh cloud-release\.sh \| sha256sum/, lane);
     // The fetch under the tick's lock, taken as the agent user so the lock
     // file a first boot creates is one tick.sh and release.sh can open.
-    assert.match(text, /sudo -H -u agent flock -w 600 \/home\/agent\/state\/\.tick\.lock git -C \/home\/agent\/build\/relay-desktop fetch -q origin main/, lane);
+    assert.match(text, /sudo -H -u agent flock -w 600 \/home\/agent\/state\/\.tick\.lock git -C \/home\/agent\/build\/relay-app fetch -q origin main/, lane);
     // ~/state is made as the agent: root never chowns a path the agent controls.
     assert.match(text, /sudo -H -u agent mkdir -p \/home\/agent\/state/, lane);
     assert.doesNotMatch(text, /install -d -o agent -g agent \/home\/agent\/state/, lane);
@@ -131,7 +131,10 @@ test("an automatic deploy follows only a green Agent CI run on main for main's c
   assert.match(deploy, /^on:\n  workflow_run:\n    workflows: \[Agent CI\]\n    types: \[completed\]\n    branches: \[main\]\n  workflow_dispatch:/m);
   assert.match(deploy, /^    concurrency:\n      group: agent-deploy-dev\n      cancel-in-progress: false$/m);
   assert.match(deploy, /allow-restart: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.allow_restart \}\}/);
-  assert.match(deploy, /adopt: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.adopt \}\}/);
+  // A new stack, never an adoption: no adopt input, and none passed to the kit.
+  assert.doesNotMatch(deploy, /^\s+adopt:/m);
+  // A public repository: no Blacksmith runner labels.
+  assert.doesNotMatch(deploy, /blacksmith/i);
   const jobIf = (job: string) => deploy.match(new RegExp(`^  ${job}:\\n(?:    .*\\n)*?    if: >-\\n((?:      .*\\n)+)`, "m"))?.[1]?.replace(/\s+/g, " ").trim();
   const automatic = "(github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_sha == github.sha))";
   // The change-set preview runs under the deploy's conditions on every path
@@ -166,8 +169,8 @@ test("an automatic deploy runs only when agent/ or its workflows changed, over A
   const previewJob = deploy.slice(deploy.indexOf("\n  preview:\n"), deploy.indexOf("\n  deploy:\n"));
   assert.doesNotMatch(changedJob, /concurrency:/);
   assert.doesNotMatch(previewJob, /concurrency:|layered-agent-deploy decide/);
-  // The deploy's own role, environment and region (the reusable workflow's
-  // defaults), and the change set is deleted whatever happened.
+  // The deploy job's own role and environment, the composite deploy action's
+  // default region, and the change set is deleted whatever happened.
   assert.match(previewJob, /^    environment: agent-deploy$/m);
   assert.match(previewJob, /^          role-to-assume: \$\{\{ vars\.LAYERED_AGENT_DEPLOY_ROLE_ARN \}\}$/m);
   assert.match(previewJob, /^          aws-region: us-west-2$/m);
@@ -185,6 +188,20 @@ test("an automatic deploy runs only when agent/ or its workflows changed, over A
   assert.doesNotMatch(changedJob, /--slurp/);
   assert.ok(!changedJob.includes("/jobs"));
   assert.doesNotMatch(changedJob, /[?&]page=|\$page|for page/);
+  // A public repository cannot call the private kit's reusable workflow: the
+  // deploy job checks the kit out with a contents:read App token and runs
+  // its composite action, on a GitHub-hosted runner, in the deploy role's
+  // environment, with a job timeout the composite cannot set.
+  const deployJob = deploy.slice(deploy.indexOf("\n  deploy:\n"), deploy.indexOf("\n  record:\n"));
+  assert.ok(deployJob.length > 0);
+  assert.match(deployJob, /^    environment: agent-deploy$/m);
+  assert.match(deployJob, /^    timeout-minutes: 60$/m);
+  assert.match(deployJob, /^    runs-on: ubuntu-latest$/m);
+  assert.match(deployJob, /^        uses: \.\/\.layered-agents\/\.github\/actions\/layered-agent-deploy$/m);
+  assert.match(deployJob, /^        id: kit-token$/m);
+  assert.match(deployJob, /^          repository: AgentWorkforce\/layered-agents\n          ref: main\n          token: \$\{\{ steps\.kit-token\.outputs\.token \}\}\n          path: \.layered-agents\n          persist-credentials: false$/m);
+  assert.match(deployJob, /^          role-arn: \$\{\{ vars\.LAYERED_AGENT_DEPLOY_ROLE_ARN \}\}$/m);
+  assert.ok(!deploy.includes("uses: AgentWorkforce/layered-agents/.github/workflows/"));
   // The record job leaves that artifact after each successful deploy, outside
   // the concurrency group.
   const recordStart = deploy.indexOf("\n  record:\n");
@@ -204,24 +221,57 @@ test("an automatic deploy runs only when agent/ or its workflows changed, over A
   assert.deepEqual([...(paths ?? [])].sort(), [...prefixes].sort());
 });
 
-test("the host keeps main's parameter names and the Jev key stays optional", () => {
+test("its own secrets live under its /relay-app prefix, the shared kit keys are read from the platform prefix, and the Jev key stays optional", () => {
   assert.match(agent.envFile, /^ANTHROPIC_KEY_PARAM=\/relaycast-agent-host\/dev\/anthropic-api-key$/m);
-  assert.match(agent.envFile, /^TYPESAFE_KEY_PARAM=\/relaycast-agent-host\/dev\/typesafe-api-key$/m);
+  assert.match(agent.envFile, /^TYPESAFE_KEY_PARAM=\/relaycast-agent-host\/dev\/relay-app\/typesafe-api-key$/m);
   // A value with spaces is single-quoted by layered-agent; load-secrets.sh sources the file in bash and splits on the spaces.
   assert.match(agent.envFile, /^EXPORT_SECRETS='TYPESAFE_API_KEY:TYPESAFE_KEY_PARAM FLOWS_CLOUD_TOKEN:FLOWS_CLOUD_TOKEN_PARAM FLOWS_CLOUD_URL:FLOWS_CLOUD_URL_PARAM'$/m);
-  assert.match(agent.envFile, /^FLOWS_CLOUD_TOKEN_PARAM=\/relaycast-agent-host\/dev\/flows-cloud-token$/m);
-  assert.match(agent.envFile, /^FLOWS_CLOUD_URL_PARAM=\/relaycast-agent-host\/dev\/flows-cloud-url$/m);
-  assert.match(agent.envFile, /^RELAY_NAME=layered-relay-desktop$/m);
+  assert.match(agent.envFile, /^FLOWS_CLOUD_TOKEN_PARAM=\/relaycast-agent-host\/dev\/relay-app\/flows-cloud-token$/m);
+  assert.match(agent.envFile, /^FLOWS_CLOUD_URL_PARAM=\/relaycast-agent-host\/dev\/relay-app\/flows-cloud-url$/m);
+  assert.match(agent.envFile, /^RELAY_NAME=layered-relay-app$/m);
 });
 
 test("the sessions MCP token: read by parameter name only, never exported, never in user data", () => {
   // The value reaches ~/.claude.json through kit/relay-sessions.sh, not secrets.env.
-  // The shared relaycast-agent-host-dev role (relaycast-cloud) grants the read.
-  assert.match(agent.envFile, /^RELAY_SESSIONS_PARAM=\/relaycast-agent-host\/dev\/relay-sessions-token-relay-desktop$/m);
-  assert.deepEqual(agent.secrets.find((s) => s.envVar === "RELAY_SESSIONS_PARAM"), { envVar: "RELAY_SESSIONS_PARAM", param: "/relaycast-agent-host/dev/relay-sessions-token-relay-desktop" });
+  // The host role layered-agent creates for this stack grants the read.
+  assert.match(agent.envFile, /^RELAY_SESSIONS_PARAM=\/relaycast-agent-host\/dev\/relay-sessions-token-relay-app$/m);
+  assert.deepEqual(agent.secrets.find((s) => s.envVar === "RELAY_SESSIONS_PARAM"), { envVar: "RELAY_SESSIONS_PARAM", param: "/relaycast-agent-host/dev/relay-sessions-token-relay-app" });
   assert.ok(agent.files.some((f) => f.name === "relay-sessions.sh" && f.source === "kit"));
   const script = gunzipSync(Buffer.from(userDataBase64(agent, read), "base64")).toString("utf8");
   assert.doesNotMatch(script, /cld_|Bearer [A-Za-z0-9]/);
+});
+
+test("everything the stack creates is named for relay-app, never like the relay-desktop agent's live stack", () => {
+  const live = "relaycast-agent-host-dev-relay-desktop";
+  const created = {
+    computeStack: agent.names.computeStack,
+    role: agent.names.role,
+    sessionDocument: agent.names.sessionDocument,
+    sessionLogGroup: agent.names.sessionLogGroup,
+    telemetryEventsLogGroup: agent.names.telemetryEventsLogGroup,
+    telemetryMetricsLogGroup: agent.names.telemetryMetricsLogGroup,
+    telemetryNamespace: agent.names.telemetryNamespace,
+    paramPrefix: agent.names.paramPrefix,
+  };
+  assert.deepEqual(created, {
+    computeStack: "relaycast-agent-host-dev-relay-app",
+    role: "relaycast-agent-host-dev-relay-app",
+    sessionDocument: "relaycast-agent-host-dev-relay-app-session",
+    sessionLogGroup: "/relaycast-agent-host/dev/relay-app/ssm-sessions",
+    telemetryEventsLogGroup: "/relaycast-agent-host/dev/relay-app/claude-code-events",
+    telemetryMetricsLogGroup: "/relaycast-agent-host/dev/relay-app/claude-code-metrics",
+    telemetryNamespace: "RelaycastAgentHost/ClaudeCode/relay-app",
+    paramPrefix: "/relaycast-agent-host/dev/relay-app",
+  });
+  for (const [key, name] of Object.entries(created)) {
+    assert.ok(!name.startsWith(live) && !name.includes("relay-desktop"), `${key} ${name}`);
+    assert.match(name, /-relay-app(-session)?$|\/relay-app(\/|$)/, key);
+  }
+  // Only reads stay shared: the platform prefix (network ids, kit secrets).
+  assert.equal(agent.names.platformPrefix, "/relaycast-agent-host/dev");
+  // The deploy role's SendCommand grant keys on this tag, so it must be this host's alone.
+  assert.equal(agent.tags["layered-agent:name"], "relay-app");
+  assert.equal(agent.input.name, "relay-app");
 });
 
 test("the env file sources cleanly in bash", () => {

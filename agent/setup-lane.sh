@@ -1,5 +1,5 @@
 #!/bin/bash
-# relay-desktop's lane setup, run as root at the end of the kit's setup.sh
+# relay-app's lane setup, run as root at the end of the kit's setup.sh
 # (first boot, and again by every hot update). Idempotent.
 #  - Rust for the agent user (the CI flow's cargo lanes). Apt packages come
 #    from aptPackages in agent.config.ts.
@@ -30,7 +30,7 @@ set -euo pipefail
 # Installed by atomic rename, so a tick already running keeps its file.
 install_lane_scripts() {
   local f tmp sha want
-  if [ ! -d /home/agent/build/relay-desktop/.git ]; then
+  if [ ! -d /home/agent/build/relay-app/.git ]; then
     echo "lane scripts not installed yet: no reference clone on this host" >&2
     lane_scripts_present
     return
@@ -49,7 +49,7 @@ install_lane_scripts() {
   # can hold the lock for minutes (dispatch polling, gh calls), so wait
   # longer than one.
   sudo -H -u agent mkdir -p /home/agent/state
-  if ! sudo -H -u agent flock -w 600 /home/agent/state/.tick.lock git -C /home/agent/build/relay-desktop fetch -q origin main; then
+  if ! sudo -H -u agent flock -w 600 /home/agent/state/.tick.lock git -C /home/agent/build/relay-app fetch -q origin main; then
     echo "warning: could not fetch main into the reference clone; lane scripts not installed this time" >&2
     lane_scripts_present
     return
@@ -58,7 +58,7 @@ install_lane_scripts() {
   for f in tick.sh review.sh release.sh hotfix.sh disk-cleanup.sh cloud-release.sh; do
     # This script runs as root: only git runs as agent, the redirect is root's.
     # shellcheck disable=SC2024
-    if ! sudo -H -u agent git -C /home/agent/build/relay-desktop --no-replace-objects show "origin/main:agent/$f" > "$tmp/$f" 2>/dev/null; then
+    if ! sudo -H -u agent git -C /home/agent/build/relay-app --no-replace-objects show "origin/main:agent/$f" > "$tmp/$f" 2>/dev/null; then
       echo "warning: agent/$f is not on origin/main; lane scripts not installed this time" >&2
       rm -rf "$tmp"
       lane_scripts_present
@@ -113,7 +113,7 @@ PY
 
 cat > /etc/systemd/system/agent-host-tick.service <<'UNIT'
 [Unit]
-Description=relay-desktop candidate tick (prepare a release candidate when main changed)
+Description=relay-app candidate tick (prepare a release candidate when main changed)
 After=agent-host-secrets.service
 Requires=agent-host-secrets.service
 [Service]
@@ -125,7 +125,7 @@ ExecStart=/opt/agent-host/tick.sh
 UNIT
 cat > /etc/systemd/system/agent-host-tick.timer <<'UNIT'
 [Unit]
-Description=relay-desktop candidate tick every 30 minutes
+Description=relay-app candidate tick every 30 minutes
 [Timer]
 OnCalendar=*:00/30
 RandomizedDelaySec=60
@@ -135,7 +135,7 @@ WantedBy=timers.target
 UNIT
 cat > /etc/systemd/system/agent-host-share-lead.service <<'UNIT'
 [Unit]
-Description=relay-desktop lead session kept shared to Agent Relay Cloud
+Description=relay-app lead session kept shared to Agent Relay Cloud
 After=agent-relay.service
 [Service]
 Type=oneshot
@@ -145,7 +145,7 @@ ExecStart=/opt/agent-host/share-lead-session.sh
 UNIT
 cat > /etc/systemd/system/agent-host-share-lead.timer <<'UNIT'
 [Unit]
-Description=relay-desktop lead session share check every 5 minutes
+Description=relay-app lead session share check every 5 minutes
 [Timer]
 OnCalendar=*:00/5
 RandomizedDelaySec=30
@@ -155,7 +155,7 @@ WantedBy=timers.target
 UNIT
 cat > /etc/systemd/system/agent-host-disk-cleanup.service <<'UNIT'
 [Unit]
-Description=relay-desktop disk cleanup (idle review checkouts and work trees, 70% cap)
+Description=relay-app disk cleanup (idle review checkouts and work trees, 70% cap)
 [Service]
 Type=oneshot
 User=agent
@@ -166,7 +166,7 @@ ExecStart=/opt/agent-host/disk-cleanup.sh
 UNIT
 cat > /etc/systemd/system/agent-host-disk-cleanup.timer <<'UNIT'
 [Unit]
-Description=relay-desktop disk cleanup every hour
+Description=relay-app disk cleanup every hour
 [Timer]
 OnCalendar=hourly
 RandomizedDelaySec=300

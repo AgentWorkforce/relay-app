@@ -1,5 +1,5 @@
 #!/bin/bash
-# One review round for a pushed relay-desktop change. The reviewers run only
+# One review round for a pushed relay-app change. The reviewers run only
 # as an Agent Relay Cloud flow run (flows/cloud-review.flow.ts), never on this
 # host; local CI (flows/ci.flow.ts) runs here, beside the Cloud run.
 #
@@ -7,7 +7,7 @@
 #                   [--lead codex|claude] [--lenses claude,codex,grok]
 #   review.sh <ref> --ci-only [--final] [--trust-ref-flows]
 #
-# <ref> is a pushed branch or sha on AgentWorkforce/relay-desktop, prepared in
+# <ref> is a pushed branch or sha on AgentWorkforce/relay-app, prepared in
 # its own clone (~/reviews/<slug>) with flow state in its git-ignored
 # .relayflow/. A round:
 #  1. refuses at once, exit 3, when this host has no FLOWS_CLOUD_TOKEN
@@ -632,7 +632,7 @@ dir=$HOME/reviews/$slug
 export RELAYFLOW_STATE_DIR=$dir/.relayflow
 
 if [ ! -d "$dir/.git" ]; then
-  git clone -q --reference "$HOME/build/relay-desktop" https://github.com/AgentWorkforce/relay-desktop.git "$dir" || exit 1
+  git clone -q --reference "$HOME/build/relay-app" https://github.com/AgentWorkforce/relay-app.git "$dir" || exit 1
 fi
 cd "$dir" || exit 1
 mkdir -p "$RELAYFLOW_STATE_DIR/logs"

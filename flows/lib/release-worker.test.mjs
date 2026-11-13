@@ -151,7 +151,7 @@ test('missing shipped tag creates the exact annotated tag and ref; existing tags
       assert.equal(result.status, 0, result.stderr);
       const writes = fx.state().calls.filter(c => c.body);
       assert.deepEqual(writes, kind === 'missing' ? [
-        { path: endpoint('git/tags'), body: { tag: `released-v${plan.version}`, message: `relay-desktop v${plan.version}; candidate 456, promote 789`, object: plan.sourceSha, type: 'commit' } },
+        { path: endpoint('git/tags'), body: { tag: `released-v${plan.version}`, message: `relay-app v${plan.version}; candidate 456, promote 789`, object: plan.sourceSha, type: 'commit' } },
         { path: endpoint('git/refs'), body: { ref: `refs/tags/released-v${plan.version}`, sha: tagObject } },
       ] : []);
     } finally { fx.close(); }

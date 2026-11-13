@@ -121,7 +121,7 @@ function jobs(dir: string, lanes: Lanes, linux: boolean, xcode: boolean, flows: 
 }
 
 export default flow<CiInput>(
-  "relay-desktop.ci",
+  "relay-app.ci",
   { budget: { wallclock: "150m" } },
   async (f, input) => {
     const base = input?.base ?? "origin/main";

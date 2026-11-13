@@ -78,7 +78,7 @@ set -euo pipefail
 H=$1; mkdir -p "$H"/{reviews,work,hotfix,build,src,state,origins}
 repo() {
   # One bare origin per checkout, keyed by its path under HOME (never the
-  # basename: build/relay-desktop and src/relay-desktop must not share one).
+  # basename: build/relay-app and src/relay-app must not share one).
   local rel origin
   rel=$(realpath --relative-to="$H" "$1"); origin="$H/origins/$(printf %s "$rel" | sed 's|/|__|g')"
   [ ! -e "$origin" ] || { echo "origin collision: $origin" >&2; exit 1; }
@@ -106,8 +106,8 @@ repo "$H/work/old-cwd" main; old "$H/work/old-cwd"
 repo "$H/work/old-branch" feature/x; old "$H/work/old-branch"
 repo "$H/work/relay" main; old "$H/work/relay"
 repo "$H/work/relay-cwd" main; echo "$H/work/relay/.git/objects" > "$H/work/relay-cwd/.git/objects/info/alternates"
-for d in hotfix/link-failure build/relay-desktop src/relay-desktop; do repo "$H/$d" main; old "$H/$d"; done
-ln -s "$H/build/relay-desktop" "$H/reviews/a-symlink"
+for d in hotfix/link-failure build/relay-app src/relay-app; do repo "$H/$d" main; old "$H/$d"; done
+ln -s "$H/build/relay-app" "$H/reviews/a-symlink"
 cat > "$H/state/ledger.json" <<'JSON'
 [{"agent":"a","status":"working","task":"t | pipe","branch":"review/old-ledger","updated":"x"},
  {"agent":"a","status":"working","task":"t","branch":"feature/x","updated":"x"},
@@ -154,7 +154,7 @@ const done = (h: { home: string; holders: ChildProcess[] }) => {
 };
 const present = (home: string, rel: string) => existsSync(join(home, rel));
 const owned = ["reviews/review-old-ledger", "reviews/review-old-locked", "work/old-cwd", "work/old-branch", "work/relay"];
-const untouched = ["hotfix/link-failure", "build/relay-desktop", "src/relay-desktop", "reviews/not-a-checkout", "reviews/a-symlink"];
+const untouched = ["hotfix/link-failure", "build/relay-app", "src/relay-app", "reviews/not-a-checkout", "reviews/a-symlink"];
 
 test("a dry run decides and logs one line, and deletes nothing", async () => {
   const h = fakeHome();
@@ -426,7 +426,7 @@ test("same-named checkouts never share a bare origin", () => {
   const { home, holders } = fakeHome();
   try {
     const url = (d: string) => execFileSync("git", ["-C", join(home, d), "remote", "get-url", "origin"], { cwd: home, env: envFor(home), encoding: "utf8" }).trim();
-    assert.notEqual(url("build/relay-desktop"), url("src/relay-desktop"));
+    assert.notEqual(url("build/relay-app"), url("src/relay-app"));
   } finally {
     for (const h of holders) h.kill();
     rmSync(home, { recursive: true, force: true });

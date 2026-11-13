@@ -241,7 +241,7 @@ function section(lines: readonly string[], count: number, chars: number): string
 /** The evidence Jev reads: repository, commits, files with their sizes, then the diff, each within its share. */
 export function evidence(change: ChangeSummary): string {
   const head = [
-    "Repository: relay-desktop (macOS Swift app, GTK app for Linux and Windows, Rust core).",
+    "Repository: relay-app (macOS Swift app, GTK app for Linux and Windows, Rust core).",
     `Commits (${change.commitCount}${change.redactedSubjects ? `; ${change.redactedSubjects} subject(s) redacted` : ""}):\n${section(change.subjects, change.commitCount, SUBJECTS_CHARS)}`,
     `Changed files (${change.fileCount}, ${change.lines} lines):\n${section(change.files.map((f) => `${f.path} +${f.added} -${f.deleted}`), change.fileCount, FILES_CHARS)}`,
     `Diff (truncated; desktop-core/, lockfiles and credential-shaped files left out${change.redacted ? `; ${change.redacted} secret-shaped line(s) redacted` : ""}):\n`,

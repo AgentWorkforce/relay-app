@@ -1,6 +1,6 @@
 #!/bin/bash
 # shellcheck disable=SC2016  # jq filters quote $vars on purpose
-# Publish a relay-desktop release from a candidate the tick already built, then
+# Publish a relay-app release from a candidate the tick already built, then
 # tag the source commit so a later hotfix can start from exactly what shipped.
 #
 #   release.sh beta|stable [--profile <id>]              newest ready candidate for that channel
@@ -25,7 +25,7 @@
 #
 # Publishing = Desktop Promote (verifies and publishes the exact prepared bytes,
 # ~10 minutes). Then: annotated tag released-v<version> on the candidate's
-# source sha in AgentWorkforce/relay-desktop. The source sha is the "Source
+# source sha in AgentWorkforce/relay-app. The source sha is the "Source
 # <sha>" line of the run's Resolve version job; a run's head_sha is used only
 # for a workflow_dispatch run that predates that line, never for a
 # workflow_run-triggered (automatic) candidate, whose head_sha can be newer
@@ -42,7 +42,7 @@ unset GH_TOKEN GITHUB_TOKEN
 if [ "${DESKTOP_RELEASE_ORCHESTRATOR:-legacy}" = cloud ]; then
   exec /opt/agent-host/cloud-release.sh "$@"
 fi
-REPO=AgentWorkforce/relay-desktop
+REPO=AgentWorkforce/relay-app
 state=$HOME/state/candidates.json
 # Every rewrite of the candidates file takes the tick's lock, so a tick
 # refresh running at the same time cannot read the file before a rewrite
@@ -53,7 +53,7 @@ write_state() {
     tmp=$(mktemp) && jq "$@" "$state" > "$tmp" && mv "$tmp" "$state"
   ) 8> "$HOME/state/.tick.lock"
 }
-cd "$HOME/build/relay-desktop"
+cd "$HOME/build/relay-app"
 git fetch -q origin main
 # Tags separately: a local tag that differs from origin's ("would clobber
 # existing tag") must not stop the run, but it is worth surfacing.
@@ -240,7 +240,7 @@ write_state --argjson id "$run_id" '(.[] | select(.run_id == $id)).status = "tag
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   [ "$(git rev-parse "refs/tags/$tag^{commit}")" = "$sha" ] || { echo "local tag $tag points elsewhere than $sha; fix it by hand" >&2; exit 1; }
 else
-  git tag -a "$tag" "$sha" -m "relay-desktop v$version ($channel), published from Desktop Release run $run_id"
+  git tag -a "$tag" "$sha" -m "relay-app v$version ($channel), published from Desktop Release run $run_id"
 fi
 git push -q origin "refs/tags/$tag" || { echo "pushing $tag failed; rerun this command to push it again (the release is published)" >&2; exit 1; }
 write_state --argjson id "$run_id" '(.[] | select(.run_id == $id)).status = "published"'
