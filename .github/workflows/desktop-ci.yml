@@ -188,8 +188,8 @@ jobs:
           LINUX_2204_RUNNER: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
           LINUX_2204_ARM64_RUNNER: ${{ vars.CI_LINUX_2204_ARM64_RUNNER || 'ubuntu-22.04-arm' }}
           # Repository variables pick each runner, so moving a lane to another
-          # provider is a settings change. Intel macOS and Windows on Arm have
-          # no Blacksmith equivalent and stay GitHub-hosted by default.
+          # provider is a settings change; each falls back to a GitHub-hosted
+          # runner when its variable is unset.
           MACOS_ARM64_RUNNER: ${{ vars.CI_MACOS_ARM64_RUNNER || 'macos-15' }}
           MACOS_X64_RUNNER: ${{ vars.CI_MACOS_X64_RUNNER || 'macos-15-intel' }}
           WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}

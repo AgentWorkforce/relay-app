@@ -402,8 +402,8 @@ The relay core, its bridge contract and the apps' lifecycles live in
    ```
 
 `.github/workflows/desktop-release.yml` then builds macOS, Linux and Windows for arm64
-and x64 on native runners (`macos-15`, `macos-15-intel`, Ubuntu 22.04 on
-Blacksmith for both Linux architectures, and `windows-latest` and
+and x64 on native runners (`macos-15`, `macos-15-intel`, Ubuntu 22.04 for
+both Linux architectures, and `windows-latest` and
 `windows-11-arm`; see [CI runner configuration](.github/README.md)),
 requires macOS signing and notarization, and publishes to
 [`AgentWorkforce/relay-desktop-releases`](https://github.com/AgentWorkforce/relay-desktop-releases).

@@ -1,48 +1,39 @@
 # GitHub Actions: CI, candidate preparation and releases
 
-Linux CI and release builds use Blacksmith through repository Actions variables.
-Read-only jobs use
-`CI_LINUX_*`; release publishing and changelog promotion use
-`DEPLOY_LINUX_RUNNER`. Desktop CI and Desktop Release also pick their macOS and
-Windows runners from `CI_MACOS_*` and `CI_WINDOWS_*`, which default to the
-GitHub-hosted labels, so moving a lane is a settings change. TestFlight keeps
-its GitHub-hosted runner.
+CI and release builds run on GitHub-hosted runners. Each job picks its runner
+from a repository Actions variable and falls back to the GitHub-hosted label
+below when the variable is unset, so moving a lane is a settings change.
+Read-only jobs use `CI_LINUX_*`; release publishing and changelog promotion use
+`DEPLOY_LINUX_RUNNER`. TestFlight keeps its own GitHub-hosted runner.
 
-| Repository variable | Blacksmith value | Fallback when unset |
-| --- | --- | --- |
-| `CI_LINUX_RUNNER` | `blacksmith-4vcpu-ubuntu-2404` | `ubuntu-latest` |
-| `CI_LINUX_ARM64_RUNNER` | `blacksmith-4vcpu-ubuntu-2404-arm` | `ubuntu-24.04-arm` |
-| `CI_LINUX_2204_RUNNER` | `blacksmith-4vcpu-ubuntu-2204` | `ubuntu-22.04` |
-| `CI_LINUX_2204_ARM64_RUNNER` | `blacksmith-4vcpu-ubuntu-2204-arm` | `ubuntu-22.04-arm` |
-| `DEPLOY_LINUX_RUNNER` | `blacksmith-4vcpu-ubuntu-2404` | `ubuntu-latest` |
-| `CI_MACOS_ARM64_RUNNER` | `blacksmith-6vcpu-macos-15` (Apple Silicon) | `macos-15` |
-| `CI_MACOS_X64_RUNNER` | none: Blacksmith has no Intel macOS | `macos-15-intel` |
-| `CI_WINDOWS_RUNNER` | `blacksmith-4vcpu-windows-2025` (public beta) | `windows-latest` |
-| `CI_WINDOWS_ARM64_RUNNER` | none: Blacksmith has no Windows on Arm | `windows-11-arm` |
+| Repository variable | Default runner (when unset) |
+| --- | --- |
+| `CI_LINUX_RUNNER` | `ubuntu-latest` |
+| `CI_LINUX_ARM64_RUNNER` | `ubuntu-24.04-arm` |
+| `CI_LINUX_2204_RUNNER` | `ubuntu-22.04` |
+| `CI_LINUX_2204_ARM64_RUNNER` | `ubuntu-22.04-arm` |
+| `DEPLOY_LINUX_RUNNER` | `ubuntu-latest` |
+| `CI_MACOS_ARM64_RUNNER` | `macos-15` |
+| `CI_MACOS_X64_RUNNER` | `macos-15-intel` |
+| `CI_WINDOWS_RUNNER` | `windows-latest` |
+| `CI_WINDOWS_ARM64_RUNNER` | `windows-11-arm` |
 
 The macOS variables also choose the runners that sign and notarize release
 disk images; after changing one, publish a beta release and check its images
-before the next stable one. Blacksmith's Windows image ships the Visual Studio
-Build Tools rather than full Visual Studio. The Windows jobs build with MSYS2's
-clang toolchain, which `msys2/setup-msys2` installs on any image, and install
-Inno Setup with Chocolatey, or winget where Chocolatey is missing, when the
-image lacks it.
+before the next stable one. The Windows jobs build with MSYS2's clang
+toolchain, which `msys2/setup-msys2` installs on any image, and install Inno
+Setup with Chocolatey, or winget where Chocolatey is missing, when the image
+lacks it.
 
 Keep GTK app builds on Ubuntu 22.04: its GTK 4.6 is the supported minimum.
 Each architecture builds and tests natively. Standalone probe CI uses Ubuntu
 24.04 with Zig targeting glibc 2.34. Do not point an ARM variable at an x64
 runner or use the general Ubuntu 24.04 variable for GTK builds.
 
-The [Blacksmith GitHub App](https://docs.blacksmith.sh/introduction/quickstart)
-must have access to this repository. Configure the variables under repository
-Settings → Secrets and variables → Actions → Variables, or with `gh variable
-set NAME --body VALUE`. Values use the
-[published Blacksmith runner labels](https://docs.blacksmith.sh/blacksmith-runners/overview).
-Delete a variable to send its jobs back to the GitHub-hosted fallback on the
-next run. These fallbacks apply when a variable is empty, not when a configured
-runner is unavailable.
-
-Existing Rust cache actions work on Blacksmith without replacement.
+Set a variable under repository Settings → Secrets and variables → Actions →
+Variables, or with `gh variable set NAME --body VALUE`; delete it to return its
+jobs to the default on the next run. The defaults apply when a variable is
+empty, not when a configured runner is unavailable.
 
 ## Parallel CI lanes and required checks
 
