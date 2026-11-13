@@ -8,44 +8,6 @@ use crate::models::{
 };
 
 impl App {
-    /// The teammate-context hook, where Claude Code is here or chosen. As on
-    /// the Mac, it is read and changed through the provider methods.
-    pub(super) fn teammate_context_row(&self) -> Option<gtk::Box> {
-        use crate::models::{
-            TEAMMATE_CONTEXT_DETAIL, TEAMMATE_CONTEXT_TITLE, TEAMMATE_CONTEXT_TURN_OFF_HELP,
-            TEAMMATE_CONTEXT_TURN_ON_HELP,
-        };
-        let (enabled, busy) = self.with_state(|state| {
-            (state.tools.teammate_context(), state.tools.busy)
-        });
-        let enabled = enabled?;
-        let set = |enabled: bool| self.on(move |app| app.set_teammate_context(enabled));
-        let accessory = if enabled {
-            let off = button("Turn Off", &[], set(false));
-            off.set_tooltip_text(Some(TEAMMATE_CONTEXT_TURN_OFF_HELP));
-            off
-        } else {
-            let on = button("Turn On", &[], set(true));
-            on.set_tooltip_text(Some(TEAMMATE_CONTEXT_TURN_ON_HELP));
-            on
-        };
-        accessory.set_sensitive(!busy);
-        Some(
-            settings_row(
-                TEAMMATE_CONTEXT_TITLE,
-                TEAMMATE_CONTEXT_DETAIL,
-                if enabled {
-                    "emblem-ok-symbolic"
-                } else {
-                    "system-users-symbolic"
-                },
-                Some(accessory.upcast_ref()),
-                &[],
-            )
-            .0,
-        )
-    }
-
     /// Claude Code's SessionStart hook. On by default after sign-in. It never
     /// registers a session; it tells one that is not on the relay how to
     /// POST /register.

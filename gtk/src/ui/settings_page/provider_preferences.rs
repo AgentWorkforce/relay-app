@@ -231,11 +231,6 @@ impl App {
         if let Some(section) = self.claude_folders_section() {
             column.append(&section);
         }
-        if let Some(row) = self.teammate_context_row() {
-            let (section, group) = settings_section("Teammates", None);
-            group.append(&row);
-            column.append(&section);
-        }
         // As on the Mac, delivery shows only while a Claude terminal
         // session exists, and the section only with a row to show.
         let (delivery, hook) = self.with_state(|state| {

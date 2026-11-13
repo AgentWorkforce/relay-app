@@ -13,7 +13,8 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 
 /// This computer's MCP setup, with a development build's private profiles,
-/// and the teammate-context hook setting that writes beside it.
+/// and the reclaim pass that takes the retired teammate-context hook out of
+/// the Claude logins it wrote to.
 pub(super) fn mcp_installer(
     config: &agent_relay_node::relay::daemon::Config,
     plugins: &mut agent_relay_node::relay::daemon::Plugins,
@@ -21,7 +22,7 @@ pub(super) fn mcp_installer(
     let installer = provider_installer(config, &plugins.sessions);
     plugins
         .settings
-        .push(Arc::new(crate::teammate_context::Setting::new(installer.clone())));
+        .push(Arc::new(crate::teammate_context::LegacyCleanup::new(installer.clone())));
     installer
 }
 

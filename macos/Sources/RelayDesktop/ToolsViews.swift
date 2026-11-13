@@ -97,7 +97,6 @@ struct ChooseToolsView: View {
             }
             .padding(.horizontal, -Self.focusRingInset)
             .frame(maxHeight: .infinity)
-            if tools.offersTeammateContext { TeammateContextChoice(tools: tools) }
             if tools.eligibleIDs.isEmpty {
                 Text("No supported providers were detected. You can continue and add providers later in Settings › Providers.")
                     .zoomFont(size: 12).foregroundStyle(CloudTheme.secondary)

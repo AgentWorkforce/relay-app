@@ -228,9 +228,17 @@ impl Installer {
             .writing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let current = binding
+        let mut current = binding
             .map(|binding| self.install(binding, &mut logout::run))
             .unwrap_or_default();
+        // The retired teammate-context hook leaves on every refresh, signed
+        // out, with no saved selection or no helper included: those paths
+        // install nothing, so the cleanup cannot live in `install`.
+        if let Err(warning) = self.remove_teammate_hooks() {
+            current.push(warning);
+            current.sort();
+            current.dedup();
+        }
         if let Some(binding) = binding {
             self.clear_reconciled_failures(binding);
             self.reconcile_runtime(binding);
@@ -316,9 +324,6 @@ impl Installer {
             }) {
                 warnings.push("Claude Code hosted Agent Relay MCP setup could not add the chat identity hook. Existing settings were preserved; check that settings.json is a JSON object you can write.".into());
             }
-        }
-        if let Err(warning) = self.apply_teammate_hooks() {
-            warnings.push(warning);
         }
         warnings.sort();
         warnings.dedup();

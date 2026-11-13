@@ -1,5 +1,4 @@
 use super::*;
-use crate::teammate_context::SETTING;
 use agent_relay_node::relay::agents::SettingsExtension;
 
 fn installer(home: &Path) -> Installer {
@@ -26,153 +25,131 @@ fn binding() -> Binding {
     }
 }
 
-/// A Claude login holding the person's own hooks and relay-node's
-/// SessionStart hook, chosen in the provider chooser.
-fn claude_chosen(root: &Path) -> (std::sync::Arc<Installer>, PathBuf, Value) {
-    let app = std::sync::Arc::new(installer(root));
-    executable_helper(root);
-    fs::create_dir_all(&app.claude.home).unwrap();
-    let settings = app.claude.home.join("settings.json");
-    let others = json!({
-        "hooks": {
-            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "audit-bash"}]}],
-            "SessionStart": [{"hooks": [{"type": "command", "command": "probe claude-session-hook"}]}],
-        },
-    });
-    fs::write(&settings, others.to_string()).unwrap();
-    agent_relay_node::platform::fs::set_mode(&settings, 0o600).unwrap();
-    app.select(vec!["claude".into()], Some(&binding()), None)
-        .unwrap();
-    assert!(app.refresh(Some(&binding())).is_empty());
-    (app, settings, others)
-}
-
 fn read(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
-#[test]
-fn off_by_default_even_once_claude_is_chosen_until_the_person_turns_it_on() {
-    let root = tempfile::tempdir().unwrap();
-    let (app, settings, others) = claude_chosen(root.path());
-    let setting = crate::teammate_context::Setting::new(app.clone());
-    // Write-only: settings.get never carries it.
-    assert!(setting.get().is_empty());
-    assert_eq!(setting.write_only(), &[SETTING]);
-    // No choice yet: nothing written, and no default pass turns it on.
-    assert_eq!(app.report(None, None).teammate_context, Some(false));
-    assert!(setting.default_on().is_empty());
-    assert_eq!(
-        read(&settings)["hooks"]["SessionStart"],
-        others["hooks"]["SessionStart"]
-    );
-    assert_eq!(setting.set(SETTING, &Value::Bool(true)), Some(Ok(())));
-    assert_eq!(app.report(None, None).teammate_context, Some(true));
+/// The person's own hooks and relay-node's SessionStart hook.
+fn others() -> Value {
+    json!({
+        "hooks": {
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "audit-bash"}]}],
+            "SessionStart": [{"hooks": [{"type": "command", "command": "probe claude-session-hook"}]}],
+        },
+    })
+}
+
+/// A Claude login as v2026.11.6 left it with the setting on: the person's
+/// hooks, this build's teammate-context hook, and the saved choice.
+fn legacy_login(app: &Installer) -> PathBuf {
+    fs::create_dir_all(&app.claude.home).unwrap();
+    let settings = app.claude.home.join("settings.json");
+    let mut root = others();
+    root["hooks"]["SessionStart"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"hooks": [{
+            "type": "command",
+            "command": "'/Apps/Agent Relay.app/probe' teammate-context-hook",
+            "timeout": 5,
+        }]}));
+    fs::write(&settings, root.to_string()).unwrap();
+    agent_relay_node::platform::fs::set_mode(&settings, 0o600).unwrap();
+    let choice = app.choices.with_file_name("teammate-context-hook.json");
+    fs::create_dir_all(choice.parent().unwrap()).unwrap();
+    fs::write(
+        choice,
+        r#"{"on":true}"#,
+    )
+    .unwrap();
     assert!(app.teammate_hook_present());
+    assert!(app.teammate_choice_saved());
+    settings
 }
 
-#[test]
-fn an_off_chosen_before_the_default_pass_stays_off() {
-    let root = tempfile::tempdir().unwrap();
-    let (app, settings, others) = claude_chosen(root.path());
-    let setting = crate::teammate_context::Setting::new(app.clone());
-    app.set_teammate_context(false).unwrap();
-    assert_eq!(setting.set(SETTING, &Value::Bool(true)), Some(Ok(())));
-    assert_eq!(app.report(None, None).teammate_context, Some(false));
-    assert_eq!(
-        read(&settings)["hooks"]["SessionStart"],
-        others["hooks"]["SessionStart"]
-    );
-    // An agent may turn it off through the write-only key.
-    app.set_teammate_context(true).unwrap();
-    assert_eq!(setting.set(SETTING, &Value::Bool(false)), Some(Ok(())));
+fn assert_cleaned(app: &Installer, settings: &Path) {
     assert!(!app.teammate_hook_present());
-}
-
-#[test]
-fn on_adds_one_session_start_hook_beside_the_others_and_off_takes_only_it_out() {
-    let root = tempfile::tempdir().unwrap();
-    let (app, settings, others) = claude_chosen(root.path());
-    let before = read(&settings);
-    app.set_teammate_context(true).unwrap();
-    let command = app.teammate_hook_command().unwrap();
-    assert!(command.ends_with(" teammate-context-hook"), "{command}");
-    let on = read(&settings);
-    let starts = on["hooks"]["SessionStart"].as_array().unwrap();
-    assert_eq!(starts.len(), 2, "{on}");
-    assert_eq!(starts[0], others["hooks"]["SessionStart"][0]);
-    assert_eq!(starts[1]["hooks"][0]["command"], command);
-    assert!(starts[1].get("matcher").is_none(), "{on}");
-    // The identity hook and the person's own PreToolUse hook are untouched.
-    assert_eq!(on["hooks"]["PreToolUse"], before["hooks"]["PreToolUse"]);
-
-    // Again, and on refresh: unchanged.
-    app.set_teammate_context(true).unwrap();
-    assert!(app.refresh(Some(&binding())).is_empty());
-    assert_eq!(read(&settings), on);
-
-    app.set_teammate_context(false).unwrap();
-    assert_eq!(read(&settings), before);
-    // A refresh while off does not put it back.
-    assert!(app.refresh(Some(&binding())).is_empty());
-    app.reclaim_teammate_context();
-    assert_eq!(read(&settings), before);
-}
-
-#[test]
-fn a_lost_hook_comes_back_on_reclaim_and_uninstalling_claude_removes_it() {
-    let root = tempfile::tempdir().unwrap();
-    let (app, settings, others) = claude_chosen(root.path());
-    app.set_teammate_context(true).unwrap();
-    let on = read(&settings);
-    fs::write(&settings, others.to_string()).unwrap();
-    app.reclaim_teammate_context();
+    assert!(!app.teammate_choice_saved());
+    let root = read(settings);
     assert_eq!(
-        read(&settings)["hooks"]["SessionStart"],
-        on["hooks"]["SessionStart"]
+        root["hooks"]["SessionStart"],
+        others()["hooks"]["SessionStart"]
     );
-
-    app.manage("claude", "uninstall", Some(&binding()), None)
-        .unwrap();
-    assert_eq!(read(&settings), others);
-    // Claude no longer chosen: a reclaim leaves the file alone.
-    app.reclaim_teammate_context();
-    assert_eq!(read(&settings), others);
+    assert_eq!(root["hooks"]["PreToolUse"], others()["hooks"]["PreToolUse"]);
 }
 
 #[test]
-fn the_setting_refuses_anything_but_on_or_off() {
+fn a_signed_out_refresh_removes_the_retired_hook_and_its_choice() {
     let root = tempfile::tempdir().unwrap();
-    let setting =
-        crate::teammate_context::Setting::new(std::sync::Arc::new(installer(root.path())));
-    assert!(setting.refuse(SETTING, &json!("yes")).is_some());
-    assert!(setting.refuse(SETTING, &Value::Bool(false)).is_none());
-    assert!(setting.refuse("telemetry", &json!("yes")).is_none());
-    assert!(matches!(setting.set(SETTING, &json!(1)), Some(Err(_))));
-    assert!(setting.set("telemetry", &Value::Bool(true)).is_none());
-    // Without Claude Code there is no default and no setting to show.
-    assert!(setting.default_on().is_empty());
-    assert_eq!(
-        installer(root.path()).report(None, None).teammate_context,
-        None
-    );
+    let app = installer(root.path());
+    let settings = legacy_login(&app);
+    assert!(app.refresh(None).is_empty());
+    assert_cleaned(&app, &settings);
 }
 
 #[test]
-fn a_chooser_save_changes_no_file_and_the_selection_refresh_applies_it() {
+fn a_refresh_with_no_saved_selection_or_no_helper_still_removes_it() {
     let root = tempfile::tempdir().unwrap();
-    let (app, settings, others) = claude_chosen(root.path());
-    app.save_teammate_context(true).unwrap();
-    assert_eq!(
-        read(&settings)["hooks"]["SessionStart"],
-        others["hooks"]["SessionStart"]
-    );
+    // Signed in, but nothing chosen yet and no helper installed: `install`
+    // returns before touching any provider.
+    let app = installer(root.path());
+    let settings = legacy_login(&app);
+    assert_eq!(app.selection(), Ok(None));
+    let _ = app.refresh(Some(&binding()));
+    assert_cleaned(&app, &settings);
+}
+
+#[test]
+fn a_refresh_with_claude_chosen_removes_it_and_never_puts_it_back() {
+    let root = tempfile::tempdir().unwrap();
+    let app = installer(root.path());
+    executable_helper(root.path());
+    let settings = legacy_login(&app);
     app.select(vec!["claude".into()], Some(&binding()), None)
         .unwrap();
     assert!(app.refresh(Some(&binding())).is_empty());
-    assert!(app.teammate_hook_present());
-    app.save_teammate_context(false).unwrap();
-    assert!(app.teammate_hook_present());
-    assert!(app.refresh(Some(&binding())).is_empty());
     assert!(!app.teammate_hook_present());
+    assert!(!app.teammate_choice_saved());
+    // The identity hook went in; the person's own and relay-node's stay.
+    let installed = read(&settings);
+    assert_eq!(
+        installed["hooks"]["SessionStart"],
+        others()["hooks"]["SessionStart"]
+    );
+    assert!(app.refresh(Some(&binding())).is_empty());
+    assert_eq!(read(&settings), installed);
+}
+
+#[test]
+fn the_reclaim_pass_removes_it_and_has_no_setting_of_its_own() {
+    let root = tempfile::tempdir().unwrap();
+    let app = std::sync::Arc::new(installer(root.path()));
+    let settings = legacy_login(&app);
+    let cleanup = crate::teammate_context::LegacyCleanup::new(app.clone());
+    assert!(cleanup.get().is_empty());
+    assert!(cleanup.write_only().is_empty());
+    assert!(cleanup.default_on().is_empty());
+    assert!(cleanup
+        .set("teammate_context_hook", &Value::Bool(true))
+        .is_none());
+    cleanup.reclaim();
+    assert_cleaned(&app, &settings);
+    // Again: nothing to change, nothing written.
+    let before = fs::read(&settings).unwrap();
+    cleanup.reclaim();
+    assert_eq!(fs::read(&settings).unwrap(), before);
+}
+
+#[test]
+fn uninstalling_claude_also_removes_it() {
+    let root = tempfile::tempdir().unwrap();
+    let app = installer(root.path());
+    executable_helper(root.path());
+    app.select(vec!["claude".into()], Some(&binding()), None)
+        .unwrap();
+    let settings = legacy_login(&app);
+    app.manage("claude", "uninstall", Some(&binding()), None)
+        .unwrap();
+    assert!(!app.teammate_hook_present());
+    assert_eq!(read(&settings), others());
 }
