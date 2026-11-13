@@ -7,11 +7,6 @@ pub struct ToolsReport {
     pub onboarding_complete: bool,
     pub account_health: Option<String>,
     pub tools: Vec<ToolIntegration>,
-    /// The teammate-context hook: a Claude Code SessionStart hook telling each
-    /// session to check teammates' session summaries before it starts. Absent
-    /// where Claude Code is neither on this computer nor chosen.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub teammate_context: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -36,15 +31,6 @@ pub struct ToolIntegration {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ToolsSelectParams {
     pub tool_ids: Vec<String>,
-    /// The chooser's teammate-context choice, saved before the providers so
-    /// the setup they start already follows it. Absent leaves it as it is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub teammate_context: Option<bool>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct ToolsTeammateContextParams {
-    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

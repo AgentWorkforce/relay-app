@@ -27,10 +27,6 @@ final class ToolsModel {
     private(set) var displayedProviderID: String?
     private(set) var onboardingDeferred = false
     private(set) var onboardingRequested = false
-    /// The person's tick or untick of the chooser's teammate-context line
-    /// since it opened; nil follows the saved state the report gives.
-    private var teammateContextDraft: Bool?
-    private(set) var teammateContextError: String?
 
     private let client: CoreClient
     private let operations: CoreClient
@@ -45,46 +41,6 @@ final class ToolsModel {
     init(socketPath: String, requestTimeout: TimeInterval = 30) {
         client = CoreClient(socketPath: socketPath, requestTimeout: requestTimeout)
         operations = CoreClient(socketPath: socketPath)
-    }
-
-    /// The teammate-context hook's state, or nil where Claude Code is neither
-    /// on this computer nor chosen.
-    var teammateContextEnabled: Bool? { report?.teammateContext }
-    /// The chooser offers the teammate-context line once Claude Code is here
-    /// or chosen.
-    var offersTeammateContext: Bool { report?.teammateContext != nil || selectedIDs.contains("claude") }
-
-    /// What the chooser's line shows: the person's edit, else the saved
-    /// state, else unchecked where nothing is saved yet: the hook is off by
-    /// default.
-    var teammateContextChoice: Bool { teammateContextDraft ?? report?.teammateContext ?? false }
-
-    func setTeammateContextChoice(_ on: Bool) { teammateContextDraft = on }
-
-    /// What Continue saves: only the person's edit. An untouched line saves
-    /// nothing, so the hook stays off by default and a reopened chooser never
-    /// undoes Settings.
-    private var teammateContextToSave: Bool? {
-        guard offersTeammateContext else { return nil }
-        return teammateContextDraft
-    }
-
-    /// Settings' Turn On and Turn Off for the teammate-context hook.
-    func setTeammateContext(_ on: Bool) async {
-        guard !isWorking else { return }
-        operationRevision += 1
-        let request = generation
-        teammateContextError = nil
-        isWorking = true
-        defer { if generation == request { isWorking = false } }
-        do {
-            let result = try await operations.toolsTeammateContext(ToolsTeammateContextParams(enabled: on))
-            guard generation == request else { return }
-            apply(result)
-        } catch {
-            guard generation == request else { return }
-            teammateContextError = TeammateContextCopy.failed
-        }
     }
 
     var shouldChooseTools: Bool { (report?.onboardingComplete == false || onboardingRequested) && !onboardingDeferred }
@@ -252,9 +208,7 @@ final class ToolsModel {
         isWorking = true
         defer { if generation == request { isWorking = false } }
         do {
-            // Not now leaves the teammate-context default as it is.
-            let teammate = skip ? nil : teammateContextToSave
-            let result = try await operations.toolsSelect(ToolsSelectParams(teammateContext: teammate, toolIds: ids))
+            let result = try await operations.toolsSelect(ToolsSelectParams(toolIds: ids))
             guard generation == request else { return }
             apply(result)
             guard result.onboardingComplete else {
@@ -263,7 +217,6 @@ final class ToolsModel {
                 return
             }
             error = nil
-            teammateContextDraft = nil
             onboardingRequested = false
             onboardingDeferred = true
         } catch {
@@ -292,7 +245,6 @@ final class ToolsModel {
         }.map(\.id))
         onboardingDeferred = false
         onboardingRequested = true
-        teammateContextDraft = nil
         preservesActionError = false
         error = nil
     }

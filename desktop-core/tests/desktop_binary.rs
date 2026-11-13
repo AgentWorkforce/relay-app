@@ -78,30 +78,32 @@ fn help_names_one_surface_and_every_listed_command_answers() {
 }
 
 #[test]
-fn the_teammate_context_hook_prints_session_start_guidance_and_never_fails() {
+fn the_retired_teammate_context_hook_prints_nothing_and_never_fails() {
     use std::io::Write;
     let run = |input: &[u8]| {
         let mut child = Command::new(PROBE)
             .args(["teammate-context-hook", "--socket", "/nonexistent.sock"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         child.stdin.take().unwrap().write_all(input).unwrap();
         child.wait_with_output().unwrap()
     };
-    let started = run(br#"{"hook_event_name":"SessionStart","source":"startup"}"#);
-    assert!(started.status.success(), "{started:?}");
-    let output: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
-    assert_eq!(output["hookSpecificOutput"]["hookEventName"], "SessionStart");
-    assert!(output["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .unwrap()
-        .contains("list_session_summaries"));
-    let other = run(br#"{"hook_event_name":"PreToolUse"}"#);
-    assert!(other.status.success() && other.stdout.is_empty(), "{other:?}");
-    let garbage = run(b"not json");
-    assert!(garbage.status.success(), "{garbage:?}");
+    // A login not cleaned up yet still runs it at every session start: no
+    // guidance, no error, exit 0.
+    for input in [
+        &br#"{"hook_event_name":"SessionStart","source":"startup"}"#[..],
+        br#"{"hook_event_name":"PreToolUse"}"#,
+        b"not json",
+        b"",
+    ] {
+        let output = run(input);
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
 }
 
 #[test]

@@ -63,7 +63,6 @@ pub(super) async fn run(
             onboarding_complete: true,
             account_health: Some("unavailable".into()),
             tools: Vec::new(),
-            teammate_context: None,
         });
     };
     if action == "check" {
@@ -122,38 +121,6 @@ pub(super) async fn run(
     Ok(report)
 }
 
-/// Saves the teammate-context choice; with `apply`, also adds or removes
-/// its hook now.
-async fn change_teammate_context(
-    account: &Arc<Account>,
-    enabled: bool,
-    apply: bool,
-) -> Result<(), RpcError> {
-    let Some(installer) = account.mcp_config.get().cloned() else {
-        return Err(RpcError::invalid_params(
-            "Provider setup is unavailable on this computer.",
-        ));
-    };
-    tokio::task::spawn_blocking(move || {
-        if apply {
-            installer.set_teammate_context(enabled)
-        } else {
-            installer.save_teammate_context(enabled)
-        }
-    })
-    .await
-    .map_err(|_| RpcError::invalid_params("The teammate context hook could not be changed."))?
-    .map_err(RpcError::invalid_params)
-}
-
-async fn save_teammate_context(account: &Arc<Account>, enabled: bool) -> Result<(), RpcError> {
-    change_teammate_context(account, enabled, false).await
-}
-
-async fn set_teammate_context(account: &Arc<Account>, enabled: bool) -> Result<(), RpcError> {
-    change_teammate_context(account, enabled, true).await
-}
-
 pub(super) async fn call(
     account: &Arc<Account>,
     method: &str,
@@ -174,20 +141,7 @@ pub(super) async fn call(
         }
         crate::contract::method::ToolsSelect::NAME => {
             answer::<crate::contract::method::ToolsSelect, _>(raw.clone(), |r| async move {
-                // The hook preference first, then the providers: the refresh
-                // the selection starts adds or removes the hook, and reports a
-                // failure there as a setup warning, never as a lost choice.
-                if let Some(enabled) = r.teammate_context {
-                    save_teammate_context(account, enabled).await?;
-                }
                 run(account, "select", r.tool_ids, String::new()).await
-            })
-            .await
-        }
-        crate::contract::method::ToolsTeammateContext::NAME => {
-            answer::<crate::contract::method::ToolsTeammateContext, _>(raw.clone(), |r| async move {
-                set_teammate_context(account, r.enabled).await?;
-                run(account, "status", Vec::new(), String::new()).await
             })
             .await
         }

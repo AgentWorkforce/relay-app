@@ -37,7 +37,7 @@ const DESKTOP_COMMANDS: &[(&str, &str)] = &[
     ("feed", "Verify a signed release feed manifest (feed verify)"),
     ("service-callers", "List service callers, or ask Settings to provision or rotate one"),
     ("claude-attestation-hook", "Agent Relay's Claude Code tool-call proof hook"),
-    ("teammate-context-hook", "Agent Relay's Claude Code teammate-context SessionStart hook"),
+    ("teammate-context-hook", "Retired Claude Code SessionStart hook; prints nothing"),
 ];
 
 /// Every command the helper answers, for `--help`.
