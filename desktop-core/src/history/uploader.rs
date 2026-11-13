@@ -390,7 +390,7 @@ impl ProbeRunner for ProcessRunner {
         let (done, finished) = tokio::sync::oneshot::channel();
         let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
-            let reader = tokio::spawn(async move {
+            let mut reader = tokio::spawn(async move {
                 let Some(stdout) = stdout else { return };
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -417,8 +417,18 @@ impl ProbeRunner for ProcessRunner {
                 }
             };
             drop(registration);
-            // Every event the probe wrote before exiting is delivered first.
-            let _ = tokio::time::timeout(Duration::from_secs(1), reader).await;
+            // Drain the final events before reporting the outcome. A descendant
+            // can keep stdout open after setup exits; dropping a timed-out
+            // JoinHandle would detach its task and keep `events` open forever,
+            // leaving Account::connect waiting instead of reading `finished`.
+            if tokio::time::timeout(Duration::from_secs(1), &mut reader)
+                .await
+                .is_err()
+            {
+                reader.abort();
+                // Wait for the sender to be dropped before publishing outcome.
+                let _ = reader.await;
+            }
             let stderr = stderr.finish().await;
             let outcome = match status {
                 _ if cancelled => Err(UploaderError::cancelled()),
@@ -1121,6 +1131,7 @@ impl Uploader {
 mod tests {
     use super::*;
 
+    mod install;
     mod operator_policy;
     mod reset;
     mod supervise;
