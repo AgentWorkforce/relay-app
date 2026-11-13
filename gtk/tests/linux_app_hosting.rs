@@ -420,22 +420,45 @@ async fn an_older_releases_core_is_replaced_where_the_app_replaces_cores() {
 
 /// A release is replaced once per run: a core of it that answers again (a
 /// logon task still pointed at the old app) is used, never stopped in a
-/// loop. A core of a newer release is used from the start.
+/// loop. Here the helper exists but exits, so nothing takes the socket
+/// before the core of the replaced release answers again.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_older_release_is_replaced_once_and_a_newer_one_never() {
-    let (_directory, socket) = directory();
+async fn an_older_release_is_replaced_once() {
+    let (directory, socket) = directory();
+    let broken = script(directory.path(), "broken", "exit 3", "exit /b 3");
     let old = FakeCore::start(&socket).unwrap();
-    let (bridge, mut events) = replacing(&socket, None, "9.9.9");
+    let (bridge, mut events) = replacing(&socket, Some(broken), "9.9.9");
     tokio::time::timeout(Duration::from_secs(10), old.stopped())
         .await
         .expect("the older core was asked to stop");
+    assert!(eventually(|| !listening(&socket)).await);
     let again = FakeCore::start(&socket).unwrap();
     assert_eq!(events.status(30).await, "SignedOut");
     assert!(!again.is_stopped());
     bridge.stop().await;
     again.stop().await;
+}
 
-    let (_directory, socket) = directory();
+/// An older core is kept, with the stale-core warning, while this app has
+/// no helper to replace it with (a missing helper, no logon task): stopping
+/// it would leave the app and agents offline. A core of a newer release is
+/// used from the start.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_core_without_a_helper_and_a_newer_one_are_used() {
+    let (directory, socket) = directory();
+    let old = FakeCore::start(&socket).unwrap();
+    let missing = directory.path().join("missing-probe");
+    let (bridge, mut events) = replacing(&socket, Some(missing), "9.9.9");
+    assert_eq!(events.status(10).await, "SignedOut");
+    assert!(!old.is_stopped());
+    assert!(bridge
+        .stale_core()
+        .unwrap()
+        .contains("0.0.0-fake, not 9.9.9"));
+    bridge.stop().await;
+    old.stop().await;
+
+    let (_directory, socket) = self::directory();
     let newer = FakeCore::start(&socket).unwrap();
     // 0.0.0-fake is newer than 0.0.0-alpha.
     let (bridge, mut events) = replacing(&socket, None, "0.0.0-alpha");

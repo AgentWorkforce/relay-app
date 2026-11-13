@@ -42,6 +42,20 @@ pub struct HostOptions {
     pub replace_older_core: bool,
 }
 
+impl HostOptions {
+    /// Hosting `probe`, the core this app carries: its version, and the
+    /// platform's choice of whether an older release's core is replaced.
+    pub fn bundled(probe: Option<PathBuf>) -> HostOptions {
+        HostOptions {
+            probe,
+            version: Some(agent_relay_node::VERSION.to_string()),
+            replace_older_core:
+                agent_relay_desktop_core::executable_identity::app_replaces_older_core(),
+            ..HostOptions::default()
+        }
+    }
+}
+
 /// The hosted child, if any.
 #[derive(Default)]
 pub struct Hosted {
