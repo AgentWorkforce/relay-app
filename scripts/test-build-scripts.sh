@@ -194,6 +194,17 @@ control="$(deb_control "$work/l1/out/Desktop-acme-7-0.0.0-Linux-x64.deb")"
     && grep -qx 'Homepage: https://relay.example' <<< "$control" && grep -q '^Description: Native Acme Desktop companion' <<< "$control" \
     && grep -qx 'Section: devel' <<< "$control"; } \
   || fail "build-linux.sh: a profile package's control: $control"
+# The package's modes do not depend on the caller's umask: dpkg-deb refuses
+# a 700 DEBIAN dir, and the installed tree must be readable by other users.
+linux_fixture "$work/l4" https://agentrelay.com agentrelay
+( umask 077; cd "$work" && bash "$SCRIPTS/build-linux.sh" --version 0.0.0 --app l4/agent-relay --probe l4/agent-relay-probe --out l4/out >/dev/null ) || fail "build-linux.sh failed under umask 077"
+tree="$work/l4/out/AgentRelay-linux-x64"
+for dir in "$tree" "$tree/usr/lib/agent-relay"; do
+  [ "$(stat -c %a "$dir")" = 755 ] || fail "build-linux.sh under umask 077: $dir is mode $(stat -c %a "$dir"), not 755"
+done
+entry="$tree/usr/share/applications/agent-relay.desktop"
+[ "$(stat -c %a "$entry")" = 644 ] || fail "build-linux.sh under umask 077: the launcher entry is mode $(stat -c %a "$entry"), not 644"
+[ -f "$work/l4/out/AgentRelay-0.0.0-Linux-x64.deb" ] || fail "build-linux.sh under umask 077: no .deb: $(ls "$work/l4/out")"
 # The default profile: the entry and names of every production release.
 linux_fixture "$work/l2" https://agentrelay.com agentrelay
 ( cd "$work" && bash "$SCRIPTS/build-linux.sh" --version 0.0.0 --app l2/agent-relay --probe l2/agent-relay-probe --out l2/out >/dev/null ) || fail "build-linux.sh default failed"
