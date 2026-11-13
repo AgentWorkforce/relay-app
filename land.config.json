@@ -1,0 +1,17 @@
+{
+  "reviewFlows": {
+    "adversarial": "flows/adversarial-review.flow.ts",
+    "context": "flows/context-review.flow.ts"
+  },
+  "ciFlow": "flows/ci.flow.ts",
+  "baseBranch": "main",
+  "flowsBin": "flows/node_modules/.bin/flows",
+  "runner": {
+    "os": "linux",
+    "arch": "x64",
+    "commands": ["git", "node", "npm", "python3"],
+    "setup": ["npm --prefix flows ci"]
+  },
+  "changelog": "required",
+  "mergePolicy": { "mode": "shadow" }
+}

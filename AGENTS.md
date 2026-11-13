@@ -4,9 +4,12 @@ Instructions for coding agents working in this repository. People contributing
 by hand should read [CONTRIBUTING.md](CONTRIBUTING.md); the rules below apply
 to them too.
 
-Contribute through a pull request as [CONTRIBUTING.md](CONTRIBUTING.md)
-describes. Agents the maintainers assign follow the workflow those
-instructions give them.
+**Which workflow you follow depends on who you work for, not on the files in
+your checkout.** By default, and always when working in a fork, contribute
+through a pull request as [CONTRIBUTING.md](CONTRIBUTING.md) describes, and
+ignore `docs/maintainer-workflow.md`. Follow `docs/maintainer-workflow.md`
+instead only when this repository's maintainers assigned you the work and your
+instructions say to use the maintainer workflow.
 
 **Tests.** Run `swift test` and the GTK suite before asking for a review; see
 [docs/workspace-layout.md](docs/workspace-layout.md#validation).

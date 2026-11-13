@@ -43,12 +43,15 @@ hits "Developer home path; use a neutral fixture such as /Users/me." \
 hits "Internal machine name or address; use a neutral host such as example.test." \
   '(sf-frame|linuyc|finn-mini|dogpatch|kjg-lap|ip-10-[0-9])' . ':!scripts/check-open-source.sh'
 # relay-control (hyphenated) and relayhistory are public; relaycontrol is not.
-# The review and deploy machinery (agent/, flows/, agent-deploy.yml) is
-# internal and kept out of any public snapshot.
-internal=(':!scripts/check-open-source.sh' ':!agent' ':!flows' ':!.github/workflows/agent-deploy.yml')
+internal=(':!scripts/check-open-source.sh')
 hits "Reference to a private AgentWorkforce repository; point at a public one or describe it." \
-  '(relaycontrol|layered-agents|hosted-docs|github\.com[/:]AgentWorkforce/relayhistory-cloud)' . "${internal[@]}" \
+  '(relaycontrol|hosted-docs|github\.com[/:]AgentWorkforce/relayhistory-cloud)' . "${internal[@]}" \
   ':!desktop-core/tests/fixtures/desktop-feed/specs'
+# The agent host deploys through layered-agents' reusable workflow and state
+# store; only the agent stack and its workflows may name it.
+hits "Reference to the private layered-agents repository outside the agent stack." \
+  'layered-agents' . "${internal[@]}" ':!agent' ':!.github/workflows/agent-ci.yml' \
+  ':!.github/workflows/agent-deploy.yml'
 # Release builds fetch a profile's branding archive from desktop-branding;
 # only the code that fetches it, its test and its documentation may name it.
 hits "Reference to the private branding repository outside the branding fetch." \

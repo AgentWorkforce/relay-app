@@ -155,7 +155,8 @@ tests without duplicate packages, or `core-only` when `main` already passed
 its commit. A manual CI run can request
 the full matrix with unsigned packaging enabled when diagnosing an
 architecture-specific issue, and `base-sha` selects lanes from the changes
-since that commit (empty runs every lane).
+since that commit (empty runs every lane): `flows/ci.flow.ts` dispatches a
+pushed snapshot with the merge base and the full matrix.
 
 Swift build caches separate architecture and package/test lane, and include
 Swift, Xcode, SDK and manifest identities. Windows caches separate downloaded
@@ -232,6 +233,8 @@ that code.
 | Swift source/tests in known macOS or shared package target directories | Swift checks only |
 | Exact Swift package manifests, macOS plist/entitlements, or macOS app resources | Swift checks and macOS packaging |
 | Generated `macos/Sources/RelayDesktopCore/CoreContract.swift` | Probe contract check and Swift checks |
+| Agent flows under `flows/` | Shell (which type-checks the flows and runs their helper tests) |
+| The layered agent's lane files and stack under `agent/` | Shell (which lints its lane scripts; Agent CI runs its stack tests, dispatched by the review gate and by main's push) |
 | Linux packaging under `linux/` | Shell, Linux GTK/library tests, core, integration and packaging |
 | Windows packaging under `windows/` | Shell, Windows native tests and Windows packaging |
 | `gtk/tests/linux_app_gtk.rs` or Rust modules under `gtk/tests/linux_app_gtk/` | Linux GTK/library and Windows native tests; no core build or integration |

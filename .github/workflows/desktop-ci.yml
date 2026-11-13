@@ -75,7 +75,7 @@ on:
         type: string
         default: '0.0.0'
       base-sha:
-        description: Select lanes from the changes since this commit, as a pull request would; empty runs every lane
+        description: Select lanes from the changes since this commit, as a pull request would (flows/ci.flow.ts); empty runs every lane
         type: string
         default: ''
 
@@ -342,6 +342,23 @@ jobs:
 
       - name: Test the pull-model operator script
         run: bash scripts/test-agent-relay-desktop-update.sh
+
+      # The layered agent's lane scripts (agent/*.sh). Its stack tests need
+      # GitHub Packages, which this workflow may not request (Desktop
+      # Release calls it with contents: read only), so they run in
+      # agent-ci.yml.
+      - name: Lint the agent lane scripts
+        run: shellcheck agent/*.sh
+
+      - name: Set up Node.js for the agent flows
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Check the agent flows
+        run: |
+          npm --prefix flows ci --no-audit --no-fund --ignore-scripts
+          npm --prefix flows run -s check
 
 
   probe:
