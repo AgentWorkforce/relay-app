@@ -788,9 +788,11 @@ impl App {
         {
             return;
         }
+        // Re-read local history, as macOS does: with no cached catalog yet
+        // (a first sign-in) the cache alone lists nothing.
         let params = agent_relay_desktop_core::contract::account::PreviewParams {
             limit: None,
-            refresh: false,
+            refresh: true,
         };
         self.call::<agent_relay_desktop_core::contract::method::UploaderSessionsPreview>(params, |app, result| {
             let count = result.map(|preview| preview.sessions.len()).unwrap_or(0);
