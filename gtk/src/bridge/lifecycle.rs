@@ -4,7 +4,7 @@ use super::*;
 use crate::host::{self, HOST_WAIT, SHUTDOWN_WAIT};
 use std::sync::PoisonError;
 
-mod stale_core;
+pub(super) mod stale_core;
 
 impl Bridge {
     /// Asks the hosted core to stop and waits for it to exit. One that has
