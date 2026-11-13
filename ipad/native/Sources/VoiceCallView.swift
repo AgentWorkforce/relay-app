@@ -262,6 +262,7 @@ import UIKit
             }
             system.onResume = { [weak self] in self?.resumeLive() }
             system.onActivate = { session in VoiceLiveConnection.audioSessionActivated(session) }
+            system.onLeftCallKit = { [weak self] in self?.continueWithoutCallKit() }
             // CallKit keeps the call alive on the lock screen and in the
             // background; without it the app's background audio mode does.
             let activated = await system.start(handle: agentName)
@@ -305,6 +306,30 @@ import UIKit
         system.setHeld(false)
         system.reportConnected()
         flushReplies()
+    }
+
+    /// CallKit was turned off during the call (the storefront turned out to be
+    /// China mainland): the call keeps going as plain VoIP, activating the
+    /// audio session itself as a call that never had CallKit does.
+    private func continueWithoutCallKit() {
+        guard phase != .ended else { return }
+        stage("callkit", "left: not allowed in this storefront; continuing without it")
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .voiceChat,
+                                    options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+            try session.setActive(true)
+            VoiceLiveConnection.audioSessionActivatedByApp(session)
+            // CallKit's deactivation stopped the on-device engine.
+            if route == .onDevice, engineRunning, phase != .paused {
+                try audio.restart()
+                detector.reset()
+                transcript = ""
+                if phase == .hearing { phase = restingPhase }
+            }
+        } catch {
+            end(.audioFailed(error.localizedDescription))
+        }
     }
 
     /// Ends the call and waits until it has let go of the audio, so a call

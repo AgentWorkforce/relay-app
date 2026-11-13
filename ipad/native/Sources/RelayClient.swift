@@ -348,6 +348,9 @@ private enum SecureStore {
     /// The bare handle agents use to reach this person (`to=<handle>`).
     var messagingHandle: String { UserDefaults.standard.string(forKey: "relay.mobileName") ?? "" }
     @Published var verificationURL: URL?
+    /// Counts sign-ins that stopped with an error (polling for the device
+    /// grant included), so the approval page can close to show the failure.
+    @Published private(set) var signInFailures = 0
     @Published var userCode = ""
     @Published var signInStatus = ""
     @Published var relayAgents: [RelayAgent] = []
@@ -805,7 +808,10 @@ private enum SecureStore {
                 try await finishSavedCloudSignIn()
                 signInStatus = ""
             }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = error.localizedDescription
+            signInFailures += 1
+        }
     }
     func beginSignIn() async {
         guard !busy, !signingOut else { return }
@@ -833,7 +839,10 @@ private enum SecureStore {
             SecureStore.write(userCode, for: "cloudPendingUserCode")
             SecureStore.write(url.absoluteString, for: "cloudPendingURL")
             try await pollCloudGrant(code: code, deadline: deadline, initialInterval: interval)
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = error.localizedDescription
+            signInFailures += 1
+        }
     }
     private func finishSavedCloudSignIn() async throws {
         let access: String

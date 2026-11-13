@@ -38,4 +38,11 @@ final class VoiceCallPolicyTests: XCTestCase {
         XCTAssertTrue(allows(region: "MO", storefront: "MAC"))
         XCTAssertTrue(allows(region: "TW", storefront: "TWN"))
     }
+
+    func testCallKitStartStopsIfTheCallEndedDuringTheStorefrontWait() {
+        XCTAssertTrue(VoiceCallKitStart.proceeds(started: 0, now: 0))
+        XCTAssertTrue(VoiceCallKitStart.proceeds(started: 3, now: 3))
+        XCTAssertFalse(VoiceCallKitStart.proceeds(started: 0, now: 1))
+        XCTAssertFalse(VoiceCallKitStart.proceeds(started: 2, now: 4))
+    }
 }

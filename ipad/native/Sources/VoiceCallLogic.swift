@@ -255,6 +255,15 @@ enum VoiceCallSystemEnd: String, Equatable {
     }
 }
 
+/// Whether a CallKit start that waited for the storefront lookup may go on.
+/// Ending the call bumps its generation, so a hang-up or sign-out during the
+/// wait (when the call has no CallKit ID to end yet) stops the start.
+enum VoiceCallKitStart {
+    static func proceeds(started generation: Int, now current: Int) -> Bool {
+        generation == current
+    }
+}
+
 /// Which call a CallKit audio deactivation belongs to, and whether it means
 /// the audio is off. CallKit sends one deactivation per activation, in order,
 /// but without a call ID, and a released call's can arrive after the next

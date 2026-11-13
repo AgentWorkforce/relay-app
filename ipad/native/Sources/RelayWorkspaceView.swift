@@ -303,6 +303,11 @@ struct RelayWorkspaceView: View {
             // the person signed out: the approval page has nothing left to do.
             if webSignIn.openURL != nil, webSignIn.openURL != url { webSignIn.close() }
         }
+        .onChange(of: client.signInFailures) { _, _ in
+            // Polling stopped with an error (a server error, say) and left the
+            // link in place: close the page so the failure shows.
+            webSignIn.close()
+        }
         .onChange(of: client.relayAgents.map(\.id)) { _, _ in
             // Rejoin a call that was active before the app was relaunched.
             voiceCalls.rejoinIfNeeded(client: client, roster: client.relayAgents + client.conversations)
