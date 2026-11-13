@@ -182,23 +182,38 @@ enum VoiceLiveReconnect {
     var onMute: ((Bool) -> Void)?
     /// The person resumed a held call from the system UI.
     var onResume: (() -> Void)?
+    /// CallKit was turned off during the call (the storefront turned out to be
+    /// China mainland) and has let go of the audio; the call goes on as plain
+    /// VoIP and activates its own audio session.
+    var onLeftCallKit: (() -> Void)?
 
     private let callKit = VoiceCallKit.shared
     private(set) var callID: UUID?
     private var activation: CheckedContinuation<Bool, Never>?
+    /// Bumped by `end()`, so a `start` still waiting for the storefront knows
+    /// the call ended meanwhile, before it had a `callID` to end.
+    private var generation = 0
+    /// The call left CallKit mid-call; it no longer uses it.
+    private var leftCallKit = false
 
     static var isAllowed: Bool { VoiceCallKit.isAllowed }
 
-    var isEnabled: Bool { callKit.provider != nil }
+    var isEnabled: Bool { callKit.provider != nil && !leftCallKit }
     /// CallKit activated the audio for this call, not for an earlier one.
     var audioActive: Bool { callKit.ownsAudio(self) }
 
     /// Starts an outgoing call in the system UI and waits (briefly) for CallKit
     /// to activate the audio session. Returns whether CallKit activated it.
     func start(handle name: String) async -> Bool {
+        let started = generation
         // Settles the China check and creates or removes the provider before
         // anything is asked of CallKit.
         await callKit.prepare()
+        // A hang-up or sign-out during the wait: no system call for an ended call.
+        guard VoiceCallKitStart.proceeds(started: started, now: generation) else {
+            VoiceCallLog.logger.info("CallKit start skipped: the call ended while the storefront was looked up")
+            return false
+        }
         guard callKit.provider != nil else { return false }
         let id = UUID()
         callID = id
@@ -213,6 +228,8 @@ enum VoiceLiveReconnect {
             callKit.unregister(id)
             return false
         }
+        // Ended, or taken out of CallKit, while the request was in flight.
+        guard callID == id else { return false }
         if callKit.ownsAudio(self) { return true }
         return await withCheckedContinuation { continuation in
             activation = continuation
@@ -242,6 +259,7 @@ enum VoiceLiveReconnect {
     /// end action CallKit sends back no longer matches `callID`, so it is
     /// not taken for iOS ending the call.
     func end() {
+        generation += 1
         guard let callID else { return }
         self.callID = nil
         callKit.noteEnded(callID)
@@ -273,6 +291,26 @@ enum VoiceLiveReconnect {
         callKit.noteEnded(id)
         finishActivation(false)
         onEnd?(reason)
+    }
+
+    /// Takes the call out of CallKit without ending it: the system call UI
+    /// goes, and CallKit's audio deactivation that follows is not taken for
+    /// iOS ending the call. Returns whether the call was in CallKit.
+    fileprivate func leaveCallKit() -> Bool {
+        guard let callID else { return false }
+        self.callID = nil
+        leftCallKit = true
+        callKit.noteEnded(callID)
+        finishActivation(false)
+        VoiceCallLog.logger.notice("CallKit left by \(callID.uuidString, privacy: .public); the call continues without it")
+        callKit.provider?.reportCall(with: callID, endedAt: Date(), reason: .remoteEnded)
+        return true
+    }
+
+    /// After `leaveCallKit()`, once CallKit let go of the audio.
+    fileprivate func continueWithoutCallKit() {
+        onActivate = nil
+        onLeftCallKit?()
     }
 
     fileprivate func setMutedBySystem(_ muted: Bool) { onMute?(muted) }
@@ -319,6 +357,8 @@ enum VoiceLiveReconnect {
     /// The call whose audio is on now.
     private var audioOwner: VoiceCallSystem? { activations.current.flatMap(call) }
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Calls in progress are being taken out of CallKit.
+    private var dropping = false
 
     private struct WeakCall { weak var system: VoiceCallSystem? }
 
@@ -356,6 +396,38 @@ enum VoiceLiveReconnect {
             activations.reset()
             finishRelease()
         }
+    }
+
+    /// The storefront changed or its lookup answered. If CallKit is no longer
+    /// allowed, calls in CallKit leave it and go on as plain VoIP, and the
+    /// provider is removed, so no CallKit call outlives the China check.
+    func storefrontChanged() {
+        guard provider != nil, !Self.isAllowed, !dropping else { return }
+        dropping = true
+        Task { @MainActor in
+            await dropProvider()
+            dropping = false
+        }
+    }
+
+    private func dropProvider() async {
+        let storefront = VoiceCallStorefront.shared.countryCode ?? "unknown"
+        VoiceCallLog.logger.notice("CallKit not allowed in storefront \(storefront, privacy: .public); removing the provider")
+        var left: [VoiceCallSystem] = []
+        for entry in calls.values {
+            if let system = entry.system, system.leaveCallKit() { left.append(system) }
+        }
+        // CallKit deactivates the audio of the calls it ended; wait for that
+        // (bounded) before the calls activate the audio session themselves.
+        await waitForAudioRelease()
+        if !Self.isAllowed, let existing = provider {
+            existing.invalidate()
+            provider = nil
+            audioActive = false
+            activations.reset()
+        }
+        finishRelease()
+        for system in left { system.continueWithoutCallKit() }
     }
 
     func register(_ system: VoiceCallSystem, for id: UUID) {
@@ -404,7 +476,10 @@ enum VoiceLiveReconnect {
     static let shared = VoiceCallStorefront()
 
     /// ISO 3166-1 alpha-3 code ("CHN" for China mainland); nil while unknown.
-    private(set) var countryCode: String?
+    private(set) var countryCode: String? {
+        // A provider created while the storefront was unknown is reconciled.
+        didSet { if countryCode != oldValue { VoiceCallKit.shared.storefrontChanged() } }
+    }
     private var lookup: Task<Void, Never>?
     private var updates: Task<Void, Never>?
 
