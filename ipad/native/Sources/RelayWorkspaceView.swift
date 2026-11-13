@@ -785,14 +785,8 @@ struct RelayWorkspaceView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationBarTitleDisplayMode(.inline)
+            .modifier(WorkspaceLogoToolbar())
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        Image("BrandMark").resizable().scaledToFit().frame(width: 27, height: 22)
-                            .accessibilityIdentifier("Workspace logo")
-                        Text("Agent Relay").font(.headline)
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { Task { await client.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Refresh")
@@ -2062,5 +2056,33 @@ struct RelayWorkspaceView: View {
     /// and a fixed minimum wider than the screen pushes its content off it.
     private func sheetMinWidth(_ width: CGFloat) -> CGFloat? {
         horizontalSizeClass == .compact ? nil : width
+    }
+}
+
+/// The Agent Relay lockup at the leading end of the iPhone header. It is a
+/// title, not a control: from iOS 26 the bar draws a Liquid Glass capsule
+/// behind every toolbar item, and that capsule pads the lockup and moves it off
+/// the bar's leading edge and out of line with the trailing buttons. Hiding the
+/// shared background lays it out flat, as on earlier iOS versions.
+private struct WorkspaceLogoToolbar: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.toolbar {
+                ToolbarItem(placement: .topBarLeading) { lockup }
+                    .sharedBackgroundVisibility(.hidden)
+            }
+        } else {
+            content.toolbar {
+                ToolbarItem(placement: .topBarLeading) { lockup }
+            }
+        }
+    }
+
+    private var lockup: some View {
+        HStack(spacing: 8) {
+            Image("BrandMark").resizable().scaledToFit().frame(width: 27, height: 22)
+                .accessibilityIdentifier("Workspace logo")
+            Text("Agent Relay").font(.headline)
+        }
     }
 }
