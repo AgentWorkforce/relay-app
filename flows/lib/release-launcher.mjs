@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { validate } from './release-worker.mjs';
+import { RELEASE_APP_SECRETS } from './release-github-auth.mjs';
 export function requestFromArgs(args, read = path => JSON.parse(readFileSync(path, 'utf8')), requestId = randomUUID()) {
   const argv = [...args]; const mode = argv.shift();
   const operation = mode === 'prepare' ? 'prepare' : mode === 'tick' ? 'tick' : mode === 'inventory' ? 'inventory' : 'publish';
@@ -36,6 +37,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     mkdirSync('release-state', { recursive: true });
     writeFileSync('release-state/request.json', JSON.stringify(input, null, 2) + '\n');
     const clean = { ...process.env }; delete clean.GH_TOKEN; delete clean.GITHUB_TOKEN; delete clean.DESKTOP_RELEASE_GH_TOKEN;
+    for (const name of RELEASE_APP_SECRETS) delete clean[name];
     const out = execFileSync('flows/node_modules/.bin/flows', ['run', '--cloud', '--json', '--sync-code', '--no-connect', '--budget-minutes', '180', 'flows/cloud-release.flow.ts', '--input', JSON.stringify(input)], { encoding: 'utf8', env: clean, stdio: ['ignore', 'pipe', 'inherit'] });
     const accepted = submission(out);
     writeFileSync('release-state/run.json', JSON.stringify(accepted, null, 2) + '\n');

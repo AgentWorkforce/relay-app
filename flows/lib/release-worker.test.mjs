@@ -65,6 +65,7 @@ function effectsFixture(overrides = {}) {
   writeFileSync(statePath, JSON.stringify({ calls: [], refs: {}, sourceSha: plan.sourceSha, runs: [], ...overrides }));
   const script = `#!/usr/bin/env node
 const fs=require('node:fs'); const s=JSON.parse(fs.readFileSync(process.env.FAKE_GITHUB,'utf8'));
+if(['DESKTOP_RELEASE_GH_APP_ID','DESKTOP_RELEASE_GH_INSTALLATION_ID','DESKTOP_RELEASE_GH_APP_PRIVATE_KEY','DESKTOP_RELEASE_GH_TOKEN','GITHUB_TOKEN'].some(k=>process.env[k])){console.error('App credentials leaked to subprocess');process.exit(1);}
 const argv=process.argv.slice(2); const path=argv[1]; const body=argv.includes('--input')?JSON.parse(fs.readFileSync(0,'utf8')):undefined;
 s.calls.push({path,body}); let out={}; let failure='';
 if(Object.hasOwn(s.responses??{},path)){const response=s.responses[path];if(response.error)failure=response.error;else out=response;}
@@ -78,7 +79,9 @@ fs.writeFileSync(process.env.FAKE_GITHUB,JSON.stringify(s)); if(failure){console
 `;
   writeFileSync(join(root, 'gh'), script, { mode: 0o755 });
   return {
-    call(action, payload, token = 'fake-only') { return spawnSync(process.execPath, ['flows/lib/release-worker.mjs', action, Buffer.from(JSON.stringify(payload)).toString('base64')], { cwd: new URL('../..', import.meta.url), encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, FAKE_GITHUB: statePath, DESKTOP_RELEASE_GH_TOKEN: token } }); },
+    // Authentication has its own HTTP/JWT tests. Exercise the real synchronous
+    // effects behind that boundary with a fake token and executable here.
+    call(action, payload, token = 'fake-only') { return spawnSync(process.execPath, ['--input-type=module', '-e', `import { perform } from './flows/lib/release-worker.mjs'; try { console.log(JSON.stringify(perform(process.argv[1], JSON.parse(Buffer.from(process.argv[2], 'base64').toString())))); } catch (e) { console.error(e.message); process.exitCode=1; }`, action, Buffer.from(JSON.stringify(payload)).toString('base64')], { cwd: new URL('../..', import.meta.url), encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, FAKE_GITHUB: statePath, DESKTOP_RELEASE_GH_TOKEN: token, DESKTOP_RELEASE_GH_APP_PRIVATE_KEY: 'must-not-reach-child', GITHUB_TOKEN: 'unrelated' } }); },
     state() { return JSON.parse(readFileSync(statePath, 'utf8')); },
     close() { rmSync(root, { recursive: true, force: true }); },
   };

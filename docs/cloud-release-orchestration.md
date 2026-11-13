@@ -22,14 +22,24 @@ substitute main's source for the requested older release.
 The switch is **off by default**. Land and deploy the reviewed code first;
 do not switch an in-flight incident release to a new orchestrator.
 
-1. The Cloud secret owner provisions `DESKTOP_RELEASE_GH_TOKEN` for the
-   release flow's command steps. Use a dedicated GitHub App/service identity
-   restricted to `AgentWorkforce/relay-app`, Actions read/write and
-   Contents read/write. It does not need access to releases repositories or
-   any signing/publishing key. Ensure the credential remains usable throughout
-   a run (up to 180 minutes); short-lived installation tokens need the secret
-   owner's refresh mechanism. Do not copy the host's `gh-token`, pusher App
-   private key or Cloud submit token into the sandbox or flow input.
+1. The GitHub organization owner creates a dedicated private GitHub App,
+   installed only on `AgentWorkforce/relay-app`, with Actions read/write,
+   Contents read/write and the implicit Metadata read permission. No webhook,
+   OAuth user flow, release-repository access or signing key is needed.
+   The Cloud secret owner provisions these **environment** secrets in the
+   workspace used by the lead's Cloud submit login:
+   `DESKTOP_RELEASE_GH_APP_ID`, `DESKTOP_RELEASE_GH_INSTALLATION_ID`, and
+   `DESKTOP_RELEASE_GH_APP_PRIVATE_KEY` (the new App's PEM, with real newlines).
+   Follow [the owner setup](cloud-release-app-setup.md). Do not copy the host's
+   `gh-token`, pusher App private key or Cloud submit token into the sandbox
+   or flow input. The earlier static `DESKTOP_RELEASE_GH_TOKEN` binding is no
+   longer used: it cannot renew an installation token during a long run.
+   Each three-minute command step mints a fresh one-hour installation token
+   for repository ID `1455893451` only, checks the returned permissions and
+   repository list, and revokes it when the step finishes. The App key never
+   reaches the `gh`/Python subprocesses. This covers the 180-minute run without
+   a shared host token or a refresh daemon. See [GitHub's installation-token
+   contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
 2. Run a **prepare-only** smoke request through `/opt/agent-host/cloud-release.sh`
    with a known source and gate. Check Cloud acceptance, native worker dispatch,
    exact-tree reuse, candidate output and a deliberately invalid evidence

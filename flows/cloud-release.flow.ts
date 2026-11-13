@@ -35,7 +35,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 async function effect<T>(f: Ctx, action: string, payload: unknown): Promise<T> {
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64');
   return JSON.parse(await f.run(`node flows/lib/release-worker.mjs ${quote(action)} ${quote(encoded)}`, {
-    secrets: ['DESKTOP_RELEASE_GH_TOKEN'], timeout: '3m',
+    secrets: ['DESKTOP_RELEASE_GH_APP_ID', 'DESKTOP_RELEASE_GH_INSTALLATION_ID', 'DESKTOP_RELEASE_GH_APP_PRIVATE_KEY'], timeout: '3m',
   })) as T;
 }
 async function dispatch(f: Ctx, input: ReleaseInput, plan: Plan, phase: string): Promise<number> {

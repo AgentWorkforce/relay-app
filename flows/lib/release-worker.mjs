@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { withReleaseGithubToken, RELEASE_APP_SECRETS } from './release-github-auth.mjs';
 
 export const REPO = 'AgentWorkforce/relay-app';
 const sha = /^[0-9a-f]{40}$/;
@@ -52,7 +53,9 @@ export function matchingRun(runs, title, sourceSha) {
 }
 const env = () => {
   if (!process.env.DESKTOP_RELEASE_GH_TOKEN) throw Error('Cloud release credential DESKTOP_RELEASE_GH_TOKEN is not configured');
-  return { ...process.env, GH_TOKEN: process.env.DESKTOP_RELEASE_GH_TOKEN };
+  const child = { ...process.env, GH_TOKEN: process.env.DESKTOP_RELEASE_GH_TOKEN };
+  for (const name of [...RELEASE_APP_SECRETS, 'DESKTOP_RELEASE_GH_TOKEN', 'GITHUB_TOKEN']) delete child[name];
+  return child;
 };
 const command = (bin, args, input) => execFileSync(bin, args, { encoding: 'utf8', input, env: env(), maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 const api = (path, body) => {
@@ -212,6 +215,13 @@ export function perform(action, payload) {
   throw Error(`unknown release worker action: ${action}`);
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  try { console.log(JSON.stringify(perform(process.argv[2], JSON.parse(Buffer.from(process.argv[3], 'base64').toString('utf8'))))); }
+  try {
+    const result = await withReleaseGithubToken(token => {
+      process.env.DESKTOP_RELEASE_GH_TOKEN = token;
+      try { return perform(process.argv[2], JSON.parse(Buffer.from(process.argv[3], 'base64').toString('utf8'))); }
+      finally { delete process.env.DESKTOP_RELEASE_GH_TOKEN; }
+    });
+    console.log(JSON.stringify(result));
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

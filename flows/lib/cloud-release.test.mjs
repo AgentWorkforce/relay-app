@@ -15,7 +15,7 @@ function context({ approve = true, gateFailure = false, retry = false, current =
         const [, action, encoded] = command.match(/release-worker\.mjs '([^']+)' '([^']+)'/);
         const payload = JSON.parse(Buffer.from(encoded, 'base64').toString());
         calls.push({ action, payload });
-        assert.deepEqual(options.secrets, ['DESKTOP_RELEASE_GH_TOKEN']);
+        assert.deepEqual(options.secrets, ['DESKTOP_RELEASE_GH_APP_ID', 'DESKTOP_RELEASE_GH_INSTALLATION_ID', 'DESKTOP_RELEASE_GH_APP_PRIVATE_KEY']);
         let result = {};
         if (action === 'inventory') result = [];
         if (action === 'resolve') result = { ...source, current, ...(missingGate ? { gateRunId: undefined } : {}) };
