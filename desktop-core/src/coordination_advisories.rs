@@ -81,6 +81,11 @@ const ACK_RETRY: Duration = Duration::from_secs(120);
 const ACK_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// An ack the token is not allowed is retried at most this often.
 pub const ACK_FORBIDDEN_RETRY: Duration = Duration::from_secs(60 * 60);
+/// A shown advisory of a session that ended is acked for at most this long
+/// after the session was last seen live, and given up after
+/// [`ENDED_ACK_FAILURES`] failed acks.
+pub const ENDED_ACK_RETENTION: Duration = Duration::from_secs(60 * 60);
+pub const ENDED_ACK_FAILURES: u32 = 3;
 /// A read-token exchange that failed is not asked for again before this.
 const TOKEN_RETRY: Duration = Duration::from_secs(5 * 60);
 /// The fewest seconds between two read-token exchanges (the exchange allows
@@ -124,6 +129,33 @@ struct Taken {
     shown: bool,
     retry_at: Option<Instant>,
     failures: u32,
+    /// When its session was first seen no longer live.
+    ended: Option<Instant>,
+}
+
+impl Taken {
+    fn new(at: Instant) -> Self {
+        Taken {
+            at,
+            acked: false,
+            sending: false,
+            shown: false,
+            retry_at: None,
+            failures: 0,
+            ended: None,
+        }
+    }
+
+    /// Whether a record of a session that ended is still worth keeping: only
+    /// a shown one whose ack is pending, for a bounded time and number of
+    /// tries.
+    fn kept_after_end(&mut self, now: Instant) -> bool {
+        let ended = *self.ended.get_or_insert(now);
+        self.shown
+            && !self.acked
+            && now.duration_since(ended) < ENDED_ACK_RETENTION
+            && self.failures < ENDED_ACK_FAILURES
+    }
 }
 
 #[derive(Default)]
@@ -143,8 +175,8 @@ struct State {
     paused_until: Option<Instant>,
     /// Where the next tick starts in the session list.
     cursor: usize,
-    /// The workspace the cache belongs to.
-    workspace: Option<String>,
+    /// Whom the cache belongs to.
+    principal: Option<Principal>,
 }
 
 impl State {
@@ -152,6 +184,35 @@ impl State {
         self.waiting.clear();
         self.taken.clear();
         self.sessions.clear();
+        self.paused_until = None;
+    }
+
+    /// Makes this the cache of `principal` (`None`: signed out), forgetting
+    /// everything another account's sessions had waiting or taken. Answers
+    /// whether it already was.
+    fn belong_to(&mut self, principal: Option<&Principal>) -> bool {
+        if self.principal.as_ref() == principal {
+            return true;
+        }
+        self.clear();
+        self.principal = principal.cloned();
+        false
+    }
+
+    /// Forgets what `live`'s sessions no longer need: what ended sessions
+    /// had waiting, their backoffs, and every record of theirs but a shown
+    /// one whose ack is pending, which is kept a bounded while.
+    fn prune(&mut self, live: &HashSet<&Target>, now: Instant) {
+        self.waiting.retain(|target, _| live.contains(target));
+        self.sessions.retain(|target, _| live.contains(target));
+        self.taken.retain(|target, taken| {
+            if live.contains(target) {
+                taken.values_mut().for_each(|taken| taken.ended = None);
+            } else {
+                taken.retain(|_, taken| taken.kept_after_end(now));
+            }
+            !taken.is_empty()
+        });
     }
 }
 
@@ -162,6 +223,9 @@ pub struct Advisories {
     this: Weak<Advisories>,
     app_data_dir: PathBuf,
     enabled: AtomicBool,
+    /// Held across saving the setting, publishing it and clearing the cache,
+    /// so overlapping changes leave the saved and the live setting the same.
+    setting: Mutex<()>,
     tokens: Arc<dyn TokenSource>,
     api: Arc<dyn AdvisoryApi>,
     state: Mutex<State>,
@@ -177,6 +241,7 @@ impl Advisories {
             this: this.clone(),
             app_data_dir: app_data_dir.to_path_buf(),
             enabled: AtomicBool::new(load(app_data_dir)),
+            setting: Mutex::new(()),
             tokens,
             api,
             state: Mutex::new(State::default()),
@@ -191,10 +256,21 @@ impl Advisories {
     /// Saves the setting; off forgets everything waiting, so nothing is
     /// handed out after.
     pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.set_enabled_with(enabled, save)
+    }
+
+    /// [`Advisories::set_enabled`], saving with `save`.
+    fn set_enabled_with(
+        &self,
+        enabled: bool,
+        save: impl FnOnce(&Path, bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _one = self.setting.lock().unwrap_or_else(|p| p.into_inner());
         save(&self.app_data_dir, enabled)?;
+        let mut state = self.state();
         self.enabled.store(enabled, Ordering::SeqCst);
         if !enabled {
-            self.state().clear();
+            state.clear();
         }
         Ok(())
     }
@@ -243,10 +319,14 @@ pub(crate) async fn watch(core: Arc<Core>, advisories: Arc<Advisories>) {
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        if !advisories.enabled() || core.plugins.cloud.account().is_none() {
+        if !advisories.enabled() {
             continue;
         }
-        let sessions = reached(&agent_relay_node::relay::local_methods::discovered_sessions(&core));
+        // Signed out, the poll only drops what the last account had cached.
+        let sessions = match core.plugins.cloud.account() {
+            Some(_) => reached(&agent_relay_node::relay::local_methods::discovered_sessions(&core)),
+            None => Vec::new(),
+        };
         advisories.poll(&sessions, Instant::now()).await;
     }
 }
