@@ -21,7 +21,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -530,11 +530,15 @@ test("a process that enters between the scan and the rename moves the checkout b
   }
 });
 
-// A stand-in for a detached flows daemon: /bin/sleep copied to bin/<COMM>
-// (so its comm is COMM, named to the script by the test-only
-// DISK_CLEANUP_DAEMON_COMM), started with its cwd in `cwd` under setsid by a
-// shell that exits at once, so it is reparented to pid 1. Returns its pid
-// once its parent is pid 1.
+// A stand-in for a detached flows daemon: a bash script at bin/<COMM> (a
+// script's comm is its basename, so COMM, named to the script by the test-only
+// DISK_CLEANUP_DAEMON_COMM) that sleeps <seconds> with the read builtin, so it
+// never execs another binary (which would change its comm) and has no child
+// working in its cwd. /bin/sleep cannot simply be copied: on Ubuntu images
+// with Rust uutils it is the multicall coreutils binary, which dispatches on
+// argv[0] and exits at once when named COMM. It is started with its cwd in
+// `cwd` under setsid by a shell that exits at once, so it is reparented to
+// pid 1. Returns its pid once its parent is pid 1.
 const COMM = "fakeflowd";
 const daemonEnv = { DISK_CLEANUP_DAEMON_COMM: COMM };
 const statOf = (pid: number): string[] | undefined => {
@@ -555,11 +559,14 @@ async function detachedDaemon(home: string, cwd: string): Promise<number> {
   assert.ok(inside(cwd, home), cwd);
   const bin = join(home, "bin", COMM);
   mkdirSync(join(home, "bin"), { recursive: true });
-  if (!existsSync(bin)) { copyFileSync("/bin/sleep", bin); chmodSync(bin, 0o755); }
+  // <(:) exits at once and `wait $!` reaps it (no child, not even a zombie);
+  // opening it read-write keeps the pipe alive, so the read blocks for the
+  // full timeout. TERM kills bash in the read.
+  if (!existsSync(bin)) { writeFileSync(bin, '#!/bin/bash\nexec 3<> <(:)\nwait $!\nread -r -t "$1" -u 3\n'); chmodSync(bin, 0o755); }
   const pid = Number(execFileSync("setsid", ["bash", "-c", 'cd "$1" || exit 1; "$0" 300 </dev/null >/dev/null 2>&1 & echo $!', bin, cwd], {
     cwd: home, env: envFor(home), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
   }).trim());
-  // The forked child execs the copy after its shell may already have exited.
+  // The forked child execs the script after its shell may already have exited.
   const comm = () => { try { return readFileSync(`/proc/${pid}/comm`, "utf8").trim(); } catch { return ""; } };
   for (let i = 0; i < 50 && (statOf(pid)?.[1] !== "1" || comm() !== COMM); i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(statOf(pid)?.[1], "1", `daemon ${pid} was not reparented to pid 1`);
