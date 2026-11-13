@@ -8,7 +8,12 @@ impl Advisories {
         if !self.enabled() {
             return None;
         }
+        let current = self.tokens.principal();
         let mut state = self.state();
+        // Signed out, or another account: what was cached is not theirs.
+        if current.is_none() || !state.belong_to(current.as_ref()) {
+            return None;
+        }
         let waiting = state.waiting.remove(target)?;
         let mut lines = Vec::new();
         let mut ids = Vec::new();
@@ -34,17 +39,7 @@ impl Advisories {
         }
         let taken = state.taken.entry(target.clone()).or_default();
         for id in &ids {
-            taken.insert(
-                id.clone(),
-                Taken {
-                    at: now,
-                    acked: false,
-                    sending: false,
-                    shown: false,
-                    retry_at: None,
-                    failures: 0,
-                },
-            );
+            taken.insert(id.clone(), Taken::new(now));
         }
         lines.push(FOOTER.to_string());
         Some(TurnEndAdvisory {
