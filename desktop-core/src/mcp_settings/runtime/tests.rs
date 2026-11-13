@@ -1,6 +1,18 @@
 use super::*;
 use std::collections::BTreeSet;
 
+fn ids(ids: &[&str]) -> BTreeSet<String> {
+    ids.iter().map(|id| id.to_string()).collect()
+}
+
+fn with_absent(
+    mut report: app_server::McpReloadReport,
+    absent: &[&str],
+) -> app_server::McpReloadReport {
+    report.absent = ids(absent);
+    report
+}
+
 fn report(loaded: &[&str], verified: &[&str]) -> app_server::McpReloadReport {
     app_server::McpReloadReport {
         absent: BTreeSet::new(),
@@ -29,13 +41,15 @@ fn initial_failures_partial_and_empty_proofs_retry_reload_after_cooldown() {
         let now = Instant::now();
         let (generation, reload) = runtime.prepare("current", true, now).unwrap();
         assert!(reload);
+        // One automatic failure is retried sooner; proofs wait the cooldown.
+        let retry = if first.is_err() { 5 } else { 30 };
         runtime.complete("current", generation, first);
         assert!(runtime.stamp.is_none());
         assert!(runtime
-            .prepare("current", true, now + Duration::from_secs(29))
+            .prepare("current", true, now + Duration::from_secs(retry - 1))
             .is_none());
         let (generation, reload) = runtime
-            .prepare("current", true, now + Duration::from_secs(30))
+            .prepare("current", true, now + Duration::from_secs(retry))
             .unwrap();
         assert!(
             reload,
@@ -134,6 +148,20 @@ fn explicit_runtime_check_retries_inside_the_maintenance_cooldown() {
     app.recheck_runtime(&alice);
     assert!(app.runtime.lock().unwrap().attempted.unwrap() > before);
     assert!(app.runtime_problem("codex", Some(&alice), true).is_some());
+}
+
+#[test]
+fn a_check_that_starts_no_attempt_leaves_maintenance_lenient() {
+    let root = tempfile::tempdir().unwrap();
+    let app = installer(root.path());
+    let alice = binding();
+    // Codex is not selected and nothing needs cleaning up: no attempt starts.
+    app.recheck_runtime(&alice);
+    let runtime = app.runtime.lock().unwrap();
+    assert!(runtime.attempted.is_none(), "no attempt started");
+    assert!(runtime.scope.is_some(), "the check reached prepare");
+    assert!(!runtime.check_requested);
+    assert!(!runtime.checking);
 }
 
 #[test]
@@ -286,10 +314,11 @@ fn provider_health_never_turns_green_for_failed_partial_or_unattempted_runtime()
         .unwrap()
         .0;
     for result in [Err(()), Ok(report(&["a", "b"], &["a"]))] {
-        app.runtime
-            .lock()
-            .unwrap()
-            .complete(&scope, generation, result);
+        let mut runtime = app.runtime.lock().unwrap();
+        // Only Check connection reports an unreachable daemon.
+        runtime.checking = result.is_err();
+        runtime.complete(&scope, generation, result);
+        drop(runtime);
         let tool = row();
         assert_eq!(tool.state, "action_required");
         assert_eq!(tool.status_label, "MCP not ready");
@@ -372,4 +401,431 @@ fn explicit_removal_cleans_up_without_a_recorded_desire() {
     };
     assert!(runtime.prepare("other", false, now).is_some());
     assert!(runtime.cleanup);
+}
+
+fn runtime() -> Runtime {
+    Runtime {
+        enabled: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn automatic_failure_keeps_setup_saved_and_retries_once_sooner() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(
+        !runtime.unhealthy,
+        "a slow or absent daemon is not a problem"
+    );
+    assert!(runtime.stamp.is_none(), "nothing was verified");
+    assert!(runtime
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("could not reach"));
+    let (generation, reload) = runtime
+        .prepare("current", true, now + Duration::from_secs(5))
+        .unwrap();
+    assert!(reload);
+    runtime.complete("current", generation, Err(()));
+    assert!(!runtime.unhealthy);
+    // The second consecutive failure falls back to the usual cooldown.
+    let later = now + Duration::from_secs(5);
+    assert!(runtime
+        .prepare("current", true, later + Duration::from_secs(29))
+        .is_none());
+    assert!(runtime
+        .prepare("current", true, later + Duration::from_secs(30))
+        .is_some());
+}
+
+#[test]
+fn automatic_failure_keeps_a_pending_cleanup() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("installed", true, now).unwrap();
+    runtime.complete("installed", generation, Ok(report(&["a"], &["a"])));
+    let (generation, _) = runtime.prepare("removed", false, now).unwrap();
+    runtime.complete("removed", generation, Err(()));
+    assert!(runtime.cleanup, "the unload is retried");
+    assert!(runtime
+        .prepare("removed", false, now + Duration::from_secs(5))
+        .is_some());
+}
+
+#[test]
+fn explicit_check_reports_an_unreachable_daemon() {
+    let mut runtime = runtime();
+    runtime.check_requested = true;
+    let (generation, _) = runtime.prepare("current", true, Instant::now()).unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(runtime.unhealthy);
+    let detail = runtime.detail.as_deref().unwrap();
+    assert!(detail.contains("could not reach"));
+    assert!(!detail.contains("try again automatically"));
+}
+
+#[test]
+fn chats_open_before_setup_do_not_make_maintenance_unhealthy() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, reload) = runtime.prepare("current", true, now).unwrap();
+    assert!(reload);
+    // The server works in a newer chat, so older chats without it are
+    // grandfathered rather than a problem.
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(
+            report(&["new", "old-a", "old-b"], &["new"]),
+            &["old-a", "old-b"],
+        )),
+    );
+    assert!(!runtime.unhealthy);
+    assert_eq!(runtime.stamp.as_deref(), Some("current"));
+    assert_eq!(runtime.grandfathered, ids(&["old-a", "old-b"]));
+    let detail = runtime.detail.as_deref().unwrap();
+    assert!(detail.contains("1 of 3"));
+    assert!(detail.contains("2 chats were open before Agent Relay was set up"));
+    // Only grandfathered chats left: nothing verified, still Setup saved.
+    let (generation, reload) = runtime
+        .prepare("current", true, now + Duration::from_secs(30))
+        .unwrap();
+    assert!(!reload);
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(
+            report(&["old-a", "old-b"], &[]),
+            &["old-a", "old-b"],
+        )),
+    );
+    assert!(!runtime.unhealthy);
+    assert!(runtime.stamp.is_none(), "nothing verified: Setup saved");
+    // Later maintenance reads instead of restarting servers in every chat.
+    let (generation, reload) = runtime
+        .prepare("current", true, now + Duration::from_secs(60))
+        .unwrap();
+    assert!(
+        !reload,
+        "only grandfathered chats lack tools; read, don't reload"
+    );
+    // A reloaded older chat leaves the grandfathered set.
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(
+            report(&["new", "old-a", "old-b"], &["new", "old-a"]),
+            &["old-b"],
+        )),
+    );
+    assert_eq!(runtime.grandfathered, ids(&["old-b"]));
+    assert!(runtime
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("1 chat was open before Agent Relay was set up"));
+    // A new scope reloads again.
+    assert!(
+        runtime
+            .prepare("rotated", true, now + Duration::from_secs(90))
+            .unwrap()
+            .1
+    );
+}
+
+#[test]
+fn a_broken_server_absent_from_every_chat_is_not_grandfathered() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, reload) = runtime.prepare("rotated", true, now).unwrap();
+    assert!(reload);
+    runtime.complete(
+        "rotated",
+        generation,
+        Ok(with_absent(
+            report(&["old-a", "old-b"], &[]),
+            &["old-a", "old-b"],
+        )),
+    );
+    assert!(runtime.unhealthy, "a server verified nowhere may be broken");
+    assert!(runtime.grandfathered.is_empty());
+    assert!(!runtime.baseline);
+    assert!(runtime.stamp.is_none());
+    assert!(!runtime
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("open before Agent Relay"));
+    // The next attempt reloads and can still take the baseline.
+    let (generation, reload) = runtime
+        .prepare("rotated", true, now + Duration::from_secs(30))
+        .unwrap();
+    assert!(reload);
+    runtime.complete(
+        "rotated",
+        generation,
+        Ok(with_absent(
+            report(&["new", "old-a", "old-b"], &["new"]),
+            &["old-a", "old-b"],
+        )),
+    );
+    assert!(!runtime.unhealthy);
+    assert!(runtime.baseline);
+    assert_eq!(runtime.grandfathered, ids(&["old-a", "old-b"]));
+}
+
+#[test]
+fn a_grandfathered_chat_with_the_server_unverified_is_judged() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(report(&["seen", "old"], &["seen"]), &["old"])),
+    );
+    assert_eq!(runtime.grandfathered, ids(&["old"]));
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(30))
+        .unwrap();
+    // "old" now has the server but it is not verified there.
+    runtime.complete(
+        "current",
+        generation,
+        Ok(report(&["seen", "old"], &["seen"])),
+    );
+    assert!(runtime.grandfathered.is_empty());
+    assert!(runtime.unhealthy, "a partial chat is judged, not ignored");
+}
+
+#[test]
+fn a_failure_after_a_problem_keeps_the_problem_and_its_detail() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete("current", generation, Ok(report(&["a", "b"], &["a"])));
+    assert!(runtime.unhealthy);
+    let last = runtime.detail.clone().unwrap();
+    let expected = format!("{last} Agent Relay will try again automatically.");
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(30))
+        .unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(runtime.unhealthy, "a busy daemon proves nothing either way");
+    assert_eq!(runtime.detail.as_deref(), Some(expected.as_str()));
+    // A second failure does not repeat the retry note.
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(35))
+        .unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(runtime.unhealthy);
+    assert_eq!(runtime.detail.as_deref(), Some(expected.as_str()));
+}
+
+#[test]
+fn a_new_chat_without_tools_after_grandfathering_is_a_problem() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(report(&["seen", "old"], &["seen"]), &["old"])),
+    );
+    assert!(!runtime.unhealthy);
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(30))
+        .unwrap();
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(
+            report(&["new", "old", "seen"], &["seen"]),
+            &["new", "old"],
+        )),
+    );
+    assert!(
+        runtime.unhealthy,
+        "chats opened after setup must load the tools"
+    );
+    assert_eq!(runtime.grandfathered, ids(&["old"]));
+}
+
+#[test]
+fn explicit_check_judges_grandfathered_chats_again() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let seen_and_old = || Ok(with_absent(report(&["seen", "old"], &["seen"]), &["old"]));
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete("current", generation, seen_and_old());
+    assert!(!runtime.unhealthy);
+    runtime.check_requested = true;
+    runtime.attempted = None;
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(1))
+        .unwrap();
+    assert!(runtime.grandfathered.is_empty());
+    runtime.complete("current", generation, seen_and_old());
+    assert!(
+        runtime.unhealthy,
+        "Check connection reports chats without tools"
+    );
+    // Later maintenance keeps judging them until they are reloaded.
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(31))
+        .unwrap();
+    runtime.complete("current", generation, seen_and_old());
+    assert!(runtime.unhealthy);
+}
+
+#[test]
+fn a_reload_rereads_unsettled_chats_once_without_reloading_again() {
+    let calls = std::cell::RefCell::new(Vec::new());
+    let paused = std::cell::Cell::new(None);
+    let result = settle_attempt(
+        true,
+        |report| report.loaded != report.verified,
+        |reload, timeout| {
+            calls.borrow_mut().push((reload, timeout));
+            Ok(if calls.borrow().len() == 1 {
+                report(&["a", "b"], &["a"])
+            } else {
+                report(&["a", "b"], &["a", "b"])
+            })
+        },
+        |pause| paused.set(Some(pause)),
+        Instant::now,
+    )
+    .unwrap();
+    assert_eq!(result.verified, ids(&["a", "b"]));
+    let calls = calls.into_inner();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].0 && !calls[1].0, "the second read never reloads");
+    assert_eq!(paused.get(), Some(SETTLE_PAUSE));
+    assert!(calls[0].1 + SETTLE_PAUSE <= ATTEMPT_BUDGET + SETTLE_PAUSE);
+    assert!(SETTLE_PAUSE + calls[1].1 <= ATTEMPT_BUDGET);
+}
+
+#[test]
+fn settled_unreloaded_or_failed_attempts_are_not_reread() {
+    for (reload, first, unsettled) in [
+        (true, Ok(report(&["a"], &["a"])), false),
+        (false, Ok(report(&["a"], &[])), true),
+        (true, Err(()), true),
+    ] {
+        let mut calls = 0;
+        let expected = first.clone();
+        let result = settle_attempt(
+            reload,
+            |_| unsettled,
+            |_, _| {
+                calls += 1;
+                first.clone()
+            },
+            |_| panic!("no pause without a reread"),
+            Instant::now,
+        );
+        assert_eq!(result, expected);
+        assert_eq!(calls, 1);
+    }
+    // A failed second read fails the attempt; the first read may be stale.
+    let mut calls = 0;
+    let result = settle_attempt(
+        true,
+        |_| true,
+        |_, _| {
+            calls += 1;
+            if calls == 1 {
+                Ok(report(&["a"], &[]))
+            } else {
+                Err(())
+            }
+        },
+        |_| {},
+        Instant::now,
+    );
+    assert_eq!(result, Err(()));
+}
+
+#[test]
+fn an_unsettled_first_read_without_time_for_a_reread_fails_the_attempt() {
+    // The first read takes 7.6 s: 2.4 s left cannot fit the pause and a read.
+    // With 3 s spent, 7 s left fits both.
+    for (spent, rereads) in [(7600, false), (3000, true)] {
+        let start = Instant::now();
+        let clock = std::cell::Cell::new(start);
+        let calls = std::cell::Cell::new(0);
+        let paused = std::cell::Cell::new(None);
+        let result = settle_attempt(
+            true,
+            |report| report.loaded != report.verified,
+            |_, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    clock.set(start + Duration::from_millis(spent));
+                    Ok(report(&["a", "b"], &["a"]))
+                } else {
+                    Ok(report(&["a", "b"], &["a", "b"]))
+                }
+            },
+            |pause| paused.set(Some(pause)),
+            || clock.get(),
+        );
+        if rereads {
+            assert_eq!(result.unwrap().verified, ids(&["a", "b"]));
+            assert_eq!(calls.get(), 2);
+            assert_eq!(paused.get(), Some(SETTLE_PAUSE));
+        } else {
+            assert_eq!(result, Err(()), "an unsettled first read is not judged");
+            assert_eq!(calls.get(), 1);
+            assert_eq!(paused.get(), None);
+        }
+    }
+}
+
+#[test]
+fn a_maintenance_failure_keeps_older_chat_counts_with_one_retry_note() {
+    let mut runtime = runtime();
+    let now = Instant::now();
+    let (generation, _) = runtime.prepare("current", true, now).unwrap();
+    runtime.complete(
+        "current",
+        generation,
+        Ok(with_absent(
+            report(&["new", "old-a", "old-b"], &["new"]),
+            &["old-a", "old-b"],
+        )),
+    );
+    assert!(!runtime.unhealthy);
+    let last = runtime.detail.clone().unwrap();
+    assert!(last.contains("1 of 3"));
+    assert!(last.contains("2 chats were open before Agent Relay was set up"));
+    let expected = format!("{last} Agent Relay will try again automatically.");
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(30))
+        .unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(!runtime.unhealthy);
+    assert_eq!(runtime.detail.as_deref(), Some(expected.as_str()));
+    let (generation, _) = runtime
+        .prepare("current", true, now + Duration::from_secs(35))
+        .unwrap();
+    runtime.complete("current", generation, Err(()));
+    assert!(!runtime.unhealthy);
+    let detail = runtime.detail.as_deref().unwrap();
+    assert_eq!(detail, expected);
+    assert_eq!(detail.matches("try again").count(), 1);
+}
+
+#[test]
+fn grandfathered_chats_do_not_trigger_a_reread() {
+    let mut runtime = runtime();
+    runtime.desired = true;
+    runtime.grandfathered = ids(&["old"]);
+    assert!(!runtime.unsettled(&with_absent(report(&["old"], &[]), &["old"])));
+    assert!(runtime.unsettled(&report(&["old", "new"], &[])));
 }
