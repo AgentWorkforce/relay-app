@@ -34,7 +34,7 @@ targets:
       properties:
         CFBundleDisplayName: Agent Relay
         CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "54"
+        CFBundleVersion: "55"
         ITSAppUsesNonExemptEncryption: false
         NSCameraUsageDescription: Agent Relay uses the camera to share video during calls with your agents.
         NSMicrophoneUsageDescription: Agent Relay uses the microphone during voice calls with your agents. With GPT-Live voice, call audio is sent to OpenAI.
