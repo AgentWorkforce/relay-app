@@ -9,18 +9,24 @@ impl Advisories {
         if !self.enabled() {
             return;
         }
+        let principal = self.tokens.principal();
+        {
+            let mut state = self.state();
+            state.belong_to(principal.as_ref());
+            state.prune(&sessions.iter().collect(), now);
+        }
+        if principal.is_none() {
+            return;
+        }
         let Some(token) = self.tokens.token().await else {
             return;
         };
         let due = {
             let mut state = self.state();
-            if state.workspace.as_deref() != Some(token.workspace_id.as_str()) {
-                state.clear();
-                state.workspace = Some(token.workspace_id.clone());
+            // The account changed while the token was fetched.
+            if !state.belong_to(Some(&token.principal)) {
+                return;
             }
-            let live: HashSet<&Target> = sessions.iter().collect();
-            state.waiting.retain(|target, _| live.contains(target));
-            state.sessions.retain(|target, _| live.contains(target));
             if state.paused_until.is_some_and(|until| now < until) {
                 Vec::new()
             } else {
@@ -62,7 +68,9 @@ impl Advisories {
                 }
             }
             match listing {
-                Listing::Advisories(advisories) => self.listed(target, advisories, now),
+                Listing::Advisories(advisories) => {
+                    self.listed(&token.principal, target, advisories, now)
+                }
                 Listing::Failed => {
                     let mut state = self.state();
                     let backoff = state.sessions.entry(target.clone()).or_default();
@@ -84,9 +92,24 @@ impl Advisories {
         self.send_due_acks(&token, now).await;
     }
 
-    /// Records what the pipeline lists for `target` now.
-    pub(super) fn listed(&self, target: &Target, advisories: Vec<Advisory>, now: Instant) {
+    /// Records what the pipeline lists for `target` now, for `principal`:
+    /// a listing made for an account no longer signed in, or after the
+    /// setting was turned off, is dropped.
+    pub(super) fn listed(
+        &self,
+        principal: &Principal,
+        target: &Target,
+        advisories: Vec<Advisory>,
+        now: Instant,
+    ) {
+        let current = self.tokens.principal();
         let mut state = self.state();
+        if !self.enabled()
+            || current.as_ref() != Some(principal)
+            || state.principal.as_ref() != Some(principal)
+        {
+            return;
+        }
         state.sessions.remove(target);
         let listed: HashSet<String> = advisories.iter().map(|a| a.id.clone()).collect();
         // Handed out and no longer listed: acked or expired upstream.
@@ -100,9 +123,10 @@ impl Advisories {
                 .get_mut(target)
                 .and_then(|t| t.get_mut(&advisory.id));
             match taken {
-                // Taken: never again, unless 30 minutes passed with no ack
-                // and it is still listed.
-                Some(taken) if taken.acked || taken.sending => continue,
+                // Shown, or acked: never again, whatever the ack's retries.
+                // Taken and never confirmed shown: again once 30 minutes
+                // passed and it is still listed.
+                Some(taken) if taken.acked || taken.sending || taken.shown => continue,
                 Some(taken) if now.duration_since(taken.at) < REDELIVER_AFTER => continue,
                 Some(_) => {
                     state.taken.get_mut(target).map(|t| t.remove(&advisory.id));
@@ -122,6 +146,10 @@ impl Advisories {
     pub(super) async fn send_due_acks(&self, token: &ReadToken, now: Instant) {
         let due: Vec<(Target, String)> = {
             let mut state = self.state();
+            // Another account's token never acks this one's notes.
+            if state.principal.as_ref() != Some(&token.principal) {
+                return;
+            }
             let mut due = Vec::new();
             for (target, taken) in state.taken.iter_mut() {
                 for (id, taken) in taken.iter_mut() {

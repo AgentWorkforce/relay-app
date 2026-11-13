@@ -17,13 +17,43 @@ pub(super) fn hosted_site(site: &str) -> bool {
         == agent_relay_node::relay::links::DEFAULT_SITE_URL.trim_end_matches('/')
 }
 
+/// The token and exchange state of one [`Principal`]; a sign-out, another
+/// person, another site or a new sign-in starts it afresh.
 #[derive(Default)]
 pub(super) struct TokenCache {
-    pub(super) token: Option<(ReadToken, Instant)>,
+    pub(super) principal: Option<Principal>,
+    /// The token, until when it is used, and whether it was a replacement
+    /// for a refused one.
+    pub(super) token: Option<(ReadToken, Instant, bool)>,
     /// No exchange before this.
     pub(super) next_exchange: Option<Instant>,
+    /// The read API refused this cache's token: the next exchange is made
+    /// at once, despite `next_exchange`, and is a replacement.
+    pub(super) replace_now: bool,
     /// The hosted gap was logged.
     pub(super) told_hosted: bool,
+}
+
+impl TokenCache {
+    /// Forgets everything but whether the hosted gap was logged.
+    pub(super) fn belong_to_nobody(&mut self) {
+        *self = TokenCache {
+            told_hosted: self.told_hosted,
+            ..TokenCache::default()
+        };
+    }
+
+    /// Makes this the cache of `principal`, starting afresh if it was
+    /// another's.
+    pub(super) fn belong_to(&mut self, principal: &Principal) {
+        if self.principal.as_ref() != Some(principal) {
+            *self = TokenCache {
+                principal: Some(principal.clone()),
+                told_hosted: self.told_hosted,
+                ..TokenCache::default()
+            };
+        }
+    }
 }
 
 /// The read token from the workspace's RelayHistory session exchange,
@@ -62,9 +92,9 @@ impl HistoryReadTokens {
     pub(super) fn read_token(
         &self,
         answer: &Value,
-        site: &str,
-        workspace: &str,
+        principal: &Principal,
     ) -> Option<(ReadToken, Instant)> {
+        let (site, workspace) = (principal.site.as_str(), principal.workspace_id.as_str());
         if answer["exchange"] == "client" {
             return None;
         }
@@ -109,6 +139,7 @@ impl HistoryReadTokens {
                 origin,
                 bearer: Secret::new(access),
                 workspace_id: workspace.to_string(),
+                principal: principal.clone(),
             },
             now + lifetime,
         ))
@@ -119,20 +150,26 @@ impl TokenSource for HistoryReadTokens {
     fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
         Box::pin(async move {
             let cloud = self.cloud.upgrade()?;
-            let account = cloud.account()?;
+            let Some(principal) = Principal::of(&*cloud) else {
+                // Signed out: nothing of the last account's is kept.
+                self.cache().belong_to_nobody();
+                return None;
+            };
             let now = Instant::now();
-            {
+            let replacement = {
                 let mut cache = self.cache();
-                if let Some((token, until)) = &cache.token {
-                    if token.workspace_id == account.workspace_id && now < *until {
+                cache.belong_to(&principal);
+                if let Some((token, until, _)) = &cache.token {
+                    if now < *until {
                         return Some(token.clone());
                     }
                     cache.token = None;
                 }
-                if cache.next_exchange.is_some_and(|at| now < at) {
+                let replacement = std::mem::take(&mut cache.replace_now);
+                if !replacement && cache.next_exchange.is_some_and(|at| now < at) {
                     return None;
                 }
-                if self.origin_override.is_none() && hosted_site(&account.site_url) {
+                if self.origin_override.is_none() && hosted_site(&principal.site) {
                     if !cache.told_hosted {
                         cache.told_hosted = true;
                         debug(format_args!(
@@ -144,16 +181,17 @@ impl TokenSource for HistoryReadTokens {
                 }
                 // Claimed before the request, so two callers never both ask.
                 cache.next_exchange = Some(now + TOKEN_MIN_INTERVAL);
-            }
+                replacement
+            };
             let path = format!(
                 "/workspaces/{}/relayhistory/session",
-                segment(&account.workspace_id)
+                segment(&principal.workspace_id)
             );
             let answer = cloud
                 .request("POST", path, Some(json!({"mode": "read", "label": LABEL})))
                 .await;
             let issued = match &answer {
-                Ok(answer) => self.read_token(answer, &account.site_url, &account.workspace_id),
+                Ok(answer) => self.read_token(answer, &principal),
                 Err(CloudError::Status { status, message }) => {
                     debug(format_args!(
                         "the read-token exchange answered {status}{}",
@@ -169,10 +207,20 @@ impl TokenSource for HistoryReadTokens {
                     None
                 }
             };
+            // Whoever is signed in once the exchange answers: an answer made
+            // for an earlier sign-in is never anyone's token.
+            let current = Principal::of(&*cloud);
             let mut cache = self.cache();
+            if current.as_ref() != Some(&principal) || cache.principal.as_ref() != Some(&principal)
+            {
+                debug(format_args!(
+                    "the account changed during the read-token exchange"
+                ));
+                return None;
+            }
             match issued {
                 Some((token, until)) => {
-                    cache.token = Some((token.clone(), until));
+                    cache.token = Some((token.clone(), until, replacement));
                     Some(token)
                 }
                 None => {
@@ -186,14 +234,23 @@ impl TokenSource for HistoryReadTokens {
         })
     }
 
+    fn principal(&self) -> Option<Principal> {
+        Principal::of(&*self.cloud.upgrade()?)
+    }
+
     fn refused(&self, token: &ReadToken) {
         let mut cache = self.cache();
-        if cache
-            .token
-            .as_ref()
-            .is_some_and(|(held, _)| held.bearer.expose() == token.bearer.expose())
-        {
+        if cache.principal.as_ref() != Some(&token.principal) {
+            return;
+        }
+        let held = cache.token.as_ref().and_then(|(held, _, replacement)| {
+            (held.bearer.expose() == token.bearer.expose()).then_some(*replacement)
+        });
+        if let Some(replacement) = held {
             cache.token = None;
+            // One replacement for a refused token, never one for a refused
+            // replacement: that waits for the throttle like any exchange.
+            cache.replace_now = !replacement;
         }
     }
 }

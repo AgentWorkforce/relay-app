@@ -4,12 +4,37 @@ use super::*;
 
 // Upstream.
 
-/// A read-API origin and the bearer it takes.
+/// Whom a read token and the advisories it lists belong to: the site,
+/// workspace and person signed in, and the account's sign-in generation
+/// ([`CloudAccess::identity_sync_generation`]), which a new sign-in changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Principal {
+    pub site: String,
+    pub workspace_id: String,
+    pub user_id: Option<String>,
+    pub generation: u64,
+}
+
+impl Principal {
+    /// Who is signed in to `cloud` now, or `None` when nobody is.
+    pub fn of(cloud: &dyn CloudAccess) -> Option<Self> {
+        let account = cloud.account()?;
+        Some(Self {
+            site: account.site_url.trim_end_matches('/').to_string(),
+            workspace_id: account.workspace_id,
+            user_id: account.user_id,
+            generation: cloud.identity_sync_generation(),
+        })
+    }
+}
+
+/// A read-API origin and the bearer it takes, issued to `principal`.
 #[derive(Clone, Debug)]
 pub struct ReadToken {
     pub origin: String,
     pub bearer: Secret,
     pub workspace_id: String,
+    pub principal: Principal,
 }
 
 /// Where the poller gets its read-API token; swapped in tests.
@@ -17,8 +42,12 @@ pub trait TokenSource: Send + Sync + 'static {
     /// A usable token, or `None` (signed out, an edition with no client
     /// read token, or a failed exchange, which waits before the next).
     fn token(&self) -> BoxFuture<'_, Option<ReadToken>>;
+    /// Who is signed in now, or `None`; cached advisories and tokens belong
+    /// to one principal and are dropped when it changes.
+    fn principal(&self) -> Option<Principal>;
     /// The read API refused `token` (401): it is dropped, and the next
-    /// [`TokenSource::token`] asks for a new one.
+    /// [`TokenSource::token`] asks for a new one at once, once per token
+    /// that was not itself such a replacement.
     fn refused(&self, token: &ReadToken);
 }
 

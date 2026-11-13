@@ -1,6 +1,6 @@
 use super::*;
 use agent_relay_node::relay::cloud_session::{AgentOwner, CloudAccount};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 const WORKSPACE: &str = "ws_1";
 
@@ -29,11 +29,21 @@ fn advisory(id: &str, urgency: &'static str) -> Advisory {
     }
 }
 
+fn principal(user: &str) -> Principal {
+    Principal {
+        site: "https://control.selfhost.example".into(),
+        workspace_id: WORKSPACE.into(),
+        user_id: Some(user.into()),
+        generation: 1,
+    }
+}
+
 fn token() -> ReadToken {
     ReadToken {
         origin: "https://history.selfhost.example".into(),
         bearer: Secret::new("rth_at_read_1"),
         workspace_id: WORKSPACE.into(),
+        principal: principal("alice"),
     }
 }
 
@@ -43,14 +53,34 @@ fn token() -> ReadToken {
 struct FakeTokens {
     asked: AtomicUsize,
     refused: AtomicUsize,
+    /// Signed out.
     none: AtomicBool,
+    /// Who is signed in; alice when unset.
+    user: Mutex<Option<String>>,
+}
+
+impl FakeTokens {
+    fn sign_in(&self, user: &str) {
+        self.none.store(false, Ordering::SeqCst);
+        *self.user.lock().unwrap() = Some(user.into());
+    }
 }
 
 impl TokenSource for FakeTokens {
     fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
         self.asked.fetch_add(1, Ordering::SeqCst);
-        let none = self.none.load(Ordering::SeqCst);
-        Box::pin(async move { (!none).then(token) })
+        let principal = self.principal();
+        Box::pin(async move {
+            Some(ReadToken {
+                principal: principal?,
+                ..token()
+            })
+        })
+    }
+
+    fn principal(&self) -> Option<Principal> {
+        let user = self.user.lock().unwrap().clone();
+        (!self.none.load(Ordering::SeqCst)).then(|| principal(user.as_deref().unwrap_or("alice")))
     }
 
     fn refused(&self, _token: &ReadToken) {
@@ -66,6 +96,8 @@ struct FakeApi {
     /// What each ack answers, in turn; the last repeats. `Done` when empty.
     acks: Mutex<Vec<Ack>>,
     acked: Mutex<Vec<(Target, String)>>,
+    /// Runs while the next listing is under way.
+    during_list: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl FakeApi {
@@ -91,6 +123,9 @@ impl FakeApi {
 impl AdvisoryApi for FakeApi {
     fn list<'a>(&'a self, _token: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing> {
         self.listed.lock().unwrap().push(target.clone());
+        if let Some(during) = self.during_list.lock().unwrap().take() {
+            during();
+        }
         let mut listings = self.listings.lock().unwrap();
         let answers = listings.entry(target.clone()).or_default();
         let answer = match answers.len() {
@@ -715,31 +750,55 @@ async fn nothing_answering_is_quiet() {
 // The read token.
 
 struct FakeCloud {
-    site: String,
-    answer: Mutex<Result<Value, CloudError>>,
+    account: Mutex<Option<CloudAccount>>,
+    generation: AtomicU64,
+    /// What each exchange answers, in turn; the last repeats.
+    answers: Mutex<Vec<Result<Value, CloudError>>>,
     requests: Mutex<Vec<(String, String, Option<Value>)>>,
+    /// Runs while the next exchange is under way.
+    during_request: Mutex<Option<Box<dyn FnOnce(&FakeCloud) + Send>>>,
 }
 
 impl FakeCloud {
     fn new(site: &str, answer: Result<Value, CloudError>) -> Arc<Self> {
+        Self::answering(site, vec![answer])
+    }
+    fn answering(site: &str, answers: Vec<Result<Value, CloudError>>) -> Arc<Self> {
         Arc::new(Self {
-            site: site.into(),
-            answer: Mutex::new(answer),
+            account: Mutex::new(Some(CloudAccount {
+                site_url: site.into(),
+                workspace_id: WORKSPACE.into(),
+                user_id: Some("alice".into()),
+            })),
+            generation: AtomicU64::new(1),
+            answers: Mutex::new(answers),
             requests: Mutex::default(),
+            during_request: Mutex::default(),
         })
     }
     fn asked(&self) -> usize {
         self.requests.lock().unwrap().len()
     }
+    fn sign_out(&self) {
+        *self.account.lock().unwrap() = None;
+    }
+    /// A new sign-in, as `user` on `site`, in the same workspace.
+    fn sign_in(&self, site: &str, user: &str) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        *self.account.lock().unwrap() = Some(CloudAccount {
+            site_url: site.into(),
+            workspace_id: WORKSPACE.into(),
+            user_id: Some(user.into()),
+        });
+    }
 }
 
 impl CloudAccess for FakeCloud {
     fn account(&self) -> Option<CloudAccount> {
-        Some(CloudAccount {
-            site_url: self.site.clone(),
-            workspace_id: WORKSPACE.into(),
-            user_id: Some("user".into()),
-        })
+        self.account.lock().unwrap().clone()
+    }
+    fn identity_sync_generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
     fn agent_owner(&self) -> Option<AgentOwner> {
         None
@@ -754,7 +813,15 @@ impl CloudAccess for FakeCloud {
             .lock()
             .unwrap()
             .push((method.into(), path, body));
-        let answer = self.answer.lock().unwrap().clone();
+        if let Some(during) = self.during_request.lock().unwrap().take() {
+            during(self);
+        }
+        let mut answers = self.answers.lock().unwrap();
+        let answer = if answers.len() > 1 {
+            answers.remove(0)
+        } else {
+            answers[0].clone()
+        };
         Box::pin(async move { answer })
     }
 }
@@ -808,10 +875,9 @@ async fn a_self_hosted_site_exchanges_once_for_a_read_token_at_its_own_origin() 
     // Cached.
     assert!(source.token().await.is_some());
     assert_eq!(cloud.asked(), 1);
-    // Refused: dropped, and the next call asks again (the last exchange is
-    // more than the minimum interval ago once the token has been used).
+    // Refused: dropped, and the next call asks again at once, despite the
+    // minimum interval between exchanges.
     source.refused(&token);
-    source.cache().next_exchange = None;
     assert!(source.token().await.is_some());
     assert_eq!(cloud.asked(), 2);
 }
@@ -866,4 +932,376 @@ async fn a_development_origin_replaces_the_exchanges() {
         source.token().await.unwrap().origin,
         "https://history.selfhost.example"
     );
+}
+
+// Review findings: each account's own tokens and notes, shown notes kept
+// back, one setting write at a time, a refused token's replacement, and
+// ended sessions.
+
+fn issued_as(base_url: &str, bearer: &str) -> Value {
+    let mut answer = issued(base_url);
+    answer["accessToken"] = json!(bearer);
+    answer
+}
+
+#[tokio::test]
+async fn a_read_token_is_never_reused_for_another_person_or_site() {
+    const OTHER_SITE: &str = "https://control.other.example";
+    let cloud = FakeCloud::answering(
+        SELF_HOSTED,
+        vec![
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_alice",
+            )),
+            Ok(issued_as("https://history.other.example", "rth_at_bob")),
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_bob_moved",
+            )),
+        ],
+    );
+    let source = tokens(&cloud, None);
+    let alice = source.token().await.unwrap();
+    assert_eq!(alice.bearer.expose(), "rth_at_alice");
+    // Alice signs out: nothing, and nothing asked.
+    cloud.sign_out();
+    assert!(source.token().await.is_none());
+    assert!(source.principal().is_none());
+    // Bob signs in to the same workspace on another site: his own exchange,
+    // at once, and never alice's token or origin.
+    cloud.sign_in(OTHER_SITE, "bob");
+    let bob = source.token().await.unwrap();
+    assert_eq!(cloud.asked(), 2);
+    assert_eq!(bob.bearer.expose(), "rth_at_bob");
+    assert_eq!(bob.origin, "https://history.other.example");
+    assert_eq!(bob.principal.user_id.as_deref(), Some("bob"));
+    // The same person and workspace on another site: another exchange.
+    cloud.sign_in(SELF_HOSTED, "bob");
+    let moved = source.token().await.unwrap();
+    assert_eq!(cloud.asked(), 3);
+    assert_eq!(moved.bearer.expose(), "rth_at_bob_moved");
+    assert_eq!(moved.principal.site, SELF_HOSTED);
+    // Alice's refused token no longer touches bob's.
+    source.refused(&alice);
+    assert_eq!(
+        source.token().await.unwrap().bearer.expose(),
+        "rth_at_bob_moved"
+    );
+    assert_eq!(cloud.asked(), 3);
+}
+
+#[tokio::test]
+async fn an_exchange_that_answers_after_the_account_changed_is_dropped() {
+    let cloud = FakeCloud::answering(
+        SELF_HOSTED,
+        vec![
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_alice",
+            )),
+            Ok(issued_as("https://history.selfhost.example", "rth_at_bob")),
+        ],
+    );
+    *cloud.during_request.lock().unwrap() = Some(Box::new(|cloud: &FakeCloud| {
+        cloud.sign_in(SELF_HOSTED, "bob")
+    }));
+    let source = tokens(&cloud, None);
+    // Alice's exchange answers once bob is signed in: nobody gets it.
+    assert!(source.token().await.is_none());
+    // Bob's own exchange follows at once.
+    let bob = source.token().await.unwrap();
+    assert_eq!(cloud.asked(), 2);
+    assert_eq!(bob.bearer.expose(), "rth_at_bob");
+    assert_eq!(bob.principal.user_id.as_deref(), Some("bob"));
+}
+
+#[tokio::test]
+async fn cached_notes_are_dropped_when_the_account_signs_out_or_changes() {
+    let w = world(true);
+    let listed = Listing::Advisories(vec![advisory("a1", "low")]);
+    w.api.answer(&claude(), vec![listed.clone()]);
+    let start = Instant::now();
+    w.advisories.poll(&[claude()], start).await;
+    // Another person signs in before the turn ends: not theirs.
+    w.tokens.sign_in("bob");
+    assert!(w.advisories.take_at(&claude(), start).is_none());
+    w.tokens.sign_in("alice");
+    assert!(
+        w.advisories.take_at(&claude(), start).is_none(),
+        "forgotten"
+    );
+    // Signed out: nothing is handed out, and what was taken is forgotten.
+    w.advisories.poll(&[claude()], start).await;
+    w.tokens.none.store(true, Ordering::SeqCst);
+    assert!(w.advisories.take_at(&claude(), start).is_none());
+    w.advisories.poll(&[claude()], start).await;
+    assert!(w.advisories.state().taken.is_empty());
+    assert!(w.advisories.state().waiting.is_empty());
+}
+
+#[tokio::test]
+async fn a_listing_that_answers_after_the_account_changed_is_dropped() {
+    let w = world(true);
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    let tokens = w.tokens.clone();
+    *w.api.during_list.lock().unwrap() = Some(Box::new(move || tokens.sign_in("bob")));
+    let start = Instant::now();
+    w.advisories.poll(&[claude()], start).await;
+    assert!(w.advisories.state().waiting.is_empty());
+    assert!(w.advisories.take_at(&claude(), start).is_none());
+}
+
+#[tokio::test]
+async fn a_shown_note_is_never_handed_again_while_its_ack_is_retried() {
+    let w = world(true);
+    *w.api.acks.lock().unwrap() = vec![Ack::Forbidden, Ack::Done];
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    let start = Instant::now();
+    w.advisories.poll(&[claude()], start).await;
+    let taken = w.advisories.take_at(&claude(), start).unwrap();
+    w.advisories.shown(&claude(), &taken.ids);
+    w.advisories.send_shown(start).await;
+    assert_eq!(w.api.acked(), vec!["a1"], "refused (403)");
+    // Thirty minutes on, the pipeline still lists it as pending: shown, so
+    // it is not handed out again.
+    let later = start + REDELIVER_AFTER;
+    w.advisories.poll(&[claude()], later).await;
+    assert!(w.advisories.take_at(&claude(), later).is_none());
+    let much_later = start + REDELIVER_AFTER * 2 - Duration::from_secs(1);
+    w.advisories.poll(&[claude()], much_later).await;
+    assert!(w.advisories.take_at(&claude(), much_later).is_none());
+    // Its ack's retry is kept, and goes out on time.
+    w.advisories.send_shown(start + ACK_FORBIDDEN_RETRY).await;
+    assert_eq!(w.api.acked(), vec!["a1", "a1"]);
+}
+
+#[test]
+fn overlapping_setting_changes_leave_the_saved_and_the_live_setting_the_same() {
+    use std::sync::mpsc;
+    let w = world(false);
+    let dir = w._dir.path().to_path_buf();
+    let (written, was_written) = mpsc::channel();
+    let (go, wait_for_go) = mpsc::channel::<()>();
+    // Turning it on saves, then stalls before it is published.
+    let on = w.advisories.clone();
+    let first = std::thread::spawn(move || {
+        on.set_enabled_with(true, move |dir, enabled| {
+            save(dir, enabled)?;
+            written.send(()).unwrap();
+            wait_for_go.recv().unwrap();
+            Ok(())
+        })
+    });
+    was_written.recv().unwrap();
+    // Turning it off meanwhile waits for the first change to finish.
+    let off = w.advisories.clone();
+    let (done, was_done) = mpsc::channel();
+    let second = std::thread::spawn(move || {
+        let saved = off.set_enabled(false);
+        done.send(()).unwrap();
+        saved
+    });
+    let overlapped = was_done.recv_timeout(Duration::from_millis(300)).is_ok();
+    go.send(()).unwrap();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    assert!(!overlapped, "the second change ran inside the first");
+    assert!(!w.advisories.enabled());
+    assert_eq!(load(&dir), w.advisories.enabled());
+}
+
+#[tokio::test]
+async fn a_listing_that_answers_after_the_setting_was_turned_off_is_dropped() {
+    let w = world(true);
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    let advisories = Arc::downgrade(&w.advisories);
+    *w.api.during_list.lock().unwrap() = Some(Box::new(move || {
+        advisories.upgrade().unwrap().set_enabled(false).unwrap();
+    }));
+    w.advisories.poll(&[claude()], Instant::now()).await;
+    assert!(w.advisories.state().waiting.is_empty());
+}
+
+/// Refuses the bearers it was told to; lists one advisory for any other.
+#[derive(Default)]
+struct BearerApi {
+    refused: Mutex<Vec<String>>,
+    listed: Mutex<Vec<(String, Target)>>,
+}
+
+impl AdvisoryApi for BearerApi {
+    fn list<'a>(&'a self, token: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing> {
+        let bearer = token.bearer.expose().to_string();
+        self.listed
+            .lock()
+            .unwrap()
+            .push((bearer.clone(), target.clone()));
+        let refused = self.refused.lock().unwrap().contains(&bearer);
+        Box::pin(async move {
+            if refused {
+                Listing::Unauthorized
+            } else {
+                Listing::Advisories(vec![advisory("a1", "low")])
+            }
+        })
+    }
+    fn ack<'a>(&'a self, _: &'a ReadToken, _: &'a Target, _: &'a str) -> BoxFuture<'a, Ack> {
+        Box::pin(async { Ack::Done })
+    }
+}
+
+fn exchanging_world(
+    cloud: &Arc<FakeCloud>,
+    api: &Arc<BearerApi>,
+) -> (tempfile::TempDir, Arc<Advisories>) {
+    let dir = tempfile::tempdir().unwrap();
+    save(dir.path(), true).unwrap();
+    let advisories = Advisories::new(dir.path(), Arc::new(tokens(cloud, None)), api.clone());
+    (dir, advisories)
+}
+
+#[tokio::test]
+async fn a_token_refused_at_once_is_replaced_at_once_and_the_poll_goes_on() {
+    let cloud = FakeCloud::answering(
+        SELF_HOSTED,
+        vec![
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_stale",
+            )),
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_fresh",
+            )),
+        ],
+    );
+    let api = Arc::new(BearerApi::default());
+    api.refused.lock().unwrap().push("rth_at_stale".into());
+    let (_dir, advisories) = exchanging_world(&cloud, &api);
+    let start = Instant::now();
+    advisories.poll(&[claude(), codex()], start).await;
+    // Refused within the exchange throttle: one replacement, unthrottled,
+    // and both sessions listed with it; nothing paused.
+    assert_eq!(cloud.asked(), 2);
+    let listed = api.listed.lock().unwrap().clone();
+    assert_eq!(
+        listed.iter().map(|(b, _)| b.as_str()).collect::<Vec<_>>(),
+        ["rth_at_stale", "rth_at_fresh", "rth_at_fresh"]
+    );
+    assert_eq!(
+        advisories.take_at(&claude(), start).unwrap().ids,
+        vec!["a1"]
+    );
+    assert_eq!(advisories.take_at(&codex(), start).unwrap().ids, vec!["a1"]);
+}
+
+#[tokio::test]
+async fn a_refused_replacement_gets_no_other_and_the_poll_pauses() {
+    let cloud = FakeCloud::answering(
+        SELF_HOSTED,
+        vec![
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_stale",
+            )),
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_also_refused",
+            )),
+            Ok(issued_as(
+                "https://history.selfhost.example",
+                "rth_at_third",
+            )),
+        ],
+    );
+    let api = Arc::new(BearerApi::default());
+    api.refused
+        .lock()
+        .unwrap()
+        .extend(["rth_at_stale".into(), "rth_at_also_refused".into()]);
+    let (_dir, advisories) = exchanging_world(&cloud, &api);
+    let start = Instant::now();
+    advisories.poll(&[claude(), codex()], start).await;
+    assert_eq!(cloud.asked(), 2, "one replacement only");
+    assert_eq!(api.listed.lock().unwrap().len(), 2);
+    advisories
+        .poll(&[claude(), codex()], start + Duration::from_secs(60))
+        .await;
+    assert_eq!(api.listed.lock().unwrap().len(), 2, "paused");
+    assert_eq!(cloud.asked(), 2);
+}
+
+#[tokio::test]
+async fn ended_sessions_keep_only_pending_acks_and_only_for_a_while() {
+    let w = world(true);
+    *w.api.acks.lock().unwrap() = vec![Ack::Failed];
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![
+            advisory("done", "low"),
+            advisory("shown", "low"),
+            advisory("unshown", "low"),
+        ])],
+    );
+    let start = Instant::now();
+    w.advisories.poll(&[claude()], start).await;
+    let taken = w.advisories.take_at(&claude(), start).unwrap();
+    assert_eq!(taken.ids, vec!["done", "shown", "unshown"]);
+    {
+        let mut state = w.advisories.state();
+        let records = state.taken.get_mut(&claude()).unwrap();
+        records.get_mut("done").unwrap().acked = true;
+        records.get_mut("shown").unwrap().shown = true;
+    }
+    w.advisories.send_shown(start).await;
+    assert_eq!(w.api.acked(), vec!["shown"], "failed, retried later");
+    // The session ends: only the shown note whose ack is pending is kept.
+    let ended = start + Duration::from_secs(1);
+    w.advisories.poll(&[], ended).await;
+    let kept: Vec<String> = w.advisories.state().taken[&claude()]
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(kept, vec!["shown"]);
+    // It is retried while kept ...
+    w.advisories.send_shown(ended + ACK_RETRY).await;
+    assert_eq!(w.api.acked().len(), 2);
+    // ... and dropped once the retention passes, never acked again.
+    let gone = ended + ENDED_ACK_RETENTION;
+    w.advisories.poll(&[], gone).await;
+    assert!(w.advisories.state().taken.is_empty());
+    w.advisories.send_shown(gone + ACK_RETRY_MAX).await;
+    assert_eq!(w.api.acked().len(), 2);
+}
+
+#[tokio::test]
+async fn an_ended_session_gives_up_its_ack_after_a_few_failures() {
+    let w = world(true);
+    *w.api.acks.lock().unwrap() = vec![Ack::Failed];
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    let start = Instant::now();
+    w.advisories.poll(&[claude()], start).await;
+    let taken = w.advisories.take_at(&claude(), start).unwrap();
+    w.advisories.shown(&claude(), &taken.ids);
+    let mut now = start;
+    for _ in 0..ENDED_ACK_FAILURES {
+        w.advisories.send_shown(now).await;
+        now += ACK_RETRY_MAX;
+        w.advisories.poll(&[], start + Duration::from_secs(1)).await;
+    }
+    assert_eq!(w.api.acked().len(), ENDED_ACK_FAILURES as usize);
+    assert!(w.advisories.state().taken.is_empty());
 }
