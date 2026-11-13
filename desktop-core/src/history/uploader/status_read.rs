@@ -7,7 +7,11 @@ use super::*;
 pub(super) const STATUS_FAILED: &str =
     "Agent Relay could not read upload status. Try refreshing again.";
 
-/// [`crate::history::delivery_status::status`] of `directory`, bounded by `timeouts::STATUS`.
+/// [`crate::history::delivery_status::status`] of `directory`, until its
+/// thread ends. Unbounded on purpose: [`Uploader::status`] shares this read
+/// and gives each caller its own `timeouts::STATUS` deadline, so a read that
+/// outlasts one caller is joined by the next instead of a second store read
+/// starting beside it.
 pub(super) fn read(
     directory: Option<PathBuf>,
     lease: HistoryReader,
@@ -15,13 +19,50 @@ pub(super) fn read(
 ) -> BoxFuture<'static, Result<Value, UploaderError>> {
     Box::pin(async move {
         let directory = directory.ok_or_else(|| UploaderError::new(STATUS_FAILED))?;
-        read_holding(lease, timeouts::STATUS, move || {
+        hold(lease, move || {
             crate::history::delivery_status::status(&directory, replace_same_release)
         })
         .await
     })
 }
 
+/// Runs `read` on a blocking thread that holds `lease` until `read` returns,
+/// and answers with its result.
+async fn hold<T: Send + 'static>(
+    lease: HistoryReader,
+    read: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> Result<T, UploaderError> {
+    let read = tokio::task::spawn_blocking(move || {
+        let _lease = lease;
+        read()
+    });
+    match read.await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => {
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "relay uploader status failed cause={error:#}"
+            ));
+            Err(UploaderError::new(STATUS_FAILED))
+        }
+        Err(error) => {
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "relay uploader status helper exited cause={error}"
+            ));
+            Err(UploaderError::new(STATUS_FAILED))
+        }
+    }
+}
+
+/// The answer for a caller whose deadline passed while a status read runs on.
+fn status_timeout() -> RpcError {
+    let message = timeout_message("status");
+    agent_relay_node::relay::diagnostics::write(format_args!(
+        "relay uploader status failed cause={message}"
+    ));
+    UploaderError::new(message).into()
+}
+
+#[cfg(test)]
 /// Runs `read` on a blocking thread that holds `lease` until `read` returns,
 /// whatever its caller does: past `timeout` the caller is answered with the
 /// timeout sentence while the thread finishes, and a session reset waits for
@@ -31,24 +72,8 @@ pub(super) async fn read_holding<T: Send + 'static>(
     timeout: Duration,
     read: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, UploaderError> {
-    let read = tokio::task::spawn_blocking(move || {
-        let _lease = lease;
-        read()
-    });
-    match tokio::time::timeout(timeout, read).await {
-        Ok(Ok(Ok(value))) => Ok(value),
-        Ok(Ok(Err(error))) => {
-            agent_relay_node::relay::diagnostics::write(format_args!(
-                "relay uploader status failed cause={error:#}"
-            ));
-            Err(UploaderError::new(STATUS_FAILED))
-        }
-        Ok(Err(error)) => {
-            agent_relay_node::relay::diagnostics::write(format_args!(
-                "relay uploader status helper exited cause={error}"
-            ));
-            Err(UploaderError::new(STATUS_FAILED))
-        }
+    match tokio::time::timeout(timeout, hold(lease, read)).await {
+        Ok(answer) => answer,
         Err(_) => {
             let message = timeout_message("status");
             agent_relay_node::relay::diagnostics::write(format_args!(
@@ -114,7 +139,12 @@ impl Uploader {
                 }
             }
         };
-        let raw = read.await?;
+        // The deadline is this caller's, not the read's: past it the caller
+        // is answered while the read stays in the slot, so the next caller
+        // joins it rather than opening the store a second time.
+        let raw = tokio::time::timeout(timeouts::STATUS, read)
+            .await
+            .map_err(|_| status_timeout())??;
         self.log_claude_health(&raw);
         let mut status = with_derived(raw);
         if let Value::Object(fields) = &mut status {

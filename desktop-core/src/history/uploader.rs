@@ -57,6 +57,7 @@ mod supervision;
 /// a store, which commits only at the end.
 pub mod timeouts;
 #[cfg(test)]
+#[cfg(test)]
 use status_read::read_holding;
 #[cfg(test)]
 use status_read::STATUS_FAILED;
@@ -2093,6 +2094,32 @@ mod tests {
         assert_eq!(before.unwrap()["run"], 3);
         assert_eq!(after.unwrap()["run"], 4);
         assert_eq!(probe.statuses.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_status_read_past_one_callers_deadline_is_joined_not_restarted() {
+        // A store read slower than the deadline (a stalled disk): the first
+        // caller is answered at the deadline, and the next caller joins the
+        // same read and gets its answer, instead of a second read opening the
+        // store beside the first.
+        let probe = Arc::new(CountingProbe {
+            statuses: AtomicU64::new(0),
+            delay: timeouts::STATUS + Duration::from_secs(5),
+        });
+        let uploader = Uploader::new(probe.clone());
+        uploader.attach(Install::from_json(
+            &json!({ "site_url": "https://example.test" }),
+        ));
+        assert_eq!(
+            uploader.status().await.unwrap_err().message,
+            timeout_message("status")
+        );
+        assert_eq!(uploader.status().await.unwrap()["run"], 1);
+        assert_eq!(
+            probe.statuses.load(Ordering::SeqCst),
+            1,
+            "one store read for both callers"
+        );
     }
 
     #[tokio::test]
