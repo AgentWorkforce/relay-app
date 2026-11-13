@@ -1,0 +1,15 @@
+Agent Relay desktop app
+Copyright 2025-2026 Agent Workforce, Inc.
+
+Licensing: from the first release published after this change, the
+first-party code in this repository is licensed under the Functional Source
+License, Version 1.1, ALv2 Future License (FSL-1.1-ALv2; see LICENSE). Each
+version converts to the Apache License, Version 2.0 two years after it is made
+available. Earlier releases and commits remain available under the Apache
+License, Version 2.0. Contributions made under the Apache License, Version 2.0
+before this change keep that license and their authors' notices, and are
+included in this work as Apache-2.0 licensed material.
+
+"Agent Relay" and the Agent Relay logos are trademarks of Agent Workforce, Inc.
+Builds signed and notarized by Agent Workforce, Inc. are distributed under its
+terms; your own builds must not use its signing identity or branding.

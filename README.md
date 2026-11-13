@@ -671,4 +671,7 @@ and reload scripts record the desktop Git revision in `build-revision.txt`.
 
 ## License
 
-Agent Relay Desktop is licensed under the [Apache License 2.0](LICENSE).
+Agent Relay Desktop is licensed under the [Functional Source License 1.1, ALv2 Future
+License](LICENSE) (FSL-1.1-ALv2) from the first release after this change:
+use and modify it freely, but don't offer it as a competing product or service.
+Each release becomes Apache-2.0 two years after it ships. See [NOTICE](NOTICE).
