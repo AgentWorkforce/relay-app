@@ -17,7 +17,15 @@ enum SpawnFailure {
         let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = detail.lowercased()
         let summary: String
-        if lower.contains("d1_pressure") || lower.contains("liveness retry pending") {
+        if lower.contains("spawn_fork_refused") {
+            summary = "Only the owner of \(node) can fork its sessions. Sign in on this device as that person."
+        } else if lower.contains("spawn_fork_unavailable") {
+            summary = "\(node) can't copy this session. It may have been archived, or it was opened from an app Agent Relay can't resume."
+        } else if lower.contains("spawn_fork_not_found") {
+            summary = "\(node) no longer has this agent. Refresh Agents and try again."
+        } else if lower.contains("spawn_fork_unsupported") {
+            summary = "\(node) can't fork this kind of session yet."
+        } else if lower.contains("d1_pressure") || lower.contains("liveness retry pending") {
             summary = "Agent Relay is busy and could not register \(name). Wait a minute, then try again."
         } else if lower.contains("spawn_readiness_timeout") || lower.contains("readiness timeout") {
             summary = "\(name) did not become ready on \(node) in time. Check Agents before trying again."

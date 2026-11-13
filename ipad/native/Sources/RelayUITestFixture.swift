@@ -24,6 +24,7 @@ enum RelayUITestFixture {
     static func response(_ path: String, method: String = "GET", body: JSONObject? = nil) -> Any? {
         guard enabled else { return nil }
         if let handoff = MobileHandoffFixture.response(path, method: method, body: body) { return handoff }
+        if let fork = SessionForkFixture.response(path, method: method, body: body) { return fork }
         if path == "/dm/conversations" {
             let newer = ProcessInfo.processInfo.arguments.contains("-RelayUITestNewMessage")
             return [
