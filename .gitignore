@@ -1,0 +1,39 @@
+# SwiftPM build products
+macos/.build/
+macos/.swiftpm/
+*.xcodeproj
+
+# Packaging output (scripts/*.sh and the CI workflows write these at the root)
+/dist/
+/out/
+/probe-build/
+/target/
+# Builds from before the core moved to relay wrote here.
+/probe/target/
+*.dmg
+*.icns
+*.iconset/
+*.zip
+
+# Tool caches an agent or editor may place in the checkout
+.npm-cache/
+
+# Python scripts
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Local git worktrees, never committed
+.worktrees/
+
+# Relayflow dependencies and run artifacts (flows/)
+flows/node_modules/
+.relayflow/
+.relayflowd/
+flows/.claude/
+
+# Machine-local agent state: the relay's workspace and the CLIs' settings
+/.agentworkforce/
+/.claude/

@@ -1,0 +1,85 @@
+[package]
+name = "agent-relay-app"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "agent_relay_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-relay"
+path = "src/bin/agent-relay.rs"
+required-features = ["production-binaries"]
+
+[[bin]]
+name = "agent-relay-fake-core"
+path = "src/bin/agent-relay-fake-core.rs"
+
+[[test]]
+name = "linux_app_gtk"
+path = "tests/linux_app_gtk.rs"
+# GTK runs on the process's main thread, which libtest's runner never is.
+harness = false
+required-features = ["gtk"]
+
+[features]
+# Harness-only runs opt out with --no-default-features, as in the core.
+default = ["production-binaries"]
+production-binaries = []
+# The GTK window; without it only the view models and hosting build.
+gtk = ["dep:gtk4", "dep:ksni"]
+
+[workspace]
+
+[dependencies]
+# Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to the
+# commit a core release was cut from. Move it in desktop-core and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "fe3587b988ad3734edc6ed54cf2a2b779dd9d9b3", default-features = false }
+# Session history's view models (`history::session_model`).
+agent-relay-desktop-core = { path = "../desktop-core" }
+# The session-body scrub engine behind history::scrub. An exact version:
+# move it in desktop-core and gtk together (scripts/apply-crate-overrides.sh).
+relayscrubber = "=0.5.0-alpha.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+url = "2"
+tar = "0.4"
+anyhow = "1"
+base64 = "0.22"
+flate2 = "1"
+sha2 = "0.10"
+ureq = { version = "2", features = ["json"] }
+tempfile = "3"
+# GTK 4.6, as Ubuntu 22.04 ships it, is the oldest the window runs on.
+gtk4 = { version = "0.11", features = ["v4_6"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", optional = true }
+
+[dev-dependencies]
+# Signs the cloud feed test envelopes (updates/cloud/tests.rs); the verifier
+# itself is desktop-core's (desktop-core/src/feed).
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+
+# The Windows app's platform modules (src: service, install,
+# updates, prefs, ui/{tray,desktop,theme}, src/bin/agent-relay.rs): the
+# registry, ShellExecute and consoles; the notification-area icon; toast
+# notifications; and the release `.zip` the updater unpacks.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation"] }
+# Windows uses native menus. Disable the Linux GTK 3 defaults so the lockfile
+# does not pull in glib 0.18 (RUSTSEC-2024-0429); Linux uses ksni above.
+tray-icon = { version = "0.24.2", default-features = false }
+tauri-winrt-notification = "0.7"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# End of the Windows app's platform modules.

@@ -1,0 +1,163 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      inventory_only:
+        description: Read Apple build processing and Internal Devices status without uploading
+        type: boolean
+        default: false
+      distribution:
+        description: Distribution scope (upload does not submit for review)
+        type: choice
+        options:
+          - internal
+          - app-store
+        default: internal
+      voice_privacy_ready:
+        description: App Store only. Confirm the privacy policy and App Store privacy answers cover voice-call audio sent to OpenAI (docs/specs/ios-voice-call.md).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Read Apple processing and Internal Devices status
+    if: ${{ inputs.inventory_only }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Test read-only transport and credential handling
+        run: node --test scripts/mobile-build-inventory.test.mjs
+      - name: Read inventory without changing distribution
+        env:
+          APPLE_MOBILE_API_KEY_BASE64: ${{ secrets.APPLE_MOBILE_API_KEY_BASE64 }}
+          APPLE_MOBILE_API_KEY_ID: ${{ secrets.APPLE_MOBILE_API_KEY_ID }}
+          APPLE_MOBILE_API_ISSUER: ${{ secrets.APPLE_MOBILE_API_ISSUER }}
+        run: node scripts/mobile-build-inventory.mjs
+
+  upload:
+    if: ${{ !inputs.inventory_only }}
+    name: Archive and upload iOS
+    runs-on: macos-26
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require current iOS SDK
+        run: |
+          sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          if [ "${sdk_version%%.*}" -lt 26 ]; then
+            echo "::error::iOS 26 SDK or newer is required for App Store Connect uploads; found $sdk_version"
+            exit 1
+          fi
+
+      - name: Require voice privacy answers before an App Store build
+        # Compare as text: an API dispatch can pass the boolean as the string "false".
+        if: ${{ inputs.distribution == 'app-store' && format('{0}', inputs.voice_privacy_ready) != 'true' }}
+        run: |
+          echo "::error::Voice calls send call audio to OpenAI in every build. Confirm the privacy policy and App Store privacy answers cover it (docs/specs/ios-voice-call.md), then rerun with voice_privacy_ready=true."
+          exit 1
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Prepare App Store Connect authentication
+        env:
+          APPLE_MOBILE_API_KEY_BASE64: ${{ secrets.APPLE_MOBILE_API_KEY_BASE64 }}
+          APPLE_MOBILE_API_KEY_ID: ${{ secrets.APPLE_MOBILE_API_KEY_ID }}
+          APPLE_MOBILE_API_ISSUER: ${{ secrets.APPLE_MOBILE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_MOBILE_API_KEY_BASE64 APPLE_MOBILE_API_KEY_ID APPLE_MOBILE_API_ISSUER; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required App Store Connect secret: $name"
+              exit 1
+            fi
+          done
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$APPLE_MOBILE_API_KEY_BASE64" | base64 -D > "$key_path"
+          chmod 600 "$key_path"
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ipad/native/project.yml
+
+      - name: Archive iPhone and iPad app
+        env:
+          APPLE_MOBILE_API_KEY_ID: ${{ secrets.APPLE_MOBILE_API_KEY_ID }}
+          APPLE_MOBILE_API_ISSUER: ${{ secrets.APPLE_MOBILE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ipad/native/AgentRelayiPad.xcodeproj \
+            -scheme AgentRelayiPad \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AgentRelayMobile.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
+            -authenticationKeyID "$APPLE_MOBILE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_MOBILE_API_ISSUER" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+
+      - name: Check the archive ships voice calls
+        run: |
+          set -euo pipefail
+          plist="$RUNNER_TEMP/AgentRelayMobile.xcarchive/Products/Applications/AgentRelayiPad.app/Info.plist"
+          enabled="$(/usr/libexec/PlistBuddy -c "Print :RelayVoiceCallEnabled" "$plist")"
+          echo "RelayVoiceCallEnabled: $enabled"
+          if [ "$enabled" != "YES" ]; then
+            echo "::error::The archived app has RelayVoiceCallEnabled=$enabled; every build must ship voice calls"
+            exit 1
+          fi
+          if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$plist" | grep -q "^ *audio$"; then
+            echo "::error::The archived app does not declare the audio background mode voice calls need"
+            exit 1
+          fi
+
+      - name: Preserve production push entitlement for cloud signing
+        run: |
+          set -euo pipefail
+          entitlements="$RUNNER_TEMP/production-push.entitlements"
+          cp ipad/native/Sources/AgentRelayiPad.entitlements "$entitlements"
+          plutil -replace aps-environment -string production "$entitlements"
+          codesign --force --sign - --entitlements "$entitlements" \
+            "$RUNNER_TEMP/AgentRelayMobile.xcarchive/Products/Applications/AgentRelayiPad.app"
+
+      - name: Upload to App Store Connect
+        env:
+          MOBILE_DISTRIBUTION: ${{ inputs.distribution }}
+          APPLE_MOBILE_API_KEY_ID: ${{ secrets.APPLE_MOBILE_API_KEY_ID }}
+          APPLE_MOBILE_API_ISSUER: ${{ secrets.APPLE_MOBILE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          case "$MOBILE_DISTRIBUTION" in
+            internal) export_options=ipad/native/ExportOptions.plist ;;
+            app-store) export_options=ipad/native/ExportOptions-AppStore.plist ;;
+            *) echo "::error::Unknown distribution scope"; exit 1 ;;
+          esac
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/AgentRelayMobile.xcarchive" \
+            -exportOptionsPlist "$export_options" \
+            -exportPath "$RUNNER_TEMP/AgentRelayMobileUpload" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
+            -authenticationKeyID "$APPLE_MOBILE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_MOBILE_API_ISSUER" \
+            -skipPackagePluginValidation

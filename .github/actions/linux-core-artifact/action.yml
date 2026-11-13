@@ -1,0 +1,41 @@
+name: Checked Linux core artifact
+description: Restore the same architecture, commit and version that passed Zig/glibc validation in this run.
+inputs:
+  arch:
+    description: x64 or arm64 artifact architecture
+    required: true
+  rust-target:
+    description: Expected native GNU Linux target
+    required: true
+  probe-version:
+    description: Expected embedded core version
+    required: true
+  source-sha:
+    description: Exact source commit, when a workflow_run builds a tested earlier revision
+    required: false
+    default: ${{ github.sha }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ci-linux-core-${{ inputs.arch }}-${{ inputs.source-sha }}
+        path: probe-build
+    - name: Verify the checked core and restore executable mode
+      shell: bash
+      env:
+        EXPECTED_TARGET: ${{ inputs.rust-target }}
+        EXPECTED_ARCH: ${{ inputs.arch }}
+        EXPECTED_VERSION: ${{ inputs.probe-version }}
+        EXPECTED_REVISION: ${{ inputs.source-sha }}
+      run: |
+        case "$EXPECTED_ARCH:$EXPECTED_TARGET" in
+          x64:x86_64-unknown-linux-gnu|arm64:aarch64-unknown-linux-gnu) ;;
+          *) echo 'Invalid Linux core architecture/target pair' >&2; exit 1 ;;
+        esac
+        test "$(cat probe-build/source-revision.txt)" = "$EXPECTED_REVISION"
+        test "$(cat probe-build/rust-target.txt)" = "$EXPECTED_TARGET"
+        test "$(cat probe-build/probe-version.txt)" = "$EXPECTED_VERSION"
+        (cd probe-build && sha256sum --check agent-relay-probe.sha256)
+        # Artifact downloads deliberately normalize permissions to 0644.
+        chmod 0755 probe-build/agent-relay-probe

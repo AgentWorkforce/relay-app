@@ -1,0 +1,54 @@
+name: Windows Cargo dependency cache
+description: Reuse dependencies across commits without accumulating workspace binaries or test executables.
+inputs:
+  arch:
+    description: Runner architecture
+    required: true
+  profile:
+    description: Cargo output directory (debug or release)
+    required: true
+  lane:
+    description: Independent compiler lane (shared for combined core and app builds)
+    required: false
+    default: shared
+  toolchain:
+    description: Installed compiler and native dependency fingerprint
+    required: true
+outputs:
+  cache-hit:
+    description: Whether the exact dependency cache already exists
+    value: ${{ steps.cache.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Fingerprint Cargo profile settings
+      id: settings
+      shell: msys2 {0}
+      run: |
+        identity=$(env | LC_ALL=C sort | sed -n '/^CARGO_PROFILE_/p; /^CARGO_INCREMENTAL=/p; /^RUSTFLAGS=/p; /^CARGO_ENCODED_RUSTFLAGS=/p' | sha256sum | cut -d ' ' -f 1)
+        echo "identity=$identity" >> "$(cygpath -u "$GITHUB_OUTPUT")"
+    - name: Restore reusable dependencies
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # No source SHA: workspace products are pruned before the first save,
+        # so an unchanged dependency/toolchain/profile graph reuses this entry.
+        # Callers must run windows-build-cache-prune after a successful build
+        # on a miss, before this action's automatic post-job save.
+        path: |
+          target/${{ inputs.profile }}/build
+          target/${{ inputs.profile }}/deps
+          target/${{ inputs.profile }}/.fingerprint
+        key: windows-deps-v4-${{ inputs.arch }}-${{ inputs.profile }}-${{ inputs.toolchain }}-${{ steps.settings.outputs.identity }}-${{ inputs.lane }}-${{ hashFiles('.cargo/config.toml', 'gtk/Cargo.lock', 'desktop-core/Cargo.lock', 'desktop-core/Cargo.toml', 'gtk/Cargo.toml') }}
+        restore-keys: |
+          windows-deps-v4-${{ inputs.arch }}-${{ inputs.profile }}-${{ inputs.toolchain }}-${{ steps.settings.outputs.identity }}-${{ inputs.lane }}-
+          windows-deps-v4-${{ inputs.arch }}-${{ inputs.profile }}-${{ inputs.toolchain }}-${{ steps.settings.outputs.identity }}-shared-
+          windows-deps-v3-${{ inputs.arch }}-${{ inputs.profile }}-${{ inputs.toolchain }}-${{ steps.settings.outputs.identity }}-
+    - name: Report dependency cache reuse
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        CACHE_ARCH: ${{ inputs.arch }}
+        CACHE_PROFILE: ${{ inputs.profile }}
+      run: |
+        echo "Windows $CACHE_ARCH $CACHE_PROFILE dependencies: exact cache hit=${CACHE_HIT:-false}" | tee -a "$GITHUB_STEP_SUMMARY"

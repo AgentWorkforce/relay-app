@@ -1,0 +1,1229 @@
+[
+  {
+    "name": "exact-terminal",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/ttys004",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "focus"
+    }
+  },
+  {
+    "name": "same-title-directory-two-panes",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/ttys004",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        },
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 40,
+          "process_start": 41,
+          "tty": "/dev/ttys005",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "choose",
+      "choices": 2
+    }
+  },
+  {
+    "name": "selected-second-pane",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": {
+        "application": "Ghostty",
+        "bundle_id": "com.mitchellh.ghostty",
+        "pid": 40,
+        "process_start": 41,
+        "tty": "/dev/ttys005",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "macos-tty",
+        "resume_capability": "argv"
+      },
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/ttys004",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        },
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 40,
+          "process_start": 41,
+          "tty": "/dev/ttys005",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "focus",
+      "pid": 40
+    }
+  },
+  {
+    "name": "timestamp-refresh-does-not-change-identity",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": {
+        "application": "Ghostty",
+        "bundle_id": "com.mitchellh.ghostty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/ttys004",
+        "observed_at_ms": 900,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "macos-tty",
+        "resume_capability": "argv"
+      },
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/ttys004",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "focus"
+    }
+  },
+  {
+    "name": "reused-pid-selection-rejected",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": {
+        "application": "Ghostty",
+        "bundle_id": "com.mitchellh.ghostty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/ttys004",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "macos-tty",
+        "resume_capability": "argv"
+      },
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 30,
+          "process_start": 32,
+          "tty": "/dev/ttys004",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "unavailable"
+    }
+  },
+  {
+    "name": "codex-path-segment-encoded",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Codex",
+          "bundle_id": "com.openai.codex",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "none",
+          "resume_capability": "desktop"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "open_link",
+      "url": "codex://threads/thread%2Fid"
+    }
+  },
+  {
+    "name": "claude-provider-desktop-id",
+    "platform": "macos",
+    "request": {
+      "source": "claude",
+      "session_id": "different-cli-id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Claude",
+          "bundle_id": "com.anthropic.claudefordesktop",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "none",
+          "resume_capability": "desktop"
+        }
+      ],
+      "previous": [],
+      "desktop_link": "claude://code/continue?session=local_exact",
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "open_link",
+      "url": "claude://code/continue?session=local_exact"
+    }
+  },
+  {
+    "name": "unknown-state-cannot-resume",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "unknown"
+    },
+    "expected": {
+      "action": "unavailable"
+    }
+  },
+  {
+    "name": "running-unknown-window-cannot-resume",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "unavailable"
+    }
+  },
+  {
+    "name": "last-host-wins-after-move",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 40,
+          "process_start": 41,
+          "tty": "/dev/ttys005",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        },
+        {
+          "application": "Codex",
+          "bundle_id": "com.openai.codex",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "none",
+          "resume_capability": "desktop"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Codex",
+        "bundle_id": "com.openai.codex",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "none",
+        "resume_capability": "desktop"
+      },
+      "latest": {
+        "application": "Ghostty",
+        "bundle_id": "com.mitchellh.ghostty",
+        "pid": 40,
+        "process_start": 41,
+        "tty": "/dev/ttys005",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "macos-tty",
+        "resume_capability": "argv"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "resume",
+      "command": {
+        "executable": "codex",
+        "args": [
+          "resume",
+          "thread/id"
+        ],
+        "cwd": "/work/my repo"
+      },
+      "pid": 40
+    }
+  },
+  {
+    "name": "closed-app-can-open-link",
+    "platform": "macos",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Codex",
+          "bundle_id": "com.openai.codex",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "macos",
+          "focus_capability": "none",
+          "resume_capability": "desktop"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Codex",
+        "bundle_id": "com.openai.codex",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "none",
+        "resume_capability": "desktop"
+      },
+      "latest": {
+        "application": "Codex",
+        "bundle_id": "com.openai.codex",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "macos",
+        "focus_capability": "none",
+        "resume_capability": "desktop"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "open_link",
+      "url": "codex://threads/thread%2Fid",
+      "no_live_location": true
+    }
+  },
+  {
+    "name": "closed-terminal-literal-arguments",
+    "platform": "macos",
+    "request": {
+      "source": "claude",
+      "session_id": "id'$(touch BAD)",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Ghostty",
+          "bundle_id": "com.mitchellh.ghostty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/ttys004",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "claude",
+          "runtime": "macos",
+          "focus_capability": "macos-tty",
+          "resume_capability": "argv"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Ghostty",
+        "bundle_id": "com.mitchellh.ghostty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/ttys004",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "claude",
+        "runtime": "macos",
+        "focus_capability": "macos-tty",
+        "resume_capability": "argv"
+      },
+      "latest": {
+        "application": "Ghostty",
+        "bundle_id": "com.mitchellh.ghostty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/ttys004",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "claude",
+        "runtime": "macos",
+        "focus_capability": "macos-tty",
+        "resume_capability": "argv"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "resume",
+      "command": {
+        "executable": "claude",
+        "args": [
+          "--resume",
+          "id'$(touch BAD)"
+        ],
+        "cwd": "/work/my repo"
+      }
+    }
+  },
+  {
+    "name": "linux-live-native-host",
+    "platform": "linux",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Kitty",
+          "bundle_id": "net.kovidgoyal.kitty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/pts/4",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "linux",
+          "focus_capability": "kitty",
+          "resume_capability": "argv",
+          "pane_id": "8",
+          "environment_identity": "unix:/run/user/1000/kitty.sock",
+          "host_executable": "/usr/bin/kitty"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "focus"
+    }
+  },
+  {
+    "name": "linux-stopped-original-host",
+    "platform": "linux",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Kitty",
+          "bundle_id": "net.kovidgoyal.kitty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/pts/4",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "linux",
+          "focus_capability": "kitty",
+          "resume_capability": "argv",
+          "pane_id": "8",
+          "environment_identity": "unix:/run/user/1000/kitty.sock",
+          "host_executable": "/usr/bin/kitty"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Kitty",
+        "bundle_id": "net.kovidgoyal.kitty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/pts/4",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "linux",
+        "focus_capability": "kitty",
+        "resume_capability": "argv",
+        "pane_id": "8",
+        "environment_identity": "unix:/run/user/1000/kitty.sock",
+        "host_executable": "/usr/bin/kitty"
+      },
+      "latest": {
+        "application": "Kitty",
+        "bundle_id": "net.kovidgoyal.kitty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/pts/4",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "linux",
+        "focus_capability": "kitty",
+        "resume_capability": "argv",
+        "pane_id": "8",
+        "environment_identity": "unix:/run/user/1000/kitty.sock",
+        "host_executable": "/usr/bin/kitty"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "resume",
+      "pid": 30,
+      "command": {
+        "executable": "codex",
+        "args": [
+          "resume",
+          "thread/id"
+        ],
+        "cwd": "/work/my repo"
+      },
+      "can_resume_default": true
+    }
+  },
+  {
+    "name": "windows-live-native-host",
+    "platform": "windows",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Windows Terminal",
+          "bundle_id": "Microsoft.WindowsTerminal",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "C:\\work\\my repo",
+          "executable": "codex.exe",
+          "runtime": "windows",
+          "focus_capability": "none",
+          "resume_capability": "argv",
+          "pane_id": "windows-session-guid",
+          "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+          "profile_id": "{test-profile}"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "show_application"
+    }
+  },
+  {
+    "name": "windows-stopped-original-host",
+    "platform": "windows",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Windows Terminal",
+          "bundle_id": "Microsoft.WindowsTerminal",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "C:\\work\\my repo",
+          "executable": "codex.exe",
+          "runtime": "windows",
+          "focus_capability": "none",
+          "resume_capability": "argv",
+          "pane_id": "windows-session-guid",
+          "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+          "profile_id": "{test-profile}"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Windows Terminal",
+        "bundle_id": "Microsoft.WindowsTerminal",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "C:\\work\\my repo",
+        "executable": "codex.exe",
+        "runtime": "windows",
+        "focus_capability": "none",
+        "resume_capability": "argv",
+        "pane_id": "windows-session-guid",
+        "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+        "profile_id": "{test-profile}"
+      },
+      "latest": {
+        "application": "Windows Terminal",
+        "bundle_id": "Microsoft.WindowsTerminal",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "C:\\work\\my repo",
+        "executable": "codex.exe",
+        "runtime": "windows",
+        "focus_capability": "none",
+        "resume_capability": "argv",
+        "pane_id": "windows-session-guid",
+        "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+        "profile_id": "{test-profile}"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "resume",
+      "pid": 30,
+      "command": {
+        "executable": "codex.exe",
+        "args": [
+          "resume",
+          "thread/id"
+        ],
+        "cwd": "C:\\work\\my repo"
+      },
+      "can_resume_default": true
+    }
+  },
+  {
+    "name": "default-terminal-explicit-stopped",
+    "platform": "linux",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false,
+      "use_default_terminal": true
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Kitty",
+          "bundle_id": "net.kovidgoyal.kitty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/pts/4",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "linux",
+          "focus_capability": "kitty",
+          "resume_capability": "argv",
+          "pane_id": "8",
+          "environment_identity": "unix:/run/user/1000/kitty.sock",
+          "host_executable": "/usr/bin/kitty"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Kitty",
+        "bundle_id": "net.kovidgoyal.kitty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/pts/4",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "linux",
+        "focus_capability": "kitty",
+        "resume_capability": "argv",
+        "pane_id": "8",
+        "environment_identity": "unix:/run/user/1000/kitty.sock",
+        "host_executable": "/usr/bin/kitty"
+      },
+      "latest": {
+        "application": "Kitty",
+        "bundle_id": "net.kovidgoyal.kitty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/pts/4",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "linux",
+        "focus_capability": "kitty",
+        "resume_capability": "argv",
+        "pane_id": "8",
+        "environment_identity": "unix:/run/user/1000/kitty.sock",
+        "host_executable": "/usr/bin/kitty"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "resume",
+      "no_live_location": true,
+      "can_resume_default": false
+    }
+  },
+  {
+    "name": "default-terminal-cannot-bypass-live-owner",
+    "platform": "linux",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false,
+      "use_default_terminal": true
+    },
+    "report": {
+      "supported": true,
+      "running": true,
+      "current": [
+        {
+          "application": "Kitty",
+          "bundle_id": "net.kovidgoyal.kitty",
+          "pid": 30,
+          "process_start": 31,
+          "tty": "/dev/pts/4",
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "/work/my repo",
+          "executable": "codex",
+          "runtime": "linux",
+          "focus_capability": "kitty",
+          "resume_capability": "argv",
+          "pane_id": "8",
+          "environment_identity": "unix:/run/user/1000/kitty.sock",
+          "host_executable": "/usr/bin/kitty"
+        }
+      ],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": null,
+      "latest": null,
+      "owner_state": "running"
+    },
+    "expected": {
+      "action": "focus",
+      "can_resume_default": false
+    }
+  },
+  {
+    "name": "default-terminal-cannot-change-wsl-runtime",
+    "platform": "windows",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false,
+      "use_default_terminal": true
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [
+        {
+          "application": "Windows Terminal",
+          "bundle_id": "Microsoft.WindowsTerminal",
+          "pid": 30,
+          "process_start": 31,
+          "tty": null,
+          "observed_at_ms": 1000,
+          "boot_id": "test-boot",
+          "host_pid": 10,
+          "host_process_start": 11,
+          "cwd": "C:\\work\\my repo",
+          "executable": "codex.exe",
+          "runtime": "wsl",
+          "focus_capability": "none",
+          "resume_capability": "argv",
+          "pane_id": "windows-session-guid",
+          "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+          "profile_id": "{test-profile}",
+          "environment_identity": "Ubuntu"
+        }
+      ],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Windows Terminal",
+        "bundle_id": "Microsoft.WindowsTerminal",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "C:\\work\\my repo",
+        "executable": "codex.exe",
+        "runtime": "wsl",
+        "focus_capability": "none",
+        "resume_capability": "argv",
+        "pane_id": "windows-session-guid",
+        "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+        "profile_id": "{test-profile}",
+        "environment_identity": "Ubuntu"
+      },
+      "latest": {
+        "application": "Windows Terminal",
+        "bundle_id": "Microsoft.WindowsTerminal",
+        "pid": 30,
+        "process_start": 31,
+        "tty": null,
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "C:\\work\\my repo",
+        "executable": "codex.exe",
+        "runtime": "wsl",
+        "focus_capability": "none",
+        "resume_capability": "argv",
+        "pane_id": "windows-session-guid",
+        "host_executable": "C:\\Apps\\WindowsTerminal.exe",
+        "profile_id": "{test-profile}",
+        "environment_identity": "Ubuntu"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "unavailable",
+      "can_resume_default": false
+    }
+  },
+  {
+    "name": "unsupported-stopped-multiplexer-offers-explicit-choice",
+    "platform": "linux",
+    "request": {
+      "source": "codex",
+      "session_id": "thread/id",
+      "directory": "/work/my repo",
+      "selected": null,
+      "prefer_terminal": false
+    },
+    "report": {
+      "supported": true,
+      "running": false,
+      "current": [],
+      "previous": [],
+      "desktop_link": null,
+      "reason": null,
+      "original": {
+        "application": "Kitty",
+        "bundle_id": "net.kovidgoyal.kitty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/pts/4",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "linux",
+        "focus_capability": "tmux",
+        "resume_capability": "argv",
+        "pane_id": "8",
+        "environment_identity": "unix:/run/user/1000/kitty.sock",
+        "host_executable": "/usr/bin/kitty"
+      },
+      "latest": {
+        "application": "Kitty",
+        "bundle_id": "net.kovidgoyal.kitty",
+        "pid": 30,
+        "process_start": 31,
+        "tty": "/dev/pts/4",
+        "observed_at_ms": 1000,
+        "boot_id": "test-boot",
+        "host_pid": 10,
+        "host_process_start": 11,
+        "cwd": "/work/my repo",
+        "executable": "codex",
+        "runtime": "linux",
+        "focus_capability": "tmux",
+        "resume_capability": "argv",
+        "pane_id": "8",
+        "environment_identity": "unix:/run/user/1000/kitty.sock",
+        "host_executable": "/usr/bin/kitty"
+      },
+      "owner_state": "stopped"
+    },
+    "expected": {
+      "action": "unavailable",
+      "can_resume_default": true
+    }
+  }
+]

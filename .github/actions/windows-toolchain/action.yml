@@ -1,0 +1,98 @@
+name: Windows Rust and GTK toolchain
+description: Install MSYS2 and cache downloaded Cargo sources independently of build profiles.
+inputs:
+  msystem:
+    description: MSYS2 environment matching the runner architecture
+    required: true
+outputs:
+  identity:
+    description: Fingerprint of the installed compiler and native dependencies
+    value: ${{ steps.identity.outputs.value }}
+runs:
+  using: composite
+  steps:
+    # A package mirror that stalls (pacman: "Operation too slow") fails the
+    # install; mirrors recover within minutes. Retry twice with backoff.
+    - name: Install MSYS2 (attempt 1)
+      id: msys2-1
+      continue-on-error: true
+      uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+      with:
+        msystem: ${{ inputs.msystem }}
+        update: true
+        install: zip unzip git
+        pacboy: >-
+          toolchain:p
+          rust:p
+          gtk4:p
+          pkgconf:p
+          librsvg:p
+          ntldd:p
+    - name: Wait before retrying MSYS2
+      if: steps.msys2-1.outcome == 'failure'
+      shell: pwsh
+      run: |
+        Write-Host "::warning::MSYS2 install attempt 1 failed (often a stalled package mirror); retrying in 30s"
+        Start-Sleep -Seconds 30
+    - name: Install MSYS2 (attempt 2)
+      id: msys2-2
+      if: steps.msys2-1.outcome == 'failure'
+      continue-on-error: true
+      uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+      with:
+        msystem: ${{ inputs.msystem }}
+        # A retry installs into a fresh folder, so a stalled try leaves
+        # nothing half-updated behind; its msys2 shell comes first on PATH.
+        location: ${{ runner.temp }}\msys2-attempt-2
+        update: true
+        install: zip unzip git
+        pacboy: >-
+          toolchain:p
+          rust:p
+          gtk4:p
+          pkgconf:p
+          librsvg:p
+          ntldd:p
+    - name: Wait before retrying MSYS2
+      if: steps.msys2-1.outcome == 'failure' && steps.msys2-2.outcome == 'failure'
+      shell: pwsh
+      run: |
+        Write-Host "::warning::MSYS2 install attempt 2 failed (often a stalled package mirror); retrying in 120s"
+        Start-Sleep -Seconds 120
+    - name: Install MSYS2 (attempt 3)
+      id: msys2-3
+      if: steps.msys2-1.outcome == 'failure' && steps.msys2-2.outcome == 'failure'
+      uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+      with:
+        msystem: ${{ inputs.msystem }}
+        # A retry installs into a fresh folder, so a stalled try leaves
+        # nothing half-updated behind; its msys2 shell comes first on PATH.
+        location: ${{ runner.temp }}\msys2-attempt-3
+        update: true
+        install: zip unzip git
+        pacboy: >-
+          toolchain:p
+          rust:p
+          gtk4:p
+          pkgconf:p
+          librsvg:p
+          ntldd:p
+    - name: Fingerprint the toolchain and allow long paths
+      id: identity
+      shell: msys2 {0}
+      run: |
+        git config --global core.longpaths true
+        rustc -vV
+        cargo -V
+        pkgconf --modversion gtk4
+        identity=$( { rustc -vV; clang --version; pacman -Q; } | sha256sum | cut -d ' ' -f 1)
+        echo "value=$identity" >> "$(cygpath -u "$GITHUB_OUTPUT")"
+    - name: Cache downloaded Cargo sources
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          C:\ch\registry\index
+          C:\ch\registry\cache
+          C:\ch\git\db
+        key: windows-cargo-sources-v2-${{ hashFiles('gtk/Cargo.lock', 'desktop-core/Cargo.lock') }}
+        restore-keys: windows-cargo-sources-v2-

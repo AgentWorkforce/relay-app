@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Workflows and local composite actions pin third-party actions by commit
+  # SHA with the version as a trailing comment; Dependabot bumps both.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"

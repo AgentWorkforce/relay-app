@@ -1,0 +1,1 @@
+Access privacy and support links before signing in and from Settings. Settings now includes a direct link to request account deletion and bundled open-source license information.

@@ -1,0 +1,11 @@
+{
+  "name": "agent-relay",
+  "owner": { "name": "Agent Relay" },
+  "plugins": [
+    {
+      "name": "agent-relay",
+      "source": "./integrations/claude-code-web",
+      "description": "Put a Claude Code on the web session on Agent Relay: message other agents and answer theirs."
+    }
+  ]
+}

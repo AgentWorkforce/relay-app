@@ -1,0 +1,174 @@
+# rust-oleum configuration — https://github.com/AgentWorkforce/rust-oleum
+#
+# [targets] are the aspirational limits every metric is reported against.
+# [baseline] grandfathers existing violations at their current ceiling so
+# the gate can be enforced today: new violations, and regressions beyond a
+# grandfathered ceiling, fail CI. So do loose or stale entries: when code
+# improves, `rust-oleum --tighten` shrinks this section in place.
+
+[targets]
+cyclomatic_max = 22
+cognitive_max = 22
+halstead_difficulty_max = 80.0
+file_loc_max = 500
+coverage_min_pct = 100.0
+crap_max = 25.0
+surviving_mutants_max = 0
+dead_code_max = 0
+redundant_code_max = 0
+unsafe_max = 0
+panic_max = 0
+allow_max = 0
+file_allow_max = 0
+
+[sources]
+rust_roots = ["src"]
+
+[baseline]
+
+[baseline.file_loc]
+"src/bridge.rs" = 507
+"src/ui/app.rs" = 978
+"src/ui/messages.rs" = 760
+"src/ui/session_controls.rs" = 655
+"src/ui/sessions_page.rs" = 1775
+"src/ui/settings_page.rs" = 966
+"src/ui/transcript.rs" = 653
+"src/ui/widgets.rs" = 770
+"src/updates.rs" = 676
+
+[baseline.cyclomatic]
+"src/ui/session_controls.rs::SessionControls::build" = 33
+"src/ui/sessions_page.rs::App::render_selection_bar" = 23
+"src/ui/sessions_page.rs::App::render_sessions" = 44
+"src/ui/sessions_page.rs::App::session_list_row" = 41
+"src/updates.rs::validate" = 25
+
+[baseline.cognitive]
+"src/ui/app.rs::App::on_status" = 26
+"src/ui/relay.rs::App::refresh_request_log" = 23
+"src/ui/saved_session_views.rs::view_list" = 45
+"src/ui/session_columns.rs::SessionColumnControls::build" = 58
+"src/ui/session_controls.rs::SessionControls::build" = 70
+"src/ui/session_controls.rs::SessionControls::update" = 27
+"src/ui/sessions_page.rs::App::connect_sessions_page" = 32
+"src/ui/sessions_page.rs::App::drive_upload" = 25
+"src/ui/sessions_page.rs::App::render_selection_bar" = 30
+"src/ui/sessions_page.rs::App::render_sessions" = 149
+"src/ui/sessions_page.rs::App::session_list_row" = 69
+"src/ui/settings_page.rs::App::render_settings" = 24
+"src/ui/settings_page.rs::App::request_log_view" = 34
+"src/ui/transcript.rs::App::connect_transcript" = 31
+"src/ui/transcript.rs::App::load_transcript" = 24
+"src/updates.rs::validate" = 28
+
+[baseline.unsafe]
+"src/bin/agent-relay.rs::windows::attach_console" = 1
+"src/bin/agent-relay.rs::windows::kill_on_close_job" = 1
+"src/bin/agent-relay.rs::windows::run_and_wait" = 2
+"src/bin/agent-relay.rs::windows::wait_for_replaced_app" = 1
+"src/session_navigation/native/output/unix.rs::flags" = 1
+"src/session_navigation/native/output/unix.rs::set_flags" = 1
+"src/session_navigation/native/output/windows.rs::available" = 1
+"src/session_navigation/windows/api.rs::collect" = 1
+"src/session_navigation/windows/api.rs::foreground_window" = 1
+"src/session_navigation/windows/api.rs::is_window" = 1
+"src/session_navigation/windows/api.rs::open_link" = 1
+"src/session_navigation/windows/api.rs::owner" = 1
+"src/session_navigation/windows/api.rs::restore" = 1
+"src/session_navigation/windows/api.rs::set_foreground" = 1
+"src/session_navigation/windows/api.rs::visible" = 1
+"src/session_navigation/windows/api.rs::visible_windows" = 1
+"src/ui/desktop/windows.rs::shell_open" = 1
+"src/ui/mod.rs::allow_first_instance_to_come_forward" = 1
+"src/ui/settings_page.rs::platform" = 2
+"src/ui/widgets.rs::name" = 1
+
+[baseline.panic]
+"src/bridge.rs::Bridge::connect" = 1
+"src/bridge.rs::Bridge::daemon_version" = 1
+"src/bridge.rs::Bridge::drop_pool" = 1
+"src/bridge.rs::Bridge::greeted" = 1
+"src/bridge.rs::Bridge::offers" = 1
+"src/bridge.rs::Bridge::release" = 1
+"src/bridge.rs::Bridge::start" = 1
+"src/fake_core.rs::FakeCore::advertise_topic" = 1
+"src/fake_core.rs::FakeCore::answer" = 1
+"src/fake_core.rs::FakeCore::called" = 1
+"src/fake_core.rs::FakeCore::emit" = 1
+"src/fake_core.rs::FakeCore::emit_before_subscribed" = 1
+"src/fake_core.rs::FakeCore::log_calls_to" = 1
+"src/fake_core.rs::FakeCore::methods" = 1
+"src/fake_core.rs::FakeCore::replace_state" = 1
+"src/fake_core.rs::FakeCore::report_bridge_version" = 1
+"src/fake_core.rs::FakeCore::respond" = 1
+"src/fake_core.rs::FakeCore::serve" = 4
+"src/fake_core.rs::FakeCore::set_state" = 1
+"src/fake_core.rs::FakeCore::speak_bridge_version" = 1
+"src/fake_core.rs::FakeCore::state" = 1
+"src/fake_core.rs::FakeCore::stop" = 1
+"src/host.rs::Hosted::pid" = 1
+"src/host.rs::Hosted::release" = 1
+"src/host.rs::Hosted::running" = 1
+"src/host.rs::Hosted::spawn" = 1
+"src/host.rs::Hosted::wait_for_socket" = 1
+"src/models/session_columns.rs::SessionColumn::id" = 2
+"src/models/session_opening.rs::SessionOpening::new" = 2
+"src/ui/saved_session_views.rs::App::store_saved_session_views" = 1
+"src/ui/session_columns.rs::SessionColumnControls::build" = 2
+"src/ui/session_columns.rs::SessionColumnControls::update" = 1
+"src/ui/sessions_page.rs::App::render_sessions" = 1
+"src/ui/sessions_page.rs::App::session_list_row" = 2
+"src/ui/widgets/upload_activity.rs::upload_activity_icon" = 1
+
+[baseline.bare_panic]
+"src/bridge.rs::Bridge::daemon_version" = 1
+"src/bridge.rs::Bridge::drop_pool" = 1
+"src/bridge.rs::Bridge::greeted" = 1
+"src/bridge.rs::Bridge::offers" = 1
+"src/bridge.rs::Bridge::release" = 1
+"src/bridge.rs::Bridge::start" = 1
+"src/fake_core.rs::FakeCore::advertise_topic" = 1
+"src/fake_core.rs::FakeCore::answer" = 1
+"src/fake_core.rs::FakeCore::called" = 1
+"src/fake_core.rs::FakeCore::emit" = 1
+"src/fake_core.rs::FakeCore::emit_before_subscribed" = 1
+"src/fake_core.rs::FakeCore::log_calls_to" = 1
+"src/fake_core.rs::FakeCore::methods" = 1
+"src/fake_core.rs::FakeCore::replace_state" = 1
+"src/fake_core.rs::FakeCore::report_bridge_version" = 1
+"src/fake_core.rs::FakeCore::respond" = 1
+"src/fake_core.rs::FakeCore::serve" = 4
+"src/fake_core.rs::FakeCore::set_state" = 1
+"src/fake_core.rs::FakeCore::speak_bridge_version" = 1
+"src/fake_core.rs::FakeCore::state" = 1
+"src/fake_core.rs::FakeCore::stop" = 1
+"src/host.rs::Hosted::pid" = 1
+"src/host.rs::Hosted::release" = 1
+"src/host.rs::Hosted::running" = 1
+"src/host.rs::Hosted::spawn" = 1
+"src/host.rs::Hosted::wait_for_socket" = 1
+"src/models/session_columns.rs::SessionColumn::id" = 2
+"src/models/session_opening.rs::SessionOpening::new" = 2
+"src/ui/saved_session_views.rs::App::store_saved_session_views" = 1
+"src/ui/session_columns.rs::SessionColumnControls::build" = 2
+"src/ui/session_columns.rs::SessionColumnControls::update" = 1
+"src/ui/sessions_page.rs::App::render_sessions" = 1
+"src/ui/sessions_page.rs::App::session_list_row" = 2
+"src/ui/widgets/upload_activity.rs::upload_activity_icon" = 1
+
+[baseline.pub_wrapper]
+"src/bridge.rs::BridgeOptions::standard" = 1
+"src/models/session_search_cache.rs::LocalSessionSearchCache::get" = 1
+"src/service.rs::Systemd::new" = 1
+"src/service/windows.rs::LogonTask::new" = 1
+"src/ui/app.rs::App::shell" = 1
+"src/ui/messages.rs::App::chat" = 1
+"src/ui/shell.rs::Shell::build" = 1
+"src/ui/spawn_join/chat_input.rs::ChatInput::focus_within" = 1
+"src/ui/widgets.rs::clear" = 1
+"src/ui/widgets.rs::settings_divider" = 1
+
+[baseline.missing_error_impl]
+"src/bridge.rs::ConnectionError" = 1
+"src/updates.rs::FetchError" = 1

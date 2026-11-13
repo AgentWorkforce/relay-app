@@ -1,0 +1,175 @@
+{
+  "now_ms": 1800000000000,
+  "cases": [
+    {
+      "name": "a Devin Cloud session active half a day ago is active",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": true,
+        "host": "Devin Cloud",
+        "suggested_name": "devin",
+        "updated_at_ms": 1799956800000
+      },
+      "active": true,
+      "next_change_ms": 1800043200001
+    },
+    {
+      "name": "a Devin Cloud session active exactly a day ago is active",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": true,
+        "host": "Devin Cloud",
+        "suggested_name": "devin",
+        "updated_at_ms": 1799913600000
+      },
+      "active": true,
+      "next_change_ms": 1800000000001
+    },
+    {
+      "name": "a Devin Cloud session quiet for seven weeks is not active, though it can take a message",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": true,
+        "host": "Devin Cloud",
+        "suggested_name": "devin",
+        "updated_at_ms": 1795766400000
+      },
+      "active": false,
+      "next_change_ms": null
+    },
+    {
+      "name": "a Devin Cloud session with no activity time is not active",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": true,
+        "host": "Devin Cloud",
+        "suggested_name": "devin"
+      },
+      "active": false,
+      "next_change_ms": null
+    },
+    {
+      "name": "a Devin Cloud time up to a day ahead (a slow local clock) is active",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": true,
+        "host": "Devin Cloud",
+        "suggested_name": "devin",
+        "updated_at_ms": 1800043200000
+      },
+      "active": true,
+      "next_change_ms": 1800129600001
+    },
+    {
+      "name": "a Devin Cloud time more than a day ahead proves nothing",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": true,
+        "host": "Devin Cloud",
+        "suggested_name": "devin",
+        "updated_at_ms": 1800172800000
+      },
+      "active": false,
+      "next_change_ms": 1800086400000
+    },
+    {
+      "name": "a Devin Cloud session that cannot take a message is not active",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "0123456789abcdef0123456789abcdef"
+        },
+        "title": "Cloud",
+        "live": false,
+        "host": "Devin Cloud",
+        "suggested_name": "devin",
+        "updated_at_ms": 1799956800000
+      },
+      "active": false,
+      "next_change_ms": null
+    },
+    {
+      "name": "a local Devin session is active however long ago it was updated",
+      "session": {
+        "target": {
+          "kind": "devin",
+          "id": "secretive-catcher"
+        },
+        "title": "Local",
+        "live": true,
+        "updated_at_ms": 1795766400000,
+        "suggested_name": "devin"
+      },
+      "active": true,
+      "next_change_ms": null
+    },
+    {
+      "name": "a live local Codex session is active however long ago it was updated",
+      "session": {
+        "target": {
+          "kind": "codex",
+          "id": "one"
+        },
+        "title": "Local",
+        "live": true,
+        "updated_at_ms": 1795766400000,
+        "suggested_name": "codex"
+      },
+      "active": true,
+      "next_change_ms": null
+    },
+    {
+      "name": "a session whose process ended is not active",
+      "session": {
+        "target": {
+          "kind": "codex",
+          "id": "one"
+        },
+        "title": "Ended",
+        "live": true,
+        "running": false,
+        "suggested_name": "codex"
+      },
+      "active": false,
+      "next_change_ms": null
+    },
+    {
+      "name": "a session that cannot take a message is not active",
+      "session": {
+        "target": {
+          "kind": "codex",
+          "id": "one"
+        },
+        "title": "Idle",
+        "live": false,
+        "suggested_name": "codex"
+      },
+      "active": false,
+      "next_change_ms": null
+    }
+  ]
+}

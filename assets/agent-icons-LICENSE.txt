@@ -1,0 +1,37 @@
+Codex and Claude: Cloud public/onboarding-icons (LobeHub icons).
+Grok, Cursor, OpenCode, OpenAI, and Claude Code:
+https://github.com/lobehub/lobe-icons/tree/master/packages/static-svg/icons
+
+MIT License
+
+Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+GitHub Copilot icon (copilot.svg): official Copilot_Icon_Black.svg,
+GitHub Brand Toolkit logo archive: https://brand.github.com/GitHub_Logos.zip
+Guidance: https://brand.github.com/brand-identity/copilot
+Copyright GitHub, Inc. All rights reserved. GitHub Copilot is a trademark of GitHub, Inc.
+Used to identify the GitHub Copilot integration; no endorsement is implied.
+
+Amp icon (amp.svg): official Amp logo, logo-light.svg from the Amp press kit
+(https://ampcode.com/press-kit): https://ampcode.com/logo-light.svg
+The logo's single path unchanged, in a square viewBox and drawn in currentColor.
+Amp is a trademark of its owner. Used to identify the Amp integration; no
+endorsement is implied.

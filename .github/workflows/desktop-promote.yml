@@ -1,0 +1,673 @@
+name: Desktop Promote
+run-name: ${{ inputs.request-id && format('cloud-release/{0}', inputs.request-id) || 'Desktop Promote' }}
+
+# Publish the exact signed/versioned bytes prepared by Desktop Release.
+on:
+  workflow_dispatch:
+    inputs:
+      request-id:
+        description: 'Cloud orchestration request ID.'
+        required: false
+        default: ''
+        type: string
+      candidate-run-id:
+        description: 'Successful Desktop Release candidate run ID (manual or automatic; within seven days).'
+        required: true
+        type: string
+      version:
+        description: 'Exact prepared version, including beta suffix when present.'
+        required: true
+        type: string
+      channel:
+        description: 'Must match the prepared artifacts; beta cannot be relabeled stable.'
+        required: true
+        type: choice
+        options: [stable, beta]
+      profile:
+        description: 'Site profile the candidate was prepared for: the opaque id of its desktop-<id> GitHub Environment. Empty is the default profile.'
+        required: false
+        default: ''
+        type: string
+      bridge-environment:
+        description: 'Cloud profiles only: desktop-<id>-bridge, to also publish the candidate to the GitHub releases repository its older apps update from. Empty publishes to the cloud feed alone.'
+        required: false
+        default: ''
+        type: string
+
+# Shares Desktop Release's publication lock, per profile: a profile's
+# promotion waiting on its environment's reviewers must not block the
+# default product's.
+concurrency:
+  group: ${{ inputs.profile && format('desktop-release-{0}', inputs.profile) || 'desktop-release' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  promote:
+    name: Verify and publish prepared candidate
+    runs-on: ${{ vars.DEPLOY_LINUX_RUNNER || 'ubuntu-latest' }}
+    # A profile's candidate publishes to its environment's RELEASES_REPOSITORY
+    # with a token minted from its releases App secrets (or its RELEASES_TOKEN);
+    # the default profile runs under no environment.
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    timeout-minutes: 10
+    # id-token and attestations: the pull model's SHA256SUMS provenance
+    # attestation (actions/attest-build-provenance), this job only.
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      CANDIDATE_RUN_ID: ${{ inputs.candidate-run-id }}
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+      # Use the reviewed verifier on main, never executable candidate contents.
+      - name: Check out trusted promotion tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          pull-releases-repository: ${{ secrets.PULL_RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+
+      # A bridge publishes a cloud candidate to the GitHub releases
+      # repository a profile's older apps update from, from the profile's
+      # desktop-<id>-bridge environment and nowhere else. Anything else is
+      # refused before any release call.
+      - name: Check the bridge environment
+        env:
+          BRIDGE_ENVIRONMENT: ${{ inputs.bridge-environment }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BRIDGE_ENVIRONMENT" ]; then
+            if [ "${RELEASE_FEED:-}" != cloud ] || [ "$BRIDGE_ENVIRONMENT" != "desktop-$PROFILE-bridge" ]; then
+              echo "::error::bridge-environment is only for a cloud profile, and must be desktop-<id>-bridge for the profile being promoted."
+              exit 1
+            fi
+          fi
+
+      # Publishing prefers a short-lived GitHub App installation token,
+      # minted here for the releases repository alone, over the long-lived
+      # RELEASES_TOKEN: a profile sets DESKTOP_RELEASES_APP_ID and
+      # DESKTOP_RELEASES_APP_PRIVATE_KEY in its environment; the default
+      # profile sets RELEASES_APP_ID and RELEASES_APP_PRIVATE_KEY as repository
+      # secrets (an App installed on the organisation with access limited to
+      # the releases repository, Contents read/write and Metadata read). The
+      # names differ on purpose: an environment secret shadows a repository
+      # secret of the same name but cannot hide one, so a profile selects its
+      # own pair and never inherits the default's. A profile whose own pair is
+      # unset may instead opt into the organisation's pusher App
+      # (GH_APP_PUSHER_ID and GH_APP_PUSHER_PRIVATE_KEY, organisation secrets
+      # visible to this repository) by setting DESKTOP_RELEASES_USE_ORG_PUSHER
+      # to "true" (compared case-insensitively, as GitHub expressions do) in
+      # its environment; that App must be installed on the profile's
+      # releases repository. The default profile never uses it.
+      # RELEASES_TOKEN remains the fallback when no App is selected.
+      # A cloud feed publishes with its publisher token instead: it needs
+      # no App, no RELEASES_TOKEN and no releases repository, unless it sets
+      # PULL_RELEASES_REPOSITORY (the pull model, docs/enterprise-distribution.md):
+      # then the same pair, or RELEASES_TOKEN, attaches the attested bundle
+      # there, and the token is minted for that repository alone.
+      - name: Check for the releases App
+        id: releases-app
+        if: env.RELEASE_FEED != 'cloud' || env.PULL_RELEASES_REPOSITORY != ''
+        env:
+          HAS_APP: ${{ (inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_ID != '' && secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY != '') || (inputs.profile == '' && secrets.RELEASES_APP_ID != '' && secrets.RELEASES_APP_PRIVATE_KEY != '') }}
+          # Only a profile, only with its own pair unset, only on explicit opt-in.
+          USE_ORG_PUSHER: ${{ inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_ID == '' && secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY == '' && secrets.DESKTOP_RELEASES_USE_ORG_PUSHER == 'true' && secrets.GH_APP_PUSHER_ID != '' && secrets.GH_APP_PUSHER_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          target="$RELEASES_REPOSITORY"
+          if [ "$RELEASE_FEED" = cloud ]; then target="$PULL_RELEASES_REPOSITORY"; fi
+          owner="${target%%/*}"
+          name="${target#*/}"
+          # A profile's repository is masked; so are its parts.
+          if [ -n "$PROFILE" ]; then
+            echo "::add-mask::$owner"
+            echo "::add-mask::$name"
+          fi
+          {
+            echo "RELEASES_OWNER=$owner"
+            echo "RELEASES_NAME=$name"
+          } >> "$GITHUB_ENV"
+          if [ "$USE_ORG_PUSHER" = true ]; then HAS_APP=true; fi
+          {
+            echo "has_app=$HAS_APP"
+            echo "use_org_pusher=$USE_ORG_PUSHER"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mint a releases repository token
+        id: releases-token
+        if: steps.releases-app.outputs.has_app == 'true'
+        # For the pull repository the App may not be installed there:
+        # RELEASES_TOKEN is the fallback (Check pull repository access).
+        continue-on-error: ${{ env.RELEASE_FEED == 'cloud' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ (inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_ID) || (inputs.profile != '' && steps.releases-app.outputs.use_org_pusher == 'true' && secrets.GH_APP_PUSHER_ID) || (inputs.profile == '' && secrets.RELEASES_APP_ID) || '' }}
+          private-key: ${{ (inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY) || (inputs.profile != '' && steps.releases-app.outputs.use_org_pusher == 'true' && secrets.GH_APP_PUSHER_PRIVATE_KEY) || (inputs.profile == '' && secrets.RELEASES_APP_PRIVATE_KEY) || '' }}
+          owner: ${{ env.RELEASES_OWNER }}
+          repositories: ${{ env.RELEASES_NAME }}
+          permission-contents: write
+
+      - name: Fetch producer provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > producer-run.json
+          # Fail before downloading from an unrelated/unsuccessful workflow.
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .repository.full_name == $repo and .head_repository.full_name == $repo and
+            .path == ".github/workflows/desktop-release.yml" and
+            (.event == "workflow_dispatch" or .event == "workflow_run") and
+            .status == "completed" and .conclusion == "success"
+          ' producer-run.json > /dev/null
+
+      - name: Download immutable prepared candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-candidate
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate-run-id }}
+
+      - name: Verify identity and every prepared byte
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(--run-metadata producer-run.json)
+          if [ "$(jq -r '.event' producer-run.json)" = workflow_run ]; then
+            ci_run_id="$(jq -er '.ci_run_id' candidate/release-candidate.json)"
+            [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate CI run ID'; exit 1; }
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id" > ci-run.json
+            source_sha="$(jq -er '.head_sha' ci-run.json)"
+            args+=(--ci-run-metadata ci-run.json)
+          else
+            source_sha="$(jq -er '.head_sha' producer-run.json)"
+          fi
+          # The candidate must be the requested profile's (its manifest records
+          # the opaque id), so one profile's bytes never publish as another's.
+          # A cloud candidate records "feed": "cloud" and verifies only as one.
+          if [ "${RELEASE_FEED:-}" = cloud ]; then args+=(--feed cloud); fi
+          python3 scripts/release-candidate.py verify --directory candidate \
+            --source-sha "$source_sha" --version "$VERSION" --channel "$CHANNEL" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" \
+            --profile "$PROFILE" "${args[@]}"
+          # Dispatched Cloud candidates record the selected gate too. Recheck
+          # it independently before publishing; legacy automatic provenance
+          # above retains its existing checks.
+          if [ "$(jq -r '.event' producer-run.json)" = workflow_dispatch ] && jq -e '.ci_run_id' candidate/release-candidate.json >/dev/null; then
+            ci_run_id="$(jq -er '.ci_run_id' candidate/release-candidate.json)"
+            python3 scripts/release-ci-evidence.py --run-id "$ci_run_id" --source-sha "$source_sha"
+          fi
+          echo "source-sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check publishing access and reserve exact version
+        id: version
+        if: env.RELEASE_FEED != 'cloud'
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          APP_TOKEN: ${{ steps.releases-token.outputs.token != '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            pair="RELEASES_APP_ID + RELEASES_APP_PRIVATE_KEY"
+            alternative=""
+            if [ -n "$PROFILE" ]; then
+              pair="DESKTOP_RELEASES_APP_ID + DESKTOP_RELEASES_APP_PRIVATE_KEY"
+              alternative=", or DESKTOP_RELEASES_USE_ORG_PUSHER=true (the organisation's pusher App, installed there),"
+            fi
+            echo "Missing publishing credentials. Set $pair (a GitHub App installed on the releases repository with Contents: read and write)$alternative or RELEASES_TOKEN"
+            exit 1
+          fi
+          # An installation token's repository response may carry no
+          # permissions; minting it with Contents write already proved access.
+          gh api "repos/$RELEASES_REPOSITORY" > repository.json
+          jq -e --argjson app "$APP_TOKEN" '.private == false and ($app or .permissions.push == true)' repository.json > /dev/null
+          gh api "repos/$RELEASES_REPOSITORY/commits/main" --jq .sha > /dev/null
+          gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp | jq 'add' > releases.json
+          python3 scripts/release-version.py --releases releases.json --version "$VERSION" --channel "$CHANNEL" >> "$GITHUB_OUTPUT"
+          # A tag without a release must not be silently reused either.
+          if gh api "repos/$RELEASES_REPOSITORY/git/ref/tags/v$VERSION" > existing-tag.json 2> tag-error.txt; then
+            echo 'Prepared version tag already exists; create a new candidate version.'
+            exit 1
+          fi
+          # Distinguish a missing tag from an API/authentication failure.
+          grep -q 'HTTP 404' tag-error.txt || { cat tag-error.txt; exit 1; }
+
+      - name: Publish prepared assets
+        if: env.RELEASE_FEED != 'cloud'
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          TITLE: ${{ steps.version.outputs.title }}
+        run: |
+          set -euo pipefail
+          args=(release create "v$VERSION" --draft --repo "$RELEASES_REPOSITORY" --target main \
+            --title "$TITLE" --notes-file candidate/release-notes.md)
+          if [ "$CHANNEL" = beta ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}" candidate/assets/*
+          # Keep the release private until every upload succeeds.
+          if [ "$CHANNEL" = stable ]; then
+            gh release edit "v$VERSION" --repo "$RELEASES_REPOSITORY" --draft=false --latest
+          else
+            gh release edit "v$VERSION" --repo "$RELEASES_REPOSITORY" --draft=false --latest=false
+          fi
+          echo "Published unchanged candidate from source run $CANDIDATE_RUN_ID." >> "$GITHUB_STEP_SUMMARY"
+
+      # The pull model: the profile's PULL_RELEASES_REPOSITORY receives the
+      # attested bundle its operator publishes to the profile's own site.
+      # Its access is checked before anything is uploaded anywhere.
+      - name: Check pull repository access
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY != ''
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          APP_TOKEN: ${{ steps.releases-token.outputs.token != '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Missing publishing credentials for PULL_RELEASES_REPOSITORY. Set DESKTOP_RELEASES_APP_ID + DESKTOP_RELEASES_APP_PRIVATE_KEY (a GitHub App installed on the pull repository with Contents: read and write), or DESKTOP_RELEASES_USE_ORG_PUSHER=true (the organisation's pusher App, installed there), or RELEASES_TOKEN"
+            exit 1
+          fi
+          # An installation token's repository response may carry no
+          # permissions; minting it with Contents write already proved access.
+          gh api "repos/$PULL_RELEASES_REPOSITORY" > pull-repository.json
+          jq -e --argjson app "$APP_TOKEN" '$app or .permissions.push == true' pull-repository.json > /dev/null || {
+            echo "::error::The publishing credential cannot write to PULL_RELEASES_REPOSITORY."
+            exit 1
+          }
+
+      - name: Skip the pull bundle
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY == ''
+        run: echo "::notice::PULL_RELEASES_REPOSITORY is unset; no pull bundle is published."
+
+      # The pull model's retry (scripts/pull-receipt.py): a promote that
+      # published to the cloud feed keeps a receipt binding that publication
+      # to its candidate (Keep the pull receipt). A later run of the same
+      # candidate, after the attestation or the pull release failed, resumes
+      # after the cloud publish instead of repeating it, which an unlisted
+      # candidate's version would refuse. Only a receipt kept by Desktop
+      # Promote on main counts; one of any other candidate is refused, and
+      # without one this is a first publication with the feed's collision
+      # check.
+      - name: Find the pull receipt
+        id: pull-receipt
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.verify.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          rm -rf pull-receipt
+          python3 scripts/pull-receipt.py find --repository "$GITHUB_REPOSITORY" --profile "$PROFILE" \
+            --version "$VERSION" --channel "$CHANNEL" --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --source-sha "$SOURCE_SHA" --output pull-receipt
+
+      # The verified candidate's versioned packages, install.sh and
+      # install.ps1 go to the cloud feed through the publisher bridge (proposed Cloud contract,
+      # relay-control docs/desktop-feed.md): declared, uploaded,
+      # then published, as latest for a stable and not for a beta. A failed
+      # upload leaves the draft unpublished and this job red; a rerun
+      # resumes it. The token reaches this step's environment only. A
+      # candidate whose version was taken as given ("unlisted": true) is
+      # checked against the feed listing first and refused if the feed
+      # already holds its version, published or not. A run resuming from the
+      # pull receipt of this same candidate publishes nothing: it checks the
+      # kept create body against the candidate and hands it to the pull
+      # bundle.
+      - name: Publish prepared assets to the cloud feed
+        if: env.RELEASE_FEED == 'cloud'
+        env:
+          SOURCE_SHA: ${{ steps.verify.outputs.source-sha }}
+          PULL_RESUME: ${{ steps.pull-receipt.outputs.resume }}
+          DESKTOP_FEED_PUBLISHER_TOKEN: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release-candidate.py cloud-assets --directory candidate --feed cloud \
+            --source-sha "$SOURCE_SHA" --version "$VERSION" --channel "$CHANNEL" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --profile "$PROFILE" \
+            --output cloud-assets.txt
+          if [ -n "${PULL_RELEASES_REPOSITORY:-}" ] && [ "${PULL_RESUME:-}" = true ]; then
+            python3 scripts/pull-receipt.py check --receipt pull-receipt --assets cloud-assets.txt \
+              --directory candidate/assets --version "$VERSION" --channel "$CHANNEL"
+            cp pull-receipt/publish-request.json publish-request.json
+            echo "Candidate run $CANDIDATE_RUN_ID was already published to the cloud feed by an earlier promote; resumed its pull bundle." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The signed envelope the feed returned (Keep the published envelope).
+          publish_args=(--envelope-out feed-envelope.json)
+          # The pull model's publish-request.json: the exact create body sent.
+          if [ -n "${PULL_RELEASES_REPOSITORY:-}" ]; then
+            publish_args+=(--request-out publish-request.json)
+          fi
+          if [ "$(jq -r '.unlisted == true' candidate/release-candidate.json)" = true ]; then
+            publish_args+=(--unlisted)
+          fi
+          python3 scripts/desktop-feed-publish.py publish --site "$SITE_URL" --profile "$PROFILE" \
+            --feed "$RELEASE_FEED" --asset-prefix "$ASSET_PREFIX" --version "$VERSION" \
+            --channel "$CHANNEL" --notes candidate/release-notes.md --directory candidate/assets \
+            --assets cloud-assets.txt ${publish_args[@]+"${publish_args[@]}"}
+          echo "Published unchanged candidate from source run $CANDIDATE_RUN_ID to the cloud feed." >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${PULL_RELEASES_REPOSITORY:-}" ]; then
+            python3 scripts/pull-receipt.py write --request publish-request.json --output pull-receipt \
+              --profile "$PROFILE" --version "$VERSION" --channel "$CHANNEL" \
+              --candidate-run-id "$CANDIDATE_RUN_ID" --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID"
+          fi
+          # Last, and never fatal: the receipt above is written whatever this does.
+          if [ -f feed-envelope.json ] && key_id="$(jq -r '.key_id' feed-envelope.json)" \
+            && digest="$(python3 -c 'import importlib.util, json, sys; spec = importlib.util.spec_from_file_location("desktop_feed", "scripts/desktop_feed.py"); feed = importlib.util.module_from_spec(spec); spec.loader.exec_module(feed); print(feed.manifest_digest(json.load(open(sys.argv[1], encoding="utf-8"))["manifest"]))' feed-envelope.json)"; then
+            echo "Signed by key_id $key_id; signed manifest canonical SHA-256 $digest." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Kept before anything else can fail, so a retry of this candidate
+      # finds it (Find the pull receipt). A re-run attempt of this run
+      # replaces its own.
+      - name: Keep the pull receipt
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY != '' && steps.pull-receipt.outputs.resume != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pull-receipt-${{ inputs.profile }}-v${{ inputs.version }}
+          path: pull-receipt
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      # The signed envelope (manifest, signature, key_id) the feed returned
+      # above, so an observer can compare it with what the installed app
+      # verifies. A re-run attempt of this run replaces its own. A replay
+      # (an earlier attempt's publish reply was lost) has no envelope to keep.
+      - name: Keep the published envelope
+        if: env.RELEASE_FEED == 'cloud' && steps.pull-receipt.outputs.resume != 'true' && hashFiles('feed-envelope.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: feed-envelope-${{ inputs.profile }}-v${{ inputs.version }}
+          path: feed-envelope.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      # The pull bundle (docs/enterprise-distribution.md, Pull model): the
+      # create body sent above, pull-bundle.json (the profile, version and
+      # channel it is for, which the operator script requires to match), the
+      # cloud feed's assets, the notes and the operator script, all listed by
+      # bare name in SHA256SUMS, which is attested as built by this workflow.
+      - name: Prepare the pull bundle
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY != ''
+        run: |
+          set -euo pipefail
+          rm -rf pull
+          mkdir pull
+          names=()
+          while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "::error::cloud-assets.txt names an asset that is not a bare file name."; exit 1; }
+            cp -- "candidate/assets/$name" "pull/$name"
+            names+=("$name")
+          done < cloud-assets.txt
+          [ "${#names[@]}" -gt 0 ] || { echo "::error::cloud-assets.txt names no assets."; exit 1; }
+          cp publish-request.json pull/publish-request.json
+          cp candidate/release-notes.md pull/release-notes.md
+          cp scripts/agent-relay-desktop-update.sh pull/agent-relay-desktop-update.sh
+          jq -cn --arg profile "$PROFILE" --arg version "$VERSION" --arg channel "$CHANNEL" \
+            '{profile: $profile, version: $version, channel: $channel}' > pull/pull-bundle.json
+          (cd pull && sha256sum -- pull-bundle.json publish-request.json release-notes.md agent-relay-desktop-update.sh ${names[@]+"${names[@]}"}) > pull/SHA256SUMS
+
+      - name: Attest the pull bundle
+        id: pull-attest
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY != ''
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: pull/SHA256SUMS
+
+      # A draft first, published once every upload succeeds; a prerelease for
+      # a beta. A rerun replaces a leftover draft, and accepts a published
+      # release only when its SHA256SUMS is this one.
+      - name: Publish the pull bundle
+        if: env.RELEASE_FEED == 'cloud' && env.PULL_RELEASES_REPOSITORY != ''
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          BUNDLE_PATH: ${{ steps.pull-attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE_PATH" pull/SHA256SUMS.sigstore.json
+          tag="v$VERSION"
+          gh api "repos/$PULL_RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp \
+            | jq --arg tag "$tag" '[add // [] | .[] | select(.tag_name == $tag)]' > pull-existing.json
+          if [ "$(jq 'map(select(.draft == false)) | length' pull-existing.json)" -gt 0 ]; then
+            rm -rf pull-published
+            gh release download "$tag" --repo "$PULL_RELEASES_REPOSITORY" --pattern SHA256SUMS --dir pull-published
+            if cmp -s pull-published/SHA256SUMS pull/SHA256SUMS; then
+              echo "::notice::The pull repository already holds $tag with this SHA256SUMS; nothing to publish."
+              exit 0
+            fi
+            echo "::error::The pull repository already holds a published $tag with a different SHA256SUMS."
+            exit 1
+          fi
+          for id in $(jq -r '.[] | select(.draft == true) | .id' pull-existing.json); do
+            gh api -X DELETE "repos/$PULL_RELEASES_REPOSITORY/releases/$id" > /dev/null
+          done
+          args=(release create "$tag" --draft --repo "$PULL_RELEASES_REPOSITORY" \
+            --title "$tag" --notes-file pull/release-notes.md)
+          if [ "$CHANNEL" = beta ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}" pull/*
+          if [ "$CHANNEL" = stable ]; then
+            gh release edit "$tag" --repo "$PULL_RELEASES_REPOSITORY" --draft=false --latest
+          else
+            gh release edit "$tag" --repo "$PULL_RELEASES_REPOSITORY" --draft=false --latest=false
+          fi
+          echo "Published the pull bundle for $tag." >> "$GITHUB_STEP_SUMMARY"
+
+      # The changelog is the default profile's: a profile's versions are its own.
+      - name: Prepare the released snapshot's changelog
+        if: inputs.channel == 'stable' && !inputs.profile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_sha="${{ steps.verify.outputs.source-sha }}"
+          mkdir -p promoted
+          gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$source_sha" \
+            -H 'Accept: application/vnd.github.raw+json' > promoted/CHANGELOG.md
+          python3 scripts/release-notes.py "$VERSION" --changelog promoted/CHANGELOG.md --promote
+
+      - name: Upload the promoted changelog
+        if: inputs.channel == 'stable' && !inputs.profile
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: promoted-changelog-v${{ inputs.version }}
+          path: promoted/CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 30
+
+  # A cloud profile's older apps update from its GitHub releases repository.
+  # Once the cloud feed has the release, this job publishes the same
+  # verified candidate there, so those apps update to a build that reads
+  # the cloud feed. Its desktop-<id>-bridge environment holds only
+  # RELEASES_REPOSITORY and DESKTOP_BRIDGE_APP_ID +
+  # DESKTOP_BRIDGE_APP_PRIVATE_KEY (never RELEASES_TOKEN); nothing else reads
+  # that environment, and nothing in it builds.
+  bridge:
+    name: Publish the candidate to the bridge repository
+    needs: promote
+    if: inputs.bridge-environment != '' && inputs.profile != '' && inputs.bridge-environment == format('desktop-{0}-bridge', inputs.profile)
+    runs-on: ${{ vars.DEPLOY_LINUX_RUNNER || 'ubuntu-latest' }}
+    environment: ${{ inputs.bridge-environment }}
+    timeout-minutes: 10
+    env:
+      CANDIDATE_RUN_ID: ${{ inputs.candidate-run-id }}
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+      PROFILE: ${{ inputs.profile }}
+    steps:
+      - name: Check out trusted promotion tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Check the bridge repository
+        id: releases-app
+        env:
+          RELEASES_REPOSITORY: ${{ secrets.RELEASES_REPOSITORY }}
+          HAS_APP: ${{ secrets.DESKTOP_BRIDGE_APP_ID != '' && secrets.DESKTOP_BRIDGE_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/site-origin.sh
+          . scripts/site-origin.sh
+          [[ "$PROFILE" =~ ^[a-z0-9]{1,32}$ ]] || { echo '::error::A bridge is only for a cloud profile id.'; exit 1; }
+          [[ "$RELEASES_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "::error::The bridge environment's RELEASES_REPOSITORY must be owner/name."
+            exit 1
+          }
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          [ "$(lower "$RELEASES_REPOSITORY")" != "$(lower "$DEFAULT_RELEASES_REPOSITORY")" ] || {
+            echo "::error::The bridge environment's RELEASES_REPOSITORY must not be the default product's releases repository; a bridge publishes only to the profile's own."
+            exit 1
+          }
+          # Only the bridge's own App: a repository-level RELEASES_TOKEN or
+          # releases App pair would reach every environment that lacks one.
+          [ "$HAS_APP" = true ] || {
+            echo '::error::The bridge environment needs DESKTOP_BRIDGE_APP_ID + DESKTOP_BRIDGE_APP_PRIVATE_KEY (a GitHub App installed on its repository with Contents: read and write); it never falls back to RELEASES_TOKEN.'
+            exit 1
+          }
+          owner="${RELEASES_REPOSITORY%%/*}"
+          name="${RELEASES_REPOSITORY#*/}"
+          echo "::add-mask::$RELEASES_REPOSITORY"
+          echo "::add-mask::$owner"
+          echo "::add-mask::$name"
+          {
+            echo "RELEASES_REPOSITORY=$RELEASES_REPOSITORY"
+            echo "RELEASES_OWNER=$owner"
+            echo "RELEASES_NAME=$name"
+          } >> "$GITHUB_ENV"
+
+      - name: Mint a releases repository token
+        id: releases-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.DESKTOP_BRIDGE_APP_ID }}
+          private-key: ${{ secrets.DESKTOP_BRIDGE_APP_PRIVATE_KEY }}
+          owner: ${{ env.RELEASES_OWNER }}
+          repositories: ${{ env.RELEASES_NAME }}
+          permission-contents: write
+
+      - name: Fetch producer provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > producer-run.json
+          # Fail before downloading from an unrelated/unsuccessful workflow.
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .repository.full_name == $repo and .head_repository.full_name == $repo and
+            .path == ".github/workflows/desktop-release.yml" and
+            (.event == "workflow_dispatch" or .event == "workflow_run") and
+            .status == "completed" and .conclusion == "success"
+          ' producer-run.json > /dev/null
+
+      - name: Download immutable prepared candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-candidate
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate-run-id }}
+
+      # The same verification as the promote job: only the cloud candidate
+      # the feed just published reaches the bridge repository.
+      - name: Verify identity and every prepared byte
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(--run-metadata producer-run.json --feed cloud)
+          if [ "$(jq -r '.event' producer-run.json)" = workflow_run ]; then
+            ci_run_id="$(jq -er '.ci_run_id' candidate/release-candidate.json)"
+            [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate CI run ID'; exit 1; }
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id" > ci-run.json
+            source_sha="$(jq -er '.head_sha' ci-run.json)"
+            args+=(--ci-run-metadata ci-run.json)
+          else
+            source_sha="$(jq -er '.head_sha' producer-run.json)"
+          fi
+          python3 scripts/release-candidate.py verify --directory candidate \
+            --source-sha "$source_sha" --version "$VERSION" --channel "$CHANNEL" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" \
+            --profile "$PROFILE" "${args[@]}"
+
+      - name: Check publishing access and reserve exact version
+        id: version
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::Minting the bridge App token gave no token.'
+            exit 1
+          fi
+          gh api "repos/$RELEASES_REPOSITORY" > repository.json
+          jq -e '.private == false' repository.json > /dev/null
+          gh api "repos/$RELEASES_REPOSITORY/commits/main" --jq .sha > /dev/null
+          gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp | jq 'add' > releases.json
+          # The cloud feed allocated the version, so it must also sort after
+          # every bridge release the way the updaters compare (2026.3.1 is
+          # older than 2026.03.2), or the older apps would never take it.
+          python3 scripts/release-version.py --releases releases.json --version "$VERSION" --channel "$CHANNEL" \
+            --newer-than-all >> "$GITHUB_OUTPUT" || {
+            echo "::error::v$VERSION does not sort after every release in the bridge repository, as the updaters compare versions; the bridge publishes only a later version."
+            exit 1
+          }
+          if gh api "repos/$RELEASES_REPOSITORY/git/ref/tags/v$VERSION" > existing-tag.json 2> tag-error.txt; then
+            echo 'Prepared version tag already exists in the bridge repository.'
+            exit 1
+          fi
+          grep -q 'HTTP 404' tag-error.txt || { cat tag-error.txt; exit 1; }
+
+      - name: Publish prepared assets
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token }}
+          TITLE: ${{ steps.version.outputs.title }}
+        run: |
+          set -euo pipefail
+          args=(release create "v$VERSION" --draft --repo "$RELEASES_REPOSITORY" --target main \
+            --title "$TITLE" --notes-file candidate/release-notes.md)
+          if [ "$CHANNEL" = beta ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}" candidate/assets/*
+          if [ "$CHANNEL" = stable ]; then
+            gh release edit "v$VERSION" --repo "$RELEASES_REPOSITORY" --draft=false --latest
+          else
+            gh release edit "v$VERSION" --repo "$RELEASES_REPOSITORY" --draft=false --latest=false
+          fi
+          echo "Published the cloud candidate from source run $CANDIDATE_RUN_ID to the bridge repository." >> "$GITHUB_STEP_SUMMARY"

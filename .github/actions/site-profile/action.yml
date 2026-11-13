@@ -1,0 +1,412 @@
+name: Site profile
+description: >-
+  The site profile a Desktop Release job builds or publishes for
+  (docs/workspace-layout.md, "Site profiles"): checks the desktop-<id>
+  environment's secrets that carry the profile's values, masks the values
+  derived from them, exports them for the steps that follow and fetches the
+  profile's branding. The values are environment secrets, not variables, so
+  the runner masks them from the start of the job: it prints this action's
+  inputs and its step's env before the step runs.
+  The profile's release feed (RELEASE_FEED) is where its updater reads
+  releases: github:<owner>/<name> (its RELEASES_REPOSITORY; unset means
+  that, as before feeds) or cloud (its own site, with DESKTOP_FEED_PUBLIC_KEY
+  and no RELEASES_REPOSITORY). DESKTOP_FEED_PUBLISHER_TOKEN never enters the
+  action: the workflow passes only whether it is set.
+  DESKTOP_POLICY_DEFAULTS (optional) is the organization's upload settings
+  the build applies until it has read the site's own policy: checked and
+  exported as compact JSON for desktop-core's build.rs, masked, never
+  printed.
+  DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS (optional) is the https origins of
+  the storage hosts the profile's direct uploads may PUT to on a private
+  address: checked, exported for desktop-core's build.rs as
+  AGENT_RELAY_HISTORY_UPLOAD_STORAGE_ORIGINS (a sorted JSON array), masked,
+  never printed.
+  PULL_RELEASES_REPOSITORY (optional, owner/name; cloud feeds only) is
+  the repository where Desktop Promote also attaches the pull model's
+  attested bundle, which the customer's operator publishes to the profile's
+  own site (docs/enterprise-distribution.md, Pull model): checked, masked
+  and exported; never the default product's releases repository.
+  DESKTOP_COEXIST (optional, true or false; unset is false) builds the
+  profile's Mac app to coexist with Agent Relay: it carries no product
+  marker, so it never replaces an installed Agent Relay and is never replaced
+  by it (build-app.sh --coexist). An internal or dev profile sets it. It is
+  the environment's variable, not a secret: a secret whose value is true
+  would mask every true in the job's log and outputs. Only the jobs that
+  build or package an app pass it.
+  With no profile, the default profile's values are exported and nothing is
+  masked or fetched; it never reads policy-defaults or
+  history-upload-storage-origins. Run after the checkout: it sources scripts/site-origin.sh.
+inputs:
+  profile:
+    description: The profile's opaque id; empty for the default profile.
+    required: false
+    default: ''
+  site-url:
+    description: The environment's AGENT_RELAY_SITE_URL secret.
+    required: false
+    default: ''
+  url-scheme:
+    description: The environment's AGENT_RELAY_URL_SCHEME secret.
+    required: false
+    default: ''
+  product-name:
+    description: The environment's DESKTOP_PRODUCT_NAME secret.
+    required: false
+    default: ''
+  bundle-id:
+    description: The environment's DESKTOP_BUNDLE_ID secret.
+    required: false
+    default: ''
+  coexist:
+    description: >-
+      The environment's DESKTOP_COEXIST variable (optional): true builds the
+      Mac app to coexist with Agent Relay (no product takeover either way);
+      false or unset keeps the takeover. Refused for the default profile.
+    required: false
+    default: ''
+  releases-repository:
+    description: The environment's RELEASES_REPOSITORY secret.
+    required: false
+    default: ''
+  pull-releases-repository:
+    description: >-
+      The environment's PULL_RELEASES_REPOSITORY secret (optional): owner/name
+      of the repository that receives the pull model's attested bundle. Cloud
+      feeds only; refused for the default profile and when it is the default
+      product's releases repository.
+    required: false
+    default: ''
+  release-feed:
+    description: >-
+      The environment's RELEASE_FEED secret (optional): github:<owner>/<name>
+      naming RELEASES_REPOSITORY, or cloud. Unset is github: with
+      RELEASES_REPOSITORY.
+    required: false
+    default: ''
+  feed-public-key:
+    description: >-
+      The environment's DESKTOP_FEED_PUBLIC_KEY secret: a cloud feed's
+      Ed25519 public key, base64 of 32 bytes. Required for cloud, refused
+      otherwise.
+    required: false
+    default: ''
+  feed-publisher-token-set:
+    description: >-
+      Whether the environment sets DESKTOP_FEED_PUBLISHER_TOKEN (true or
+      false), never the token: `secrets.DESKTOP_FEED_PUBLISHER_TOKEN != ''`.
+      Required for cloud, refused otherwise.
+    required: false
+    default: 'false'
+  support-url:
+    description: The environment's DESKTOP_SUPPORT_URL secret (optional).
+    required: false
+    default: ''
+  branding-url:
+    description: The environment's DESKTOP_BRANDING_URL secret (optional).
+    required: false
+    default: ''
+  branding-token:
+    description: >-
+      The environment's DESKTOP_BRANDING_TOKEN secret (optional): an override.
+      Unset, the action mints a short-lived, read-only installation token for
+      AgentWorkforce/desktop-branding from branding-app-id and
+      branding-app-private-key.
+    required: false
+    default: ''
+  branding-app-id:
+    description: >-
+      The organization's GH_APP_PUSHER_ID secret (optional): the GitHub App
+      installed on AgentWorkforce/desktop-branding. Used only when the
+      branding URL is in that repository and branding-token is unset.
+    required: false
+    default: ''
+  branding-app-private-key:
+    description: The organization's GH_APP_PUSHER_PRIVATE_KEY secret (optional).
+    required: false
+    default: ''
+  policy-defaults:
+    description: >-
+      The environment's DESKTOP_POLICY_DEFAULTS secret (optional): a JSON
+      object setting sharing_mode, upload_control, oops_window_seconds and
+      user_retroactive_delete, applied until the site's policy is read.
+    required: false
+    default: ''
+  history-upload-storage-origins:
+    description: >-
+      The environment's DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS secret
+      (optional): a JSON array of the https origins of the storage hosts
+      direct uploads may PUT to even when they resolve to private addresses.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Resolve the site profile
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        IN_SITE_URL: ${{ inputs.site-url }}
+        IN_URL_SCHEME: ${{ inputs.url-scheme }}
+        IN_PRODUCT_NAME: ${{ inputs.product-name }}
+        IN_BUNDLE_ID: ${{ inputs.bundle-id }}
+        IN_COEXIST: ${{ inputs.coexist }}
+        IN_RELEASES_REPOSITORY: ${{ inputs.releases-repository }}
+        IN_PULL_RELEASES_REPOSITORY: ${{ inputs.pull-releases-repository }}
+        IN_RELEASE_FEED: ${{ inputs.release-feed }}
+        IN_FEED_PUBLIC_KEY: ${{ inputs.feed-public-key }}
+        IN_FEED_PUBLISHER_TOKEN_SET: ${{ inputs.feed-publisher-token-set }}
+        IN_SUPPORT_URL: ${{ inputs.support-url }}
+        IN_BRANDING_URL: ${{ inputs.branding-url }}
+        IN_POLICY_DEFAULTS: ${{ inputs.policy-defaults }}
+        IN_HISTORY_UPLOAD_STORAGE_ORIGINS: ${{ inputs.history-upload-storage-origins }}
+      run: |
+        set -euo pipefail
+        # shellcheck source=scripts/site-origin.sh
+        . scripts/site-origin.sh
+        # DESKTOP_COEXIST: true opts the profile's Mac app out of the product
+        # takeover (build-app.sh --coexist); false or unset keeps it.
+        coexist_in="$(printf '%s' "$IN_COEXIST" | tr -d '[:space:]')"
+        case "$coexist_in" in
+          true) coexist=yes ;;
+          false|'') coexist= ;;
+          *) echo "::error::DESKTOP_COEXIST must be true, false or unset."; exit 1 ;;
+        esac
+        if [ -z "$PROFILE" ]; then
+          [ -z "$coexist" ] || { echo "::error::DESKTOP_COEXIST is a site profile's setting; the default profile always replaces other Agent Relay apps."; exit 1; }
+          [ -z "$IN_PULL_RELEASES_REPOSITORY" ] || { echo "::error::PULL_RELEASES_REPOSITORY is a site profile's setting; the default profile publishes only to its own releases repository."; exit 1; }
+          # The default profile: what every release before profiles was built
+          # for. The repository's own branding applies; the values are public.
+          {
+            echo "PROFILE="
+            echo "ASSET_PREFIX=$DEFAULT_ASSET_PREFIX"
+            echo "SITE_URL=$DEFAULT_SITE_URL"
+            echo "URL_SCHEME=$DEFAULT_URL_SCHEME"
+            echo "PRODUCT_NAME=$DEFAULT_PRODUCT_NAME"
+            echo "BUNDLE_ID=$DEFAULT_BUNDLE_ID"
+            echo "RELEASES_REPOSITORY=$DEFAULT_RELEASES_REPOSITORY"
+            echo "PULL_RELEASES_REPOSITORY="
+            echo "SUPPORT_URL="
+            echo "BRANDING_ICON="
+            echo "BRANDING_WANTED="
+            echo "RELEASE_FEED=$DEFAULT_RELEASE_FEED"
+            echo "FEED_PUBLIC_KEY="
+            echo "DESKTOP_POLICY_DEFAULTS="
+            echo "AGENT_RELAY_HISTORY_UPLOAD_STORAGE_ORIGINS="
+            echo "COEXIST="
+          } >> "$GITHUB_ENV"
+          exit 0
+        fi
+        profile="$(profile_id "$PROFILE")" || { echo "::error::The profile must be an opaque id of lowercase letters and digits, at most 40, with single hyphens between them (none at either end)."; exit 1; }
+        # The values come from the desktop-<id> environment's secrets, which
+        # the runner masks from the start of the job (a variable would be in
+        # the log already, in this step's header). The log names the profile
+        # by its id only; the values derived below (trimmed, normalised) are
+        # masked too before any step could print them, and none is echoed.
+        # The feed decides which of RELEASES_REPOSITORY and the cloud feed's
+        # key and publisher token the profile needs: unset is github: with
+        # RELEASES_REPOSITORY, as every profile before feeds.
+        if [ -n "$IN_RELEASE_FEED" ]; then
+          feed="$(release_feed "$IN_RELEASE_FEED")" || { echo "::error::RELEASE_FEED must be github:<owner>/<name> (the profile's RELEASES_REPOSITORY) or cloud."; exit 1; }
+        else
+          feed=github:
+        fi
+        required="IN_SITE_URL:AGENT_RELAY_SITE_URL IN_URL_SCHEME:AGENT_RELAY_URL_SCHEME IN_PRODUCT_NAME:DESKTOP_PRODUCT_NAME IN_BUNDLE_ID:DESKTOP_BUNDLE_ID"
+        if [ "$feed" = cloud ]; then
+          required="$required IN_FEED_PUBLIC_KEY:DESKTOP_FEED_PUBLIC_KEY"
+        else
+          required="$required IN_RELEASES_REPOSITORY:RELEASES_REPOSITORY"
+        fi
+        for pair in $required; do
+          name="${pair%%:*}"
+          [ -n "${!name}" ] || { echo "::error::The desktop-$profile environment does not set the secret ${pair#*:} (docs/workspace-layout.md, Site profiles)."; exit 1; }
+        done
+        case "$IN_FEED_PUBLISHER_TOKEN_SET" in
+          true) token_set=yes ;;
+          false|'') token_set= ;;
+          *) echo "::error::feed-publisher-token-set must be true or false."; exit 1 ;;
+        esac
+        if [ "$feed" = cloud ]; then
+          [ -z "$IN_RELEASES_REPOSITORY" ] || { echo "::error::RELEASES_REPOSITORY must be unset for a cloud feed; the profile's releases are on its own site."; exit 1; }
+          [ -n "$token_set" ] || { echo "::error::The desktop-$profile environment does not set the secret DESKTOP_FEED_PUBLISHER_TOKEN, which a cloud feed needs to publish (docs/workspace-layout.md, Site profiles)."; exit 1; }
+          key="$(feed_public_key "$IN_FEED_PUBLIC_KEY")" || { echo "::error::DESKTOP_FEED_PUBLIC_KEY must be an Ed25519 public key: the base64 of 32 bytes."; exit 1; }
+          repository=""
+        else
+          [ -z "$IN_FEED_PUBLIC_KEY" ] || { echo "::error::DESKTOP_FEED_PUBLIC_KEY must be unset for a github: feed; only a cloud feed is signed with it."; exit 1; }
+          [ -z "$token_set" ] || { echo "::error::DESKTOP_FEED_PUBLISHER_TOKEN must be unset for a github: feed; only a cloud feed is published with it."; exit 1; }
+          key=""
+          [ -z "$IN_PULL_RELEASES_REPOSITORY" ] || { echo "::error::PULL_RELEASES_REPOSITORY must be unset for a github: feed; the pull model publishes a cloud feed's release."; exit 1; }
+        fi
+        pull=""
+        if [ -n "$IN_PULL_RELEASES_REPOSITORY" ]; then
+          pull="$(releases_repository "$IN_PULL_RELEASES_REPOSITORY")" || { echo "::error::PULL_RELEASES_REPOSITORY must be owner/name."; exit 1; }
+        fi
+        site="$(site_origin "$IN_SITE_URL")" || { echo "::error::AGENT_RELAY_SITE_URL must be an https origin such as https://relay.example."; exit 1; }
+        scheme="$(url_scheme_name "$IN_URL_SCHEME")" || { echo "::error::AGENT_RELAY_URL_SCHEME must be a name such as acme-relay, not a web scheme."; exit 1; }
+        product="$(product_name "$IN_PRODUCT_NAME")" || { echo "::error::DESKTOP_PRODUCT_NAME must be a name with no control characters, slashes, quotes or the characters : * ? < > | { } , (it names a Windows shortcut and installer)."; exit 1; }
+        if [ "$feed" != cloud ]; then
+          repository="$(releases_repository "$IN_RELEASES_REPOSITORY")" || { echo "::error::RELEASES_REPOSITORY must be owner/name."; exit 1; }
+        fi
+        bundle="$(printf '%s' "$IN_BUNDLE_ID" | tr -d '[:space:]')"
+        [[ "$bundle" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] || { echo "::error::DESKTOP_BUNDLE_ID must be a reverse-DNS identifier such as com.example.desktop."; exit 1; }
+        [ "${#bundle}" -le 32 ] || { echo "::error::DESKTOP_BUNDLE_ID must be at most 32 characters."; exit 1; }
+        support="$(printf '%s' "$IN_SUPPORT_URL" | tr -d '[:space:]')"
+        if [ -n "$support" ]; then
+          [[ "$support" =~ ^https://[^\"]+$ ]] || { echo "::error::DESKTOP_SUPPORT_URL must be an https URL."; exit 1; }
+        fi
+        # The organization's upload settings until the site's policy is read
+        # (docs/workspace-layout.md, Site profiles): the checks desktop-core's
+        # build.rs makes again. The message names the secret, never its value.
+        policy="$(policy_defaults "$IN_POLICY_DEFAULTS")" || { echo "::error::DESKTOP_POLICY_DEFAULTS must be a JSON object setting only sharing_mode (all, new or selected), upload_control (operator or user), oops_window_seconds (0 to 86400) and user_retroactive_delete (true or false) (docs/workspace-layout.md, Site profiles)."; exit 1; }
+        # The storage hosts direct uploads may PUT to on a private address
+        # (docs/workspace-layout.md, Site profiles): the checks build.rs makes
+        # again. The message names the secret, never its value.
+        storage="$(upload_storage_origins "$IN_HISTORY_UPLOAD_STORAGE_ORIGINS")" || { echo "::error::DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS must be a JSON array of https origins on DNS names, such as https://store.example:9000, with no user info, path, query or fragment (docs/workspace-layout.md, Site profiles)."; exit 1; }
+        [[ "$site" == https://* ]] || { echo "::error::AGENT_RELAY_SITE_URL must be an https origin; a profile is never a local site."; exit 1; }
+        # A profile is never the default product: with the default's releases
+        # repository it would publish Desktop-<id> assets into the public
+        # feed as its latest release, and with its site, link scheme or bundle
+        # id it would sign in, open links or install as Agent Relay. The
+        # defaults are scripts/site-origin.sh's; repositories and bundle ids
+        # compare without case, as GitHub and macOS do.
+        lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+        [ -z "$pull" ] || [ "$(lower "$pull")" != "$(lower "$DEFAULT_RELEASES_REPOSITORY")" ] || { echo "::error::PULL_RELEASES_REPOSITORY must not be the default product's releases repository; the pull bundle goes to the profile's own."; exit 1; }
+        if [ "$feed" != cloud ]; then
+          [ "$(lower "$repository")" != "$(lower "$DEFAULT_RELEASES_REPOSITORY")" ] || { echo "::error::RELEASES_REPOSITORY must not be the default product's releases repository; a profile publishes to its own."; exit 1; }
+          # A github: feed names the profile's own releases repository, as
+          # GitHub compares names, without case.
+          if [ "$feed" != github: ] && [ "$(lower "${feed#github:}")" != "$(lower "$repository")" ]; then
+            echo "::error::RELEASE_FEED must name the profile's RELEASES_REPOSITORY: github:<owner>/<name> with the same owner/name."; exit 1
+          fi
+          feed="github:$repository"
+        fi
+        [ "$site" != "$DEFAULT_SITE_URL" ] || { echo "::error::AGENT_RELAY_SITE_URL must not be the default product's site; a profile signs in to its own."; exit 1; }
+        [ "$scheme" != "$DEFAULT_URL_SCHEME" ] || { echo "::error::AGENT_RELAY_URL_SCHEME must not be the default product's link scheme; a profile opens its own links."; exit 1; }
+        [ "$(lower "$bundle")" != "$(lower "$DEFAULT_BUNDLE_ID")" ] || { echo "::error::DESKTOP_BUNDLE_ID must not be the default product's bundle identifier; a profile's Mac app is its own."; exit 1; }
+        # The id is the one value that may appear in logs and job outputs, so
+        # it must not contain any value masked below: a job output holding a
+        # masked value is dropped by the runner.
+        for value in "$site" "$scheme" "$product" "$repository" "$pull" "$bundle" "$support" "$key"; do
+          [ -z "$value" ] || case "$profile" in *"$value"*) echo "::error::The profile id must not contain one of the profile's own values (its link scheme or product name, for example)."; exit 1 ;; esac
+        done
+        # The feed is masked through its repository (github:) or is the
+        # word cloud, which is no secret; the key is the profile's own.
+        for value in "$site" "$scheme" "$product" "$repository" "$pull" "$bundle" "$support" "$key" "$policy" "$storage"; do
+          [ -z "$value" ] || echo "::add-mask::$value"
+        done
+        # A cloud feed's key fingerprint, never the key: the SHA-256 of its
+        # decoded 32 bytes, for an observer to compare with the installed
+        # app's key (docs/enterprise-distribution.md, Pull model).
+        if [ -n "$key" ]; then
+          fingerprint="$(printf '%s' "$key" | python3 -c 'import sys,base64,hashlib; print(hashlib.sha256(base64.b64decode(sys.stdin.read())).hexdigest())')"
+          echo "::notice::Feed public key SHA-256 fingerprint: $fingerprint"
+        fi
+        {
+          echo "PROFILE=$profile"
+          echo "ASSET_PREFIX=$(asset_prefix "$profile")"
+          echo "SITE_URL=$site"
+          echo "URL_SCHEME=$scheme"
+          echo "PRODUCT_NAME=$product"
+          echo "BUNDLE_ID=$bundle"
+          echo "RELEASES_REPOSITORY=$repository"
+          echo "PULL_RELEASES_REPOSITORY=$pull"
+          echo "SUPPORT_URL=$support"
+          echo "BRANDING_ICON="
+          echo "BRANDING_WANTED=${IN_BRANDING_URL:+yes}"
+          echo "RELEASE_FEED=$feed"
+          echo "FEED_PUBLIC_KEY=$key"
+          echo "DESKTOP_POLICY_DEFAULTS=$policy"
+          echo "AGENT_RELAY_HISTORY_UPLOAD_STORAGE_ORIGINS=$storage"
+          echo "COEXIST=$coexist"
+        } >> "$GITHUB_ENV"
+        echo "Profile $profile"
+
+    # The branding archive lives in the private AgentWorkforce/desktop-branding
+    # repository. Without a DESKTOP_BRANDING_TOKEN override, the organization's
+    # GitHub App mints a token scoped to that repository, Contents: read, that
+    # expires within the hour. Only for a profile whose branding URL is in that
+    # repository, so the token is never sent anywhere else; the default
+    # profile, profiles without branding and forks without the App's secrets
+    # never mint.
+    - name: Mint a branding token
+      id: branding-app-token
+      if: >-
+        ${{ inputs.profile != '' && inputs.branding-token == ''
+        && inputs.branding-app-id != '' && inputs.branding-app-private-key != ''
+        && (startsWith(inputs.branding-url, 'https://raw.githubusercontent.com/AgentWorkforce/desktop-branding/')
+        || startsWith(inputs.branding-url, 'https://api.github.com/repos/AgentWorkforce/desktop-branding/contents/')) }}
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: ${{ inputs.branding-app-id }}
+        private-key: ${{ inputs.branding-app-private-key }}
+        owner: AgentWorkforce
+        repositories: desktop-branding
+        permission-contents: read
+
+    - name: Fetch branding
+      if: ${{ inputs.profile != '' && inputs.branding-url != '' }}
+      shell: bash
+      env:
+        BRANDING_URL: ${{ inputs.branding-url }}
+        BRANDING_TOKEN: ${{ inputs.branding-token || steps.branding-app-token.outputs.token }}
+      run: |
+        set -euo pipefail
+        # A tar.gz at a private location, fetched with a bearer token: icon.svg
+        # (the app's mark, square), optionally icon.png (1024x1024) and
+        # colours.json. Unpacked into branding/ in the workspace, which the
+        # build steps pass as --icon; members with a path are refused.
+        [[ "$BRANDING_URL" =~ ^https:// ]] || { echo "::error::DESKTOP_BRANDING_URL must be an https URL."; exit 1; }
+        # The archive stays inside the workspace: on the Windows runners
+        # RUNNER_TEMP is a drive-letter path, which GNU tar reads as a
+        # remote host (host:file).
+        archive=.branding.tar.gz
+        rm -rf branding "$archive"
+        mkdir branding
+        # Either a raw.githubusercontent.com URL or the contents API
+        # (https://api.github.com/repos/<owner>/<repo>/contents/<path>), which
+        # returns the file itself only when asked for the raw media type. Both
+        # take an installation token as a bearer token.
+        headers=()
+        if [[ "$BRANDING_URL" =~ ^https://api\.github\.com/repos/[^/]+/[^/]+/contents/ ]]; then
+          headers+=(-H "Accept: application/vnd.github.raw" -H "X-GitHub-Api-Version: 2022-11-28")
+        fi
+        if [ -n "$BRANDING_TOKEN" ]; then
+          headers+=(-H "Authorization: Bearer $BRANDING_TOKEN")
+        fi
+        curl -fsSL --retry 3 ${headers[@]+"${headers[@]}"} "$BRANDING_URL" -o "$archive" || {
+          echo "::error::Could not fetch the branding archive. A private repository needs DESKTOP_BRANDING_TOKEN, or GH_APP_PUSHER_ID and GH_APP_PUSHER_PRIVATE_KEY with the App installed on AgentWorkforce/desktop-branding."
+          exit 1
+        }
+        # Checks the archive's member names against the allow-list, then that
+        # each allow-listed member is a regular file: a symlink or hard link
+        # named icon.svg would be read through to a file outside branding/.
+        # Other entries (tar's own ./ root directory) are not type-checked;
+        # they are never extracted.
+        branding_members_ok() {
+          local archive="$1" members member line
+          allowed=()
+          members="$(tar -tzf "$archive")"
+          while IFS= read -r member; do
+            [ -n "$member" ] || continue
+            case "$member" in
+              .|./) ;;
+              icon.svg|icon.png|colours.json|./icon.svg|./icon.png|./colours.json) allowed+=("$member") ;;
+              *) echo "::error::The branding archive may hold only icon.svg, icon.png and colours.json at its root; it holds another member."; return 1 ;;
+            esac
+          done <<< "$members"
+          for member in ${allowed[@]+"${allowed[@]}"}; do
+            line="$(tar -tvzf "$archive" -- "$member" | head -n 1)"
+            [ "${line:0:1}" = "-" ] || { echo "::error::The branding archive member $member is not a regular file (links, directories and devices are refused)."; return 1; }
+          done
+        }
+        branding_members_ok "$archive" || exit 1
+        tar -xzf "$archive" -C branding -- ${allowed[@]+"${allowed[@]}"}
+        rm -f "$archive"
+        for name in icon.svg icon.png colours.json; do
+          if [ -L "branding/$name" ] || { [ -e "branding/$name" ] && [ ! -f "branding/$name" ]; }; then
+            echo "::error::branding/$name is not a regular file."; exit 1
+          fi
+        done
+        [ -f branding/icon.svg ] || { echo "::error::The branding archive has no icon.svg."; exit 1; }
+        grep -q '<svg' branding/icon.svg || { echo "::error::branding/icon.svg is not an SVG."; exit 1; }
+        echo "BRANDING_ICON=branding/icon.svg" >> "$GITHUB_ENV"
+        echo "Branding fetched: $(ls branding | tr '\n' ' ')"

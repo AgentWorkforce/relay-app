@@ -1,0 +1,44 @@
+{
+  "provenance": "Synthetic metadata only: installed GitHub Copilot SDK native mcpGenerateQualifiedToolName(server, tool, []). No model, session, MCP connection or network operation.",
+  "sdkVersion": "1.0.73",
+  "runtimePlatform": "darwin-arm64",
+  "runtimeSha256": "7ad534c5ee0c4f678e90c44d0b1f5112ab8bad27d17903c653a78e08fa9f44c3",
+  "cases": [
+    {
+      "server": "agentrelay",
+      "tool": "send_relay_message",
+      "qualifiedName": "agentrelay-send_relay_message",
+      "acceptedTool": "send_relay_message"
+    },
+    {
+      "server": "agent-relay",
+      "tool": "send_relay_message",
+      "qualifiedName": "agent-relay-send_relay_message",
+      "acceptedTool": null
+    },
+    {
+      "server": "agent",
+      "tool": "relay-send_relay_message",
+      "qualifiedName": "agent-relay-send_relay_message",
+      "acceptedTool": null
+    },
+    {
+      "server": "agentrelay!",
+      "tool": "send_relay_message",
+      "qualifiedName": "agentrelay--send_relay_message",
+      "acceptedTool": null
+    },
+    {
+      "server": "agentrelay",
+      "tool": "send_relay_message-extra",
+      "qualifiedName": "agentrelay-send_relay_message-extra",
+      "acceptedTool": null
+    },
+    {
+      "server": "agentrelay",
+      "tool": "unknown_tool",
+      "qualifiedName": "agentrelay-unknown_tool",
+      "acceptedTool": null
+    }
+  ]
+}

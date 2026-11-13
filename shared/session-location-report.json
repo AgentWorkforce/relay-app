@@ -1,0 +1,25 @@
+{
+  "supported": true,
+  "running": true,
+  "current": [
+    {
+      "application": "Ghostty",
+      "bundle_id": "com.mitchellh.ghostty",
+      "pid": 30,
+      "process_start": 31,
+      "tty": "/dev/ttys004",
+      "observed_at_ms": 1000
+    }
+  ],
+  "previous": [
+    {
+      "application": "Claude",
+      "bundle_id": "com.anthropic.claudefordesktop",
+      "pid": 40,
+      "process_start": 41,
+      "observed_at_ms": 900
+    }
+  ],
+  "desktop_link": "claude://code/continue?session=local_exact",
+  "reason": null
+}

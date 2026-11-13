@@ -1,0 +1,32 @@
+#!/bin/sh
+# A running user manager keeps the agent-relay.service definition it loaded
+# until it reloads, so a unit whose core moved would restart the old path.
+#
+# Releases up to v2026.10.57 installed the app as /usr/bin/agent-relay, the
+# npm Agent Relay CLI's name, and wrote launch-at-login entries that run it.
+# The package now installs only /usr/bin/agent-relay-desktop, so each such
+# entry is pointed at the new name here, before the next login, as its owner.
+# Only the command changes: an entry the person turned off stays off.
+set -e
+if [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then
+  for runtime in /run/user/*; do
+    [ -d "$runtime" ] || continue
+    user="$(id -nu "${runtime##*/}" 2>/dev/null)" || continue
+    systemctl --user --machine="$user@" daemon-reload >/dev/null 2>&1 || true
+  done
+fi
+if [ "$1" = configure ] && command -v runuser >/dev/null 2>&1; then
+  getent passwd | while IFS=: read -r user _ uid _ _ home _; do
+    entry="$home/.config/autostart/agent-relay.desktop"
+    case "$home" in /?*) ;; *) continue ;; esac
+    if [ ! -f "$entry" ] || [ -L "$entry" ]; then continue; fi
+    [ "$(stat -c %u "$entry" 2>/dev/null)" = "$uid" ] || continue
+    grep -qx 'Exec=/usr/bin/agent-relay --background' "$entry" 2>/dev/null || continue
+    grep -qx 'Name=Agent Relay' "$entry" || continue
+    grep -qx 'Icon=agent-relay' "$entry" || continue
+    runuser -u "$user" -- sed -i \
+      's|^Exec=/usr/bin/agent-relay --background$|Exec=/usr/bin/agent-relay-desktop --background|' \
+      "$entry" >/dev/null 2>&1 || true
+  done
+fi
+exit 0

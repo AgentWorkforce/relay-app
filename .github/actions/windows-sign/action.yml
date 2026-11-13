@@ -1,0 +1,193 @@
+name: Windows signing
+description: >-
+  Sign in to Azure Trusted Signing with OIDC and provide a sign command for
+  scripts/package-windows.py (mode setup), or verify the Authenticode
+  signatures of what a package job built (mode verify).
+# Signing uses the ArtifactSigning PowerShell module (the engine of
+# Azure/artifact-signing-action, formerly trusted-signing-action, at the
+# version its v2.0.0 installs) rather than that action itself: the action signs
+# files that exist when it runs, but the PE files must be signed inside
+# scripts/package-windows.py (after the hash-verified runtimes are staged and
+# before they are zipped) and Setup and its uninstaller inside Inno Setup's
+# compile. One sign command serves both.
+inputs:
+  mode:
+    description: setup or verify
+    required: true
+  # mode setup: the six repository variables (docs/windows-app.md, "Code signing").
+  tenant-id:
+    description: Microsoft Entra tenant of the signing identity
+    required: false
+  client-id:
+    description: Client ID of the app registration with the federated credential
+    required: false
+  subscription-id:
+    description: Subscription that holds the Trusted Signing account
+    required: false
+  endpoint:
+    description: Trusted Signing account endpoint (https://<region>.codesigning.azure.net)
+    required: false
+  account:
+    description: Trusted Signing account name
+    required: false
+  certificate-profile:
+    description: Certificate profile name
+    required: false
+  # mode verify.
+  sign:
+    description: Whether this build was signed ("true"); otherwise verification is skipped with a warning
+    required: false
+    default: 'false'
+  archives:
+    description: Zips whose PE files must carry a valid signature, one per line
+    required: false
+    default: ''
+  files:
+    description: Files that must carry a valid signature, one per line
+    required: false
+    default: ''
+outputs:
+  sign-command:
+    description: A Windows command line that signs the files appended to it in place (mode setup)
+    value: ${{ steps.prepare.outputs.sign-command }}
+  signtool:
+    description: Path of the signtool.exe that verified the signatures (mode verify, signed builds)
+    value: ${{ steps.verify.outputs.signtool }}
+runs:
+  using: composite
+  steps:
+    - name: Sign in to Azure with OIDC
+      if: inputs.mode == 'setup'
+      uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        tenant-id: ${{ inputs.tenant-id }}
+        subscription-id: ${{ inputs.subscription-id }}
+
+    - name: Prepare the sign command
+      id: prepare
+      if: inputs.mode == 'setup'
+      shell: pwsh
+      env:
+        SIGNING_ENDPOINT: ${{ inputs.endpoint }}
+        SIGNING_ACCOUNT: ${{ inputs.account }}
+        SIGNING_PROFILE: ${{ inputs.certificate-profile }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # The federated GitHub token az signed in with is short-lived. Fetch the
+        # code signing access token now so az's cache serves the signing runs
+        # later in the job.
+        az account get-access-token --resource https://codesigning.azure.net --output none
+        if ($LASTEXITCODE -ne 0) { throw 'Could not get a Trusted Signing access token' }
+        Install-Module -Name ArtifactSigning -RequiredVersion 0.1.8 -Repository PSGallery -Scope CurrentUser -Force
+        $directory = Join-Path $env:RUNNER_TEMP 'windows-sign'
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        [ordered]@{ endpoint = $env:SIGNING_ENDPOINT; account = $env:SIGNING_ACCOUNT; profile = $env:SIGNING_PROFILE } |
+          ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $directory 'signing.json')
+        $script = Join-Path $directory 'sign.ps1'
+        Set-Content -Encoding utf8 -LiteralPath $script -Value @'
+        # Signs the files given as arguments in place with Azure Trusted Signing
+        # (SHA256 file and timestamp digests, Microsoft's RFC 3161 timestamp),
+        # through az's sign-in only, and fails unless each is then validly signed.
+        param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Files)
+        $ErrorActionPreference = 'Stop'
+        if (-not $Files) { throw 'No files to sign' }
+        foreach ($file in $Files) {
+          if (-not [System.IO.Path]::IsPathRooted($file)) { throw "Not an absolute path: $file" }
+          # The module takes its file list comma-separated.
+          if ($file.Contains(',')) { throw "A path with a comma cannot be signed: $file" }
+          if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "No such file: $file" }
+        }
+        $config = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'signing.json') | ConvertFrom-Json
+        Import-Module ArtifactSigning -RequiredVersion 0.1.8
+        $parameters = @{
+          Endpoint = $config.endpoint
+          CodeSigningAccountName = $config.account
+          CertificateProfileName = $config.profile
+          Files = $Files -join ','
+          FileDigest = 'SHA256'
+          TimestampRfc3161 = 'http://timestamp.acs.microsoft.com'
+          TimestampDigest = 'SHA256'
+          ExcludeEnvironmentCredential = $true
+          ExcludeWorkloadIdentityCredential = $true
+          ExcludeManagedIdentityCredential = $true
+          ExcludeSharedTokenCacheCredential = $true
+          ExcludeVisualStudioCredential = $true
+          ExcludeVisualStudioCodeCredential = $true
+          ExcludeAzurePowerShellCredential = $true
+          ExcludeAzureDeveloperCliCredential = $true
+          ExcludeInteractiveBrowserCredential = $true
+        }
+        Invoke-ArtifactSigning @parameters
+        foreach ($file in $Files) {
+          $signature = Get-AuthenticodeSignature -LiteralPath $file
+          if ($signature.Status -ne 'Valid') { throw "Not validly signed after signing ($($signature.Status)): $file" }
+        }
+        '@
+        $pwsh = (Get-Process -Id $PID).Path
+        "sign-command=`"$pwsh`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`"" >> $env:GITHUB_OUTPUT
+
+    - name: Verify the signatures
+      id: verify
+      if: inputs.mode == 'verify'
+      shell: pwsh
+      env:
+        SIGN: ${{ inputs.sign }}
+        ARCHIVES: ${{ inputs.archives }}
+        FILES: ${{ inputs.files }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:SIGN -ne 'true') {
+          Write-Output '::warning title=Windows signing skipped::Unsigned build: no signatures to verify.'
+          Write-Output 'Windows signing skipped: unsigned build, no signatures to verify.'
+          exit 0
+        }
+        function Test-PortableExecutable([string] $Path) {
+          $stream = [System.IO.File]::OpenRead($Path)
+          try {
+            $header = [byte[]]::new(64)
+            if ($stream.Read($header, 0, 64) -lt 64 -or $header[0] -ne 0x4D -or $header[1] -ne 0x5A) { return $false }
+            $stream.Position = [BitConverter]::ToUInt32($header, 0x3C)
+            $signature = [byte[]]::new(4)
+            return ($stream.Read($signature, 0, 4) -eq 4) -and ([BitConverter]::ToUInt32($signature, 0) -eq 0x00004550)
+          } finally { $stream.Dispose() }
+        }
+        # The newest Windows SDK signtool for this machine, else x64's, else
+        # the one the ArtifactSigning module downloaded.
+        $native = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+        $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+        $candidates = @(foreach ($arch in $native, 'x64') {
+          Get-ChildItem -Path $kits -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -as [version] } | Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName "$arch\signtool.exe" }
+        })
+        $candidates += Get-ChildItem -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue `
+          -Path (Join-Path $env:LOCALAPPDATA 'ArtifactSigning') | ForEach-Object FullName
+        $signtool = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+        if (-not $signtool) { throw 'signtool.exe was not found' }
+        Write-Output "Verifying with $signtool"
+        "signtool=$signtool" >> $env:GITHUB_OUTPUT
+        $files = [System.Collections.Generic.List[string]]::new()
+        $expanded = Join-Path $env:RUNNER_TEMP 'windows-sign-verify'
+        if (Test-Path $expanded) { Remove-Item -Recurse -Force $expanded }
+        $index = 0
+        foreach ($archive in $env:ARCHIVES -split "`r?`n" | Where-Object { $_.Trim() }) {
+          $destination = Join-Path $expanded ($index++)
+          Expand-Archive -LiteralPath $archive.Trim() -DestinationPath $destination
+          $found = @(Get-ChildItem -Recurse -File -LiteralPath $destination |
+            Where-Object { Test-PortableExecutable $_.FullName } | ForEach-Object FullName)
+          if (-not $found) { throw "No PE files in $archive" }
+          $files.AddRange([string[]]$found)
+        }
+        foreach ($file in $env:FILES -split "`r?`n" | Where-Object { $_.Trim() }) {
+          if (-not (Test-Path -LiteralPath $file.Trim() -PathType Leaf)) { throw "No such file: $file" }
+          $files.Add((Resolve-Path -LiteralPath $file.Trim()).Path)
+        }
+        if ($files.Count -eq 0) { throw 'Nothing to verify' }
+        for ($start = 0; $start -lt $files.Count; $start += 50) {
+          $batch = $files.GetRange($start, [Math]::Min(50, $files.Count - $start)).ToArray()
+          & $signtool verify /pa /v @batch
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE)" }
+        }
+        Remove-Item -Recurse -Force $expanded
+        Write-Output "Verified the Authenticode signatures of $($files.Count) files."

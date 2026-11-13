@@ -1,0 +1,674 @@
+# Agent Relay Desktop
+
+Native, temporary agent collaboration: see [Relay Connect](docs/native-connect.md).
+
+
+The native companion app that connects a computer to
+[Agent Relay Teams](https://agentrelay.com) in two clicks: install the app, sign
+in with Google, done.
+
+It bundles `agent-relay-probe`, the relay core: one Rust program that puts your
+local coding sessions (Claude Code, Codex and friends) on the relay, delivers
+messages to them, and captures and uploads them to your workspace. The app shows
+that in the menu bar and lets you pause uploads, choose which past sessions to
+share, and message your agents. You never have to touch a terminal.
+
+macOS, Linux and Windows ship as full companion apps; the
+[Windows app](windows/README.md) is the Linux GTK app built for Windows. The
+native [iPhone and iPad app](ipad/native/README.md) connects directly to Cloud
+and Relaycast.
+
+## Cloud development stack
+
+Run `npm run dev:desktop` from `../cloud` to build and open **Agent Relay Dev** with
+marketing, Cloud, and History. The launcher packages a local DMG for the Teams
+signup flow. The app is pinned to the printed loopback origin, uses a separate
+bundle ID/URL scheme and its own `com.agentrelay.desktop.dev` Application
+Support directory, and leaves production connections and the CLI untouched.
+Ctrl+C stops the app and collectors for that exact local origin.
+
+To test onboarding, open the printed `/teams` URL, sign in, download the DMG,
+drag the app into Applications, and use **Open Agent Relay Dev** on the page.
+Continue with Google in the app, then choose sessions to
+upload. `npm run test:sessions:local` in Cloud checks the DMG and synthetic
+selected-session delivery; browser Google sign-in remains a manual test.
+
+### Try provider setup in the development app
+
+Agent Relay Dev keeps provider profiles under its own app-data directory in
+`mcp/clients`, with Codex in the shorter owner-scoped directory
+`~/.agent-relay-dev/<app-data-hash>/codex` so its native control socket fits
+macOS path limits. Connect a provider from onboarding or **Settings → Providers**;
+the installed hosted MCP uses the development app’s login and core socket.
+Development helpers are private, content-addressed copies under `mcp/bin`.
+Normal provider configurations and their saved credentials are not copied.
+
+Run test chats with the development profile explicitly. On macOS:
+
+```bash
+relay_dev_profiles="$HOME/Library/Application Support/com.agentrelay.desktop.dev/mcp/clients"
+mkdir -p "$relay_dev_profiles/../workspace"
+cd "$relay_dev_profiles/../workspace"
+relay_dev_data="$HOME/Library/Application Support/com.agentrelay.desktop.dev"
+relay_dev_scope=$(printf %s "$relay_dev_data" | shasum -a 256 | cut -c1-12)
+relay_dev_codex="$HOME/.agent-relay-dev/$relay_dev_scope/codex"
+CODEX_HOME="$relay_dev_codex" CODEX_SQLITE_HOME="$relay_dev_codex" codex
+CLAUDE_CONFIG_DIR="$relay_dev_profiles/.claude" claude
+```
+
+Use a private test working directory so project-level MCP files do not override
+the test configuration. These fresh profiles may need their own provider sign-in
+to run a model.
+The Agent Relay MCP uses the app’s login; it does not ask for another Relay
+login. Ordinary Codex and Claude sessions continue using their normal profiles.
+
+
+## Start over with local sessions during development
+
+Build the probe, list its configured installs, then reset the intended one:
+
+```bash
+cargo build --manifest-path desktop-core/Cargo.toml --bin agent-relay-desktop-probe
+target/debug/agent-relay-desktop-probe sharing status --json
+target/debug/agent-relay-desktop-probe sessions reset --local \
+  --site-url '<site_url>' --account '<account_id>' --workspace '<workspace_id>' \
+  --confirmation 'RESET LOCAL SESSIONS'
+```
+
+Use the install’s site origin and IDs from `sharing status`. For local development,
+use the launcher’s exact origin, including its port. This command keeps sign-in
+and original Codex/Claude conversations, clears the target install’s upload journal
+and selections, and restarts its collector with manual selection and no uploads
+selected. Cloud sessions are unchanged. Existing conversations can be discovered,
+read, and selected again; refresh the desktop session list after it finishes.
+
+Reader/preview caches and the old reset exclusion list are shared across local
+installs, so those are cleared machine-wide. Other installs’ upload journals and
+selections are retained. Interrupted local resets replay locally before capture
+resumes. A pending cloud reset must be completed before switching reset modes.
+
+Without `--local`, `sessions reset` remains the destructive cloud-and-local reset
+and requires `DELETE ALL SESSIONS`. Use `--local` for a development start-over;
+the destructive reset deliberately excludes pre-existing sessions. Neither reset
+is exposed in the desktop Settings UI.
+
+## Download
+
+The macOS app requires macOS 15 (Sequoia) or later.
+
+| Mac | Download |
+| --- | --- |
+| Apple silicon (M1 and later) | [**AgentRelay-macOS-arm64.dmg**](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-macOS-arm64.dmg) |
+| Intel | [**AgentRelay-macOS-x64.dmg**](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-macOS-x64.dmg) |
+
+Linux releases include `.deb` packages and relocatable `.tar.gz` trees for
+x64 and arm64. See [linux/README.md](linux/README.md) for dependencies,
+source runs, and packaging.
+
+| Linux | Debian package | Tarball |
+| --- | --- | --- |
+| x64 | [**AgentRelay-Linux-x64.deb**](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Linux-x64.deb) | [`.tar.gz`](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Linux-x64.tar.gz) |
+| arm64 | [**AgentRelay-Linux-arm64.deb**](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Linux-arm64.deb) | [`.tar.gz`](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Linux-arm64.tar.gz) |
+
+Windows releases are per-user installs for x64 and arm64 that carry the GTK
+runtime: a Setup program, or a portable `.zip`. See
+[windows/README.md](windows/README.md) for installing, the logon task,
+building with MSYS2, and the harnesses Windows lacks.
+
+| Windows | Installer | Portable |
+| --- | --- | --- |
+| x64 | [**AgentRelay-Windows-x64-Setup.exe**](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Windows-x64-Setup.exe) | [`.zip`](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Windows-x64.zip) |
+| arm64 | [**AgentRelay-Windows-arm64-Setup.exe**](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Windows-arm64-Setup.exe) | [`.zip`](https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/AgentRelay-Windows-arm64.zip) |
+
+For unattended macOS installation, headless Ubuntu/systemd installation, and
+the private session-socket setup API, see [Agent-driven setup](docs/agent-driven-setup.md).
+
+Not sure which you have? Apple menu → **About This Mac**. "Chip" means Apple
+silicon; "Processor" means Intel.
+
+Those two URLs always resolve to the newest release. Every release also carries
+version-pinned copies, byte-identical to the stable names, whose names state the
+oldest macOS the build runs on: `AgentRelay-<version>-macOS<floor>-<arch>.dmg`,
+for example `AgentRelay-2026.09.1-macOS13-arm64.dmg` runs on macOS 13 and newer.
+The in-app updater installs a release only when this Mac meets that floor.
+Each image has a `.sha256`:
+
+```sh
+shasum -a 256 -c AgentRelay-macOS-arm64.dmg.sha256
+shasum -a 256 -c AgentRelay-2026.11.1-macOS15-arm64.dmg.sha256
+```
+
+Open the image, drag **Agent Relay** to Applications, and launch it.
+
+### Welcome and uploads
+
+The window is the sessions table: every session on this computer with its
+upload state, its switch onto the relay and the controls to choose which
+upload. **Settings** and your account sit in the header; Settings › General
+chooses Match system, Light or Dark. On Linux and Windows a Messages page holds
+your open conversations. The layout is documented in
+[`docs/workspace-layout.md`](docs/workspace-layout.md).
+
+Agent Relay opens a full window as well as a menu-bar control. The welcome
+screen uses a split layout, with sign-in on the right. Sign in with Google in
+your browser; signing in does not select any sessions for upload. The relay core
+keeps your Agent Relay session, connects the workspace, captures the local
+session catalog and starts the background collector. The window then opens
+Sessions automatically.
+
+The menu-bar panel counts how many sessions are receiving messages, local
+only, uploaded and not. Each row's switch puts the session on the relay, which
+gives it a name to message and uploads it. Search filters the list; opening a
+row shows its transcript, address, ids, folder and upload. An
+`agentrelay://message` link opens the message composer. Workspace and Claude
+Code delivery settings live in **Settings › Messages**.
+
+The default is **Only sessions I choose**. In **My sessions** (also the upload
+status in the window's status bar or the menu-bar panel), check the rows you want
+and click **Upload selected**. Checking a row alone does not start an upload.
+Selected sessions continue uploading changes; other existing and newly discovered
+sessions stay local. **Settings › Session sharing** is where automatic uploads
+for new sessions or all past and future sessions require explicit confirmation.
+Existing saved upload policies are preserved. Already uploaded remote data is not
+deleted by stopping uploads.
+
+My sessions displays actual per-session queued/uploading/uploaded states and
+record-level progress. The open window refreshes every five seconds. Search
+filters loaded sessions; **Load more** extends the initial 500-session page.
+
+The session uploads table opens with the latest local titles from the uploader's
+shallow catalog while full history capture continues. Preview rows remain
+unselectable until the uploader confirms they are ready. The desktop shows
+per-source files processed and sessions captured locally. The preview catalog,
+local file counts and capture counts stay on the Mac; Cloud receives only
+permitted-session delivery progress. Sessions on the relay are uploaded.
+Settings controls opening at login, the background service and upload policy.
+Settings and Account include About diagnostics: the desktop release (or Git
+revision for development), running and bundled service versions, the compiled
+RelayHistory (`ai-hist`) version, bridge protocol, service process, Relaycast
+verification and live-channel state, and Cloud/Relaycast workspace IDs. Copy
+diagnostics copies those displayed fields without credentials or session content.
+Disconnected services mark their retained snapshot as stale. Account also lets
+you log out.
+Quitting the app leaves the relay core running: agents keep receiving messages
+and uploads continue. Reopen the app from the Dock or Applications. Turn off
+**Settings › General › Keep agents connected after quitting** to have quitting
+stop the core until the app opens again.
+
+### First run
+
+When the release was built with Developer ID credentials it is signed and
+notarized, and opens normally.
+
+Local builds and PR CI builds produced without those credentials are **ad-hoc signed**. macOS then
+refuses the first launch with *"Agent Relay" cannot be opened because it is from
+an unidentified developer*. To open it once:
+
+1. In Applications, **right-click** (or Control-click) **Agent Relay**.
+2. Choose **Open**.
+3. Choose **Open** again in the dialog.
+
+macOS remembers the decision; later launches are normal. On macOS 15 you may
+instead have to go to **System Settings → Privacy & Security** and click **Open
+Anyway** under the message about Agent Relay.
+
+## How the relay core is bundled and run
+
+The relay core is relay's public core,
+[`crates/relay-node`](https://github.com/AgentWorkforce/relay/tree/main/crates/relay-node),
+which `desktop-core/` pins and extends with the desktop's sign-in, hosted MCP
+and session history.
+CI and releases build `desktop-core`'s binary for every target and stamp it with
+the desktop release version it ships in. It reads local history through the published `ai-hist` crate.
+`build-app.sh` lays it inside the bundle with the LaunchAgent that runs it:
+
+```
+Agent Relay.app/Contents/
+  Info.plist
+  PkgInfo
+  MacOS/RelayDesktop                                  # the SwiftUI app
+  Helpers/Agent Relay Helper                          # agent-relay-probe: the relay core, 0755
+  Helpers/Agent Relay Helper (Sessions)               # a hard link to it: the session collector
+  Library/LaunchAgents/com.agentrelay.desktop.core.plist
+  Resources/AppIcon.icns
+  Resources/agent-relay-probe.sha256                  # checksum of the bundled core
+  Resources/probe-version.txt                         # the core's version
+  Resources/site-url.txt                              # the site this build signs in to
+  Resources/url-scheme.txt                            # the scheme of the links it opens
+  Resources/releases-repository.txt                   # where it checks for updates
+  Resources/asset-prefix.txt                          # the first part of its release images' names
+  Resources/mark.txt                                  # with --icon only: the app icon is the mark it draws
+```
+
+The app registers the LaunchAgent with `SMAppService.agent` on launch. launchd
+runs `agent-relay-probe serve` at login with no window, keeps it alive,
+and restarts it from the bundle after an update; the app is a client of its
+socket, `~/.agentworkforce/desktop/core.sock`. Activity Monitor lists the core
+as **Agent Relay Helper** and the session collector it starts as **Agent Relay
+Helper (Sessions)**. The collector reads local sessions, lists them for *My
+sessions* and uploads the ones being shared; it runs as a background process,
+so it yields to everything else. When macOS asks for approval,
+Settings and the sign-in screen open **System Settings › General › Login
+Items**. With **Keep agents connected after quitting** off, quitting
+unregisters the LaunchAgent, which stops the core until Agent Relay opens again. Agent Relay Dev has its own label
+(`com.agentrelay.desktop.dev.core`), socket (`core.dev.sock`) and data directory
+(`com.agentrelay.desktop.dev`), and a build with any other bundle id
+(`build-app.sh --bundle-id`) its own in the same way (`<id>.core`,
+`core.<id>.sock`, `<id>`). The bridge contract and the lifecycle are in
+[`docs/relay-core.md`](docs/relay-core.md).
+
+The core keeps `~/.local/bin/agent-relay-probe` no older than itself (never over
+a copy another developer signed) so the command line runs the same uploader.
+Packaging checks that the core serves `serve` and that the uploader
+commands it runs support `--json`, `--selected-sessions-only` and
+`sessions preview`; the check runs on hosts that match the build target.
+
+Sign-in opens Google in your default browser and returns to a localhost
+receiver the core runs; the app never handles Google credentials or tokens.
+
+## Development
+
+Requirements: macOS 15 or later, the Xcode 16 command line tools (the macOS 15
+SDK), and a Rust toolchain for the probe.
+
+```sh
+# The app on its own (SwiftPM, no Xcode project)
+swift build --package-path macos
+swift test  --package-path macos
+
+# The desktop core and its tests (relay's CI tests the public core it pins)
+cargo test --manifest-path desktop-core/Cargo.toml --locked
+scripts/build-probe.sh --target aarch64-apple-darwin --version 0.0.0 --out probe-build
+
+# A complete, ad-hoc signed bundle
+scripts/build-app.sh --arch arm64 --version 0.0.0 --probe probe-build --out dist
+
+# Agent Relay Dev, for a Cloud on http://localhost:3100: the core signs in
+# to the site it was built for, so its probe is built for that site and the
+# Dev link scheme (nothing at run time changes either)
+scripts/build-probe.sh --target aarch64-apple-darwin --version 0.0.0 --out probe-dev \
+  --site-url http://localhost:3100 --url-scheme agentrelay-dev
+scripts/build-app.sh --arch arm64 --version 0.0.0 --probe probe-dev --out dist-dev \
+  --dev-site-url http://localhost:3100
+# One-time setup for the styled, headless DMG packager (Python 3.10+)
+python3 -m venv /tmp/relay-dmg-tools
+/tmp/relay-dmg-tools/bin/python -m pip install -r scripts/dmg-requirements.txt
+export PATH="/tmp/relay-dmg-tools/bin:$PATH"
+scripts/package-dmg.sh --app 'dist/Agent Relay.app' --out dist/AgentRelay.dmg
+```
+
+`swift run` has no LaunchAgent to register, so it connects to a core you start
+yourself on the same socket:
+
+```sh
+cargo run --manifest-path desktop-core/Cargo.toml --bin agent-relay-desktop-probe -- serve
+```
+
+Development reloads rebuild Swift and re-sign the bundle with its existing
+identity. Cloud watches Swift (including the shared session overview), Rust,
+Cargo configuration and the generated Swift contract. It passes `--swift-only`
+when helper inputs have not changed, preserving the signed helper, collector,
+and their metadata. Helper changes use the full reload and bridge validation.
+Build-cache cleanup and DMG packaging run at startup, outside the save loop;
+restart the launcher when you need a fresh onboarding download.
+
+For a manual UI-only reload, quit the Dev app window/process first, then run:
+
+```sh
+scripts/dev-reload.sh --app 'dist/cloud-dev/Agent Relay Dev.app' --arch arm64 --swift-only
+open 'dist/cloud-dev/Agent Relay Dev.app'
+```
+
+Use `--arch x64` on Intel. Omit `--swift-only` after changing Rust, Cargo inputs,
+or the generated contract. Leave the managed core running.
+
+Each new build (`build-app.sh`, or `scripts/dev-reload.sh` replacing the app
+executables) registers its core again on launch and retires the one registered
+before. launchd admits the core against a code requirement macOS records for
+the agent: a Developer ID or Apple Development signature names a team, so an
+update starts at once. An ad-hoc signature pins the old binary's hash, which
+macOS keeps for a short while after the bundle changes; the app registers the
+core again while it does not answer, and the new core starts within about a
+minute.
+
+Every script takes `--help`. In short:
+
+| Script | What it does |
+| --- | --- |
+| `scripts/build-probe.sh` | Builds `desktop-core/` (the core desktop ships) for one Rust target, stamped with a version, for one Agent Relay site and link scheme (`--site-url`, `--url-scheme`; an exported `AGENT_RELAY_SITE_URL` / `AGENT_RELAY_URL_SCHEME` when the option is omitted; production's when neither is given). Writes `agent-relay-probe`, `agent-relay-probe.sha256`, `probe-version.txt`, `probe-site.txt` and `probe-url-scheme.txt`; `build-app.sh` checks the last two against the bundle. |
+| `scripts/build-gtk.sh` | Builds the Linux app (`gtk/`, the probe crate's `gtk` feature) stamped with a version, for one Agent Relay site and link scheme as `build-probe.sh` does, and for one [site profile](docs/workspace-layout.md#site-profiles) (`--profile`, `--product-name`, `--releases-repository`, `--icon`; the default's when omitted). Writes `agent-relay`, `agent-relay.sha256`, `agent-relay-site.txt`, `agent-relay-url-scheme.txt`, `agent-relay-product-name.txt` and `agent-relay-releases-repository.txt`; `build-linux.sh` checks the site and scheme. |
+| `scripts/build-app.sh` | `swift build -c release --arch …`, assembles the app bundle for one site, link scheme, name, bundle id, update repository and icon (`--site-url`, `--url-scheme`, `--product-name`, `--bundle-id`, `--releases-repository`, `--icon`; production's `Agent Relay.app` when none is given; `--dev-site-url` for Agent Relay Dev), checks the probe is built for the same site and scheme, renders the icon, fills in `Info.plist` and records the profile in `Contents/Resources`, then signs (Developer ID → notarized, else ad-hoc). |
+| `scripts/package-dmg.sh` | Creates a branded Retina `.dmg` with fixed app and Applications icon positions, using `dmgbuild` without Finder automation, and writes `FILE.dmg.sha256`. |
+| `scripts/render-dmg-background.swift` | Composes the subdued relay-runner artwork with the source logo/wordmark, dashed drag arrow and install instruction at 1x and 2x. Run with an output directory to preview; `scripts/dmg-settings.py` places the native Finder icons in the matching 768×576 layout. This artwork is specific to the macOS DMG. |
+| `scripts/render-icon.swift` | Standalone Swift script that draws the Agent Relay mark on a dark squircle into an `AppIcon.iconset`, or a build's own artwork (`--from FILE`, an SVG or 1024×1024 PNG, for `build-app.sh --icon`). Run by `build-app.sh`; `swift scripts/render-icon.swift OUT_DIR` to preview it. |
+
+The Linux app (`agent-relay`, GTK 4) runs and tests with:
+
+```sh
+cargo build --manifest-path gtk/Cargo.toml --features gtk --bin agent-relay
+cargo build --manifest-path desktop-core/Cargo.toml --bin agent-relay-desktop-probe
+RELAY_DESKTOP_PROBE="$PWD/target/debug/agent-relay-desktop-probe" target/debug/agent-relay
+xvfb-run -a cargo test --manifest-path gtk/Cargo.toml --locked --features gtk --test linux_app_gtk
+```
+
+Build a release tree, tarball, and Debian package with
+`scripts/build-linux.sh`, passing the app from `scripts/build-gtk.sh` and a
+probe from `scripts/build-probe.sh` (`x86_64-unknown-linux-gnu` or
+`aarch64-unknown-linux-gnu`); each records the site and link scheme it is
+built for beside the binary, and the package takes the profile's only
+(`--site-url`, `--url-scheme`; production's when omitted), generating the
+launcher entry for that scheme and name (`--product-name`, `--icon`) and
+naming the packages by the profile (`--profile`). See
+[`linux/README.md`](linux/README.md).
+
+The Windows app is the same `agent-relay` program, built natively in an
+[MSYS2](https://www.msys2.org) CLANG64 (x64) or CLANGARM64 (arm64) shell with
+its Rust and GTK 4 packages:
+
+```sh
+cargo build --manifest-path gtk/Cargo.toml --features gtk --bin agent-relay
+cargo build --manifest-path desktop-core/Cargo.toml --bin agent-relay-desktop-probe
+cargo test --manifest-path gtk/Cargo.toml --locked --features gtk --test linux_app_gtk
+scripts/build-windows.sh --version 0.0.0 --arch x64 --out dist/windows
+```
+
+`scripts/build-windows.sh` builds both programs and writes the portable tree,
+the zip with the GTK runtime, and the bare-core zip, for one site profile
+(`--site-url`, `--url-scheme`, `--profile`, `--product-name`,
+`--releases-repository`, `--support-url`, `--icon`; the default's when
+omitted, and the options alone count, never the shell's variables). See
+[`windows/README.md`](windows/README.md).
+
+The relay core, its bridge contract and the apps' lifecycles live in
+[`docs/relay-core.md`](docs/relay-core.md).
+
+## Release process
+
+1. Add user-facing bullets under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md),
+   user-facing changes for the release, then make sure `main` is green. The
+   workflow requires at least one Unreleased bullet and copies those bullets
+   into **What's new in this release**.
+2. Dispatch the `Desktop Release` workflow with no inputs, or tag and push:
+
+   ```sh
+   gh workflow run 'Desktop Release' --repo AgentWorkforce/relay-app
+   # opt-in beta (repeat to publish beta.2, beta.3, and so on):
+   gh workflow run 'Desktop Release' --repo AgentWorkforce/relay-app -f channel=beta
+   # or, to override the default version:
+   # gh workflow run 'Desktop Release' --repo AgentWorkforce/relay-app -f version=2026.09.2
+   # or:
+   git tag desktop-v2026.09.1
+   git push origin desktop-v2026.09.1
+   ```
+
+`.github/workflows/desktop-release.yml` then builds macOS, Linux and Windows for arm64
+and x64 on native runners (`macos-15`, `macos-15-intel`, Ubuntu 22.04 on
+Blacksmith for both Linux architectures, and `windows-latest` and
+`windows-11-arm`; see [CI runner configuration](.github/README.md)),
+requires macOS signing and notarization, and publishes to
+[`AgentWorkforce/relay-desktop-releases`](https://github.com/AgentWorkforce/relay-desktop-releases).
+Versions are CalVer (`YYYY.MM.N`, where `N` counts that month's stable releases
+starting at 1). The workflow's `channel` input defaults to `stable`. Select
+`beta` for numbered prereleases (`YYYY.MM.N-beta.1`, `-beta.2`, …); a blank
+version continues the current month's beta cycle. A stable dispatch with a
+blank version publishes that cycle's base version, or allocates the next `N`
+when there is no pending beta. Pass `version` to select a base version or exact
+beta number. Published tags cannot be overwritten. Push tags infer the channel
+from the suffix: `desktop-v2026.10.2-beta.1` is beta, `desktop-v2026.10.2` is stable.
+
+To ship a tested beta to everyone, dispatch `channel=stable` with its base
+version (for example `version=2026.10.2`). Select the same source commit/ref as
+the tested beta when no further changes are needed. This rebuilds and signs
+the final version, so its embedded version and asset names match the stable
+tag. Keep the beta releases for history; do not toggle a beta's GitHub
+prerelease flag to promote it. Beta builds reuse the upcoming stable version's
+changelog entry or Unreleased notes; only stable publishing promotes Unreleased.
+
+GitHub release titles start with **Beta** or **Stable**, and betas have GitHub's
+prerelease flag. Browse [stable releases](https://github.com/AgentWorkforce/relay-desktop-releases/releases?q=prerelease%3Afalse)
+or [beta releases](https://github.com/AgentWorkforce/relay-desktop-releases/releases?q=prerelease%3Atrue).
+Each new release's notes link to both filters. Beta publishing never changes
+the stable `/releases/latest` downloads.
+Overlapping release runs serialize on one concurrency group; if your run shows
+Canceled because a newer release superseded it while pending, re-dispatch and
+it allocates the next version in the selected channel.
+The source stays in this repository. Each release contains these assets:
+
+- `AgentRelay-2026.11.1-macOS15-arm64.dmg` + `.sha256`
+- `AgentRelay-2026.11.1-macOS15-x64.dmg` + `.sha256`: `macOS15` is the
+  deployment target in `macos/Package.swift`, the oldest macOS the build runs
+  on; `scripts/macos-release-assets.py` names and stages the images
+- `AgentRelay-2026.11.1-macOS-<arch>.dmg` + `.sha256`: the unfloored name
+  updaters older than 2026.10.65 install. Those updaters take only the newest
+  release, require this exact name and never check the version inside the
+  image. At a floor of macOS 13 it carries the release's own image. Above
+  that it is the **updater bridge**: the 2026.10.66 image, downloaded from
+  that release and checked against its `.sha256` while staging (staging fails
+  otherwise). 2026.10.66 runs on macOS 13, so an old updater installs it. It
+  discards the update metadata an older app cached, and its floor-aware
+  updater then takes the newest release this Mac can open or
+  reports which macOS it needs. Floor-aware updaters ignore the unfloored name
+  whenever floored names exist, so they never install the bridge. Remove
+  `BRIDGE_VERSION` and the bridge from `scripts/macos-release-assets.py` once
+  telemetry shows no app older than 2026.10.65 checking in
+- `AgentRelay-macOS-arm64.dmg` + `.sha256` (stable name, same bytes)
+- `AgentRelay-macOS-x64.dmg` + `.sha256` (stable name, same bytes)
+- `AgentRelay-2026.09.1-Linux-x64.deb` + `.sha256`
+- `AgentRelay-2026.09.1-Linux-arm64.deb` + `.sha256`
+- `AgentRelay-2026.09.1-Linux-x64.tar.gz` + `.sha256`
+- `AgentRelay-2026.09.1-Linux-arm64.tar.gz` + `.sha256`
+- stable `AgentRelay-Linux-<arch>.deb` / `.tar.gz` copies with `.sha256`
+- `AgentRelay-2026.09.1-Windows-x64.zip` + `.sha256`
+- `AgentRelay-2026.09.1-Windows-arm64.zip` + `.sha256`
+- stable `AgentRelay-Windows-<arch>.zip` copies with `.sha256`
+- `AgentRelay-2026.09.1-Windows-<arch>-Setup.exe` + `.sha256`: the per-user
+  installer, with stable `AgentRelay-Windows-<arch>-Setup.exe` copies
+- `AgentRelay-2026.09.1-Windows-<arch>-probe.zip` + `.sha256`: the bare
+  Windows core (`agent_relay/helpers/agent-relay-probe.exe` and the DLLs it
+  needs), with stable `AgentRelay-Windows-<arch>-probe.zip` copies
+- `AgentRelay-2026.09.1-macOS-<arch>-probe.tar.gz` and
+  `AgentRelay-2026.09.1-Linux-<arch>-probe.tar.gz` + `.sha256`: the standalone
+  headless probe (`agent_relay/helpers/agent-relay-probe`, with the project
+  license at `agent_relay/LICENSE`), with stable
+  `AgentRelay-<os>-<arch>-probe.tar.gz` copies. The Linux probe runs on glibc
+  2.34 and newer; the release fails if either architecture's probe needs a
+  newer glibc (`scripts/check-glibc-floor.sh`).
+
+Installed builds check the public repository's latest stable release once per
+day by default. When an update is available, the app shows a blue update button
+and asks before quitting to install it. **Settings → Software updates** also
+provides an immediate check and an **Include beta releases** toggle on macOS
+and Linux. Beta is off by default, including when installing a beta manually.
+Opted-in users receive the highest available beta or stable version, including
+the final stable version after a beta cycle. Changing channels clears pending
+update information and checks immediately. Turning beta off keeps the installed
+version until a newer stable release is available; it does not downgrade.
+The app verifies the architecture-specific disk
+image's published SHA-256 and the replacement app's signature before installing
+and reopening Agent Relay.
+
+## Repository secrets and variables
+
+Configure these Actions secrets in the repository where builds run. Public
+releases require five signing/notarization secrets plus publishing credentials
+for the releases repository: the releases GitHub App's `RELEASES_APP_ID` and
+`RELEASES_APP_PRIVATE_KEY` (preferred; repository secrets, for the default
+profile), or `RELEASES_TOKEN`;
+local builds and PR CI can still use ad-hoc signing. No secrets belong in the public
+distribution repository.
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `RELEASES_APP_ID` | secret | The default profile's: the ID of the GitHub App that publishes releases. The publish and promote jobs mint a short-lived installation token from it, scoped to `AgentWorkforce/relay-desktop-releases` alone. |
+| `RELEASES_APP_PRIVATE_KEY` | secret | A private key (`.pem`) of that App. |
+| `DESKTOP_RELEASES_APP_ID`, `DESKTOP_RELEASES_APP_PRIVATE_KEY` | environment secrets | A site profile's own App pair, set in its environment (`desktop-live`, `desktop-p1`, ...) and read only by that profile's builds. The names differ from the repository's on purpose: an environment secret shadows a repository secret of the same name but cannot hide one, so a profile could otherwise run the default App against its own releases repository. |
+| `RELEASES_TOKEN` | secret | Fallback, per scope, when the selected App pair is unset: a fine-grained token restricted to `AgentWorkforce/relay-desktop-releases`, with Contents read/write. |
+| `CSC_LINK` | secret | Developer ID Application certificate and private key, as a base64-encoded `.p12` (the same format as Pear). The signing identity is selected from the certificate. |
+| `CSC_KEY_PASSWORD` | secret | Password for that `.p12`. |
+| `APPLE_API_KEY_BASE64` | secret | App Store Connect API key as a base64-encoded `.p8`. |
+| `APPLE_API_KEY_ID` | secret | App Store Connect API key ID. |
+| `APPLE_API_ISSUER` | secret | App Store Connect API issuer ID. |
+| `POSTHOG_API_KEY` | secret | PostHog project ingestion key embedded only in official release builds. |
+
+The release workflow fails when a signing/notarization secret is missing. GitHub
+does not allow one repository to read another repository's secrets, so the five
+Apple values must be configured in the source repository.
+The publishing token is passed only to the publish and promote jobs; the default
+`GITHUB_TOKEN` stays read-only. Initialize the distribution repo with its README on `main` and
+make it public before the first release. A beta tag such as `v2026.10.2-beta.1`
+does not replace the stable `/releases/latest` download.
+
+The App is the preferred credential: each job mints an installation token that
+expires within an hour and is revoked when the job ends, instead of a long-lived
+token. Create a GitHub App owned by the organisation with the repository
+permissions **Contents: Read and write** and **Metadata: Read-only** (and no
+others, no webhook), install it on the organisation with **Only select
+repositories** limited to the releases repository, generate a private key, and
+store the App's ID and the key without putting their values in a command line
+or transcript:
+
+```sh
+gh secret set RELEASES_APP_ID
+gh secret set RELEASES_APP_PRIVATE_KEY < path/to/app.private-key.pem
+```
+
+A site profile's environment (`desktop-<id>`, such as `desktop-live` or
+`desktop-p1`) holds its own pair under different names, for an App installed on
+its own releases repository:
+`DESKTOP_RELEASES_APP_ID` and `DESKTOP_RELEASES_APP_PRIVATE_KEY`. The names
+must differ from the repository's: an environment secret shadows a repository
+secret of the same name but cannot hide one, so a profile that reused
+`RELEASES_APP_ID` would inherit the default's App. When a job finds no App
+secrets for its scope it falls back to that scope's `RELEASES_TOKEN`; to use a fine-grained token instead, create it
+in GitHub and store it the same way:
+
+```sh
+gh secret set RELEASES_TOKEN
+```
+
+The tag is created against the distribution repo’s `main`, not the source
+commit. Release notes must describe the shipped app; source PR notes are not
+automatically copied into the distribution repository. Nothing in these scripts or workflows prints a
+secret value; the decoded `.p12` is written to a `0600` temporary file that is
+deleted before the script exits, alongside the temporary signing keychain.
+
+## Website
+
+The download buttons on <https://agentrelay.com/download> point at the stable
+asset names above, so a new release changes what they serve without any website
+deploy.
+
+### Desktop analytics and error tracking
+
+The relay core sends explicit `desktop_operation` events and handled
+`$exception` events to the same PostHog project as Cloud, for the production
+site in a release build only. A build made for its own site sends neither:
+while someone is signed in, it posts only `desktop.app_started` (the app
+version and OS, once per launch) and `desktop.sign_in_completed` (no
+properties, when someone signs in, not when a restart restores the saved
+session) to that site's analytics gateway, `<site>/api/v1/analytics/events`,
+as `agent-relay.analytics.client-batch/v1` batches with the signed-in session
+as the bearer; everything else is dropped (docs/relay-core.md). The app records the few operations only it
+performs (launch, settings, logs, login item, connection links) through the
+core. Official release builds receive the project ingestion key and HTTPS host
+from protected GitHub Actions secrets. Forks, source builds, tests and
+`--dev-site-url` bundles contain no PostHog project configuration and send
+nothing. A PostHog ingestion key is not an administrative API credential, but
+keeping it out of source prevents community builds from writing to the official
+project.
+
+The operation/outcome funnel distinguishes sign-in, browser approval, history
+preparation and connection restoration. Further events cover helper startup and
+polling failures, reported upload health failures/recovery, pause/resume, including/excluding sessions, sharing-mode changes,
+logout, login-item settings and opening settings/logs. Successful polling does not
+emit events. Session inclusion means the helper accepted an upload selection; it
+does **not** assert that the upload reached Cloud. Native crashes and probe-internal errors that are not exposed in its status
+contract are not captured by this client.
+
+After sign-in, events are linked to your Agent Relay account. They never contain
+message or session text, searches, paths, URLs, credentials or raw errors.
+Opting out turns all of it off.
+
+| State | `distinct_id` | Person and groups |
+|---|---|---|
+| No install attached | `desktop:<installation UUID>` | `$process_person_profile: false` |
+| Install attaches | one `$identify` from `desktop:<installation UUID>` (`$anon_distinct_id`) to Cloud `users.id` | merges the installation's earlier events, sign-in setup included, into the user; a cancelled or unattached sign-in stays anonymous |
+| Attached | Cloud `users.id` | `$groups: { organization: <organizations.id>, workspace: <workspaces.id> }` |
+
+The installation UUID is random. Once merged it belongs to that person: a
+relaunch keeps it until discovery decides, and sign-out, opt-out, discovery
+finding no install and another person attaching replace it. The merge is recorded only once PostHog accepts `$identify`; a
+refused one is sent again with the next event. Context is limited to fixed
+operation/outcome/error codes, app/probe/OS versions, bounded session counts
+(`session_count`) and sharing mode (`sharing_mode`), with `$geoip_disable`.
+Error grouping uses operation + error code, so an unknown helper failure remains
+`helper_failed`; Cloud supplies server-side diagnostics for the corresponding
+failure category. No session replay or UI autocapture is enabled.
+
+Session agents register on Relaycast with `cloud_user_id`, `cloud_workspace_id`
+and `owner_hash` in their metadata, so the engine credits their messages to the
+signed-in person. When an install attaches, agents registered before it, or
+under another person, are updated through `PATCH /v1/agents/{name}`.
+
+**Settings → Share diagnostics** disables both event types and drops queued
+events. The core keeps the preference in the app data directory. Identical exception operation/error pairs
+are limited to once per minute (repeated background polling failures are also
+deduplicated in product events; explicit user attempts still count), with a
+global limit of 100 operations per minute on a monotonic clock. One request is
+in flight at a time; requests are best effort with finite timeouts, without disk
+persistence, and never delay sign-in or upload actions.
+
+Desktop usage stays in `desktop_operation`, with these additional `operation`
+values shared by macOS, Linux and Windows:
+
+| Operation | Trigger and interpretation |
+|---|---|
+| `agent_register` | Explicit `agents.register` request starts and succeeds/fails; `agent_kind` is the fixed provider enum and `already_registered` distinguishes an existing registration from a new one. Automatic discovery/registration is not a UI creation attempt. |
+| `agent_unregister` | Explicit removal starts and succeeds/fails. |
+| `message_send` | Person-to-agent send starts and succeeds/fails; `is_reply` records whether a reply parent was supplied. Success means the send API accepted it, not that the agent read it. |
+| `message_test` | Explicit test-message command starts and succeeds/fails. |
+| `message_composer` | Opening the message composer (`started`), without its recipient. |
+| `page_view` | Entering a page or settings pane (`succeeded`), including the initial connected page; unchanged snapshots do not repeat it. |
+| `search` | A nonempty session query or filter settles for 500 ms (`succeeded`); clearing cancels a pending event. No query, query length, result text or recipient is sent. |
+| `transcript_open` | Initial transcript read or explicit refresh starts and succeeds/fails; pagination and background following are excluded, including polls without a cursor. |
+| `delete_sessions` | Explicit deletion succeeds/fails, separate from `exclude_sessions`. |
+| `upload_completed` | A previously observed queued/uploading session becomes `uploaded`; `session_count` aggregates transitions in that listing. Historical uploads, new pagination baselines and repeated polls do not count. This is observed progress, not a complete Cloud delivery ledger: transitions between reads or while the app is closed may be missed. |
+| `update_install` | An update starts and succeeds/fails. Success means replacement was installed or handed to the native replacement helper, not a confirmed relaunch. A downloaded Linux `.deb` emits `requires_action` because installation is manual. |
+
+The optional `surface` is a closed vocabulary: `sessions`, `agents`, `team`,
+`messages`, `projects`, and `settings_general`, `settings_opening`,
+`settings_relay`, `settings_sharing`, `settings_account`, `settings_about`,
+`settings_diagnostics`. Projects is reserved for the macOS-only hidden page.
+The settings event now follows actual settings-pane navigation on both platforms.
+Browser opening emits `browser_approval` started and succeeded/failed on each desktop.
+Success means the native opener accepted the handoff (on Windows, the validated
+URI was queued to the shell worker), not that browser approval finished.
+Sign-in cancellation is emitted once in the core, not again by either UI.
+Include/exclude/delete report the number of requested session keys as
+`session_count`; sharing-mode changes report `sharing_mode`.
+Agent/message/transcript command failures use `request_failed`, never error text;
+update failures use `update_failed`. All new events use the existing opt-out,
+identity, rate limits, exception deduplication and best-effort queue.
+Awaited update telemetry calls have a three-second client deadline, including connection
+and response time. GTK waits asynchronously so the window stays responsive; an
+unresponsive diagnostics call cannot indefinitely delay downloading or restarting.
+
+The request format follows PostHog's [capture API](https://posthog.com/docs/api/capture)
+and [exception schema](https://github.com/PostHog/posthog-js/blob/main/packages/core/src/error-tracking/types.ts).
+The core's telemetry and account tests inspect requests with a recording
+sender; they never send test events to PostHog.
+
+### Desktop build identity
+
+The probe is an internal component of the desktop release, not a separately
+versioned product. Release builds stamp the same `YYYY.MM.N` version into the app
+and probe. Plain Cargo builds report `<latest desktop release>-dev+<git revision>`; the manifest's
+`0.0.0` is an unpublished package placeholder. Development builds take their numeric base
+from the latest release heading in `CHANGELOG.md`; Git hashes identify builds
+without being treated as chronological versions. `build.rs` reads the resolved
+`ai-hist` version from `Cargo.lock` for runtime diagnostics. The macOS packaging
+and reload scripts record the desktop Git revision in `build-revision.txt`.
+
+## License
+
+Agent Relay Desktop is licensed under the [Apache License 2.0](LICENSE).

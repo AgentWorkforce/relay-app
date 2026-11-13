@@ -1,0 +1,12 @@
+# The private core (desktop-core/) and the app (gtk/) are separate Cargo
+# projects that share one target directory, so every build output stays under
+# target/.
+[build]
+target-dir = "target"
+
+# Relay's core (a git dependency) stamps development builds from this
+# repository: the newest `## v` release in CHANGELOG.md and this checkout's
+# revision, as the in-repo core did. Releases set AGENT_RELAY_PROBE_VERSION.
+[env]
+AGENT_RELAY_PROBE_CHANGELOG = { value = "CHANGELOG.md", relative = true }
+AGENT_RELAY_PROBE_GIT_DIR = { value = ".", relative = true }

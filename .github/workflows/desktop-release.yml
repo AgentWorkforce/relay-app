@@ -1,0 +1,2205 @@
+name: Desktop Release
+run-name: ${{ inputs.request-id && format('cloud-release/{0}', inputs.request-id) || 'Desktop Release' }}
+
+# Successful Desktop CI main pushes prepare exact-source candidates without publishing.
+# Tag desktop-vYYYY.MM.N[-beta.NUMBER] (or dispatch with a channel and version) to build,
+# sign and notarize the macOS disk images, build Linux packages and Windows
+# installers, and publish all architectures together. A dispatch without a version continues the current
+# month's beta cycle or allocates the next stable version. No job writes to the
+# source repository; a promoted changelog is uploaded after a stable publish and
+# is landed on main through the maintainers' review flow.
+#
+# A dispatch with a `profile` builds and publishes a site profile
+# (docs/workspace-layout.md, "Site profiles"): every job that builds or
+# publishes runs under the GitHub Environment desktop-<profile>, whose
+# secrets carry the profile's site, scheme, branding, telemetry key and
+# releases repository (secrets, so they are masked from the start of a job). The log, the artifact names, the candidate
+# manifest and the release name the profile by its opaque id only. Without a
+# profile (every automatic candidate, every tag) the jobs run under no
+# environment, as the default profile, as before.
+
+on:
+  workflow_run:
+    workflows: [Desktop CI]
+    types: [completed]
+    branches: [main]
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel (beta is opt-in in Settings → Updates).'
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - beta
+      version:
+        description: 'Version without v (2026.10.1 or 2026.10.1-beta.2). Empty continues the current beta cycle or allocates the next stable version.'
+        required: false
+        default: ''
+        type: string
+      prepare-only:
+        description: 'Build and verify a candidate for later promotion without publishing.'
+        required: false
+        default: false
+        type: boolean
+      request-id:
+        description: 'Cloud orchestration request ID, used to identify this worker without timestamp guesses.'
+        required: false
+        default: ''
+        type: string
+      ci-run-id:
+        description: 'Cloud-selected Desktop CI evidence; independently verified against the exact source tree.'
+        required: false
+        default: ''
+        type: string
+      expected-source-sha:
+        description: 'Cloud-resolved source commit; fail if the dispatch ref moved.'
+        required: false
+        default: ''
+        type: string
+      full-checks:
+        description: 'Run the full test matrix even if Desktop CI already passed this commit on main.'
+        required: false
+        default: false
+        type: boolean
+      profile:
+        description: 'Site profile: the opaque id of a desktop-<id> GitHub Environment. Empty builds the default profile (agentrelay).'
+        required: false
+        default: ''
+        type: string
+      # Internal builds only (docs/workspace-layout.md, "Crate overrides"):
+      # refused unless prepare-only, a profile, and that profile's
+      # environment sets DESKTOP_CRATE_OVERRIDES_ALLOWED to the profile's id.
+      agent-relay-node-rev:
+        description: 'Internal prepare-only builds: agent-relay-node at this full commit sha or tag of AgentWorkforce/relay. Empty builds the pinned rev.'
+        required: false
+        default: ''
+        type: string
+      relaycast-version:
+        description: 'Internal prepare-only builds: relaycast at this exact crates.io version. Empty builds the pinned version.'
+        required: false
+        default: ''
+        type: string
+      relayscrubber-version:
+        description: 'Internal prepare-only builds: relayscrubber at this exact crates.io version. Empty builds the pinned version. Refused until both workspaces depend on relayscrubber.'
+        required: false
+        default: ''
+        type: string
+
+# Tested commits prepare independently: a late completion of older CI must not
+# cancel a newer candidate. Manual preparation/release and promotion share the
+# publication lock; automatic preparations never acquire it. A profile has its
+# own lock (shared with Desktop Promote's for that profile): a profile run
+# waiting on its environment's reviewers must not block the default product.
+# Cloud prepare workers have independent source/channel locks so a build
+# waiting on its gate cannot hold up promotion of an already-ready candidate.
+concurrency:
+  group: ${{ github.event_name == 'workflow_run' && format('desktop-candidate-{0}', github.event.workflow_run.head_sha) || (inputs.request-id && inputs.prepare-only && format('desktop-cloud-candidate-{0}-{1}-{2}', inputs.profile, github.sha, inputs.channel)) || (inputs.profile && format('desktop-release-{0}', inputs.profile)) || 'desktop-release' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    # workflow_run may also announce manual/failing/fork CI: none may prepare.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    name: Resolve version
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    # A prepare-only dispatch of a profile with an explicit version uses that
+    # version as given and never lists a cloud feed (the site may not resolve
+    # from the runners yet), so the version is not checked against the feed.
+    # It publishes nothing. Its candidate records "unlisted": true, and
+    # Desktop Promote lists the feed before it publishes one and refuses a
+    # version the feed already holds (a published one included, which the
+    # feed's create alone would answer as a replay of an earlier publish).
+    env:
+      UNLISTED_CANDIDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare-only && inputs.profile != '' && inputs.version != '' }}
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      title: ${{ steps.resolve.outputs.title }}
+      source-sha: ${{ steps.source.outputs.sha }}
+      skip: ${{ steps.resolve.outputs.skip }}
+      # true when a cloud version was taken as given (UNLISTED_CANDIDATE).
+      unlisted: ${{ steps.resolve.outputs.unlisted }}
+      # The profile's opaque id (empty: the default) and what its artifact
+      # names start with; the profile's other values stay in the jobs that
+      # read them from the environment, where they are masked.
+      profile: ${{ steps.resolve.outputs.profile }}
+      # An internal build's crate overrides: 'true' when the build jobs take
+      # the Cargo files resolved here (artifact crate-overrides), and when
+      # agent-relay-node moved (the Swift contract is regenerated). crates is
+      # what the candidate was built with, overridden or pinned.
+      crate-overrides: ${{ steps.crate-guard.outputs.overridden }}
+      node-overridden: ${{ steps.crate-guard.outputs.node }}
+      crates: ${{ steps.crates.outputs.json }}
+    steps:
+      - name: Select the exact source commit
+        id: source
+        env:
+          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid source commit'; exit 1; }
+          if [ -n "$EXPECTED_SOURCE_SHA" ] && [ "$SOURCE_SHA" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::The dispatch ref moved after Cloud resolved its source"; exit 1
+          fi
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      # Crate overrides are for internal builds only: a prepare-only
+      # dispatch of a profile whose environment sets the variable
+      # DESKTOP_CRATE_OVERRIDES_ALLOWED to that profile's own id (never a
+      # production or customer profile). The value must name the profile
+      # because `vars` falls back to repository and organization variables:
+      # a repository-wide value names no profile and unlocks none. A commit
+      # sha must be on a branch or tag of AgentWorkforce/relay itself (an
+      # unmerged branch is fine), never a commit only a fork holds. Tags and
+      # automatic candidates have no inputs and always build the pins.
+      - name: Check the crate overrides are allowed
+        id: crate-guard
+        env:
+          NODE_REV: ${{ github.event_name == 'workflow_dispatch' && inputs.agent-relay-node-rev || '' }}
+          RELAYCAST_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.relaycast-version || '' }}
+          RELAYSCRUBBER_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.relayscrubber-version || '' }}
+          PREPARE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare-only }}
+          PROFILE_ID: ${{ inputs.profile }}
+          OVERRIDES_ALLOWED: ${{ vars.DESKTOP_CRATE_OVERRIDES_ALLOWED }}
+        run: |
+          set -euo pipefail
+          node_rev="$(printf '%s' "$NODE_REV" | tr -d '[:space:]')"
+          relaycast_version="$(printf '%s' "$RELAYCAST_VERSION" | tr -d '[:space:]')"
+          relayscrubber_version="$(printf '%s' "$RELAYSCRUBBER_VERSION" | tr -d '[:space:]')"
+          if [ -z "$node_rev" ] && [ -z "$relaycast_version" ] && [ -z "$relayscrubber_version" ]; then
+            { echo "overridden=false"; echo "node=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$PREPARE_ONLY" != true ]; then
+            echo '::error::Crate overrides are for internal builds only: dispatch with prepare-only.'
+            exit 1
+          fi
+          if [ -z "$PROFILE_ID" ]; then
+            echo '::error::Crate overrides need a profile: the default profile always builds the pinned crates.'
+            exit 1
+          fi
+          if [ "$OVERRIDES_ALLOWED" != "$PROFILE_ID" ]; then
+            echo "::error::Crate overrides are not allowed for profile $PROFILE_ID: its environment does not set DESKTOP_CRATE_OVERRIDES_ALLOWED to $PROFILE_ID."
+            exit 1
+          fi
+          # cargo fetches a sha from GitHub's fork network too; build only
+          # commits a branch or tag of AgentWorkforce/relay holds. A tag is
+          # fetched from that repository's own tags. The script checks the
+          # format of either.
+          if [[ "$node_rev" =~ ^[0-9a-f]{40}$ ]]; then
+            relay="$RUNNER_TEMP/relay.git"
+            git clone --quiet --bare --filter=blob:none https://github.com/AgentWorkforce/relay "$relay"
+            if ! git -C "$relay" cat-file -e "$node_rev^{commit}" 2>/dev/null \
+              || [ -z "$(git -C "$relay" for-each-ref --contains "$node_rev" --format='%(refname)' refs/heads refs/tags)" ]; then
+              echo "::error::agent-relay-node rev $node_rev is on no branch or tag of AgentWorkforce/relay: push it to a branch there first."
+              exit 1
+            fi
+            rm -rf "$relay"
+          fi
+          echo "Crate overrides: agent-relay-node ${node_rev:-pinned}, relaycast ${relaycast_version:-pinned}, relayscrubber ${relayscrubber_version:-pinned}"
+          {
+            echo "overridden=true"
+            if [ -n "$node_rev" ]; then echo "node=true"; else echo "node=false"; fi
+            echo "node-rev=$node_rev"
+            echo "relaycast-version=$relaycast_version"
+            echo "relayscrubber-version=$relayscrubber_version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+
+      - name: Install the Rust toolchain for the crate overrides
+        if: steps.crate-guard.outputs.overridden == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      # The overrides are resolved once, here, into both Cargo.toml files and
+      # both lockfiles; a value cargo cannot resolve fails the run. Every
+      # candidate records the crates it is built with, the pins when nothing
+      # is overridden (a source from before the script records none).
+      - name: Resolve the core crates
+        id: crates
+        env:
+          OVERRIDDEN: ${{ steps.crate-guard.outputs.overridden }}
+          NODE_REV: ${{ steps.crate-guard.outputs.node-rev }}
+          RELAYCAST_VERSION: ${{ steps.crate-guard.outputs.relaycast-version }}
+          RELAYSCRUBBER_VERSION: ${{ steps.crate-guard.outputs.relayscrubber-version }}
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/apply-crate-overrides.sh ] && [ "$OVERRIDDEN" != true ]; then exit 0; fi
+          args=()
+          if [ -n "$NODE_REV" ]; then args+=(--agent-relay-node-rev "$NODE_REV"); fi
+          if [ -n "$RELAYCAST_VERSION" ]; then args+=(--relaycast-version "$RELAYCAST_VERSION"); fi
+          if [ -n "$RELAYSCRUBBER_VERSION" ]; then args+=(--relayscrubber-version "$RELAYSCRUBBER_VERSION"); fi
+          bash scripts/apply-crate-overrides.sh --json "$RUNNER_TEMP/crates.json" ${args[@]+"${args[@]}"}
+          echo "Crates $(cat "$RUNNER_TEMP/crates.json")"
+          echo "json=$(cat "$RUNNER_TEMP/crates.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the overridden Cargo files for the builds
+        if: steps.crate-guard.outputs.overridden == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crate-overrides
+          path: |
+            desktop-core/Cargo.toml
+            desktop-core/Cargo.lock
+            gtk/Cargo.toml
+            gtk/Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+
+      # A cloud feed (RELEASE_FEED=cloud) has no releases repository: its
+      # versions, drafts included, are listed from the feed itself through
+      # the publisher bridge, which follows the proposed Cloud contract
+      # (relay-control docs/desktop-feed.md). The publisher token
+      # reaches this step's environment only and is never printed. A
+      # github: feed never runs it.
+      # Preparation (prepare-only and the automatic workflow_run) passes
+      # --missing-feed-empty: a site that answers GET /releases with HTTP 404
+      # not_found does not serve the feed route yet, so the listing is empty,
+      # a warning names the site, and the version resolves as for a first
+      # release. Only that answer is softened. A transport failure
+      # (unresolvable host, refused connection, TLS) and every other status
+      # still fail the step in preparation too, so a mistyped site never
+      # silently resolves a first-release version. Publish runs never pass
+      # the flag: there a 404 fails as before.
+      - name: List the cloud feed
+        if: env.RELEASE_FEED == 'cloud' && env.UNLISTED_CANDIDATE != 'true'
+        env:
+          DESKTOP_FEED_PUBLISHER_TOKEN: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN }}
+          PREPARE_ONLY: ${{ github.event_name == 'workflow_run' || inputs.prepare-only }}
+        run: |
+          set -euo pipefail
+          list_args=()
+          if [ "${PREPARE_ONLY:-}" = true ]; then
+            list_args+=(--missing-feed-empty)
+          fi
+          python3 scripts/desktop-feed-publish.py list --site "$SITE_URL" --profile "$PROFILE" \
+            --feed "$RELEASE_FEED" --output feed-listing.json ${list_args[@]+"${list_args[@]}"}
+
+      # Versions are allocated against the profile's own releases repository
+      # (the environment's RELEASES_REPOSITORY, exported above), or against
+      # a cloud feed's listing, whose months have no leading zero.
+      - name: Resolve
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          CI_RUN_ID: ${{ inputs.ci-run-id || github.event.workflow_run.id }}
+          TAG_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ github.event_name == 'workflow_run' && 'stable' || inputs.channel }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+          notes_args=()
+          if [ "${RELEASE_FEED:-}" = cloud ]; then
+            if [ "$EVENT_NAME" != "push" ]; then
+              requested="$INPUT_VERSION"
+              channel="$INPUT_CHANNEL"
+            else
+              requested="${TAG_NAME#desktop-}"
+              requested="${requested#v}"
+              case "$requested" in *-beta.*) channel=beta ;; *) channel=stable ;; esac
+            fi
+            python3 scripts/test_release_version.py
+            if [ "${UNLISTED_CANDIDATE:-}" = true ]; then
+              python3 scripts/release-notes.py "$requested" --allocate --feed cloud --as-given \
+                --channel "$channel" > resolved-version.txt
+              notes_args+=(--feed cloud)
+              echo 'unlisted=true' >> "$GITHUB_OUTPUT"
+              given="v$(sed -n 's/^version=//p' resolved-version.txt) was taken as given and not checked against the cloud feed; Desktop Promote checks the feed and refuses it if the feed already holds it."
+              echo "::warning::$given"
+              echo "$given" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            else
+              python3 scripts/release-notes.py "$requested" --allocate --feed cloud \
+                --feed-listing feed-listing.json --channel "$channel" > resolved-version.txt
+              notes_args+=(--feed cloud --feed-listing feed-listing.json)
+            fi
+          else
+            gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp \
+              | jq 'add' > releases.json
+            args=(--releases releases.json)
+            if [ "$EVENT_NAME" != "push" ]; then
+              args+=(--version "$INPUT_VERSION" --channel "$INPUT_CHANNEL")
+            else
+              args+=(--tag "${TAG_NAME#desktop-}")
+            fi
+            python3 scripts/test_release_version.py
+            python3 scripts/release-version.py "${args[@]}" > resolved-version.txt
+          fi
+          cat resolved-version.txt >> "$GITHUB_OUTPUT"
+          version="$(sed -n 's/^version=//p' resolved-version.txt)"
+
+          # Fail before the expensive builds if neither the versioned section
+          # nor a promotable Unreleased section has release notes. A profile's
+          # notes are the Unreleased section only: its version numbers are its
+          # own repository's, so a `## v<version>` section here is another
+          # release's notes.
+          notes_status=0
+          if [ -n "$PROFILE" ]; then notes_args+=(--unreleased); fi
+          python3 scripts/release-notes.py "$version" --check ${notes_args[@]+"${notes_args[@]}"} || notes_status=$?
+          if [ "$notes_status" -eq 3 ] && [ "$EVENT_NAME" = workflow_run ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            echo "::notice::No release note bullets for Source $SOURCE_SHA; skipping automatic candidate preparation."
+            exit 0
+          fi
+          if [ "$notes_status" -ne 0 ]; then exit "$notes_status"; fi
+          echo 'skip=false' >> "$GITHUB_OUTPUT"
+
+          echo "Releasing v$version"
+          echo "Source $SOURCE_SHA"
+          if [ -n "$PROFILE" ]; then echo "Profile $PROFILE"; fi
+          if [ -n "$CI_RUN_ID" ]; then echo "CI run $CI_RUN_ID"; fi
+
+      # The default profile ships with the repository's telemetry key; a
+      # profile build reports only to its own site's analytics gateway and is
+      # given no PostHog key (the core's build refuses one for a site build).
+      - name: Require analytics release configuration
+        if: steps.resolve.outputs.skip != 'true' && !inputs.profile
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+        run: |
+          set -euo pipefail
+          for name in POSTHOG_API_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required release secret: $name"
+              exit 1
+            fi
+          done
+
+  # Desktop CI tests every architecture on main and compares each push with
+  # the last commit main passed, so a passing main run for this exact commit
+  # stands in for the full test matrix. Waits for that run if it is still
+  # going; a commit main has not passed (a tag elsewhere, a failed run) gets
+  # the full matrix below, as does a dispatch with full-checks.
+  ci-status:
+    name: Desktop CI on main
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - name: Check out trusted evidence verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Look for a passing Desktop CI run of this commit on main
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.version.outputs.source-sha }}
+          AUTO_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          FULL_CHECKS: ${{ inputs.full-checks }}
+          SELECTED_CI_RUN_ID: ${{ inputs.ci-run-id }}
+          CRATE_OVERRIDES: ${{ needs.version.outputs.crate-overrides }}
+        run: |
+          set -euo pipefail
+          tested=false
+          if [ -n "${SELECTED_CI_RUN_ID:-}" ]; then
+            # Cloud selects and waits; this credential boundary verifies the
+            # actual GitHub run/tree again. Never trust an input skip boolean.
+            [[ "$SELECTED_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            if [ "$FULL_CHECKS" = true ] || [ "$CRATE_OVERRIDES" = true ]; then
+              echo '::error::Explicit full checks and crate overrides cannot reuse gate evidence'; exit 1
+            fi
+            # Compilation overlaps Cloud's gate, including a bounded failed-job
+            # rerun. A first failure gets a short handoff window; only Cloud
+            # decides whether to retry it. This worker never issues a rerun.
+            deadline=$((SECONDS + 75 * 60))
+            failed_since=0
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SELECTED_CI_RUN_ID" > selected-ci.json
+              status=$(jq -r .status selected-ci.json)
+              conclusion=$(jq -r .conclusion selected-ci.json)
+              attempt=$(jq -r .run_attempt selected-ci.json)
+              if [ "$status/$conclusion" = completed/success ]; then break; fi
+              if [ "$status" = completed ]; then
+                [ "$failed_since" != 0 ] || failed_since=$((SECONDS + 1))
+                if [ "$attempt" -ge 2 ] || [ "$SECONDS" -ge "$((failed_since + 180))" ]; then
+                  echo '::error::Selected gate did not pass'; exit 1
+                fi
+              else
+                failed_since=0
+              fi
+              sleep 15
+            done
+            python3 scripts/release-ci-evidence.py --run-id "$SELECTED_CI_RUN_ID" --source-sha "$SHA"
+            echo 'tested=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$AUTO_CI_RUN_ID" ]; then
+            # The event is already gated to a passing main push. Verify the API
+            # result too; failure must stop auto preparation, never test main's
+            # newer workflow context as a fallback for this source commit.
+            for attempt in 1 2 3; do
+              if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$AUTO_CI_RUN_ID" > ci-run.json; then break; fi
+              if [ "$attempt" -eq 3 ]; then exit 1; fi
+              sleep $((attempt * 5))
+            done
+            jq -e --arg sha "$SHA" --arg repo "$GITHUB_REPOSITORY" '
+              .head_sha == $sha and .repository.full_name == $repo and
+              .head_repository.full_name == $repo and .head_branch == "main" and
+              .path == ".github/workflows/desktop-ci.yml" and .event == "push" and
+              .status == "completed" and .conclusion == "success"
+            ' ci-run.json > /dev/null
+            tested=true
+          elif [ "$FULL_CHECKS" = true ]; then
+            echo "Full checks requested; running the full test matrix."
+          else
+            deadline=$(( $(date +%s) + 75 * 60 ))
+            lookup_failures=0
+            while :; do
+              # A failed lookup is retried a few times, then falls back to the
+              # full matrix: it must never block the release on its own.
+              if ! runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/desktop-ci.yml/runs?head_sha=$SHA&branch=main&event=push&per_page=20" --jq '.workflow_runs')"; then
+                lookup_failures=$((lookup_failures + 1))
+                if [ "$lookup_failures" -ge 5 ]; then
+                  echo "::warning::Could not list Desktop CI runs; running the full test matrix."
+                  break
+                fi
+                sleep $((lookup_failures * 15))
+                continue
+              fi
+              passed="$(jq -r '[.[] | select(.conclusion == "success")][0].html_url // empty' <<<"$runs")"
+              pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
+              if [ -n "$passed" ]; then
+                tested=true
+                echo "Desktop CI passed $SHA on main: $passed"
+                break
+              elif [ "$pending" -gt 0 ] && [ "$(date +%s)" -lt "$deadline" ]; then
+                echo "Desktop CI is still running for $SHA on main; checking again in a minute."
+                sleep 60
+              else
+                echo "No passing Desktop CI run of $SHA on main; running the full test matrix."
+                break
+              fi
+            done
+          fi
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+          echo "Desktop CI already passed this commit on main: $tested" >> "$GITHUB_STEP_SUMMARY"
+
+  pre-release:
+    name: Full architecture checks
+    needs: [version, ci-status, release-core]
+    if: >-
+      always() && !cancelled() && needs.version.outputs.skip != 'true' && needs.version.result == 'success' &&
+      needs.ci-status.result == 'success' && needs.release-core.result == 'success' &&
+      needs.ci-status.outputs.tested != 'true'
+    uses: ./.github/workflows/desktop-ci.yml
+    permissions:
+      contents: read
+      actions: read
+    secrets:
+      POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+    with:
+      full-matrix: true
+      force-all: true
+      skip-packages: true
+      probe-version: ${{ needs.version.outputs.version }}
+      release-analytics: true
+      # An internal build's crate overrides built release-core from the
+      # overridden Cargo files; the checks build the pinned core themselves.
+      reuse-linux-core: ${{ needs.version.outputs.crate-overrides != 'true' }}
+
+  # Build the versioned Linux core once, alongside verification and the
+  # other platforms. Both Linux packages and fallback CI consume these bytes.
+  release-core:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    name: Release Linux core (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+            zig_host: x86_64-linux
+            zig_sha256: d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
+          - runner: ${{ vars.CI_LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            zig_host: aarch64-linux
+            zig_sha256: 041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556
+    env:
+      CI_PROBE_VERSION: ${{ needs.version.outputs.version }}
+      GLIBC_FLOOR: "2.34"
+      ZIG_VERSION: "0.13.0"
+      CARGO_ZIGBUILD_VERSION: "0.23.4"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      # An internal build's crate overrides: the Cargo files the version job resolved.
+      - name: Take the crate overrides
+        if: needs.version.outputs.crate-overrides == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crate-overrides
+          path: .
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+
+      - name: Cache the Zig-built probe
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Retain the old key+job namespace after renaming the producer.
+          shared-key: ci-linux-probe-zig-v1-${{ matrix.arch }}-linux-probe-glibc
+          workspaces: desktop-core -> ../target
+
+      - name: Install zig and cargo-zigbuild
+        env:
+          ZIG_HOST: ${{ matrix.zig_host }}
+          ZIG_SHA256: ${{ matrix.zig_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="zig-linux-${ZIG_HOST%-linux}-$ZIG_VERSION.tar.xz"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/$archive" -o "$RUNNER_TEMP/$archive"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${archive%.tar.xz}" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION"
+
+      - name: Build the probe against glibc 2.34
+        env:
+          # A profile build reports only to its own site's analytics gateway
+          # and is given no PostHog key: the core's build refuses one. The
+          # default profile ships the repository's key.
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ (inputs.profile == '' && secrets.POSTHOG_API_KEY) || '' }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME"); fi
+          scripts/build-probe.sh \
+            --target '${{ matrix.rust_target }}' \
+            --version "$CI_PROBE_VERSION" \
+            --glibc "$GLIBC_FLOOR" \
+            --out probe-build ${args[@]+"${args[@]}"}
+
+      - name: Check the probe's glibc floor
+        run: scripts/check-glibc-floor.sh probe-build/agent-relay-probe --max "$GLIBC_FLOOR"
+
+      - name: Record the checked core identity
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          printf '%s\n' "${{ needs.version.outputs.source-sha }}" > probe-build/source-revision.txt
+          printf '%s\n' "$RUST_TARGET" > probe-build/rust-target.txt
+
+      - name: Upload the checked Linux core
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # Prefix avoids the release publisher's linux-* package pattern.
+          name: ci-linux-core-${{ matrix.arch }}-${{ needs.version.outputs.source-sha }}
+          path: probe-build/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    # Packaging overlaps verification; only publish may release these bytes.
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ vars.CI_MACOS_ARM64_RUNNER || 'macos-15' }}
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - runner: ${{ vars.CI_MACOS_X64_RUNNER || 'macos-15-intel' }}
+            arch: x64
+            rust_target: x86_64-apple-darwin
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      # An internal build's crate overrides: the Cargo files the version job resolved.
+      - name: Take the crate overrides
+        if: needs.version.outputs.crate-overrides == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crate-overrides
+          path: .
+
+      - name: Require signing and notarization credentials
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required release secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          coexist: ${{ vars.DESKTOP_COEXIST }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
+          branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
+          branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          branding-app-private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
+      - name: Cache the Swift release build
+        uses: ./.github/actions/swift-cache
+        with:
+          arch: ${{ matrix.arch }}
+          lane: package
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: probe-${{ matrix.arch }}-macos
+          workspace: desktop-core
+          lane: package
+          discard-profile: debug
+
+      # Another agent-relay-node can change the bridge contract: the Swift
+      # app is built against the contract generated from the core it ships.
+      # A contract the app no longer compiles against fails the build.
+      - name: Regenerate the Swift core contract for the overridden core
+        if: needs.version.outputs.node-overridden == 'true'
+        run: scripts/generate-contract.sh
+
+      - name: Build the probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          # A profile build reports only to its own site's analytics gateway
+          # and is given no PostHog key: the core's build refuses one. The
+          # default profile ships the repository's key.
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ (inputs.profile == '' && secrets.POSTHOG_API_KEY) || '' }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME"); fi
+          scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version "$VERSION" --out probe-build ${args[@]+"${args[@]}"}
+
+      # Public releases require Developer ID signing and notarization above.
+      # Local builds and PR CI may still use the ad-hoc build-app.sh fallback.
+      # A profile's bundle takes its site, scheme, name, identifier,
+      # releases repository and mark; the default profile's is built as before.
+      - name: Assemble and sign the app bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$PROFILE" ]; then
+            args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME" --product-name "$PRODUCT_NAME"
+              --bundle-id "$BUNDLE_ID" --asset-prefix "$ASSET_PREFIX"
+              --release-feed "$RELEASE_FEED")
+            # A cloud feed has no releases repository, and only a cloud feed a key.
+            if [ -n "$RELEASES_REPOSITORY" ]; then args+=(--releases-repository "$RELEASES_REPOSITORY"); fi
+            if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
+            if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+            # DESKTOP_COEXIST: no product marker, so no takeover either way.
+            if [ "${COEXIST:-}" = yes ]; then args+=(--coexist); fi
+          fi
+          scripts/build-app.sh \
+            --arch '${{ matrix.arch }}' \
+            --version "$VERSION" \
+            --build "$GITHUB_RUN_NUMBER" \
+            --probe probe-build \
+            --out dist ${args[@]+"${args[@]}"}
+          # The one bundle built, named for the product.
+          [ "$(find dist -maxdepth 1 -name '*.app' | wc -l)" -eq 1 ] || { echo '::error::expected one app bundle in dist'; exit 1; }
+
+      - name: Set up Python for disk image tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install disk image tooling
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmg-tools"
+          "$RUNNER_TEMP/dmg-tools/bin/python" -m pip install -r scripts/dmg-requirements.txt
+          echo "$RUNNER_TEMP/dmg-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Package the disk image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=()
+          # A profile's image names its product and draws its mark.
+          if [ -n "$PROFILE" ]; then
+            args+=(--volname "$PRODUCT_NAME" --product-name "$PRODUCT_NAME")
+            if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+          fi
+          scripts/package-dmg.sh \
+            --app "$(find dist -maxdepth 1 -name '*.app' -print -quit)" \
+            --out "out/$ASSET_PREFIX-$VERSION-macOS-${{ matrix.arch }}.dmg" ${args[@]+"${args[@]}"}
+          # Recorded so the release body can name the exact probe that shipped.
+          cp probe-build/probe-version.txt "out/probe-version-${{ matrix.arch }}.txt"
+          # The .sha256 that package-dmg.sh wrote next to the image rides along
+          # but is regenerated in the publish job, where the published copies
+          # are made, so every published checksum names its own file.
+
+      # The helper packaged here is the one build-app.sh checked, inside this
+      # bundle, as built for production; the script repeats no site check.
+      - name: Package the standalone signed and notarized probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then args+=(--product-name "$PRODUCT_NAME"); fi
+          scripts/package-macos-probe.sh \
+            --app "$(find dist -maxdepth 1 -name '*.app' -print -quit)" \
+            --out "out/$ASSET_PREFIX-$VERSION-macOS-${{ matrix.arch }}-probe.tar.gz" ${args[@]+"${args[@]}"}
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux ${{ matrix.arch }}
+    needs: [version, release-core]
+    if: needs.version.outputs.skip != 'true'
+    # Ubuntu 22.04 ships GTK 4.6, the oldest the app runs on; the app links
+    # against it, natively for each architecture.
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          - runner: ${{ vars.CI_LINUX_2204_ARM64_RUNNER || 'ubuntu-22.04-arm' }}
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+    env:
+      # The oldest glibc the Linux probe and app run on (Amazon Linux 2023,
+      # RHEL 9 and Ubuntu 22.04 and newer). A probe linked on a newer glibc
+      # needs that glibc (std's weak pidfd_spawnp reference becomes a hard
+      # GLIBC_2.39 need), so the probe links against 2.34 with zig; the app
+      # links against the runner's GTK and glibc, and is checked.
+      GLIBC_FLOOR: "2.34"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      # An internal build's crate overrides: the Cargo files the version job resolved.
+      - name: Take the crate overrides
+        if: needs.version.outputs.crate-overrides == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crate-overrides
+          path: .
+
+      - name: Install GTK 4
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev librsvg2-common pkg-config
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          coexist: ${{ vars.DESKTOP_COEXIST }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
+          branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
+          branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          branding-app-private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
+      - name: Cache the probe build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-linux-gtk4-v1-${{ matrix.arch }}
+          workspaces: gtk -> ../target
+
+      - name: Download the tested release core
+        uses: ./.github/actions/linux-core-artifact
+        with:
+          arch: ${{ matrix.arch }}
+          rust-target: ${{ matrix.rust_target }}
+          probe-version: ${{ needs.version.outputs.version }}
+          source-sha: ${{ needs.version.outputs.source-sha }}
+
+      # build-gtk.sh records the site and link scheme the app is built for
+      # beside it, which build-linux.sh checks: the profile's (production's
+      # for the default profile).
+      - name: Build the app
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          # A profile build reports only to its own site's analytics gateway
+          # and is given no PostHog key: the core's build refuses one. The
+          # default profile ships the repository's key.
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ (inputs.profile == '' && secrets.POSTHOG_API_KEY) || '' }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then
+            args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME" --profile "$PROFILE"
+              --product-name "$PRODUCT_NAME" --release-feed "$RELEASE_FEED")
+            # A cloud feed has no releases repository, and only a cloud feed a key.
+            if [ -n "$RELEASES_REPOSITORY" ]; then args+=(--releases-repository "$RELEASES_REPOSITORY"); fi
+            if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
+            if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+          fi
+          scripts/build-gtk.sh --version "$VERSION" --out app-build ${args[@]+"${args[@]}"}
+
+      - name: Build packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then
+            args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME" --profile "$PROFILE" --product-name "$PRODUCT_NAME")
+            if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+          fi
+          scripts/build-linux.sh --version "$VERSION" --arch '${{ matrix.arch }}' \
+            --app app-build/agent-relay --probe probe-build/agent-relay-probe --out out ${args[@]+"${args[@]}"}
+
+      # The bytes the packages ship, checked again after packaging.
+      - name: Check the packaged binaries' glibc floor
+        run: |
+          tree='out/AgentRelay-linux-${{ matrix.arch }}'
+          scripts/check-glibc-floor.sh "$tree/usr/lib/agent-relay/agent-relay-probe" --max "$GLIBC_FLOOR"
+          scripts/check-glibc-floor.sh "$tree/usr/bin/agent-relay-desktop" --max "$GLIBC_FLOOR"
+
+      - name: Package the standalone probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME"); fi
+          scripts/package-linux-probe.sh \
+            --probe probe-build/agent-relay-probe \
+            --glibc "$GLIBC_FLOOR" \
+            --out "out/$ASSET_PREFIX-$VERSION-Linux-${{ matrix.arch }}-probe.tar.gz" ${args[@]+"${args[@]}"}
+
+      - name: Record probe version
+        run: cp probe-build/probe-version.txt 'out/probe-version-linux-${{ matrix.arch }}.txt'
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  compile-windows-x64:
+    name: Compile Windows x64 ${{ matrix.component }}
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    # The GTK app and the core, built natively with MSYS2's clang toolchain
+    # and GTK 4; the zip carries the GTK runtime beside them.
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [core, app]
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      # A short cargo home and git-CLI fetches, as in desktop-ci.yml: RelayHistory's
+      # fixtures hold paths close to Windows' 260-character limit.
+      CARGO_HOME: C:\ch
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      # An internal build's crate overrides: the Cargo files the version job resolved.
+      - name: Take the crate overrides
+        if: needs.version.outputs.crate-overrides == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crate-overrides
+          path: .
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          coexist: ${{ vars.DESKTOP_COEXIST }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
+          branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
+          branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          branding-app-private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
+      - name: Install the Windows toolchain
+        id: toolchain
+        uses: ./.github/actions/windows-toolchain
+        with:
+          msystem: CLANG64
+
+      - name: Cache the Cargo release dependencies
+        id: build-cache
+        uses: ./.github/actions/windows-build-cache
+        with:
+          arch: x64
+          profile: release
+          lane: ${{ matrix.component }}
+          toolchain: ${{ steps.toolchain.outputs.identity }}
+
+      - name: Compile the versioned executable with its icon
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          # A profile build reports only to its own site's analytics gateway
+          # and is given no PostHog key: the core's build refuses one. The
+          # default profile ships the repository's key.
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ (inputs.profile == '' && secrets.POSTHOG_API_KEY) || '' }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then
+            args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME" --profile "$PROFILE"
+              --product-name "$PRODUCT_NAME" --release-feed "$RELEASE_FEED")
+            # A cloud feed has no releases repository, and only a cloud feed a key.
+            if [ -n "$RELEASES_REPOSITORY" ]; then args+=(--releases-repository "$RELEASES_REPOSITORY"); fi
+            if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
+            if [ -n "$SUPPORT_URL" ]; then args+=(--support-url "$SUPPORT_URL"); fi
+            if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+          fi
+          scripts/build-windows.sh --version "$VERSION" --arch 'x64' --build-only '${{ matrix.component }}' --runtime-out runtime ${args[@]+"${args[@]}"}
+
+      - name: Check the core's bridge commands
+        if: matrix.component == 'core'
+        run: bash scripts/check-probe-bridge.sh target/release/agent-relay-desktop-probe.exe
+
+      - name: Upload the compiled runtime
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiled-windows-x64-${{ matrix.component }}
+          path: runtime/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Keep only reusable release dependencies in the cache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/windows-build-cache-prune
+        with:
+          profile: release
+
+  package-windows-x64:
+    name: Build Windows x64
+    needs: [version, compile-windows-x64]
+    if: needs.version.outputs.skip != 'true'
+    # The GTK app and the core, built natively with MSYS2's clang toolchain
+    # and GTK 4; the zip carries the GTK runtime beside them.
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
+    # Always under an environment, so a signing identity can trust exactly
+    # this job (docs/windows-app.md, "Code signing"): the profile's, else
+    # desktop-release.
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || 'desktop-release' }}
+    permissions:
+      contents: read
+      # Azure Trusted Signing sign-in (OIDC); no other job has it.
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          coexist: ${{ vars.DESKTOP_COEXIST }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+
+      - name: Download the compiled core
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: compiled-windows-x64-core
+          path: compiled/core
+
+      - name: Download the compiled app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: compiled-windows-x64-app
+          path: compiled/app
+
+      # The Setup .exe is compiled with Inno Setup 6, as in desktop-ci.yml.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              choco install innosetup --no-progress -y
+            } else {
+              winget install --id JRSoftware.InnoSetup -e --scope machine --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Get-Item $iscc | Format-List FullName, VersionInfo
+
+      # Sign only when all six signing variables are set; otherwise build
+      # unsigned with a warning. Prints no value but the endpoint's host.
+      - name: Resolve Windows signing
+        id: signing
+        env:
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TRUSTED_SIGNING_ENDPOINT: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          TRUSTED_SIGNING_ACCOUNT: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          TRUSTED_SIGNING_CERT_PROFILE: ${{ vars.TRUSTED_SIGNING_CERT_PROFILE }}
+          # The ref whose source is built: an automatic candidate builds the
+          # Desktop CI run's branch (the version job admits only main pushes
+          # from this repository), any other run builds github.ref.
+          SIGNING_REF: ${{ github.event_name != 'workflow_run' && github.ref || (github.event.workflow_run.head_repository.full_name == github.repository && format('refs/heads/{0}', github.event.workflow_run.head_branch)) || 'a fork' }}
+        run: |
+          # Only main, hotfix/ branches and desktop-v tags are signed: a
+          # dispatch from any other branch builds unsigned. The desktop-release and desktop-<id>
+          # environments' deployment rules are the second layer
+          # (docs/windows-app.md, "Code signing").
+          $ref = $env:SIGNING_REF
+          if ($ref -cne 'refs/heads/main' -and -not $ref.StartsWith('refs/tags/desktop-v', [StringComparison]::Ordinal) -and -not $ref.StartsWith('refs/heads/hotfix/', [StringComparison]::Ordinal)) {
+            $message = "Building unsigned: only main, hotfix/ branches and desktop-v tags are signed, and this run builds $ref."
+            Write-Output "::warning title=Windows signing skipped::$message"
+            Write-Output "Windows signing skipped. $message"
+            'sign=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $names = 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID',
+            'TRUSTED_SIGNING_ENDPOINT', 'TRUSTED_SIGNING_ACCOUNT', 'TRUSTED_SIGNING_CERT_PROFILE'
+          $missing = @($names | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
+          if ($missing) {
+            $message = "Building unsigned: the repository variables $($missing -join ', ') are not set."
+            Write-Output "::warning title=Windows signing skipped::$message"
+            Write-Output "Windows signing skipped. $message"
+            'sign=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $endpoint = $null
+          if (-not [Uri]::TryCreate($env:TRUSTED_SIGNING_ENDPOINT, 'Absolute', [ref]$endpoint) -or $endpoint.Scheme -ne 'https') {
+            throw 'TRUSTED_SIGNING_ENDPOINT is not an https URL'
+          }
+          Write-Output "Signing with Azure Trusted Signing at $($endpoint.Host)."
+          'sign=true' >> $env:GITHUB_OUTPUT
+
+      - name: Sign in for Windows signing
+        id: sign-in
+        if: steps.signing.outputs.sign == 'true'
+        uses: ./.github/actions/windows-sign
+        with:
+          mode: setup
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          account: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile: ${{ vars.TRUSTED_SIGNING_CERT_PROFILE }}
+
+      # When signing, every PE file is signed before it is zipped, and Inno
+      # signs Setup and its uninstaller.
+      - name: Assemble the captured runtimes and build packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGN_COMMAND: ${{ steps.sign-in.outputs.sign-command }}
+        run: |
+          $signing = if ($env:SIGN_COMMAND) { @('--sign-command', $env:SIGN_COMMAND) } else { @() }
+          python scripts/package-windows.py --version "$env:VERSION" --arch 'x64' `
+            --app-runtime compiled/app --core-runtime compiled/core --out out --installer `
+            --source-sha '${{ needs.version.outputs.source-sha }}' @signing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Content -Encoding ascii -Path 'out/probe-version-windows-x64.txt' -Value $env:VERSION
+
+      # Every PE file in both zips, and Setup, must carry a valid signature.
+      - name: Verify Windows signatures
+        id: verify-signatures
+        uses: ./.github/actions/windows-sign
+        with:
+          mode: verify
+          sign: ${{ steps.signing.outputs.sign }}
+          archives: |
+            out/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64.zip
+            out/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64-probe.zip
+          files: out/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64-Setup.exe
+
+      # Use only the DLLs shipped with the package, rather than a build host's PATH.
+      - name: Smoke test the packaged core
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $unpacked = Join-Path $env:RUNNER_TEMP 'unpacked'
+          Expand-Archive -LiteralPath "out/$env:ASSET_PREFIX-$env:VERSION-Windows-x64.zip" -DestinationPath $unpacked -Force
+          $env:PATH = "$env:SystemRoot\System32"
+          & "$unpacked/AgentRelay-Windows-x64/bin/agent-relay-probe.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Setup installs per user where the updater expects the tree, and its
+      # uninstaller removes the install, the shortcut and the entry. A signed
+      # build's installed uninstaller must carry a valid signature.
+      - name: Install and uninstall with Setup
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGN: ${{ steps.signing.outputs.sign }}
+          SIGNTOOL: ${{ steps.verify-signatures.outputs.signtool }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:VERSION
+          $setup = "out\$env:ASSET_PREFIX-$version-Windows-x64-Setup.exe"
+          Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $root = "$env:LOCALAPPDATA\Programs\AgentRelay"
+          $shortcut = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Agent Relay.lnk"
+          $entry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{C5377993-AE99-466F-A519-676A299A6C6D}_is1'
+          foreach ($path in "$root\$version\AgentRelay-Windows-x64\bin\agent-relay.exe", "$root\unins000.exe", $shortcut, $entry) {
+            if (-not (Test-Path $path)) { throw "Setup did not create $path" }
+          }
+          Get-ItemProperty $entry | Format-List DisplayName, DisplayVersion, InstallLocation
+          if ($env:SIGN -eq 'true') {
+            & $env:SIGNTOOL verify /pa /v "$root\unins000.exe" "$root\$version\AgentRelay-Windows-x64\bin\agent-relay.exe"
+            if ($LASTEXITCODE -ne 0) { throw "The installed uninstaller or app is not validly signed ($LASTEXITCODE)" }
+          }
+          Start-Process "$root\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          # The uninstaller finishes removing its own folder just after it exits.
+          for ($i = 0; $i -lt 30 -and (Test-Path $root); $i++) { Start-Sleep -Seconds 1 }
+          foreach ($path in $root, $shortcut, $entry, "HKCU:\Software\Classes\$env:URL_SCHEME") {
+            if (Test-Path $path) { throw "The uninstaller left $path" }
+          }
+
+      - name: Remove the unpacked staging tree
+        run: Remove-Item -Recurse -Force 'out/AgentRelay-Windows-x64'
+
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x64
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  compile-windows-arm64:
+    name: Compile Windows arm64 ${{ matrix.component }}
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    # The GTK app and the core, built natively with MSYS2's clang toolchain
+    # and GTK 4; the zip carries the GTK runtime beside them.
+    runs-on: ${{ vars.CI_WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [core, app]
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      # A short cargo home and git-CLI fetches, as in desktop-ci.yml: RelayHistory's
+      # fixtures hold paths close to Windows' 260-character limit.
+      CARGO_HOME: C:\ch
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      # An internal build's crate overrides: the Cargo files the version job resolved.
+      - name: Take the crate overrides
+        if: needs.version.outputs.crate-overrides == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crate-overrides
+          path: .
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          coexist: ${{ vars.DESKTOP_COEXIST }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
+          branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
+          branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          branding-app-private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
+      - name: Install the Windows toolchain
+        id: toolchain
+        uses: ./.github/actions/windows-toolchain
+        with:
+          msystem: CLANGARM64
+
+      - name: Cache the Cargo release dependencies
+        id: build-cache
+        uses: ./.github/actions/windows-build-cache
+        with:
+          arch: arm64
+          profile: release
+          lane: ${{ matrix.component }}
+          toolchain: ${{ steps.toolchain.outputs.identity }}
+
+      - name: Compile the versioned executable with its icon
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          # A profile build reports only to its own site's analytics gateway
+          # and is given no PostHog key: the core's build refuses one. The
+          # default profile ships the repository's key.
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ (inputs.profile == '' && secrets.POSTHOG_API_KEY) || '' }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then
+            args+=(--site-url "$SITE_URL" --url-scheme "$URL_SCHEME" --profile "$PROFILE"
+              --product-name "$PRODUCT_NAME" --release-feed "$RELEASE_FEED")
+            # A cloud feed has no releases repository, and only a cloud feed a key.
+            if [ -n "$RELEASES_REPOSITORY" ]; then args+=(--releases-repository "$RELEASES_REPOSITORY"); fi
+            if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
+            if [ -n "$SUPPORT_URL" ]; then args+=(--support-url "$SUPPORT_URL"); fi
+            if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+          fi
+          scripts/build-windows.sh --version "$VERSION" --arch 'arm64' --build-only '${{ matrix.component }}' --runtime-out runtime ${args[@]+"${args[@]}"}
+
+      - name: Check the core's bridge commands
+        if: matrix.component == 'core'
+        run: bash scripts/check-probe-bridge.sh target/release/agent-relay-desktop-probe.exe
+
+      - name: Upload the compiled runtime
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiled-windows-arm64-${{ matrix.component }}
+          path: runtime/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Keep only reusable release dependencies in the cache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/windows-build-cache-prune
+        with:
+          profile: release
+
+  package-windows-arm64:
+    name: Build Windows arm64
+    needs: [version, compile-windows-arm64]
+    if: needs.version.outputs.skip != 'true'
+    # The GTK app and the core, built natively with MSYS2's clang toolchain
+    # and GTK 4; the zip carries the GTK runtime beside them.
+    runs-on: ${{ vars.CI_WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}
+    # Always under an environment, so a signing identity can trust exactly
+    # this job (docs/windows-app.md, "Code signing"): the profile's, else
+    # desktop-release.
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || 'desktop-release' }}
+    permissions:
+      contents: read
+      # Azure Trusted Signing sign-in (OIDC); no other job has it.
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          coexist: ${{ vars.DESKTOP_COEXIST }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+
+      - name: Download the compiled core
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: compiled-windows-arm64-core
+          path: compiled/core
+
+      - name: Download the compiled app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: compiled-windows-arm64-app
+          path: compiled/app
+
+      # The Setup .exe is compiled with Inno Setup 6, as in desktop-ci.yml.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              choco install innosetup --no-progress -y
+            } else {
+              winget install --id JRSoftware.InnoSetup -e --scope machine --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Get-Item $iscc | Format-List FullName, VersionInfo
+
+      # Sign only when all six signing variables are set; otherwise build
+      # unsigned with a warning. Prints no value but the endpoint's host.
+      - name: Resolve Windows signing
+        id: signing
+        env:
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TRUSTED_SIGNING_ENDPOINT: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          TRUSTED_SIGNING_ACCOUNT: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          TRUSTED_SIGNING_CERT_PROFILE: ${{ vars.TRUSTED_SIGNING_CERT_PROFILE }}
+          # The ref whose source is built: an automatic candidate builds the
+          # Desktop CI run's branch (the version job admits only main pushes
+          # from this repository), any other run builds github.ref.
+          SIGNING_REF: ${{ github.event_name != 'workflow_run' && github.ref || (github.event.workflow_run.head_repository.full_name == github.repository && format('refs/heads/{0}', github.event.workflow_run.head_branch)) || 'a fork' }}
+        run: |
+          # Only main, hotfix/ branches and desktop-v tags are signed: a
+          # dispatch from any other branch builds unsigned. The desktop-release and desktop-<id>
+          # environments' deployment rules are the second layer
+          # (docs/windows-app.md, "Code signing").
+          $ref = $env:SIGNING_REF
+          if ($ref -cne 'refs/heads/main' -and -not $ref.StartsWith('refs/tags/desktop-v', [StringComparison]::Ordinal) -and -not $ref.StartsWith('refs/heads/hotfix/', [StringComparison]::Ordinal)) {
+            $message = "Building unsigned: only main, hotfix/ branches and desktop-v tags are signed, and this run builds $ref."
+            Write-Output "::warning title=Windows signing skipped::$message"
+            Write-Output "Windows signing skipped. $message"
+            'sign=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $names = 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID',
+            'TRUSTED_SIGNING_ENDPOINT', 'TRUSTED_SIGNING_ACCOUNT', 'TRUSTED_SIGNING_CERT_PROFILE'
+          $missing = @($names | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
+          if ($missing) {
+            $message = "Building unsigned: the repository variables $($missing -join ', ') are not set."
+            Write-Output "::warning title=Windows signing skipped::$message"
+            Write-Output "Windows signing skipped. $message"
+            'sign=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $endpoint = $null
+          if (-not [Uri]::TryCreate($env:TRUSTED_SIGNING_ENDPOINT, 'Absolute', [ref]$endpoint) -or $endpoint.Scheme -ne 'https') {
+            throw 'TRUSTED_SIGNING_ENDPOINT is not an https URL'
+          }
+          Write-Output "Signing with Azure Trusted Signing at $($endpoint.Host)."
+          'sign=true' >> $env:GITHUB_OUTPUT
+
+      - name: Sign in for Windows signing
+        id: sign-in
+        if: steps.signing.outputs.sign == 'true'
+        uses: ./.github/actions/windows-sign
+        with:
+          mode: setup
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          account: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile: ${{ vars.TRUSTED_SIGNING_CERT_PROFILE }}
+
+      # When signing, every PE file is signed before it is zipped, and Inno
+      # signs Setup and its uninstaller.
+      - name: Assemble the captured runtimes and build packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGN_COMMAND: ${{ steps.sign-in.outputs.sign-command }}
+        run: |
+          $signing = if ($env:SIGN_COMMAND) { @('--sign-command', $env:SIGN_COMMAND) } else { @() }
+          python scripts/package-windows.py --version "$env:VERSION" --arch 'arm64' `
+            --app-runtime compiled/app --core-runtime compiled/core --out out --installer `
+            --source-sha '${{ needs.version.outputs.source-sha }}' @signing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Content -Encoding ascii -Path 'out/probe-version-windows-arm64.txt' -Value $env:VERSION
+
+      # Every PE file in both zips, and Setup, must carry a valid signature.
+      - name: Verify Windows signatures
+        id: verify-signatures
+        uses: ./.github/actions/windows-sign
+        with:
+          mode: verify
+          sign: ${{ steps.signing.outputs.sign }}
+          archives: |
+            out/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64.zip
+            out/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64-probe.zip
+          files: out/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64-Setup.exe
+
+      # Use only the DLLs shipped with the package, rather than a build host's PATH.
+      - name: Smoke test the packaged core
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $unpacked = Join-Path $env:RUNNER_TEMP 'unpacked'
+          Expand-Archive -LiteralPath "out/$env:ASSET_PREFIX-$env:VERSION-Windows-arm64.zip" -DestinationPath $unpacked -Force
+          $env:PATH = "$env:SystemRoot\System32"
+          & "$unpacked/AgentRelay-Windows-arm64/bin/agent-relay-probe.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Setup installs per user where the updater expects the tree, and its
+      # uninstaller removes the install, the shortcut and the entry. A signed
+      # build's installed uninstaller must carry a valid signature.
+      - name: Install and uninstall with Setup
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGN: ${{ steps.signing.outputs.sign }}
+          SIGNTOOL: ${{ steps.verify-signatures.outputs.signtool }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:VERSION
+          $setup = "out\$env:ASSET_PREFIX-$version-Windows-arm64-Setup.exe"
+          Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $root = "$env:LOCALAPPDATA\Programs\AgentRelay"
+          $shortcut = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Agent Relay.lnk"
+          $entry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{C5377993-AE99-466F-A519-676A299A6C6D}_is1'
+          foreach ($path in "$root\$version\AgentRelay-Windows-arm64\bin\agent-relay.exe", "$root\unins000.exe", $shortcut, $entry) {
+            if (-not (Test-Path $path)) { throw "Setup did not create $path" }
+          }
+          Get-ItemProperty $entry | Format-List DisplayName, DisplayVersion, InstallLocation
+          if ($env:SIGN -eq 'true') {
+            & $env:SIGNTOOL verify /pa /v "$root\unins000.exe" "$root\$version\AgentRelay-Windows-arm64\bin\agent-relay.exe"
+            if ($LASTEXITCODE -ne 0) { throw "The installed uninstaller or app is not validly signed ($LASTEXITCODE)" }
+          }
+          Start-Process "$root\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          # The uninstaller finishes removing its own folder just after it exits.
+          for ($i = 0; $i -lt 30 -and (Test-Path $root); $i++) { Start-Sleep -Seconds 1 }
+          foreach ($path in $root, $shortcut, $entry, "HKCU:\Software\Classes\$env:URL_SCHEME") {
+            if (Test-Path $path) { throw "The uninstaller left $path" }
+          }
+
+      - name: Remove the unpacked staging tree
+        run: Remove-Item -Recurse -Force 'out/AgentRelay-Windows-arm64'
+
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-arm64
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    name: Windows packages complete
+    needs: [version, package-windows-x64, package-windows-arm64]
+    if: >-
+      always() && !cancelled() && needs.version.outputs.skip != 'true' && needs.package-windows-x64.result == 'success' &&
+      needs.package-windows-arm64.result == 'success'
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - run: echo 'Both Windows architectures passed packaging and installer checks.'
+
+  publish:
+    name: Publish to relay-desktop-releases
+    needs:
+      - version
+      - ci-status
+      - pre-release
+      - release-core
+      - build
+      - build-linux
+      - build-windows
+    # Verification and packaging overlap. A skipped fallback matrix is safe
+    # only when this exact commit passed Desktop CI on main.
+    if: >-
+      always() && !cancelled() && needs.version.outputs.skip != 'true' &&
+      needs.version.result == 'success' && needs.ci-status.result == 'success' &&
+      needs.release-core.result == 'success' && needs.build.result == 'success' &&
+      needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
+      (needs.pre-release.result == 'success' ||
+        (needs.ci-status.outputs.tested == 'true' && needs.pre-release.result == 'skipped'))
+    runs-on: ${{ vars.DEPLOY_LINUX_RUNNER || 'ubuntu-latest' }}
+    environment: ${{ inputs.profile && format('desktop-{0}', inputs.profile) || '' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      # The profile's releases repository (RELEASES_REPOSITORY) and the
+      # credentials that write to it (the releases App's secrets, or
+      # RELEASES_TOKEN) come from its environment.
+      - name: Resolve the site profile
+        uses: ./.github/actions/site-profile
+        with:
+          profile: ${{ inputs.profile }}
+          site-url: ${{ secrets.AGENT_RELAY_SITE_URL }}
+          url-scheme: ${{ secrets.AGENT_RELAY_URL_SCHEME }}
+          product-name: ${{ secrets.DESKTOP_PRODUCT_NAME }}
+          bundle-id: ${{ secrets.DESKTOP_BUNDLE_ID }}
+          releases-repository: ${{ secrets.RELEASES_REPOSITORY }}
+          release-feed: ${{ secrets.RELEASE_FEED }}
+          feed-public-key: ${{ secrets.DESKTOP_FEED_PUBLIC_KEY }}
+          feed-publisher-token-set: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN != '' }}
+          support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
+          policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
+          history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+
+      # Publishing prefers a short-lived GitHub App installation token,
+      # minted here for the releases repository alone, over the long-lived
+      # RELEASES_TOKEN: a profile sets DESKTOP_RELEASES_APP_ID and
+      # DESKTOP_RELEASES_APP_PRIVATE_KEY in its environment; the default
+      # profile sets RELEASES_APP_ID and RELEASES_APP_PRIVATE_KEY as repository
+      # secrets (an App installed on the organisation with access limited to
+      # the releases repository, Contents read/write and Metadata read). The
+      # names differ on purpose: an environment secret shadows a repository
+      # secret of the same name but cannot hide one, so a profile selects its
+      # own pair and never inherits the default's. RELEASES_TOKEN remains the
+      # fallback when the selected pair is unset.
+      # A cloud feed publishes with its publisher token instead: it needs
+      # no App, no RELEASES_TOKEN and no releases repository.
+      - name: Check for the releases App
+        id: releases-app
+        if: env.RELEASE_FEED != 'cloud'
+        env:
+          HAS_APP: ${{ (inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_ID != '' && secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY != '') || (inputs.profile == '' && secrets.RELEASES_APP_ID != '' && secrets.RELEASES_APP_PRIVATE_KEY != '') }}
+        run: |
+          set -euo pipefail
+          owner="${RELEASES_REPOSITORY%%/*}"
+          name="${RELEASES_REPOSITORY#*/}"
+          # A profile's repository is masked; so are its parts.
+          if [ -n "$PROFILE" ]; then
+            echo "::add-mask::$owner"
+            echo "::add-mask::$name"
+          fi
+          {
+            echo "RELEASES_OWNER=$owner"
+            echo "RELEASES_NAME=$name"
+          } >> "$GITHUB_ENV"
+          echo "has_app=$HAS_APP" >> "$GITHUB_OUTPUT"
+
+      # Preparation (prepare-only and the automatic workflow_run) builds a
+      # candidate and never publishes, so it neither mints this token nor
+      # checks publishing access; Desktop Promote does both before it publishes.
+      - name: Mint a releases repository token
+        id: releases-token
+        if: ${{ steps.releases-app.outputs.has_app == 'true' && github.event_name != 'workflow_run' && !inputs.prepare-only }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ (inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_ID) || (inputs.profile == '' && secrets.RELEASES_APP_ID) || '' }}
+          private-key: ${{ (inputs.profile != '' && secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY) || (inputs.profile == '' && secrets.RELEASES_APP_PRIVATE_KEY) || '' }}
+          owner: ${{ env.RELEASES_OWNER }}
+          repositories: ${{ env.RELEASES_NAME }}
+          permission-contents: write
+
+      - name: Check publishing access
+        if: ${{ github.event_name != 'workflow_run' && !inputs.prepare-only && env.RELEASE_FEED != 'cloud' }}
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          APP_TOKEN: ${{ steps.releases-token.outputs.token != '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            if [ -n "$PROFILE" ]; then pair="DESKTOP_RELEASES_APP_ID + DESKTOP_RELEASES_APP_PRIVATE_KEY"; else pair="RELEASES_APP_ID + RELEASES_APP_PRIVATE_KEY"; fi
+            echo "::error::Set $pair (a GitHub App installed on the releases repository with Contents: read and write) or RELEASES_TOKEN. The source repo's GITHUB_TOKEN cannot publish there."
+            exit 1
+          fi
+          # An installation token's repository response may carry no
+          # permissions; minting it with Contents write already proved access.
+          gh api "repos/$RELEASES_REPOSITORY" > repository.json
+          jq -e --argjson app "$APP_TOKEN" '.private == false and ($app or .permissions.push == true)' repository.json > /dev/null || {
+            echo "::error::The releases repo must be public and the releases App or RELEASES_TOKEN must have write access."
+            exit 1
+          }
+          gh api "repos/$RELEASES_REPOSITORY/commits/main" --jq .sha > /dev/null || {
+            echo "::error::Initialize the releases repo with its README before publishing."
+            exit 1
+          }
+
+      - name: Download the disk images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dmg-*
+          path: downloads
+          merge-multiple: true
+
+      - name: Download the Linux packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: linux-*
+          path: linux-downloads
+          merge-multiple: true
+
+      - name: Download the Windows packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: windows-*
+          path: windows-downloads
+          merge-multiple: true
+
+      - name: Stage the release assets
+        id: stage
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Keep distributable packages separate from the checkout's branding assets/.
+          # Every name starts with the profile's prefix (ASSET_PREFIX):
+          # AgentRelay for the default profile, Desktop-<id> for another.
+          mkdir release-assets
+          for arch in arm64 x64; do
+            # The pinned names carry the minimum macOS from Package.swift; the
+            # stable name agentrelay.com links to gets identical bytes.
+            python3 scripts/macos-release-assets.py "$VERSION" "$arch" \
+              "downloads/$ASSET_PREFIX-$VERSION-macOS-$arch.dmg" release-assets --asset-prefix "$ASSET_PREFIX"
+
+            probe_versioned="$ASSET_PREFIX-$VERSION-macOS-$arch-probe.tar.gz"
+            probe_stable="$ASSET_PREFIX-macOS-$arch-probe.tar.gz"
+            test -f "downloads/$probe_versioned" || { echo "::error::missing $probe_versioned"; exit 1; }
+            cp "downloads/$probe_versioned" "release-assets/$probe_versioned"
+            cp "downloads/$probe_versioned" "release-assets/$probe_stable"
+
+            linux_tar="$ASSET_PREFIX-$VERSION-Linux-$arch.tar.gz"
+            linux_deb="$ASSET_PREFIX-$VERSION-Linux-$arch.deb"
+            test -f "linux-downloads/$linux_tar" || { echo "::error::missing $linux_tar"; exit 1; }
+            test -f "linux-downloads/$linux_deb" || { echo "::error::missing $linux_deb"; exit 1; }
+            cp "linux-downloads/$linux_tar" "release-assets/$linux_tar"
+            cp "linux-downloads/$linux_deb" "release-assets/$linux_deb"
+            cp "linux-downloads/$linux_tar" "release-assets/$ASSET_PREFIX-Linux-$arch.tar.gz"
+            cp "linux-downloads/$linux_deb" "release-assets/$ASSET_PREFIX-Linux-$arch.deb"
+
+            linux_probe="$ASSET_PREFIX-$VERSION-Linux-$arch-probe.tar.gz"
+            test -f "linux-downloads/$linux_probe" || { echo "::error::missing $linux_probe"; exit 1; }
+            cp "linux-downloads/$linux_probe" "release-assets/$linux_probe"
+            cp "linux-downloads/$linux_probe" "release-assets/$ASSET_PREFIX-Linux-$arch-probe.tar.gz"
+
+            windows_zip="$ASSET_PREFIX-$VERSION-Windows-$arch.zip"
+            windows_probe="$ASSET_PREFIX-$VERSION-Windows-$arch-probe.zip"
+            windows_setup="$ASSET_PREFIX-$VERSION-Windows-$arch-Setup.exe"
+            test -f "windows-downloads/$windows_zip" || { echo "::error::missing $windows_zip"; exit 1; }
+            test -f "windows-downloads/$windows_probe" || { echo "::error::missing $windows_probe"; exit 1; }
+            test -f "windows-downloads/$windows_setup" || { echo "::error::missing $windows_setup"; exit 1; }
+            cp "windows-downloads/$windows_zip" "release-assets/$windows_zip"
+            cp "windows-downloads/$windows_zip" "release-assets/$ASSET_PREFIX-Windows-$arch.zip"
+            cp "windows-downloads/$windows_probe" "release-assets/$windows_probe"
+            cp "windows-downloads/$windows_probe" "release-assets/$ASSET_PREFIX-Windows-$arch-probe.zip"
+            cp "windows-downloads/$windows_setup" "release-assets/$windows_setup"
+            cp "windows-downloads/$windows_setup" "release-assets/$ASSET_PREFIX-Windows-$arch-Setup.exe"
+          done
+          # The headless installers are served from the public releases repo
+          # (a cloud profile: from its own feed) so their one-line installs
+          # keep working wherever the source lives. Every product installs
+          # into the same prefix and user unit (one Agent Relay app per
+          # machine), so a profile release publishes both, set to install the
+          # profile's own releases: its product name, releases repository,
+          # asset prefix, feed (github or cloud), site, profile id and feed
+          # public key replace the default's seven assignments in each
+          # (docs/workspace-layout.md, "Site profiles"). A github: profile
+          # needs its releases repository and a cloud profile its site, id
+          # and key; with neither a repository nor a site there is nothing
+          # to install from, and the step fails. Nothing is logged but the
+          # opaque id.
+          if [ -z "$PROFILE" ]; then
+            cp linux/install.sh release-assets/install.sh
+            cp windows/install.ps1 release-assets/install.ps1
+          else
+            python3 - linux/install.sh windows/install.ps1 release-assets <<'PY'
+          import os, re, shlex, sys
+          shell, powershell, target = sys.argv[1:]
+          env = {name: os.environ.get(name, "") for name in (
+              "PROFILE", "PRODUCT_NAME", "RELEASES_REPOSITORY", "ASSET_PREFIX",
+              "RELEASE_FEED", "SITE_URL", "FEED_PUBLIC_KEY")}
+          if env["RELEASE_FEED"] == "cloud":
+              feed = "cloud"
+              if not (env["SITE_URL"] and env["FEED_PUBLIC_KEY"]):
+                  sys.exit("a cloud profile's installers need its site and feed public key")
+              if not re.fullmatch(r"[a-z0-9]{1,32}", env["PROFILE"]):
+                  sys.exit("a cloud profile's id must be 1 to 32 lowercase letters and digits (the feed's key_id)")
+              if env["RELEASES_REPOSITORY"]:
+                  sys.exit("a cloud profile has no releases repository")
+          elif env["RELEASE_FEED"] == "github:" or env["RELEASE_FEED"].startswith("github:"):
+              feed = "github"
+              if not env["RELEASES_REPOSITORY"]:
+                  sys.exit("a github: profile's installers need its releases repository")
+          else:
+              sys.exit("RELEASE_FEED must be github:<owner>/<name> or cloud")
+          values = {
+              "PRODUCT_NAME": env["PRODUCT_NAME"], "RELEASES_REPOSITORY": env["RELEASES_REPOSITORY"],
+              "ASSET_PREFIX": env["ASSET_PREFIX"], "RELEASE_FEED": feed, "SITE_URL": env["SITE_URL"],
+              "PROFILE_ID": env["PROFILE"], "FEED_PUBLIC_KEY": env["FEED_PUBLIC_KEY"],
+          }
+          if not values["PRODUCT_NAME"] or not values["ASSET_PREFIX"]:
+              sys.exit("a profile's installers need its product name and asset prefix")
+          if any(ord(c) < 32 or ord(c) == 127 for value in values.values() for c in value):
+              sys.exit("a profile value holds a control character")
+          def powershell_string(value):
+              # ASCII stays in single-quoted literals, each ' doubled; any
+              # other character (the typographic quotes PowerShell also ends
+              # a literal at included) is a [char] code, so the script stays
+              # ASCII and reads the same under Windows PowerShell's ANSI
+              # default.
+              parts, run = [], ""
+              for char in value:
+                  if ord(char) < 128:
+                      run += "''" if char == "'" else char
+                      continue
+                  if run:
+                      parts.append(f"'{run}'")
+                      run = ""
+                  units = char.encode("utf-16-be")
+                  parts.extend(f"[string][char]0x{units[i:i + 2].hex().upper()}" for i in range(0, len(units), 2))
+              if run or not parts:
+                  parts.append(f"'{run}'")
+              if not parts[0].startswith("'"):
+                  parts.insert(0, "''")
+              return " + ".join(parts)
+          PS_NAMES = {
+              "PRODUCT_NAME": "ProductName", "RELEASES_REPOSITORY": "ReleasesRepository",
+              "ASSET_PREFIX": "AssetPrefix", "RELEASE_FEED": "ReleaseFeed", "SITE_URL": "SiteUrl",
+              "PROFILE_ID": "ProfileId", "FEED_PUBLIC_KEY": "FeedPublicKey",
+          }
+          for source, name, assign in (
+              (shell, "install.sh", lambda key, value: (rf"^{key}=.*$", f"{key}={shlex.quote(value)}")),
+              (powershell, "install.ps1", lambda key, value: (
+                  rf"^\${PS_NAMES[key]} = .*$", f"${PS_NAMES[key]} = {powershell_string(value)}")),
+          ):
+              with open(source, encoding="utf-8", newline="") as file:
+                  text = file.read()
+              for key, value in values.items():
+                  pattern, line = assign(key, value)
+                  text, count = re.subn(pattern, lambda _: line, text, flags=re.M)
+                  if count != 1:
+                      sys.exit(f"{source} must assign {key} exactly once")
+              with open(os.path.join(target, name), "w", encoding="utf-8", newline="") as file:
+                  file.write(text)
+          PY
+            echo "Profile $PROFILE: install.sh and install.ps1 for the profile's releases."
+          fi
+          ( cd release-assets && sha256sum install.sh > install.sh.sha256 && sha256sum install.ps1 > install.ps1.sha256 )
+          ( cd release-assets && for package in *.dmg *.tar.gz *.deb *.zip *.exe; do sha256sum "$package" > "$package.sha256"; done )
+
+          probe_version=""
+          for record in \
+            downloads/probe-version-arm64.txt \
+            downloads/probe-version-x64.txt \
+            linux-downloads/probe-version-linux-arm64.txt \
+            linux-downloads/probe-version-linux-x64.txt \
+            windows-downloads/probe-version-windows-arm64.txt \
+            windows-downloads/probe-version-windows-x64.txt; do
+            test -f "$record" || { echo "::error::missing $record"; exit 1; }
+            recorded="$(tr -d '\n\r' < "$record")"
+            test "$recorded" = "$VERSION" || { echo "::error::wrong probe version in $record: expected $VERSION, got $recorded"; exit 1; }
+            if [ -z "$probe_version" ]; then
+              probe_version="$recorded"
+            elif [ "$recorded" != "$probe_version" ]; then
+              echo "::error::probe version mismatch: $record contains $recorded, expected $probe_version"
+              exit 1
+            fi
+          done
+          echo "probe_version=$probe_version" >> "$GITHUB_OUTPUT"
+
+          ls -l release-assets
+
+      # A profile's notes name it by its id and never a product, and come
+      # from the Unreleased section (its version numbers are its own).
+      - name: Prepare release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PROBE_VERSION: ${{ steps.stage.outputs.probe_version }}
+        run: |
+          args=()
+          if [ -n "$PROFILE" ]; then args+=(--unreleased); fi
+          if [ "${RELEASE_FEED:-}" = cloud ]; then args+=(--feed cloud); fi
+          python3 scripts/release-notes.py "$VERSION" \
+            --repository "$RELEASES_REPOSITORY" \
+            --asset-prefix "$ASSET_PREFIX" \
+            --probe-version "$PROBE_VERSION" \
+            --output release-notes.md ${args[@]+"${args[@]}"}
+
+      # A cloud release publishes from a verified candidate too: the
+      # candidate records "feed": "cloud", and its recorded bytes are the
+      # ones the feed is asked to declare and receives.
+      - name: Prepare verified release candidate
+        if: github.event_name == 'workflow_run' || inputs.prepare-only || env.RELEASE_FEED == 'cloud'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          SOURCE_SHA: ${{ needs.version.outputs.source-sha }}
+          CI_RUN_ID: ${{ inputs.ci-run-id || github.event.workflow_run.id }}
+          UNLISTED: ${{ needs.version.outputs.unlisted }}
+          CRATES: ${{ needs.version.outputs.crates }}
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          cp -R release-assets candidate/assets
+          cp release-notes.md candidate/release-notes.md
+          args=(create --directory candidate --source-sha "$SOURCE_SHA" \
+            --version "$VERSION" --channel "$CHANNEL" --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" --tests-passed --profile "$PROFILE")
+          if [ -n "$CI_RUN_ID" ]; then args+=(--ci-run-id "$CI_RUN_ID"); fi
+          if [ "${RELEASE_FEED:-}" = cloud ]; then args+=(--feed cloud); fi
+          if [ "${UNLISTED:-}" = true ]; then args+=(--unlisted); fi
+          if [ -n "${CRATES:-}" ]; then
+            crates="$(mktemp)"
+            printf '%s\n' "$CRATES" > "$crates"
+            args+=(--crates "$crates")
+          fi
+          python3 scripts/release-candidate.py "${args[@]}"
+
+      - name: Upload verified release candidate
+        if: github.event_name == 'workflow_run' || inputs.prepare-only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate
+          path: candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      # A cloud feed: declare the candidate's versioned packages,
+      # install.sh and install.ps1 (never the unversioned aliases or .sha256 files: the feed
+      # binds names to <asset_prefix>-<version>- and records each sha256),
+      # upload each, then publish. Stable is published as latest; beta is
+      # not. A failed upload or publish leaves the feed's draft unpublished
+      # and this job red; a rerun resumes the same draft. The bridge follows
+      # the proposed Cloud contract (relay-control docs/desktop-feed.md), and
+      # the token reaches this step's environment only.
+      - name: Publish to the cloud feed
+        if: ${{ env.RELEASE_FEED == 'cloud' && github.event_name != 'workflow_run' && !inputs.prepare-only }}
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          SOURCE_SHA: ${{ needs.version.outputs.source-sha }}
+          DESKTOP_FEED_PUBLISHER_TOKEN: ${{ secrets.DESKTOP_FEED_PUBLISHER_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release-candidate.py cloud-assets --directory candidate --feed cloud \
+            --source-sha "$SOURCE_SHA" --version "$VERSION" --channel "$CHANNEL" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --profile "$PROFILE" \
+            --output cloud-assets.txt
+          python3 scripts/desktop-feed-publish.py publish --site "$SITE_URL" --profile "$PROFILE" \
+            --feed "$RELEASE_FEED" --asset-prefix "$ASSET_PREFIX" --version "$VERSION" \
+            --channel "$CHANNEL" --notes candidate/release-notes.md --directory candidate/assets \
+            --assets cloud-assets.txt
+
+      - name: Create the release
+        if: ${{ github.event_name != 'workflow_run' && !inputs.prepare-only && env.RELEASE_FEED != 'cloud' }}
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          # The profile's repository, and the App token minted for it (or
+          # RELEASES_TOKEN), from its environment.
+          repository: ${{ env.RELEASES_REPOSITORY }}
+          token: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          # Tags belong to the distribution repo, never the source SHA.
+          target_commitish: main
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.title }}
+          draft: false
+          prerelease: ${{ needs.version.outputs.channel == 'beta' }}
+          make_latest: ${{ needs.version.outputs.channel == 'stable' }}
+          # Generated notes would describe the distribution repo, not the app.
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          # The prefix comes from this job's own site-profile step (env), never
+          # from a job output: a job output that contains a masked value (a
+          # profile id equal to its link scheme, say) is dropped by the runner.
+          files: |
+            release-assets/install.sh
+            release-assets/install.sh.sha256
+            release-assets/install.ps1
+            release-assets/install.ps1.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS*-arm64.dmg
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS*-arm64.dmg.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS*-x64.dmg
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS*-x64.dmg.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-arm64.dmg
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-arm64.dmg.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-x64.dmg
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-x64.dmg.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS-arm64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS-arm64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS-x64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS-x64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-arm64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-arm64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-x64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-macOS-x64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-arm64.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-arm64.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-arm64.deb
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-arm64.deb.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-x64.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-x64.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-x64.deb
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-x64.deb.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-arm64.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-arm64.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-arm64.deb
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-arm64.deb.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-x64.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-x64.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-x64.deb
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-x64.deb.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-arm64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-arm64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-x64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Linux-x64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-arm64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-arm64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-x64-probe.tar.gz
+            release-assets/${{ env.ASSET_PREFIX }}-Linux-x64-probe.tar.gz.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64.zip
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64.zip
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-arm64.zip
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-arm64.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-x64.zip
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-x64.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64-probe.zip
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64-probe.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64-probe.zip
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64-probe.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-arm64-probe.zip
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-arm64-probe.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-x64-probe.zip
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-x64-probe.zip.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64-Setup.exe
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-arm64-Setup.exe.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64-Setup.exe
+            release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-Windows-x64-Setup.exe.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-arm64-Setup.exe
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-arm64-Setup.exe.sha256
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-x64-Setup.exe
+            release-assets/${{ env.ASSET_PREFIX }}-Windows-x64-Setup.exe.sha256
+          body_path: release-notes.md
+
+  changelog:
+    # always(): a skipped full matrix upstream must not skip this job. The
+    # changelog is the default profile's: a profile's versions are its own.
+    if: always() && !cancelled() && needs.version.outputs.skip != 'true' && github.event_name != 'workflow_run' && !inputs.prepare-only && !inputs.profile && needs.publish.result == 'success' && needs.version.outputs.channel == 'stable'
+    name: Prepare promoted changelog
+    needs:
+      - version
+      - publish
+    runs-on: ${{ vars.DEPLOY_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the released snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Promote Unreleased in the artifact
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python3 scripts/release-notes.py "$VERSION" --promote
+
+      - name: Upload the promoted changelog
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: promoted-changelog-v${{ needs.version.outputs.version }}
+          path: CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,297 @@
+# rust-oleum configuration — https://github.com/AgentWorkforce/rust-oleum
+#
+# [targets] are the aspirational limits every metric is reported against.
+# [baseline] grandfathers existing violations at their current ceiling so
+# the gate can be enforced today: new violations, and regressions beyond a
+# grandfathered ceiling, fail CI. So do loose or stale entries: when code
+# improves, `rust-oleum --tighten` shrinks this section in place.
+
+[targets]
+cyclomatic_max = 22
+cognitive_max = 22
+halstead_difficulty_max = 80.0
+file_loc_max = 500
+coverage_min_pct = 100.0
+crap_max = 25.0
+surviving_mutants_max = 0
+dead_code_max = 0
+redundant_code_max = 0
+unsafe_max = 0
+panic_max = 0
+allow_max = 0
+file_allow_max = 0
+
+[sources]
+rust_roots = ["src"]
+
+[baseline]
+
+[baseline.file_loc]
+"src/account.rs" = 1732
+"src/cloud_chat.rs" = 1307
+"src/contractor_access.rs" = 916
+"src/history/cloud.rs" = 802
+"src/history/delivery.rs" = 2147
+"src/history/delivery/feed.rs" = 816
+"src/history/delivery/sessions.rs" = 600
+"src/history/delivery/worker.rs" = 1019
+"src/history/destination.rs" = 1200
+"src/history/probe.rs" = 613
+"src/history/probe/bridge.rs" = 815
+"src/history/probe/collector.rs" = 846
+"src/history/probe/flush.rs" = 570
+"src/history/probe/live.rs" = 758
+"src/history/uploader.rs" = 994
+"src/telemetry.rs" = 781
+
+[baseline.cyclomatic]
+"src/account.rs::Account::connect" = 46
+"src/account_methods.rs::account_call" = 23
+"src/history/delivery.rs::prepare" = 32
+"src/history/delivery.rs::recover_conflict_classified" = 27
+"src/history/delivery.rs::set_session_excluded_in_transaction" = 41
+"src/history/delivery.rs::settle" = 25
+"src/history/delivery/feed.rs::session_states_within" = 31
+"src/history/delivery/schema.rs::init" = 40
+"src/history/delivery/schema.rs::rebuild" = 26
+"src/history/delivery/sessions.rs::prepare" = 58
+"src/history/delivery/worker.rs::Worker::pipeline" = 42
+"src/history/destination.rs::send_with_budget" = 53
+"src/history/probe.rs::connect" = 42
+"src/history/probe/bridge.rs::apply_plan_with_cloud" = 32
+"src/history/probe/bridge.rs::change_with_cloud" = 45
+"src/history/probe/bridge.rs::sessions" = 23
+"src/history/probe/flush.rs::flush" = 31
+"src/history/probe/flush.rs::prepare_state_directory" = 28
+"src/history/probe/live.rs::poll_members" = 37
+"src/history/probe/session_reset.rs::recover_with" = 25
+"src/history/session_model/session_query.rs::date_bounds" = 23
+"src/history/uploader.rs::derive_at" = 27
+"src/probe_copy.rs::pe_imports" = 27
+
+[baseline.cognitive]
+"src/account.rs::Account::connect" = 41
+"src/account.rs::Account::install_event" = 25
+"src/account.rs::Account::sign_in" = 23
+"src/account.rs::Account::stop_attempt" = 31
+"src/history/delivery.rs::set_session_excluded_in_transaction" = 25
+"src/history/delivery/feed.rs::check_each" = 23
+"src/history/delivery/feed.rs::session_states_within" = 42
+"src/history/delivery/sessions.rs::prepare" = 45
+"src/history/delivery/worker.rs::Worker::pipeline" = 110
+"src/history/destination.rs::send_with_budget" = 38
+"src/history/probe.rs::connect" = 23
+"src/history/probe/bridge.rs::change_with_cloud" = 26
+"src/history/probe/flush.rs::flush" = 24
+"src/history/probe/live.rs::poll_members" = 35
+"src/history/probe/progress.rs::Monitor::start_with_report" = 23
+"src/history/session_model/session_query.rs::LocalSessionQuery::completing_suggestion" = 27
+"src/history/uploader.rs::derive_at" = 24
+"src/login_item.rs::split_command" = 25
+
+[baseline.unsafe]
+# Linux process ticks need the OS clock frequency; sysconf takes no pointers.
+"src/session_locations/providers.rs::process_start_ms" = 1
+# The Keychain fallback starts /usr/bin/security in a session of its own
+# (setsid in pre_exec), so it has no controlling terminal.
+"src/claude_keychain.rs::own_session" = 1
+# The Keychain fallback's precheck reads the item's access list and the
+# login keychain's lock state; security-framework binds none of these
+# calls, so each sits in a function of its own (mod acl).
+"src/claude_keychain.rs::acl::copy_access" = 1
+"src/claude_keychain.rs::acl::copy_acl_list" = 1
+"src/claude_keychain.rs::acl::copy_authorizations" = 1
+"src/claude_keychain.rs::acl::copy_contents" = 1
+"src/claude_keychain.rs::acl::application_path" = 1
+"src/claude_keychain.rs::acl::keychain_status" = 1
+# Process CPU counters require these narrow platform FFI calls.
+"src/history/probe/collector/performance.rs::process_cpu_unix" = 2
+"src/history/probe/collector/performance.rs::process_cpu_windows" = 1
+# The unix-only CPU benchmark test reads getrusage into zeroed storage.
+"src/history/probe/live/cpu_bench.rs::cpu" = 2
+"src/history/probe.rs::flush_to_filesystem" = 1
+"src/history/probe/collector.rs::keep_log_under_cap" = 2
+"src/history/probe/collector.rs::run_background" = 2
+"src/history/probe/collector.rs::stop_console_event" = 1
+"src/history/probe/flush.rs::flush" = 1
+"src/history/probe/flush.rs::validate_private_owner" = 1
+"src/history/probe/priority.rs::lower" = 1
+"src/history/probe/priority.rs::lower_process" = 1
+"src/history/probe/remote_sources/pacing.rs::volume_free_bytes" = 1
+"src/history/uploader.rs::signal" = 1
+"src/install/windows.rs::registry::key_exists" = 2
+"src/install/windows.rs::registry::read_dword" = 1
+"src/install/windows.rs::registry::read_string" = 2
+"src/install/windows.rs::registry::write_string" = 3
+"src/login_item.rs::windows::remove" = 1
+"src/telemetry.rs::os_version" = 4
+"src/telemetry.rs::windows_version" = 2
+
+[baseline.panic]
+"src/account.rs::Account::account" = 1
+"src/account.rs::Account::adopt_workspace" = 1
+"src/account.rs::Account::announce" = 1
+"src/account.rs::Account::browser_bearer" = 4
+"src/account.rs::Account::choose_workspace" = 1
+"src/account.rs::Account::connect" = 5
+"src/account.rs::Account::discover" = 1
+"src/account.rs::Account::finish_pending_disconnect" = 2
+"src/account.rs::Account::finish_renewal" = 1
+"src/account.rs::Account::finish_sign_in" = 1
+"src/account.rs::Account::install_event" = 1
+"src/account.rs::Account::keep_renewed" = 2
+"src/account.rs::Account::refresh_for_uploads" = 3
+"src/account.rs::Account::renew_sign_in" = 2
+"src/account.rs::Account::report" = 1
+"src/account.rs::Account::select_workspace" = 1
+"src/account.rs::Account::set" = 1
+"src/account.rs::Account::set_link" = 1
+"src/account.rs::Account::sign_in" = 2
+"src/account.rs::Account::stop_attempt" = 3
+"src/account/login_failure.rs::Account::fail" = 1
+"src/account/profile.rs::Account::refresh_workspace_name" = 2
+"src/bin/agent-relay-desktop-contract.rs::main" = 1
+"src/cloud_chat.rs::save" = 1
+"src/cloud_chat.rs::with_state" = 1
+"src/contractor_access.rs::ContractorAccess::approve" = 1
+"src/contractor_access.rs::ContractorAccess::converge" = 3
+"src/contractor_access.rs::ContractorAccess::owner" = 2
+"src/contractor_access.rs::ContractorAccess::propose" = 1
+"src/contractor_access.rs::ContractorAccess::refresh" = 4
+"src/contractor_access.rs::ContractorAccess::reset" = 1
+"src/contractor_access.rs::ContractorAccess::revoke" = 2
+"src/contractor_access.rs::ContractorAccess::signed" = 1
+"src/contractor_access.rs::ContractorAccess::status_for" = 1
+"src/contractor_access.rs::update" = 2
+"src/history/delivery.rs::shorten" = 1
+"src/history/delivery/worker.rs::Worker::pipeline" = 1
+"src/history/destination.rs::account_id" = 1
+"src/history/destination.rs::child_batch" = 1
+"src/history/destination.rs::fetch_limits" = 1
+"src/history/destination.rs::send_request" = 1
+"src/history/destination/conflict.rs::batch_digest" = 1
+"src/history/destination/conflict.rs::canonical_hash" = 4
+"src/history/destination/conflict.rs::normalized_record" = 1
+"src/history/probe.rs::write_json" = 1
+"src/history/probe/bridge.rs::sessions" = 1
+"src/history/probe/live.rs::start" = 1
+"src/history/probe/progress.rs::LocalProgress::finish" = 1
+"src/history/probe/progress.rs::LocalProgress::publish" = 1
+"src/history/probe/progress.rs::Monitor::finish_local" = 1
+"src/history/probe/progress.rs::Monitor::observer" = 1
+"src/history/probe/progress.rs::Monitor::start" = 1
+"src/history/probe/progress.rs::Monitor::start_with_report" = 1
+"src/history/probe/progress.rs::heartbeat_schedule" = 1
+"src/history/session_model/local_sessions.rs::LocalSessionRow::key" = 2
+"src/history/session_model/local_sessions.rs::LocalSessionRow::session_id" = 1
+"src/history/session_model/local_sessions.rs::LocalSessionRow::source" = 1
+"src/history/session_model/local_sessions.rs::LocalSessionRow::title" = 1
+"src/history/uploader.rs::ProcessRunner::cancel_all" = 2
+"src/history/uploader.rs::ProcessRunner::spawn" = 1
+"src/history/uploader.rs::Registration::drop" = 1
+"src/history/uploader.rs::Uploader::attach" = 1
+"src/history/uploader.rs::Uploader::disconnect_target" = 1
+"src/history/uploader.rs::Uploader::install" = 1
+"src/history/uploader.rs::Uploader::publish_sessions" = 1
+"src/history/uploader.rs::Uploader::refresh_sessions_snapshot" = 1
+"src/history/uploader.rs::Uploader::sessions_list" = 5
+"src/history/uploader/process_io.rs::Capture::finish" = 1
+"src/history/uploader/process_io.rs::Capture::start" = 1
+"src/login_item.rs::apply" = 1
+"src/telemetry.rs::Telemetry::record" = 1
+"src/telemetry.rs::Telemetry::set_enabled" = 1
+
+[baseline.allow]
+
+[baseline.bare_panic]
+"src/account.rs::Account::account" = 1
+"src/account.rs::Account::adopt_workspace" = 1
+"src/account.rs::Account::announce" = 1
+"src/account.rs::Account::browser_bearer" = 4
+"src/account.rs::Account::choose_workspace" = 1
+"src/account.rs::Account::connect" = 5
+"src/account.rs::Account::discover" = 1
+"src/account.rs::Account::finish_pending_disconnect" = 2
+"src/account.rs::Account::finish_renewal" = 1
+"src/account.rs::Account::finish_sign_in" = 1
+"src/account.rs::Account::install_event" = 1
+"src/account.rs::Account::keep_renewed" = 2
+"src/account.rs::Account::refresh_for_uploads" = 3
+"src/account.rs::Account::renew_sign_in" = 2
+"src/account.rs::Account::report" = 1
+"src/account.rs::Account::select_workspace" = 1
+"src/account.rs::Account::set" = 1
+"src/account.rs::Account::set_link" = 1
+"src/account.rs::Account::sign_in" = 2
+"src/account.rs::Account::stop_attempt" = 3
+"src/account/login_failure.rs::Account::fail" = 1
+"src/account/profile.rs::Account::refresh_workspace_name" = 2
+"src/cloud_chat.rs::with_state" = 1
+"src/contractor_access.rs::ContractorAccess::approve" = 1
+"src/contractor_access.rs::ContractorAccess::converge" = 3
+"src/contractor_access.rs::ContractorAccess::owner" = 2
+"src/contractor_access.rs::ContractorAccess::propose" = 1
+"src/contractor_access.rs::ContractorAccess::refresh" = 4
+"src/contractor_access.rs::ContractorAccess::reset" = 1
+"src/contractor_access.rs::ContractorAccess::revoke" = 2
+"src/contractor_access.rs::ContractorAccess::signed" = 1
+"src/contractor_access.rs::ContractorAccess::status_for" = 1
+"src/contractor_access.rs::update" = 2
+"src/history/probe.rs::write_json" = 1
+"src/history/probe/bridge.rs::sessions" = 1
+"src/history/probe/progress.rs::LocalProgress::finish" = 1
+"src/history/probe/progress.rs::LocalProgress::publish" = 1
+"src/history/probe/progress.rs::Monitor::finish_local" = 1
+"src/history/probe/progress.rs::Monitor::observer" = 1
+"src/history/probe/progress.rs::Monitor::start" = 1
+"src/history/probe/progress.rs::Monitor::start_with_report" = 1
+"src/history/probe/progress.rs::heartbeat_schedule" = 1
+"src/history/session_model/local_sessions.rs::LocalSessionRow::key" = 2
+"src/history/session_model/local_sessions.rs::LocalSessionRow::session_id" = 1
+"src/history/session_model/local_sessions.rs::LocalSessionRow::source" = 1
+"src/history/session_model/local_sessions.rs::LocalSessionRow::title" = 1
+"src/history/uploader.rs::ProcessRunner::cancel_all" = 2
+"src/history/uploader.rs::ProcessRunner::spawn" = 1
+"src/history/uploader.rs::Registration::drop" = 1
+"src/history/uploader.rs::Uploader::attach" = 1
+"src/history/uploader.rs::Uploader::disconnect_target" = 1
+"src/history/uploader.rs::Uploader::install" = 1
+"src/history/uploader.rs::Uploader::publish_sessions" = 1
+"src/history/uploader.rs::Uploader::refresh_sessions_snapshot" = 1
+"src/history/uploader.rs::Uploader::sessions_list" = 5
+"src/history/uploader/process_io.rs::Capture::finish" = 1
+"src/history/uploader/process_io.rs::Capture::start" = 1
+
+[baseline.bare_allow]
+
+[baseline.pub_wrapper]
+"src/account.rs::Account::attach" = 1
+"src/account.rs::Account::new" = 1
+"src/account/plugin.rs::Account::into_plugin" = 1
+"src/claude_attestation.rs::KeySlot::get" = 1
+"src/cloud_chat.rs::call" = 1
+"src/contractor_access.rs::ContractorAccess::new" = 1
+"src/contractor_access.rs::call" = 2
+"src/contractor_access.rs::for_core" = 2
+"src/desktop_identity.rs::Identities::new" = 1
+"src/history/history_retention.rs::HistoryRetentionSetting::new" = 1
+"src/history/history_retention.rs::setting" = 2
+"src/history/history_retention.rs::setting_at" = 1
+"src/history/probe/remote_sources/claude_cloud.rs::Keychain::new" = 1
+"src/history/relay_uploads.rs::admitted" = 1
+"src/history/relay_uploads.rs::refresh_snapshots" = 2
+"src/history/relay_uploads.rs::watch" = 3
+"src/history/session_naming.rs::watch" = 2
+"src/history/session_query/index.rs::Index::live" = 1
+"src/history/uploader.rs::Uploader::runner" = 1
+"src/history/uploader/query.rs::Uploader::sessions_query" = 1
+"src/history/uploader/refresh/lifecycle.rs::Uploader::new" = 1
+"src/provider_methods.rs::call" = 1
+"src/session_locations/extension.rs::watch" = 2
+"src/telemetry.rs::Telemetry::new" = 2
+"src/telemetry.rs::Telemetry::production" = 1
+
+[baseline.missing_error_impl]
+"src/claude_keychain.rs::ReadError" = 1
+"src/cloud_api.rs::ResolveError" = 1
+"src/history/uploader.rs::UploaderError" = 1

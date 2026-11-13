@@ -1,0 +1,15 @@
+Agent Relay Code is the iPhone and iPad client for an Agent Relay workspace. The Home Screen label is Agent Relay. It connects to Agent Relay Cloud and Relaycast over the internet. Agent execution and terminal sessions run on connected remote machines.
+
+Use the demo account in the App Review sign-in fields. Tap Sign in, continue to Safari, sign in and approve the device, then return to the app. The review workspace must have its demo machine and agents online for remote features to work.
+
+Agents lists workspace agents and people. Active is the default; All includes inactive agents. Select an agent to open its conversation. Messages supports direct messages to people and agents, file attachments using the paperclip, and opening attachment download links. Agent overview can be expanded or collapsed. Generate/Regenerate is available for linked sessions with Cloud authorization; older accounts can enable summaries in Settings.
+
+Start an agent opens a machine and agent-type picker. Available types depend on software advertised by that machine. A project identifies a folder on the remote machine. Starting an agent sends the task to that machine and waits for readiness. Drive can view an attachable terminal or send input to the remote session. Release stops a running fleet agent after confirmation; Detach leaves the terminal view.
+
+In Messages, swipe left and choose Hide to remove a conversation from this device's list. Show hidden reveals hidden conversations; swipe left there to Unhide. A new message makes a hidden conversation reappear. Hide does not delete messages or block the sender.
+
+Connected desktop machines can have a separate Settings > Relay > Show relay messages in agent chats preference. On versions supporting this preference, it is off by default: an agent can still receive and answer peer messages even when their full text is absent from its visible chat or terminal. Some routes show a sender/read pointer; others show only the agent's response. Turning the preference on shows the full relay input. This preference belongs to the connected desktop software, not the mobile app, and is separate from mobile conversation hiding.
+
+Settings includes Privacy policy, Support, Open-source licenses and Delete account. Delete account opens the dedicated Agent Relay Cloud deletion page. Sign out removes this device's credentials; it does not delete the account. Support is also available before sign-in.
+
+Provider artwork identifies agent integrations on connected machines. This build has no native purchase or upgrade flow. Test conversation fixtures are development-only and are not a reviewer-specific mode in the Release app.

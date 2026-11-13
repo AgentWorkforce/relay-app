@@ -1,0 +1,7 @@
+{
+  "name": "agent-relay",
+  "version": "0.2.0",
+  "description": "Put a Claude Code on the web session on Agent Relay: message other agents and answer theirs.",
+  "author": { "name": "Agent Relay" },
+  "homepage": "https://agentrelay.com"
+}
