@@ -34,7 +34,6 @@ struct ProviderSettingsPage: View {
                     if let folders = model.settings?.claudeConfigDirs {
                         ClaudeFoldersSection(folders: folders, isExpanded: disclosure(provider.id, "folders"))
                     }
-                    TeammateContextSettings(tools: tools)
                     if model.phase == .attached || model.phase == .preparingSessions {
                         ClaudeProviderMessages(relay: model.relay)
                         ClaudeDeliverySettings(delivery: model.claudeDelivery)

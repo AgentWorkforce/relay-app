@@ -215,15 +215,6 @@ impl Helper {
             self.session.as_deref(),
         )
     }
-    /// The SessionStart teammate-context hook run by this same executable.
-    pub fn teammate_context_hook(&self) -> Option<String> {
-        super::claude_hook::command_for(
-            super::claude_hook::Kind::TeammateContext,
-            &self.path,
-            self.development_scope(),
-            self.session.as_deref(),
-        )
-    }
     pub(super) fn set_copilot_executable(&mut self, executable: Option<PathBuf>) {
         if !self.development_scope() {
             self.copilot = executable.filter(|path| path.is_absolute());

@@ -5,7 +5,6 @@ mod external;
 mod presentation;
 pub(super) mod provider_status;
 mod status_reads;
-mod teammate;
 mod view;
 
 use gtk4::prelude::WidgetExt;
@@ -151,9 +150,6 @@ pub struct ToolsUi {
     polling: bool,
     identity: Option<Identity>,
     draft_initialized: bool,
-    /// The person's tick or untick of the chooser's teammate-context line
-    /// since it opened; `None` follows the saved state the report gives.
-    pub teammate_draft: Option<bool>,
 }
 
 impl ToolsUi {
@@ -442,23 +438,16 @@ impl App {
         if !self.start_tools_action(agent_relay_desktop_core::contract::method::ToolsSelect::NAME) {
             return;
         }
-        let (tool_ids, teammate_context) = self.with_state(|state| {
+        let tool_ids = self.with_state(|state| {
             if skip {
-                // Not now leaves the teammate-context default as it is.
-                (Vec::new(), None)
+                Vec::new()
             } else {
-                (
-                    state.tools.selection_to_save(),
-                    state.tools.teammate_to_save(),
-                )
+                state.tools.selection_to_save()
             }
         });
         let identity = self.with_state(|state| state.request_identity_revision);
         self.view_call::<agent_relay_desktop_core::contract::method::ToolsSelect>(
-            ToolsSelectParams {
-                tool_ids,
-                teammate_context,
-            },
+            ToolsSelectParams { tool_ids },
             move |app, result| {
                 app.finish_tools_action(result, true, identity);
             },
@@ -478,7 +467,6 @@ impl App {
             Ok(report) => {
                 if selection && report.onboarding_complete {
                     state.tools.onboarding_requested = false;
-                    state.tools.teammate_draft = None;
                     state.tools.dismissed = true;
                 }
                 if state.tools.checking {
@@ -530,7 +518,6 @@ impl App {
             state.tools.selected = report.tools.iter().filter(|tool| tool.selected && chooser_eligible(tool)).map(|tool| tool.id.clone()).collect();
             state.tools.retained_onboarding = report.tools.iter().filter(|tool| tool.selected && !chooser_eligible(tool)).map(|tool| tool.id.clone()).collect();
             state.tools.onboarding_requested = true;
-            state.tools.teammate_draft = None;
             state.tools.dismissed = false;
             state.tools.error = None;
         });
@@ -568,7 +555,7 @@ mod tests {
         absent.onboarding_available = Some(false);
         absent.state = "configured".into();
         let mut ui = ToolsUi::default();
-        ui.read(ToolsReport { onboarding_complete: false, account_health: None, teammate_context: None,
+        ui.read(ToolsReport { onboarding_complete: false, account_health: None,
             tools: vec![hidden, absent, tool("codex", true, true, true)] });
         assert_eq!(ui.selected, BTreeSet::from(["codex".into()]));
         ui.choose("amp", true);
@@ -582,7 +569,6 @@ mod tests {
     fn selection_admits_only_detected_supported_tools_and_keeps_unsaved_choices() {
         let mut ui = ToolsUi::default();
         ui.read(ToolsReport {
-            teammate_context: None,
             onboarding_complete: false,
             account_health: None,
             tools: vec![
@@ -644,44 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn the_teammate_line_follows_the_saved_state_until_the_person_changes_it() {
-        let mut ui = ToolsUi::default();
-        let report = |saved: Option<bool>| ToolsReport {
-            onboarding_complete: true,
-            account_health: None,
-            tools: vec![tool("claude", true, true, true)],
-            teammate_context: saved,
-        };
-        // Turned off in Settings: a reopened chooser shows it off and saves
-        // nothing unless the person ticks it.
-        ui.read(report(Some(false)));
-        assert!(!ui.teammate_choice());
-        assert_eq!(ui.teammate_to_save(), None);
-        ui.read(report(Some(true)));
-        assert!(ui.teammate_choice());
-        assert_eq!(ui.teammate_to_save(), None);
-        // The person's untick survives polls.
-        ui.teammate_draft = Some(false);
-        ui.read(report(Some(true)));
-        assert!(!ui.teammate_choice());
-        assert_eq!(ui.teammate_to_save(), Some(false));
-        // Nothing saved yet (Claude Code just chosen): off by default, and an
-        // untouched line saves nothing; ticking it turns it on.
-        let mut fresh = ToolsUi::default();
-        fresh.read(report(None));
-        fresh.selected.insert("claude".into());
-        assert!(!fresh.teammate_choice());
-        assert_eq!(fresh.teammate_to_save(), None);
-        fresh.teammate_draft = Some(true);
-        assert!(fresh.teammate_choice());
-        assert_eq!(fresh.teammate_to_save(), Some(true));
-    }
-
-    #[test]
     fn provider_navigation_survives_status_updates_and_falls_back_only_if_missing() {
         let mut ui = ToolsUi::default();
         let report = ToolsReport {
-            teammate_context: None,
             onboarding_complete: true,
             account_health: Some("ready".into()),
             tools: vec![

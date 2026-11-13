@@ -96,7 +96,6 @@ public enum CoreMethod {
     public static let toolsCheck = "tools.check"
     public static let toolsSelect = "tools.select"
     public static let toolsManage = "tools.manage"
-    public static let toolsTeammateContext = "tools.teammate_context"
     public static let telemetryRecord = "telemetry.record"
     public static let cursorCloudModelsList = "cursor_cloud.models.list"
     public static let cursorCloudRepositoriesList = "cursor_cloud.repositories.list"
@@ -11396,23 +11395,17 @@ public struct ToolsManageParams: Codable, Equatable, Hashable, Sendable {
 public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
     public let accountHealth: String?
     public let onboardingComplete: Bool
-    /// The teammate-context hook: a Claude Code SessionStart hook telling each
-    /// session to check teammates' session summaries before it starts. Absent
-    /// where Claude Code is neither on this computer nor chosen.
-    public let teammateContext: Bool?
     public let tools: [ToolIntegration]
 
-    public init(accountHealth: String? = nil, onboardingComplete: Bool, teammateContext: Bool? = nil, tools: [ToolIntegration]) {
+    public init(accountHealth: String? = nil, onboardingComplete: Bool, tools: [ToolIntegration]) {
         self.accountHealth = accountHealth
         self.onboardingComplete = onboardingComplete
-        self.teammateContext = teammateContext
         self.tools = tools
     }
 
     enum CodingKeys: String, CodingKey {
         case accountHealth = "account_health"
         case onboardingComplete = "onboarding_complete"
-        case teammateContext = "teammate_context"
         case tools
     }
 
@@ -11420,7 +11413,6 @@ public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.accountHealth = try c.decodeIfPresent(String.self, forKey: .accountHealth)
         self.onboardingComplete = try c.decode(Bool.self, forKey: .onboardingComplete)
-        self.teammateContext = try c.decodeIfPresent(Bool.self, forKey: .teammateContext)
         self.tools = try c.decode([ToolIntegration].self, forKey: .tools)
     }
 
@@ -11428,59 +11420,29 @@ public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.accountHealth, forKey: .accountHealth)
         try c.encode(self.onboardingComplete, forKey: .onboardingComplete)
-        try c.encodeIfPresent(self.teammateContext, forKey: .teammateContext)
         try c.encode(self.tools, forKey: .tools)
     }
 }
 
 public struct ToolsSelectParams: Codable, Equatable, Hashable, Sendable {
-    /// The chooser's teammate-context choice, saved before the providers so
-    /// the setup they start already follows it. Absent leaves it as it is.
-    public let teammateContext: Bool?
     public let toolIds: [String]
 
-    public init(teammateContext: Bool? = nil, toolIds: [String]) {
-        self.teammateContext = teammateContext
+    public init(toolIds: [String]) {
         self.toolIds = toolIds
     }
 
     enum CodingKeys: String, CodingKey {
-        case teammateContext = "teammate_context"
         case toolIds = "tool_ids"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.teammateContext = try c.decodeIfPresent(Bool.self, forKey: .teammateContext)
         self.toolIds = try c.decode([String].self, forKey: .toolIds)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(self.teammateContext, forKey: .teammateContext)
         try c.encode(self.toolIds, forKey: .toolIds)
-    }
-}
-
-public struct ToolsTeammateContextParams: Codable, Equatable, Hashable, Sendable {
-    public let enabled: Bool
-
-    public init(enabled: Bool) {
-        self.enabled = enabled
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case enabled
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.enabled = try c.decode(Bool.self, forKey: .enabled)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.enabled, forKey: .enabled)
     }
 }
 
@@ -13121,12 +13083,6 @@ extension CoreClient {
     @discardableResult
     public func toolsManage(_ params: ToolsManageParams) async throws -> ToolsReport {
         try await call(CoreMethod.toolsManage, params)
-    }
-
-    /// `tools.teammate_context`; only a core built with an account answers it.
-    @discardableResult
-    public func toolsTeammateContext(_ params: ToolsTeammateContextParams) async throws -> ToolsReport {
-        try await call(CoreMethod.toolsTeammateContext, params)
     }
 
     /// `telemetry.record`; only a core built with an account answers it.
