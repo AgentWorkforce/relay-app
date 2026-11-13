@@ -26,10 +26,14 @@ hits() { # MESSAGE PATTERN [PATHSPEC...]
   fi
 }
 
-if ! grep -qs "Apache License" LICENSE; then
-  fail "LICENSE must hold the Apache License 2.0."
+if ! grep -qs "Functional Source License, Version 1.1, ALv2 Future License" LICENSE; then
+  fail "LICENSE must hold the Functional Source License 1.1, ALv2 Future License."
 fi
-grep -q 'license = "Apache-2.0"' desktop-core/Cargo.toml || fail "desktop-core/Cargo.toml must declare license = \"Apache-2.0\"."
+if ! grep -qs "FSL-1.1-ALv2" NOTICE; then
+  fail "NOTICE must state the FSL-1.1-ALv2 licensing."
+fi
+grep -q 'license = "FSL-1.1-ALv2"' desktop-core/Cargo.toml || fail "desktop-core/Cargo.toml must declare license = \"FSL-1.1-ALv2\"."
+grep -q 'license = "FSL-1.1-ALv2"' gtk/Cargo.toml || fail "gtk/Cargo.toml must declare license = \"FSL-1.1-ALv2\"."
 if grep -q "All rights reserved" macos/Info.plist.template; then
   fail "macos/Info.plist.template must not claim all rights reserved."
 fi

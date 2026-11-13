@@ -1,7 +1,7 @@
 # Contributing to Agent Relay Desktop
 
 Thanks for helping. Agent Relay Desktop is the macOS, Linux and Windows app
-for [Agent Relay](https://agentrelay.com), licensed under Apache-2.0.
+for [Agent Relay](https://agentrelay.com), licensed under FSL-1.1-ALv2 (see LICENSE and NOTICE).
 
 ## Layout
 

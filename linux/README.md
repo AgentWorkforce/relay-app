@@ -790,7 +790,7 @@ Debian package:
 | `usr/lib/systemd/user/agent-relay.service` | The systemd user unit, running the core with `serve --headless` |
 | `usr/share/applications/agent-relay.desktop` | The launcher entry, with both production and development link schemes |
 | `usr/share/icons/hicolor/scalable/apps/agent-relay.svg` | The icon |
-| `usr/share/doc/agent-relay/LICENSE` | The Apache License 2.0 the app and core are released under |
+| `usr/share/doc/agent-relay/LICENSE` | The Functional Source License (FSL-1.1-ALv2) the app is released under; see NOTICE for earlier releases |
 | `usr/share/doc/agent-relay/agent-icons-LICENSE.txt` | The license of the bundled agent icons |
 
 `agent-relay` is the npm Agent Relay CLI's name, so the `.deb` never

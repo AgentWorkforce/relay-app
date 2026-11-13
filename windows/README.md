@@ -264,7 +264,7 @@ Either way, the install is this folder:
   share\gtk-4.0\               GTK's data
   share\icons\                 Adwaita symbolic icons, the Agent Relay icon and agent-relay.ico
   NOTICES.txt                  the bundled libraries and their licenses
-  LICENSE.txt                  the Apache License 2.0 the app and core are released under
+  LICENSE.txt                  the Functional Source License (FSL-1.1-ALv2) the app is released under
   agent-icons-LICENSE.txt      the license of the bundled agent icons
 ```
 
