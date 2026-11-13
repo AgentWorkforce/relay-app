@@ -66,8 +66,27 @@ spawning agent** adds that authority for its own sessions only (see
 [Approvals from the spawning agent](#approvals-from-the-spawning-agent)). Both normally wait until the current turn finishes; Codex has the stalled-turn recovery below. A spawned Claude takes the
 owner's turns, and sends its requests to the owner, over its own input
 ([Claude's own channel](#claudes-own-channel)); taken over, an agent is the
-person's own session again and gets peer framing from everyone. The other
-harnesses keep their existing delivery routes.
+person's own session again and gets peer framing from everyone.
+
+Spawned Grok, Devin and OpenCode keep their own delivery routes, which already
+hand the text to the session as its user prompt (ACP `session/prompt`,
+OpenCode `prompt_async`), and take native input on them too: the verified
+owner's direct messages, from the desktop app or their phone, and the
+requester's (unless **Native input from the spawning agent** is off) arrive
+under the `[Agent Relay native input]` header with the reply context kept,
+since these harnesses send no automatic answer, never as peer messages
+(`spawn::drive::owner_to_spawned`). A spawned OpenCode with mobile
+continuation on still takes the owner's message as a plain turn on that
+route. Approvals stay with Codex and Claude. A spawned Muse cannot take
+native input: its TUI is reached only through Muse's peer-message courier,
+so the requester's messages keep the owner framing and everyone else's the
+peer framing.
+
+A direct message is a 1:1 DM matched by the sender's immutable id: a pushed
+DM, the same DM read from the delivery queue (which names its `dmch_`
+channel), or a reply in a thread of that DM (`thread-reply` in the `dmch_`
+channel). Group DMs, channel posts, mentions and thread replies in any other
+channel are not (`spawn::drive::direct_from`).
 
 ### Who counts as the owner
 
@@ -110,12 +129,13 @@ because the requester asks. Everything else is unchanged:
   `PEER_NOTE` and `PEER_AUTHORITY_NOTE`). A spawned Claude's peer inbox, and any terminal pointer, end
   `read` with the owner's note (`message_pointer::OWNER_READ_NOTE` in
   place of `READ_NOTE`). Muse keeps the line under the attribution, above its
-  request. OpenCode, Grok and Devin are prompted with the text as it is.
+  request. OpenCode, Grok and Devin are prompted with the text as it is when
+  **Native input from the spawning agent** is off.
 - The requester cannot answer approvals; only the verified machine owner can
   (above). It has no native turns unless **Native input from the spawning
-  agent** is on; then a spawned Codex or Claude takes its direct messages as
-  native turns, which need no owner line, and the other harnesses still get
-  the owner framing. Agents not spawned here, and spawned
+  agent** is on; then a spawned Codex, Claude, Grok, Devin or OpenCode takes
+  its direct messages as native input, which needs no owner line, and Muse
+  still gets the owner framing. Agents not spawned here, and spawned
   agents the person took over, frame every agent as a peer, as before.
 - Another agent acting for the same person is not owner-framed: Relaycast's
   sender identity says which agent sent a message, not whom it acts for.
@@ -1123,8 +1143,8 @@ no database migration is needed.
 **Native input from the spawning agent** (`spawn_native_input`, on by default)
 is available under Settings → Messages → Spawned agents on macOS and in the
 shared Linux/Windows settings UI. Unless it is turned off, direct messages from the verified
-spawn requester use the existing native Codex or Claude channel; other senders
-remain peers. The requester is matched by the immutable ID already saved from
+spawn requester use the spawned agent's native channel (Codex, Claude, Grok,
+Devin and OpenCode; not Muse); other senders remain peers. The requester is matched by the immutable ID already saved from
 Relaycast's authenticated invocation lookup, so sender renames and desktop
 restarts preserve the binding. Missing identity, group/channel traffic,
 interactive takeovers and unsupported native channels retain peer delivery.
