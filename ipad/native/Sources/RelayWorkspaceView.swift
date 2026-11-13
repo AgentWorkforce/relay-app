@@ -77,6 +77,7 @@ struct RelayWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var client = RelayClient()
     @State private var page: WorkspacePage = .agents
     @State private var selected: RelayAgent?
@@ -192,7 +193,9 @@ struct RelayWorkspaceView: View {
         }
         .task {
             client.sceneChanged(foreground: scenePhase != .background)
+            let firstLoad = StartupTrace.begin("checkConnection")
             await client.checkConnection()
+            StartupTrace.end(firstLoad)
             Task { await client.resumePendingSignIn() }
             if client.paired { await requestNotifications() }
             if let id = RelayPushState.shared.pendingConversationID { await openNotificationConversation(id) }
@@ -583,7 +586,7 @@ struct RelayWorkspaceView: View {
         }
     }
     private var emptyListText: String {
-        "No agents in this view"
+        WorkspaceListPlaceholder.text(rosterLoaded: client.rosterLoaded)
     }
     /// Swipe left on a conversation to hide it on this device; nothing is deleted.
     @ViewBuilder private func hideAction(_ agent: RelayAgent) -> some View {
@@ -1869,7 +1872,7 @@ struct RelayWorkspaceView: View {
                 }
             }
         }
-        .frame(minWidth: 380, minHeight: 550)
+        .frame(minWidth: sheetMinWidth(380), minHeight: 550)
         .interactiveDismissDisabled(spawning)
     }
     private func forkSheet(_ source: RelayAgent) -> some View {
@@ -1983,7 +1986,7 @@ struct RelayWorkspaceView: View {
                 Link("Privacy policy", destination: AccountLinks.privacy)
                 Link("Support", destination: AccountLinks.support)
             }.font(.footnote)
-        }.frame(width: 380).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: 380).frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(25).background(Color(.secondarySystemGroupedBackground))
     }
     private var settings: some View {
@@ -2034,7 +2037,7 @@ struct RelayWorkspaceView: View {
             }
             .navigationTitle("Settings")
             .toolbar { Button("Done") { showSettings = false } }
-        }.frame(minWidth: 420, minHeight: 320)
+        }.frame(minWidth: sheetMinWidth(420), minHeight: 320)
     }
     private var compose: some View {
         NavigationStack {
@@ -2053,6 +2056,11 @@ struct RelayWorkspaceView: View {
             .navigationTitle("New message")
             .toolbar { Button("Cancel") { showCompose = false } }
             .keyboardDismissToolbar()
-        }.frame(minWidth: 420, minHeight: 260)
+        }.frame(minWidth: sheetMinWidth(420), minHeight: 260)
+    }
+    /// iPad form sheets keep their width; on iPhone a sheet fills the screen,
+    /// and a fixed minimum wider than the screen pushes its content off it.
+    private func sheetMinWidth(_ width: CGFloat) -> CGFloat? {
+        horizontalSizeClass == .compact ? nil : width
     }
 }

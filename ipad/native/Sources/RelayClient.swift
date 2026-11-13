@@ -351,6 +351,9 @@ private enum SecureStore {
     @Published var userCode = ""
     @Published var signInStatus = ""
     @Published var relayAgents: [RelayAgent] = []
+    /// False until the first roster request of this session has answered,
+    /// so the lists say they are loading instead of being empty.
+    @Published var rosterLoaded = false
     @Published var fleetAgents: [RelayAgent] = []
     @Published var spawnNodes: [RelaySpawnNode] = []
     /// Every online node that accepts forks, including a machine's second installation.
@@ -929,6 +932,7 @@ private enum SecureStore {
             conversationMetadataWorkerID = nil
             conversationAgentMetadata = [:]
             conversationRoster = ConversationRoster()
+            rosterLoaded = false
             conversationAgentRetryAfter = [:]
             latestConversationThreads = []
             conversations = []
@@ -993,6 +997,7 @@ private enum SecureStore {
         connected = false
         signingOut = false
         relayAgents = []
+        rosterLoaded = false
         fleetAgents = []
         spawnNodes = []
         forkNodes = []
@@ -1077,6 +1082,8 @@ private enum SecureStore {
             let roster = try objects(await rosterData)
             guard generation == refreshGeneration, paired else { return }
             applyRoster(roster)
+            rosterLoaded = true
+            StartupTrace.firstRosterShown()
             let nodes = try objects(await nodeData)
             guard generation == refreshGeneration, paired else { return }
             let availableNodes = nodes.compactMap { node -> RelaySpawnNode? in
@@ -1117,6 +1124,7 @@ private enum SecureStore {
             connectionReports.succeeded(ticket)
         } catch {
             guard generation == refreshGeneration, paired else { return }
+            rosterLoaded = true
             // A failure from before the app was suspended says nothing about
             // the connection now; the foreground refresh decides that.
             if reportConnectionFailure(error, from: ticket),
