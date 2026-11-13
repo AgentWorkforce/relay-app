@@ -1,7 +1,7 @@
 import RelayDesktopCore
 import SwiftUI
 
-/// The first-run chooser's pre-checked teammate-context line.
+/// The first-run chooser's teammate-context line (unticked until the person ticks it).
 struct TeammateContextChoice: View {
     var tools: ToolsModel
 
@@ -23,7 +23,7 @@ struct TeammateContextChoice: View {
     }
 }
 
-/// Settings › Providers › Claude Code: the teammate-context hook.
+/// Settings › Providers › Claude Code, Codex, Copilot or Devin: teammate context.
 struct TeammateContextSettings: View {
     var tools: ToolsModel
 

@@ -1,6 +1,9 @@
 //! The teammate-context SessionStart hook ([`crate::teammate_context`]) in
 //! each shared Claude login's `settings.json`, written with the hosted MCP
-//! entry while Claude Code is chosen and the setting is on.
+//! entry while Claude Code is chosen and the setting is on. It is Claude
+//! Code's own delivery path, independent of the core's
+//! `claude_session_hook`, so the guidance still reaches Claude sessions
+//! with that hook off; the other providers get it through the core.
 //!
 //! The person's choice is kept beside the provider choices
 //! (`teammate-context-hook.json`): no file means no choice yet, which the
@@ -34,10 +37,13 @@ impl Installer {
         self.teammate_choice() == Some(true)
     }
 
-    /// Claude Code is on this computer or chosen, so the default may turn
-    /// the hook on.
+    /// A provider the guidance reaches ([`crate::teammate_context::PROVIDERS`])
+    /// is on this computer or chosen, so the apps offer the setting.
     pub fn teammate_context_available(&self) -> bool {
-        self.claude_chosen() || self.detected("claude")
+        let chosen = self.selection().ok().flatten().unwrap_or_default();
+        crate::teammate_context::PROVIDERS
+            .iter()
+            .any(|id| chosen.iter().any(|c| c == id) || self.detected(id))
     }
 
     fn claude_chosen(&self) -> bool {

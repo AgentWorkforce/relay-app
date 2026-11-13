@@ -30,11 +30,13 @@ struct ProviderSettingsPage: View {
                 if ["grok", "opencode", "devin", "cursor", "codex", "openclaw", "hermes"].contains(provider.id) {
                     RelaySettingsSection(providerID: provider.id, relay: model.relay)
                 }
+                if ToolsModel.teammateContextProviders.contains(provider.id) {
+                    TeammateContextSettings(tools: tools)
+                }
                 if provider.id == "claude" {
                     if let folders = model.settings?.claudeConfigDirs {
                         ClaudeFoldersSection(folders: folders, isExpanded: disclosure(provider.id, "folders"))
                     }
-                    TeammateContextSettings(tools: tools)
                     if model.phase == .attached || model.phase == .preparingSessions {
                         ClaudeProviderMessages(relay: model.relay)
                         ClaudeDeliverySettings(delivery: model.claudeDelivery)

@@ -1,12 +1,15 @@
-//! The teammate-context hook in words: a Claude Code SessionStart hook that
-//! tells each session to check teammates' session summaries before it
-//! starts. The Mac's `TeammateContextCopy` matches these word for word.
+//! Teammate context in words: guidance Agent Relay adds to the start of
+//! every session it reaches (Claude Code, Codex, Copilot, Devin) to check
+//! teammates' session summaries first. The Mac's `TeammateContextCopy`
+//! matches these word for word.
 
 pub const TEAMMATE_CONTEXT_TITLE: &str = "Have agents check what teammates are working on";
 pub const TEAMMATE_CONTEXT_DETAIL: &str =
-    "Adds a session-start hook so Claude Code reads teammates' session summaries before starting work.";
-pub const TEAMMATE_CONTEXT_TURN_ON_HELP: &str = "Add the teammate-context hook to Claude Code";
-pub const TEAMMATE_CONTEXT_TURN_OFF_HELP: &str = "Remove the teammate-context hook from Claude Code";
+    "At the start of each Claude Code, Codex, Copilot or Devin session, Agent Relay tells the agent to read teammates' session summaries before starting work.";
+pub const TEAMMATE_CONTEXT_TURN_ON_HELP: &str =
+    "Tell new agent sessions to check teammates' work first";
+pub const TEAMMATE_CONTEXT_TURN_OFF_HELP: &str =
+    "Stop telling new agent sessions to check teammates' work";
 
 #[cfg(test)]
 mod tests {

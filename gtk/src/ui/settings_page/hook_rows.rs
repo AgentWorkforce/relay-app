@@ -8,7 +8,7 @@ use crate::models::{
 };
 
 impl App {
-    /// The teammate-context hook, where Claude Code is here or chosen. As on
+    /// Teammate context, where a provider it reaches is here or chosen. As on
     /// the Mac, it is read and changed through the provider methods.
     pub(super) fn teammate_context_row(&self) -> Option<gtk::Box> {
         use crate::models::{

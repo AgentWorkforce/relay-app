@@ -5,7 +5,7 @@ mod external;
 mod presentation;
 pub(super) mod provider_status;
 mod status_reads;
-mod teammate;
+pub(crate) mod teammate;
 mod view;
 
 use gtk4::prelude::WidgetExt;

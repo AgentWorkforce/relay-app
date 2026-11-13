@@ -1,6 +1,8 @@
 use super::*;
 use crate::teammate_context::SETTING;
 use agent_relay_node::relay::agents::SettingsExtension;
+use agent_relay_node::relay::daemon::SessionStartContext;
+use agent_relay_node::relay::store::SessionKind;
 
 fn installer(home: &Path) -> Installer {
     Installer::new(
@@ -150,12 +152,10 @@ fn the_setting_refuses_anything_but_on_or_off() {
     assert!(setting.refuse("telemetry", &json!("yes")).is_none());
     assert!(matches!(setting.set(SETTING, &json!(1)), Some(Err(_))));
     assert!(setting.set("telemetry", &Value::Bool(true)).is_none());
-    // Without Claude Code there is no default and no setting to show.
+    // Never on by default. (Whether the setting shows without a chosen
+    // provider depends on what this computer has installed, which
+    // detection reads from PATH and the editors, so it is not asserted.)
     assert!(setting.default_on().is_empty());
-    assert_eq!(
-        installer(root.path()).report(None, None).teammate_context,
-        None
-    );
 }
 
 #[test]
@@ -175,4 +175,41 @@ fn a_chooser_save_changes_no_file_and_the_selection_refresh_applies_it() {
     assert!(app.teammate_hook_present());
     assert!(app.refresh(Some(&binding())).is_empty());
     assert!(!app.teammate_hook_present());
+}
+
+#[test]
+fn the_core_tells_every_other_provider_while_claude_keeps_its_own_hook() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _settings, _others) = claude_chosen(root.path());
+    let context = crate::teammate_context::Context::new(app.clone());
+    let others = [SessionKind::Codex, SessionKind::Copilot, SessionKind::Devin];
+    // Off by default: nobody is told.
+    for kind in others.iter().copied().chain([SessionKind::ClaudeTerminal]) {
+        assert_eq!(context.context(kind), None, "{kind:?}");
+    }
+    app.set_teammate_context(true).unwrap();
+    for kind in others {
+        assert_eq!(
+            context.context(kind).as_deref(),
+            Some(crate::teammate_context::GUIDANCE),
+            "{kind:?}"
+        );
+    }
+    // Claude Code gets it from its own hook, never twice through the core,
+    // so it still arrives with the core's claude_session_hook off.
+    assert_eq!(context.context(SessionKind::ClaudeTerminal), None);
+    assert!(app.teammate_hook_present());
+    app.set_teammate_context(false).unwrap();
+    assert_eq!(context.context(SessionKind::Codex), None);
+}
+
+#[test]
+fn any_reached_provider_offers_the_setting() {
+    for id in crate::teammate_context::PROVIDERS {
+        let root = tempfile::tempdir().unwrap();
+        let app = installer(root.path());
+        executable_helper(root.path());
+        let _ = app.select(vec![id.to_string()], Some(&binding()), None);
+        assert_eq!(app.report(None, None).teammate_context, Some(false), "{id}");
+    }
 }

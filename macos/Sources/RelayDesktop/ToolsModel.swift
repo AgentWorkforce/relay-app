@@ -52,7 +52,14 @@ final class ToolsModel {
     var teammateContextEnabled: Bool? { report?.teammateContext }
     /// The chooser offers the teammate-context line once Claude Code is here
     /// or chosen.
-    var offersTeammateContext: Bool { report?.teammateContext != nil || selectedIDs.contains("claude") }
+    /// The providers whose sessions Agent Relay's core gives teammate context
+    /// (desktop-core's `teammate_context::PROVIDERS`).
+    static let teammateContextProviders = ["claude", "codex", "copilot", "devin"]
+
+    var offersTeammateContext: Bool {
+        report?.teammateContext != nil
+            || Self.teammateContextProviders.contains(where: selectedIDs.contains)
+    }
 
     /// What the chooser's line shows: the person's edit, else the saved
     /// state, else unchecked where nothing is saved yet: the hook is off by

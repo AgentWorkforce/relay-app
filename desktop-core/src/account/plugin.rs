@@ -13,7 +13,8 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 
 /// This computer's MCP setup, with a development build's private profiles,
-/// and the teammate-context hook setting that writes beside it.
+/// the teammate-context setting kept beside it, and the guidance it adds to
+/// every session's start through the core.
 pub(super) fn mcp_installer(
     config: &agent_relay_node::relay::daemon::Config,
     plugins: &mut agent_relay_node::relay::daemon::Plugins,
@@ -22,6 +23,9 @@ pub(super) fn mcp_installer(
     plugins
         .settings
         .push(Arc::new(crate::teammate_context::Setting::new(installer.clone())));
+    plugins.session_start_context = Some(Arc::new(crate::teammate_context::Context::new(
+        installer.clone(),
+    )));
     installer
 }
 

@@ -174,6 +174,13 @@ impl App {
         if matches!(id, "codex" | "claude" | "grok") {
             self.provider_opening_preferences(column, Some(id));
         }
+        if crate::ui::tools::teammate::TEAMMATE_CONTEXT_PROVIDERS.contains(&id) {
+            if let Some(row) = self.teammate_context_row() {
+                let (section, group) = settings_section("Teammates", None);
+                group.append(&row);
+                column.append(&section);
+            }
+        }
         if id == "claude" {
             self.claude_provider_preferences(column);
         }
@@ -229,11 +236,6 @@ impl App {
 
     fn claude_provider_preferences(&self, column: &gtk::Box) {
         if let Some(section) = self.claude_folders_section() {
-            column.append(&section);
-        }
-        if let Some(row) = self.teammate_context_row() {
-            let (section, group) = settings_section("Teammates", None);
-            group.append(&row);
             column.append(&section);
         }
         // As on the Mac, delivery shows only while a Claude terminal

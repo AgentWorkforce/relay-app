@@ -142,7 +142,7 @@ async fn change_teammate_context(
         }
     })
     .await
-    .map_err(|_| RpcError::invalid_params("The teammate context hook could not be changed."))?
+    .map_err(|_| RpcError::invalid_params("The teammate context setting could not be changed."))?
     .map_err(RpcError::invalid_params)
 }
 

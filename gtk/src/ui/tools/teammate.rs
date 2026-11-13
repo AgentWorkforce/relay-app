@@ -1,16 +1,22 @@
-//! The teammate-context hook in the provider chooser and in Settings: what
+//! Teammate context in the provider chooser and in Settings: what
 //! the chooser's line shows and saves, and Settings' Turn On and Turn Off.
 
 use super::*;
 
+/// The providers whose sessions Agent Relay's core gives teammate context
+/// (desktop-core's `teammate_context::PROVIDERS`), as on the Mac.
+pub const TEAMMATE_CONTEXT_PROVIDERS: [&str; 4] = ["claude", "codex", "copilot", "devin"];
+
 impl ToolsUi {
-    /// The chooser offers the teammate-context line once Claude Code is here
-    /// or chosen, as on the Mac.
+    /// The chooser offers the teammate-context line once a provider it
+    /// reaches is here or chosen, as on the Mac.
     pub fn offers_teammate_context(&self) -> bool {
         self.report
             .as_ref()
             .is_some_and(|report| report.teammate_context.is_some())
-            || self.selected.contains("claude")
+            || TEAMMATE_CONTEXT_PROVIDERS
+                .iter()
+                .any(|id| self.selected.contains(*id))
     }
 
     /// What the chooser's line shows, as on the Mac: the person's edit, else
