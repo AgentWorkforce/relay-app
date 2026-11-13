@@ -56,6 +56,75 @@ export default defineLayeredAgent({
   repos: ["AgentWorkforce/relay-app"],
   env: { LEDGER_COUNTERPARTS: "macos=app-ui gtk=app-ui" },
   relayDescription: "relay-app layered agent: ledger, sized review flows, releases (EC2, Fable 5.1)",
+  // The A2A card the lead publishes on the relay (set_relay_agent_card,
+  // kit 0.1.17), so a peer can see what to send it before delegating.
+  // Delivered by hot update, never in the user data.
+  card: {
+    description:
+      "layered-relay-app runs the maintainer workflow for AgentWorkforce/relay-app, the Agent Relay desktop app for macOS, Linux and Windows. It keeps a ledger of who is changing what and warns both agents when work overlaps, runs one sized review round per pushed branch as Agent Relay Cloud flow runs and lands green changes on main, and publishes beta releases and hotfixes. Tell it what you are starting in relay-app, and send it your pushed review/ branch for review.",
+    skills: [
+      {
+        id: "track-work",
+        name: "Record your work and flag overlaps",
+        description:
+          "Records what an agent is working on in relay-app (task, branch, session, paths) in its ledger, checks it against every other open entry and main, and messages both agents when their work overlaps. macOS and GTK count as one area. Send a one-line summary with your branch and paths, or a shared session id.",
+        tags: ["ledger", "coordination"],
+        examples: [
+          "Starting the GTK settings page rewrite on review/alice-gtk-settings, paths gtk/src/settings,macos/Settings",
+          "Here is my session id; record what I'm working on",
+          "review/bob-history-search landed; mark me done",
+        ],
+      },
+      {
+        id: "review-change",
+        name: "Review a pushed change",
+        description:
+          "Runs one review round for a pushed branch at the size the change needs (small, standard or deep, picked by the Jev classifier), as Agent Relay Cloud flow runs with local CI, and sends back every finding at once. A fix push gets CI and the GitHub gate only; only a blocker gets a re-review of its fix.",
+        tags: ["code-review", "ci"],
+        examples: [
+          "Please review review/bob-history-search: it adds search to the session history view",
+          "Review review/carol-signin-retry at deep depth",
+          "I pushed the fixes for the findings on review/carol-signin-retry; run CI and the gate",
+        ],
+      },
+      {
+        id: "land-change",
+        name: "Land a reviewed change",
+        description:
+          "Squashes a change onto main once its review round has reported, no blocker is open, and local CI and the GitHub gate are green on that commit; rebases and re-runs CI when main has moved. Say \"hold this\" or \"I land this myself\" when you ask for the review to keep it from landing.",
+        tags: ["merge", "main"],
+        examples: [
+          "Hold review/dave-tray-menu, I'll land it myself",
+          "main moved under review/alice-gtk-settings; is it still landing?",
+        ],
+      },
+      {
+        id: "publish-release",
+        name: "Publish a release",
+        description:
+          "Keeps a signed release candidate of main built and promotes it on request: a beta when asked, a stable only after confirming with the owner directly. Reports the version, source commit, how far behind main it is and the release URL.",
+        tags: ["release", "desktop"],
+        examples: [
+          "Release beta",
+          "Which candidate is ready, and how many commits behind main is it?",
+          "What commit did 2026.11.5 ship from?",
+        ],
+      },
+      {
+        id: "start-hotfix",
+        name: "Start and ship a hotfix",
+        description:
+          "Gives you a verified shipped commit to branch a hotfix from (any release, older ones included), reviews the hotfix branch, publishes from it, and makes sure the same fix lands on main.",
+        tags: ["hotfix", "release"],
+        examples: [
+          "I need to hotfix 2026.11.5 for a crash on sign-in: give me the base commit",
+          "hotfix/2026.11.5-signin-crash is pushed; review it and prepare a beta from it",
+        ],
+      },
+    ],
+    tags: ["relay-app", "desktop", "code-review", "releases", "coordination"],
+    documentationUrl: "https://github.com/AgentWorkforce/relay-app",
+  },
   // Names. The rule: everything this stack CREATES carries a -relay-app
   // suffix or a /relay-app path segment, so it can never collide with the
   // relay-desktop agent's live stack or relaycast-cloud's shared host

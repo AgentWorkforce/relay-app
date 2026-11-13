@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { EC2_USER_DATA_ENCODED_LIMIT, RELAY_SESSIONS_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64 } from "@agentworkforce/layered-agent";
+import { AGENT_CARD_FILE, EC2_USER_DATA_ENCODED_LIMIT, RELAY_SESSIONS_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, renderAgentCard, userDataBase64 } from "@agentworkforce/layered-agent";
 import agent from "../agent.config.ts";
 import { LANE_SCRIPTS, LANE_SCRIPTS_SHA_FILE, laneScriptsSha } from "../lane-scripts.ts";
 
@@ -34,7 +34,8 @@ test("user data: under EC2's limit, every kit and lane file, no secret values", 
   const optional: readonly string[] = ["headless.py", "delegation.md", ...WORKER_KIT_FILES, ...RELAY_SESSIONS_KIT_FILES];
   for (const f of agent.files) {
     const shipped = script.includes(`cat > /opt/agent-host/${f.name} <<'`);
-    if (f.source === "kit" && optional.includes(f.name)) assert.ok(!shipped, `${f.name} is not in user data`);
+    // The generated card file (kit 0.1.17) travels by hot update, never in user data.
+    if (f.source === "generated" || (f.source === "kit" && optional.includes(f.name))) assert.ok(!shipped, `${f.name} is not in user data`);
     else assert.ok(shipped, f.name);
   }
   assert.doesNotMatch(script, /sk-ant-|ghp_|ghs_|gho_|BEGIN [A-Z ]*PRIVATE KEY/);
@@ -249,6 +250,22 @@ test("the sessions MCP token: read by parameter name only, never exported, never
   assert.ok(agent.files.some((f) => f.name === "relay-sessions.sh" && f.source === "kit"));
   const script = gunzipSync(Buffer.from(userDataBase64(agent, read), "base64")).toString("utf8");
   assert.doesNotMatch(script, /cld_|Bearer [A-Za-z0-9]/);
+});
+
+test("the A2A card renders within the relay's limits, one skill per kind of work, and is generated, not lane or user data", () => {
+  assert.ok(agent.input.relaySessions, "the lead publishes the card with the agent-relay MCP");
+  const rendered = renderAgentCard(agent.input.card!);
+  const card = JSON.parse(rendered) as { description: string; skills: { id: string; tags?: string[]; examples?: string[] }[]; documentation_url?: string; version: string };
+  assert.match(card.description, /^layered-relay-app runs the maintainer workflow for AgentWorkforce\/relay-app/);
+  assert.deepEqual(card.skills.map((s) => s.id), ["track-work", "review-change", "land-change", "publish-release", "start-hotfix"]);
+  for (const s of card.skills) {
+    assert.ok((s.tags?.length ?? 0) > 0, `${s.id} has tags`);
+    assert.ok((s.examples?.length ?? 0) >= 2 && (s.examples?.length ?? 0) <= 4, `${s.id} has 2 to 4 examples`);
+  }
+  assert.equal(card.documentation_url, "https://github.com/AgentWorkforce/relay-app");
+  assert.match(card.version, /^[0-9a-f]{12}$/);
+  assert.equal(agent.generated[AGENT_CARD_FILE], rendered);
+  assert.deepEqual(agent.files.filter((f) => f.source === "generated"), [{ name: AGENT_CARD_FILE, source: "generated" }]);
 });
 
 test("everything the stack creates is named for relay-app, never like the relay-desktop agent's live stack", () => {
