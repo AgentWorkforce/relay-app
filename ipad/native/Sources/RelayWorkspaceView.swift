@@ -267,8 +267,8 @@ struct RelayWorkspaceView: View {
             }
         }
     }
-    /// Keeps the selection and pending notifications in step with the client.
-    private var observedWorkspace: some View {
+    /// Keeps the selection, calls and sign-in page in step with the client.
+    private var clientObservedWorkspace: some View {
         lifecycleWorkspace
         .onChange(of: client.hiddenConversationIDs) { _, hidden in
             if hidden.isEmpty { showHidden = false }
@@ -312,6 +312,10 @@ struct RelayWorkspaceView: View {
             // Rejoin a call that was active before the app was relaunched.
             voiceCalls.rejoinIfNeeded(client: client, roster: client.relayAgents + client.conversations)
         }
+    }
+    /// Answers notifications and pushes, and tracks the open channel.
+    private var observedWorkspace: some View {
+        clientObservedWorkspace
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             // Reports a GPT-Live session left unreported while the app was in the background.
             Task { await VoiceCallService.reportLeftoverUsage(client: client) }
