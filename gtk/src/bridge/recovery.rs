@@ -53,6 +53,7 @@ pub(super) fn is_read(method: &str) -> bool {
             | "people.list"
             | "links.parse"
             | "login_item.status"
+            | "coordination_advisories.status"
             | "chat.conversation"
             | "chat.history"
             | "chat.projects"
