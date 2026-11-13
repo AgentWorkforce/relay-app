@@ -137,6 +137,8 @@ jobs:
       id-token: write
       contents: read
       packages: read
+    outputs:
+      fresh: ${{ steps.preview.outputs.fresh }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,6 +166,7 @@ jobs:
           role-session-name: layered-agent-preview-${{ github.run_id }}
 
       - name: Preview the compute stack change set
+        id: preview
         env:
           PREVIEW_ALLOW_REPLACEMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_restart && 'true' || 'false' }}
         run: agent/preview-change-set.sh run "preview-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -183,7 +186,10 @@ jobs:
     # head's own run deploys instead, and only when the changed job found
     # agent/ or its workflows changed since the last successful deploy, and
     # only after the preview job passed. A skipped, failed or cancelled
-    # preview never deploys, allow_restart or not.
+    # preview never deploys, allow_restart or not. A stack that does not
+    # exist yet (the preview's fresh output) is a full deploy for the kit, so
+    # it is created only by a workflow_dispatch with allow_restart; any other
+    # run skips the deploy, and the preview's notice says so.
     if: >-
       github.ref == 'refs/heads/main'
       && !cancelled()
@@ -194,6 +200,8 @@ jobs:
           || (github.event.workflow_run.conclusion == 'success'
               && github.event.workflow_run.head_branch == 'main'
               && github.event.workflow_run.head_sha == github.sha))
+      && (needs.preview.outputs.fresh != 'true'
+          || (github.event_name == 'workflow_dispatch' && inputs.allow_restart))
     # One deploy at a time against the one stack and host, taken only by a job
     # that runs (a skipped job never enters the group). An automatic run
     # enters the group only when agent/ or its workflows changed since the
@@ -234,11 +242,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # The kit runs with the deploy role's credentials, so it is pinned: a
+      # kit change reaches this deploy only through a deliberate bump of this
+      # sha here (reviewed like any other change), never by layered-agents
+      # main moving.
       - name: Check out the layered-agents kit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: AgentWorkforce/layered-agents
-          ref: main
+          ref: 125657515dfacb2116fb1b7b7b666570582b42d9 # layered-agents main 2026-11-13: layered-agent 0.1.15, persisted AMI pin adoption (#30)
           token: ${{ steps.kit-token.outputs.token }}
           path: .layered-agents
           persist-credentials: false
@@ -258,7 +270,6 @@ jobs:
     if: needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      actions: write
       contents: read
     steps:
       - name: Write the deployed sha

@@ -274,10 +274,10 @@ function runScript(changeSetJson: object, mode = "run", opts: { deleteError?: st
     const r = spawnSync("bash", [fileURLToPath(new URL("../preview-change-set.sh", import.meta.url)), mode, "preview-1-1"], {
       cwd: dir,
       encoding: "utf8",
-      env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, FAKE_DIR: dir, GITHUB_STEP_SUMMARY: join(dir, "summary"), ...opts.env },
+      env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, FAKE_DIR: dir, GITHUB_STEP_SUMMARY: join(dir, "summary"), GITHUB_OUTPUT: join(dir, "output"), ...opts.env },
     });
     const read = (f: string) => { try { return readFileSync(join(dir, f), "utf8"); } catch { return ""; } };
-    return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls: read("calls"), submitted: read("submitted.json"), summary: read("summary") };
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls: read("calls"), submitted: read("submitted.json"), summary: read("summary"), output: read("output") };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -293,6 +293,8 @@ test("the wrapper submits the pin template without AmiId, never executes, and pa
   assert.deepEqual(JSON.parse(r.submitted).Parameters.AmiId, pinnedAmiParameter(ami));
   assert.deepEqual(JSON.parse(r.submitted).Resources.AgentHost.Metadata, { [AMI_PIN_MARKER]: ami });
   assert.match(r.summary, /stack relaycast-agent-host-dev-relay-app, change set preview-1-1, status CREATE_COMPLETE, AgentHost Modify\/False, .*PASS/);
+  assert.equal(r.output, "fresh=false\n");
+  assert.doesNotMatch(r.stdout, /::notice::/);
 });
 
 test("the wrapper submits the marker for a 0.1.14 plain-pinned stack", () => {
@@ -319,6 +321,8 @@ test("the wrapper passes without a change set once the pin and the marker are de
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /pin already adopted on relaycast-agent-host-dev-relay-app, nothing to preview/);
   assert.match(r.summary, /already carries the AMI pin, nothing to preview: PASS/);
+  assert.equal(r.output, "fresh=false\n");
+  assert.doesNotMatch(r.stdout, /::notice::/);
   assert.doesNotMatch(r.calls, /create-change-set|describe-change-set/);
   // The parameter alone is not adopted: the change set runs.
   const partial = runScript(changeSet({ Action: "Modify", Replacement: "False" }), "run", { deployed: plain014(), stacks: plainRunning(ami) });
@@ -391,6 +395,31 @@ test("a stack that verifiably does not exist yet passes as a fresh create, with 
   assert.match(r.calls, /get-template --stack-name relaycast-agent-host-dev-relay-app/);
   assert.doesNotMatch(r.calls, /describe-stacks|create-change-set|describe-change-set|execute-change-set/);
   assert.equal(r.summary, "Agent Deploy preview: stack relaycast-agent-host-dev-relay-app does not exist yet, fresh create, nothing to replace: PASS\n");
+  // The workflow skips the deploy on fresh=true unless an allow_restart
+  // dispatch asked for it; the notice tells the operator why.
+  assert.equal(r.output, "fresh=true\n");
+  const notices = r.stdout.split("\n").filter((l) => l.startsWith("::notice::"));
+  assert.deepEqual(notices, ["::notice::Stack relaycast-agent-host-dev-relay-app does not exist yet. Its first create is a full deploy, so this run deploys nothing; an operator must dispatch Agent Deploy with allow_restart to create it."]);
+});
+
+test("an allow_restart fresh create still reports fresh=true but prints no notice", () => {
+  const r = runScript({}, "run", {
+    getTemplateError: "\nAn error occurred (ValidationError) when calling the GetTemplate operation: Stack with id relaycast-agent-host-dev-relay-app does not exist\n",
+    env: { PREVIEW_ALLOW_REPLACEMENT: "true" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.output, "fresh=true\n");
+  assert.doesNotMatch(r.stdout, /::notice::/);
+});
+
+test("the wrapper runs without GITHUB_OUTPUT and GITHUB_STEP_SUMMARY", () => {
+  const r = runScript({}, "run", {
+    getTemplateError: "\nAn error occurred (ValidationError) when calling the GetTemplate operation: Stack with id relaycast-agent-host-dev-relay-app does not exist\n",
+    env: { GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.output, "");
+  assert.equal(r.summary, "");
 });
 
 test("any other get-template error fails the run and prints it, a denied read included", () => {
@@ -408,5 +437,6 @@ test("any other get-template error fails the run and prints it, a denied read in
     assert.doesNotMatch(r.stdout, /does not exist yet/);
     assert.doesNotMatch(r.calls, /describe-stacks|create-change-set/);
     assert.doesNotMatch(r.summary, /PASS/);
+    assert.equal(r.output, "");
   }
 });

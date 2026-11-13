@@ -143,11 +143,16 @@ test("an automatic deploy follows only a green Agent CI run on main for main's c
   assert.equal(jobIf("preview"),
     `github.ref == 'refs/heads/main' && needs.changed.outputs.deploy == 'true' && ${automatic}`);
   assert.equal(jobIf("deploy"),
-    `github.ref == 'refs/heads/main' && !cancelled() && needs.changed.result == 'success' && needs.changed.outputs.deploy == 'true' && needs.preview.result == 'success' && ${automatic}`);
+    `github.ref == 'refs/heads/main' && !cancelled() && needs.changed.result == 'success' && needs.changed.outputs.deploy == 'true' && needs.preview.result == 'success' && ${automatic} && (needs.preview.outputs.fresh != 'true' || (github.event_name == 'workflow_dispatch' && inputs.allow_restart))`);
+  // A stack that does not exist yet is a full deploy for the kit: the
+  // preview step reports it as its fresh output, and only an allow_restart
+  // dispatch creates it.
+  assert.match(deploy, /^  preview:\n(?:    .*\n|      .*\n)*?    outputs:\n      fresh: \$\{\{ steps\.preview\.outputs\.fresh \}\}$/m);
+  assert.match(deploy, /- name: Preview the compute stack change set\n        id: preview\n        env:\n/);
   assert.doesNotMatch(deploy, /needs\.preview\.result == 'skipped'/);
   // A replacement is allowed only by an allow_restart dispatch, and only
   // through this env on the run step.
-  assert.match(deploy, /- name: Preview the compute stack change set\n        env:\n          PREVIEW_ALLOW_REPLACEMENT: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.allow_restart && 'true' \|\| 'false' \}\}\n        run: agent\/preview-change-set\.sh run /);
+  assert.match(deploy, /- name: Preview the compute stack change set\n        id: preview\n        env:\n          PREVIEW_ALLOW_REPLACEMENT: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.allow_restart && 'true' \|\| 'false' \}\}\n        run: agent\/preview-change-set\.sh run /);
   assert.equal(deploy.match(/PREVIEW_ALLOW_REPLACEMENT:/g)?.length, 1);
   assert.doesNotMatch(deploy, /^on:\n(?:.*\n)*?  push:/m);
   // Agent CI must run on every push to main, or an unrelated main commit
@@ -199,7 +204,9 @@ test("an automatic deploy runs only when agent/ or its workflows changed, over A
   assert.match(deployJob, /^    runs-on: ubuntu-latest$/m);
   assert.match(deployJob, /^        uses: \.\/\.layered-agents\/\.github\/actions\/layered-agent-deploy$/m);
   assert.match(deployJob, /^        id: kit-token$/m);
-  assert.match(deployJob, /^          repository: AgentWorkforce\/layered-agents\n          ref: main\n          token: \$\{\{ steps\.kit-token\.outputs\.token \}\}\n          path: \.layered-agents\n          persist-credentials: false$/m);
+  // The kit is pinned to a full sha; a kit change reaches the deploy only by
+  // bumping it here, never by layered-agents main moving.
+  assert.match(deployJob, /^          repository: AgentWorkforce\/layered-agents\n          ref: [0-9a-f]{40} # layered-agents main .+\n          token: \$\{\{ steps\.kit-token\.outputs\.token \}\}\n          path: \.layered-agents\n          persist-credentials: false$/m);
   assert.match(deployJob, /^          role-arn: \$\{\{ vars\.LAYERED_AGENT_DEPLOY_ROLE_ARN \}\}$/m);
   assert.ok(!deploy.includes("uses: AgentWorkforce/layered-agents/.github/workflows/"));
   // The record job leaves that artifact after each successful deploy, outside
@@ -212,6 +219,9 @@ test("an automatic deploy runs only when agent/ or its workflows changed, over A
   assert.match(recordJob, /uses: actions\/upload-artifact@/);
   assert.match(recordJob, /^          name: agent-deployed$/m);
   assert.doesNotMatch(recordJob, /concurrency:/);
+  // upload-artifact needs no actions permission.
+  assert.match(recordJob, /^    permissions:\n      contents: read\n    steps:$/m);
+  assert.doesNotMatch(recordJob, /actions: write/);
   // The path list mirrors flows/lib/remote-ci.mjs. Read as text: that module
   // imports yaml, which this package does not install.
   const remoteCi = readFileSync(new URL("../../flows/lib/remote-ci.mjs", import.meta.url), "utf8");

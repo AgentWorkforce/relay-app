@@ -15,7 +15,13 @@
 # agent) passes without a change set: there is no host to replace, and a fresh
 # create is what the preview protects. Only a ValidationError saying "does not
 # exist" counts, never one that is also an authorization error; any other
-# get-template error is printed and fails the run.
+# get-template error is printed and fails the run. The run step's output
+# (GITHUB_OUTPUT) carries fresh=true on that path and fresh=false once the
+# deployed template was read: the workflow deploys a fresh create only from an
+# allow_restart dispatch, since the kit treats the first create as a full
+# deploy. Without PREVIEW_ALLOW_REPLACEMENT=true the fresh-create path also
+# prints a ::notice:: saying this run deploys nothing and an operator must
+# dispatch Agent Deploy with allow_restart to create the stack.
 #
 #   preview-change-set.sh run <change-set-name>
 #   preview-change-set.sh delete <change-set-name>
@@ -43,6 +49,7 @@ stack=${where% *}
 region=${where#* }
 cfn=(aws cloudformation --region "$region" --output json)
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
+output=${GITHUB_OUTPUT:-/dev/null}
 
 if [ "$mode" = delete ]; then
   if err=$("${cfn[@]}" delete-change-set --stack-name "$stack" --change-set-name "$name" 2>&1 >/dev/null); then
@@ -69,12 +76,17 @@ if ! err=$("${cfn[@]}" get-template --stack-name "$stack" --template-stage Origi
   if [[ "$err" =~ ValidationError ]] && [[ "$err" =~ does\ not\ exist ]] && [[ ! "$err" =~ AccessDenied|not\ authorized ]]; then
     echo "stack $stack does not exist yet: a fresh create, nothing to replace"
     echo "Agent Deploy preview: stack $stack does not exist yet, fresh create, nothing to replace: PASS" >>"$summary"
+    echo "fresh=true" >>"$output"
+    if [ "${PREVIEW_ALLOW_REPLACEMENT:-}" != true ]; then
+      echo "::notice::Stack $stack does not exist yet. Its first create is a full deploy, so this run deploys nothing; an operator must dispatch Agent Deploy with allow_restart to create it."
+    fi
     exit 0
   fi
   echo "could not read the deployed template of $stack:" >&2
   printf '%s\n' "$err" >&2
   exit 1
 fi
+echo "fresh=false" >>"$output"
 "${cfn[@]}" describe-stacks --stack-name "$stack" >"$work/stacks.json"
 kind=$(node preview-change-set.ts template "$work/deployed.json" "$work/stacks.json" "$work/pin.json")
 if [ "$kind" = adopted ]; then
