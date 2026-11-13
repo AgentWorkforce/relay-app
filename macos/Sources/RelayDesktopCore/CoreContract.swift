@@ -123,6 +123,8 @@ public enum CoreMethod {
     public static let sessionsOverviewEvents = "sessions.overview.events"
     public static let loginItemSet = "login_item.set"
     public static let loginItemStatus = "login_item.status"
+    public static let coordinationAdvisoriesStatus = "coordination_advisories.status"
+    public static let coordinationAdvisoriesSet = "coordination_advisories.set"
     public static let chatConversation = "chat.conversation"
     public static let chatSend = "chat.send"
     public static let chatClear = "chat.clear"
@@ -2851,6 +2853,52 @@ public struct Conversations: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.conversations, forKey: .conversations)
         try c.encode(self.identity, forKey: .identity)
+    }
+}
+
+public struct CoordinationAdvisoriesParams: Codable, Equatable, Hashable, Sendable {
+    public let enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.enabled, forKey: .enabled)
+    }
+}
+
+/// Whether sessions are shown teammates' overlapping work as their turn
+/// ends. Off by default.
+public struct CoordinationAdvisoriesState: Codable, Equatable, Hashable, Sendable {
+    public let enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.enabled, forKey: .enabled)
     }
 }
 
@@ -13479,6 +13527,18 @@ extension CoreClient {
     @discardableResult
     public func loginItemStatus() async throws -> LoginItemState {
         try await call(CoreMethod.loginItemStatus, NoParams())
+    }
+
+    /// `coordination_advisories.status`; only a core built with an account answers it.
+    @discardableResult
+    public func coordinationAdvisoriesStatus() async throws -> CoordinationAdvisoriesState {
+        try await call(CoreMethod.coordinationAdvisoriesStatus, NoParams())
+    }
+
+    /// `coordination_advisories.set`; only a core built with an account answers it.
+    @discardableResult
+    public func coordinationAdvisoriesSet(_ params: CoordinationAdvisoriesParams) async throws -> CoordinationAdvisoriesState {
+        try await call(CoreMethod.coordinationAdvisoriesSet, params)
     }
 
     /// `chat.conversation`; only a core built with an account answers it.

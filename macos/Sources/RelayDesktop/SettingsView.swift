@@ -1048,6 +1048,20 @@ struct RelaySettingsSection: View {
                         )
                     )
                 }
+                if model.coordinationAdvisories != nil {
+                    SettingsDivider()
+                    SettingsToggleRow(
+                        title: CoordinationAdvisoriesCopy.title,
+                        detail: CoordinationAdvisoriesCopy.detail,
+                        systemImage: "person.2",
+                        notice: model.settingErrors[CoordinationAdvisoriesCopy.settingKey],
+                        isPending: model.isCoordinationAdvisoriesPending,
+                        isOn: Binding(
+                            get: { model.coordinationAdvisories ?? false },
+                            set: { value in Task { await model.setCoordinationAdvisories(value) } }
+                        )
+                    )
+                }
                 if model.settings?.showRelayMessages != nil {
                     SettingsDivider()
                     showRelayMessagesRow

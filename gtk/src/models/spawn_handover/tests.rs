@@ -15,6 +15,7 @@ fn session(kind: SessionKind, spawn: Option<SessionSpawn>) -> LocalSession {
         project: Some("api".into()),
         directory: Some("/work/api".into()),
         live: true,
+        delivery_wait: None,
         running: Some(true),
         holder: None,
         updated_at_ms: None,

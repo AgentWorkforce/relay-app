@@ -25,6 +25,7 @@ impl App {
     pub fn load_settings(&self) {
         self.load_core_settings();
         self.load_login_item();
+        self.load_coordination_advisories();
         self.load_openclaw_tools();
     }
 
