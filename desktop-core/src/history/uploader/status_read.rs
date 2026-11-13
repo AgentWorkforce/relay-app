@@ -28,7 +28,7 @@ pub(super) fn read(
 
 /// Runs `read` on a blocking thread that holds `lease` until `read` returns,
 /// and answers with its result.
-async fn hold<T: Send + 'static>(
+pub(super) async fn hold<T: Send + 'static>(
     lease: HistoryReader,
     read: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, UploaderError> {
@@ -135,6 +135,11 @@ impl Uploader {
                     .boxed()
                     .shared();
                     *slot = Some((changes, read.clone()));
+                    // Driven to its end whoever waits: a read that finishes
+                    // after every caller's deadline then counts as finished,
+                    // so a later caller starts a fresh read instead of
+                    // taking this one's old answer.
+                    tokio::spawn(read.clone().map(drop));
                     read
                 }
             }
@@ -142,7 +147,7 @@ impl Uploader {
         // The deadline is this caller's, not the read's: past it the caller
         // is answered while the read stays in the slot, so the next caller
         // joins it rather than opening the store a second time.
-        let raw = tokio::time::timeout(timeouts::STATUS, read)
+        let raw = tokio::time::timeout(self.status_deadline, read)
             .await
             .map_err(|_| status_timeout())??;
         self.log_claude_health(&raw);

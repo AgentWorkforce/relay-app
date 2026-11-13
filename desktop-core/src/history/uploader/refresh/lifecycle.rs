@@ -28,6 +28,7 @@ impl Uploader {
             revision: AtomicU64::new(0),
             starting: tokio::sync::Mutex::new(()),
             status_read: Mutex::new(None),
+            status_deadline: timeouts::STATUS,
             status_snapshot: Mutex::new(None),
             claude_health_logged: Mutex::new(None),
             sessions_snapshot: Mutex::new(None),

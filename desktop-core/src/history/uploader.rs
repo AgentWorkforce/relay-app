@@ -57,7 +57,6 @@ mod supervision;
 /// a store, which commits only at the end.
 pub mod timeouts;
 #[cfg(test)]
-#[cfg(test)]
 use status_read::read_holding;
 #[cfg(test)]
 use status_read::STATUS_FAILED;
@@ -841,6 +840,9 @@ pub struct Uploader {
     /// read can wait out SQLite's busy timeout while the first sync writes
     /// the history store). Never a cache: a finished read is not reused.
     status_read: Mutex<Option<(u64, StatusRead)>>,
+    /// How long one caller waits on the shared `status` read
+    /// (`timeouts::STATUS`); the read itself runs until its thread ends.
+    status_deadline: Duration,
     status_snapshot: Mutex<Option<(u64, Value)>>,
     /// The last Claude health report logged; its pass timestamp changes for
     /// every new failure, while repeated status reads stay quiet.
@@ -2120,6 +2122,78 @@ mod tests {
             1,
             "one store read for both callers"
         );
+    }
+
+    /// Reads status through the real blocking-thread path; the first read
+    /// waits for `release`.
+    struct HeldStoreProbe {
+        statuses: AtomicU64,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl ProbeRunner for HeldStoreProbe {
+        fn status(
+            &self,
+            _: Option<std::path::PathBuf>,
+            lease: crate::history::uploader::HistoryReader,
+        ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+            let run = self.statuses.fetch_add(1, Ordering::SeqCst) + 1;
+            let held = self.release.lock().unwrap().take();
+            Box::pin(status_read::hold(lease, move || {
+                if let Some(held) = held {
+                    held.recv().ok();
+                }
+                Ok(json!({ "running": true, "paused": false, "run": run }))
+            }))
+        }
+        fn run(
+            &self,
+            _: Vec<String>,
+            _: Option<Duration>,
+        ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+            Box::pin(async { Ok(json!({})) })
+        }
+        fn install(
+            &self,
+            _args: Vec<String>,
+            _bearer: Option<Secret>,
+        ) -> Result<InstallRun, UploaderError> {
+            Err(UploaderError::new("unused"))
+        }
+        fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_store_read_is_joined_then_a_finished_one_is_never_reused() {
+        let (release, held) = std::sync::mpsc::channel();
+        let probe = Arc::new(HeldStoreProbe {
+            statuses: AtomicU64::new(0),
+            release: Mutex::new(Some(held)),
+        });
+        let mut uploader = Uploader::new(probe.clone());
+        uploader.status_deadline = Duration::from_millis(50);
+        let uploader = Arc::new(uploader);
+        uploader.attach(Install::from_json(
+            &json!({ "site_url": "https://example.test" }),
+        ));
+        // The store read outlives the first caller's deadline.
+        assert_eq!(
+            uploader.status().await.unwrap_err().message,
+            timeout_message("status")
+        );
+        // The next caller joins that read rather than opening the store again.
+        let joined = {
+            let uploader = uploader.clone();
+            tokio::spawn(async move { uploader.status().await })
+        };
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(probe.statuses.load(Ordering::SeqCst), 1, "one store read");
+        release.send(()).unwrap();
+        assert_eq!(joined.await.unwrap().unwrap()["run"], 1);
+        // A finished read is not handed to a later caller, however it ended.
+        assert_eq!(uploader.status().await.unwrap()["run"], 2);
     }
 
     #[tokio::test]
