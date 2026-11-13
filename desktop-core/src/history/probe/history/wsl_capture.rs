@@ -6,8 +6,9 @@
 //! (sync passes, discovery, the retained reconciliation and inventory
 //! rounds), never watched, and only while their distribution is still
 //! listed as running: a stopped distribution's share is never touched, so
-//! never booted. A WSL root's error is logged and skipped, never failing the
-//! pass for the other roots.
+//! never booted. A WSL folder the person named is the exception: it is read
+//! whenever it can be ([`readable`]). A WSL root's error is logged and
+//! skipped, never failing the pass for the other roots.
 use super::*;
 use agent_relay_node::relay::claude_dirs::Recorded;
 
@@ -27,10 +28,47 @@ pub(super) fn tolerated(extra: &ProviderRoots) -> bool {
     wsl::is_wsl_path(&extra.claude)
 }
 
-/// Whether a WSL `root` may be read now: its distribution is still listed
-/// as running. Any other root always may.
+/// Whether `root` (a folder, or a file in one) may be read now. A WSL root
+/// found automatically may while its distribution is still listed as
+/// running. One inside a WSL folder the person named
+/// (`AGENT_RELAY_CLAUDE_CONFIG_DIRS`, or added in Settings) always may, in
+/// the preview and in the collector, whatever the running list and
+/// `AGENT_RELAY_WSL_HISTORY` (which governs automatic discovery only) say:
+/// reading it is what the person asked for, so touching an explicit
+/// `\\wsl.localhost\<distro>` path may start its distribution. Any other
+/// root always may.
 pub(super) fn readable(root: &Path) -> bool {
-    !wsl::is_wsl_path(root) || wsl::still_running(root)
+    readable_with(root, wsl::still_running, named_dirs)
+}
+
+/// [`readable`] over `running` (the running-list check) and `named` (the
+/// person's WSL folders, asked only when the list does not answer).
+fn readable_with(
+    root: &Path,
+    running: impl Fn(&Path) -> bool,
+    named: impl FnOnce() -> Vec<PathBuf>,
+) -> bool {
+    !wsl::is_wsl_path(root) || running(root) || named().iter().any(|dir| wsl::is_within(root, dir))
+}
+
+/// The WSL folders the person named, as they are configured now.
+fn named_dirs() -> Vec<PathBuf> {
+    let env = |key: &str| std::env::var(key).ok();
+    let Some(home) = user_home() else {
+        return Vec::new();
+    };
+    named_in(&ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home)))
+}
+
+/// The WSL folders among `dirs`' `AGENT_RELAY_CLAUDE_CONFIG_DIRS` and the
+/// folders added in Settings: the ones the person named, not ones found.
+pub(super) fn named_in(dirs: &ClaudeDirs) -> Vec<PathBuf> {
+    dirs.environment
+        .iter()
+        .cloned()
+        .chain(dirs.recorded().added)
+        .filter(|dir| wsl::is_wsl_path(dir))
+        .collect()
 }
 
 /// The sources a WSL home is read for: each of `wanted` (every one when
@@ -245,6 +283,70 @@ mod tests {
         let roots = roots(Path::new("/share/home/ana"));
         assert_eq!(roots.codex, Path::new("/share/home/ana/.codex"));
         assert_eq!(roots.claude, Path::new("/share/home/ana/.claude"));
+    }
+
+    /// A WSL folder the person named is read with its distribution not
+    /// listed as running, as in the preview, and with
+    /// `AGENT_RELAY_WSL_HISTORY=0`, which leaves the running list empty; a
+    /// found one is not.
+    #[test]
+    fn a_named_wsl_folder_is_read_whatever_the_running_list() {
+        let named = r"\\wsl.localhost\Ubuntu\home\x\.claude";
+        let not_running = |_: &Path| false;
+        for path in [
+            named.to_owned(),
+            format!(r"{named}\projects\p\s.jsonl"),
+            r"\\wsl$\Ubuntu\home\x\.claude\projects".to_owned(),
+        ] {
+            assert!(
+                readable_with(Path::new(&path), not_running, || vec![named.into()]),
+                "{path}"
+            );
+        }
+        let found = Path::new(r"\\wsl.localhost\Ubuntu\home\ana\.claude");
+        assert!(!readable_with(found, not_running, || vec![named.into()]));
+        assert!(readable_with(found, |_| true, Vec::new));
+        // A folder off the share never asks for the named folders.
+        let asked = std::cell::Cell::new(false);
+        let named_asked = || {
+            asked.set(true);
+            Vec::new()
+        };
+        assert!(readable_with(
+            Path::new("/home/ana/.claude"),
+            not_running,
+            named_asked
+        ));
+        assert!(!asked.get());
+    }
+
+    /// The named folders are the environment's and the Settings ones on the
+    /// share; a local one needs no exception.
+    #[test]
+    fn the_named_folders_come_from_the_environment_and_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("claude-config-dirs.json");
+        let added = r"\\wsl.localhost\Debian\root\.claude";
+        std::fs::write(
+            &file,
+            serde_json::json!({"added": [added, "/home/ana/.claude-work"]}).to_string(),
+        )
+        .unwrap();
+        let dirs = ClaudeDirs {
+            environment: vec![
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\x\.claude"),
+                PathBuf::from("/home/ana/.claude-other"),
+            ],
+            file: Some(file),
+            private_root: None,
+        };
+        assert_eq!(
+            named_in(&dirs),
+            [
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\x\.claude"),
+                PathBuf::from(added),
+            ]
+        );
     }
 
     #[test]
