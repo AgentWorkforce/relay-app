@@ -3,7 +3,8 @@
 How changes to this repository are reviewed, landed and released by the
 maintainers and agents they assign. It applies only when the maintainers
 assigned you the work. Contributors outside the team, and any agent working in
-a fork, open a pull request instead; see [CONTRIBUTING.md](../CONTRIBUTING.md).
+a fork, propose changes as GitHub issues instead; see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 `layered-relay-app` runs reviews, landing and releases for this repo, and
 keeps track of who is working on what. It is on Agent Relay; message it by name.
@@ -88,7 +89,10 @@ Don't publish yourself:
 - Don't push a `released-v*` tag. `layered-relay-app` creates those.
 
 Every release it publishes is tagged `released-v<version>` on the commit that
-shipped.
+shipped. Releases published before this repository's first commit
+(2026-11-13) were built from the earlier private development repository,
+which is archived: their `released-v*` tags and shipped commits live there,
+and a hotfix for one of them starts from that base.
 
 **Hotfix:**
 1. Ask `layered-relay-app` for the base of the release you are fixing; this
