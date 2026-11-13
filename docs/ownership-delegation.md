@@ -115,7 +115,8 @@ harness actions. The desktop has not integrated this broader agent-binding
 resolver into the pre-ack delivery path. Its current native spawn route
 separately verifies the machine owner's direct messages (`spawn::drive`):
 those messages can enter desktop-driven Codex and Claude sessions as user
-turns, and that owner alone can answer their pending approval requests.
+turns, and spawned Grok, Devin and OpenCode sessions as native input, and that
+owner alone can answer Codex's and Claude's pending approval requests.
 The spawn's requester and other agents cannot answer approvals, agents owned
 by the same person included, and get no native turns (the requester's are
 native only with **Native input from the spawning agent** on). The requester's direct
