@@ -201,6 +201,33 @@ struct VoiceActivityDetector {
     }
 }
 
+/// Whether a call may use CallKit. Apple does not allow CallKit in China
+/// mainland (App Review guideline 5), so CallKit is never active when either
+/// signal says China mainland:
+/// - the device region (`Locale.current.region?.identifier`) is `CN`, or
+/// - the App Store storefront (StoreKit 2 `Storefront.countryCode`, ISO 3166-1
+///   alpha-3) is `CHN`.
+/// Without CallKit the call runs as plain VoIP with the background audio mode
+/// and no system call UI. An unknown storefront (no App Store account, the
+/// Simulator, or a failed lookup) is not China, so the region decides. Hong
+/// Kong (`HK`, `HKG`), Macau (`MO`, `MAC`) and Taiwan (`TW`, `TWN`) keep
+/// CallKit.
+enum VoiceCallPolicy {
+    static func allowsCallKit(regionIdentifier: String?, storefrontCountryCode: String?) -> Bool {
+        if let storefront = normalized(storefrontCountryCode), chinaMainland.contains(storefront) { return false }
+        if let region = normalized(regionIdentifier), chinaMainland.contains(region) { return false }
+        return true
+    }
+
+    /// China mainland as a region identifier (alpha-2) and as a storefront (alpha-3).
+    private static let chinaMainland: Set<String> = ["CN", "CHN"]
+
+    private static func normalized(_ code: String?) -> String? {
+        guard let code = code?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(), !code.isEmpty else { return nil }
+        return code
+    }
+}
+
 /// Step-by-step call logging, readable in Console.app (subsystem
 /// com.agentworkforce.relayipad, category voice-call) for a connected iPhone.
 enum VoiceCallLog {

@@ -421,8 +421,16 @@ time to its content.
   Calls use CallKit for outgoing calls only (no PushKit; nothing rings), which
   gives the lock screen and Dynamic Island call UI, the green call indicator,
   mute, hold and end controls, and call audio priority. CallKit is not used
-  where Apple does not allow it (China); there the app's background audio mode
-  keeps the call running without the system call UI.
+  where Apple does not allow it (China mainland); there the app's background
+  audio mode keeps the call running without the system call UI. China mainland
+  is detected from either the device region (`Locale.current.region` is `CN`)
+  or the App Store storefront (StoreKit 2 `Storefront.countryCode` is `CHN`).
+  The storefront is looked up at launch and kept current from
+  `Storefront.updates`; each call waits up to 3 seconds for that answer before
+  deciding, and a storefront still unknown then (no App Store account, the
+  Simulator, a failed lookup) leaves the decision to the region. The
+  `CXProvider` is created only then, only when allowed (`VoiceCallPolicy`,
+  `VoiceCallKit.prepare()`).
 - **Bluetooth and AirPods.** HFP gives a mic but low-quality output; A2DP gives
   high-quality output without a mic. With `.allowBluetoothHFP` iOS picks HFP
   when the AirPods mic is used; that is the right default for a call.

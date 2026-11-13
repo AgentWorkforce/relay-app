@@ -27,7 +27,12 @@ import UserNotifications
 final class RelayAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        MainActor.assumeIsolated { StartupTrace.launched() }
+        MainActor.assumeIsolated {
+            StartupTrace.launched()
+            // Look up the App Store storefront now so the CallKit China check
+            // (VoiceCallPolicy) has its answer before the first call starts.
+            VoiceCallStorefront.shared.start()
+        }
         return true
     }
 
