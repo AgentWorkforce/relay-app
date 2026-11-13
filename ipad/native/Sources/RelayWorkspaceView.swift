@@ -186,7 +186,9 @@ struct RelayWorkspaceView: View {
         }
         .task {
             client.sceneChanged(foreground: scenePhase != .background)
+            let firstLoad = StartupTrace.begin("checkConnection")
             await client.checkConnection()
+            StartupTrace.end(firstLoad)
             Task { await client.resumePendingSignIn() }
             if client.paired { await requestNotifications() }
             if let id = RelayPushState.shared.pendingConversationID { await openNotificationConversation(id) }
@@ -575,7 +577,7 @@ struct RelayWorkspaceView: View {
         }
     }
     private var emptyListText: String {
-        "No agents in this view"
+        WorkspaceListPlaceholder.text(rosterLoaded: client.rosterLoaded)
     }
     /// Swipe left on a conversation to hide it on this device; nothing is deleted.
     @ViewBuilder private func hideAction(_ agent: RelayAgent) -> some View {
