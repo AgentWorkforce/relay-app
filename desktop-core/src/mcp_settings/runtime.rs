@@ -174,7 +174,7 @@ impl Runtime {
             return DETAIL.into();
         }
         self.failures = self.failures.saturating_add(1);
-        let last = self.detail.take().filter(|_| self.unhealthy);
+        let last = self.detail.take();
         let base = last.as_deref().map_or(DETAIL, |detail| {
             detail.strip_suffix(RETRY).unwrap_or(detail)
         });
@@ -213,26 +213,25 @@ fn installed_detail(report: &Report, grandfathered: usize) -> String {
 /// each call. A reload restarts the server in every loaded chat, so a chat
 /// can still be starting when it is first read; `unsettled` chats get one
 /// more read without a reload after `SETTLE_PAUSE`, inside `ATTEMPT_BUDGET`.
-/// The second read is authoritative; if it fails the attempt fails, since the
-/// first read may have caught chats mid-restart.
+/// The second read is authoritative; if it fails, or no time is left for it,
+/// the attempt fails, since the first read may have caught chats mid-restart.
 fn settle_attempt(
     reload: bool,
     unsettled: impl Fn(&Report) -> bool,
     mut refresh: impl FnMut(bool, Duration) -> Result<Report, ()>,
     pause: impl FnOnce(Duration),
+    now: impl Fn() -> Instant,
 ) -> Result<Report, ()> {
-    let started = Instant::now();
+    let started = now();
     let first = refresh(reload, REFRESH_TIMEOUT)?;
     if !reload || !unsettled(&first) {
         return Ok(first);
     }
-    let left = ATTEMPT_BUDGET.saturating_sub(started.elapsed());
-    let Some(read) = left
+    let left = ATTEMPT_BUDGET.saturating_sub(now().saturating_duration_since(started));
+    let read = left
         .checked_sub(SETTLE_PAUSE)
         .filter(|read| *read >= SETTLE_MIN_READ)
-    else {
-        return Ok(first);
-    };
+        .ok_or(())?;
     pause(SETTLE_PAUSE);
     refresh(false, read.min(REFRESH_TIMEOUT))
 }
@@ -309,6 +308,7 @@ impl Installer {
                     .map_err(|_| ())
             },
             std::thread::sleep,
+            Instant::now,
         );
         let mut runtime = self
             .runtime
