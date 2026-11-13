@@ -57,7 +57,7 @@ IDs to the rollout owner.
 ## Rollout owner
 
 After the reviewed App-auth code is on main and secrets are provisioned, ask
-`layered-relay-desktop` to execute the prepare-only smoke from its host. Require
+`layered-relay-app` to execute the prepare-only smoke from its host. Require
 Cloud acceptance, native worker dispatch, exact-tree CI reuse, candidate output,
 and rejection of deliberately invalid evidence. Provisioning alone is not a
 successful smoke. After those checks pass, land the managed environment change

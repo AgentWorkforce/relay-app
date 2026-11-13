@@ -25,7 +25,7 @@ export async function withReleaseGithubToken(effect, { env = process.env, fetchI
     try {
       response = await fetchImpl(`https://api.github.com${path}`, {
         method, redirect: 'error', signal: AbortSignal.timeout(15_000),
-        headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'relay-desktop-cloud-release', 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'relay-app-cloud-release', 'Content-Type': 'application/json' },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
     } catch { throw Error('Release App GitHub request failed; no credential fallback'); }
