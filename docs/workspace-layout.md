@@ -990,7 +990,7 @@ input with a plain message instead of ignoring it; once they do, it is
 required exactly in both manifests, both lockfiles move to it, and the
 record adds `"relayscrubber": {"version": …}`. The engine itself sits behind
 `ScrubEngine::default_engine()` in `desktop-core/src/history/scrub.rs`; it
-is pinned at exactly 0.5.0-alpha.8 (ruleset 10), and its engine name
+is pinned at exactly 0.5.0-alpha.9 (ruleset 10), and its engine name
 carries that version. relayhistory and terse are out of scope: Desktop does not depend on them as
 crates.
 

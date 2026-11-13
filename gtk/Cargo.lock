@@ -2467,9 +2467,9 @@ dependencies = [
 
 [[package]]
 name = "relayscrubber"
-version = "0.5.0-alpha.8"
+version = "0.5.0-alpha.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f79b62f5fc4b52a738cb86e428c1a69b7f55ccb7258ffa16ebced7eb7beebc6"
+checksum = "6a97cd235bb6ded9f15f9f100e37627ee3aeef2f73e3c32c13f4a0e913d8f1e6"
 dependencies = [
  "aho-corasick",
  "base64 0.22.1",
