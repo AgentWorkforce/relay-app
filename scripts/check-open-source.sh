@@ -75,7 +75,8 @@ for removed in .claude/launch.json config/posthog.json docs/contractor-access.md
   docs/mcp-agent-credentials.md docs/skip-chat.md docs/mobile-app-review-audit-20261017.md \
   docs/retention-verification.md \
   docs/service-callers-e2e.md docs/probe-ownership-plan.md \
-  scripts/import-grok-avatar-art.mjs; do
+  scripts/import-grok-avatar-art.mjs \
+  agent/test/fixtures/relaycast-cloud-main-desktop-template.json; do
   if git ls-files --error-unmatch "$removed" > /dev/null 2>&1; then
     fail "$removed was removed as internal and must not be tracked again."
   fi

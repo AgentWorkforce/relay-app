@@ -6,9 +6,10 @@
  * exists, and the change-set verdict passes only when AgentHost is modified in
  * place, nothing is removed and AmiId took the pinned template default; an
  * empty ("no changes") change set fails, since the pin would not persist. The
- * deployed template is relaycast-cloud main's (the
- * equivalence fixture, read only). The shell runs against a fake `aws` on PATH
- * in a temp dir outside the repository.
+ * deployed template is this agent's own, as a stack looked before the pin
+ * (prePin: AmiId on Canonical's SSM pointer, no marker, older UserData).
+ * The shell runs against a fake `aws` on PATH in a temp dir outside the
+ * repository.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -21,16 +22,28 @@ import { fileReader, hostTemplate, userDataBase64 } from "@agentworkforce/layere
 import agent from "../agent.config.ts";
 import { AMI_PIN_MARKER, assertChangeSet, differingPaths, previewTemplate, previousParameters, pinnedAmiParameter } from "../preview-change-set.ts";
 
-const fixture = JSON.parse(readFileSync(new URL("./fixtures/relaycast-cloud-main-desktop-template.json", import.meta.url), "utf8"));
 const desired = hostTemplate(agent, userDataBase64(agent, fileReader(fileURLToPath(new URL("..", import.meta.url)))));
 const ami = agent.ami!;
+/**
+ * The desired template as a stack deployed before the AMI pin left it: AmiId
+ * on Canonical's SSM pointer, no marker, and the UserData of an older
+ * bootstrap. Everything else is the desired template's.
+ */
+const SSM_AMI_PARAMETER = { Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>", Default: "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id" };
+const prePin = (() => {
+  const t = JSON.parse(JSON.stringify(desired));
+  t.Parameters.AmiId = SSM_AMI_PARAMETER;
+  delete t.Resources.AgentHost.Metadata;
+  t.Resources.AgentHost.Properties.UserData = Buffer.from("#!/bin/bash\necho an older bootstrap\n").toString("base64");
+  return t;
+})();
 const stacks = (params: object[]) => ({ Stacks: [{ Parameters: params }] });
-const running = (value: string) => stacks([{ ParameterKey: "AmiId", ParameterValue: fixture.Parameters.AmiId.Default, ResolvedValue: value }]);
+const running = (value: string) => stacks([{ ParameterKey: "AmiId", ParameterValue: prePin.Parameters.AmiId.Default, ResolvedValue: value }]);
 const copy = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 const plainRunning = (value: string) => stacks([{ ParameterKey: "AmiId", ParameterValue: value }]);
 const NO_CHANGES_REASON = "The submitted information didn't contain changes. Submit different information to create a change set.";
-/** The fixture as a stack deployed by kit 0.1.14 left it: AmiId plain-pinned, no marker. */
-const plain014 = () => ({ ...copy(fixture), Parameters: { ...fixture.Parameters, AmiId: pinnedAmiParameter(ami) } });
+/** prePin as a stack deployed by kit 0.1.14 left it: AmiId plain-pinned, no marker. */
+const plain014 = () => ({ ...copy(prePin), Parameters: { ...prePin.Parameters, AmiId: pinnedAmiParameter(ami) } });
 /** A template carrying both the pin and the marker, i.e. already adopted. */
 const adoptedTemplate = () => {
   const t = plain014();
@@ -39,7 +52,7 @@ const adoptedTemplate = () => {
 };
 
 /** t without the marker the adoption adds (and without Metadata if that leaves it empty). */
-const withoutMarker = (t: typeof fixture) => {
+const withoutMarker = (t: typeof prePin) => {
   const c = copy(t);
   const { [AMI_PIN_MARKER]: _marker, ...rest } = c.Resources.AgentHost.Metadata ?? {};
   if (Object.keys(rest).length > 0) c.Resources.AgentHost.Metadata = rest;
@@ -48,15 +61,16 @@ const withoutMarker = (t: typeof fixture) => {
 };
 
 test("the adoption template is the deployed one with AmiId pinned and exactly the marker added, its UserData kept", () => {
-  for (const deployed of [fixture, JSON.stringify(fixture)]) {
+  for (const deployed of [prePin, JSON.stringify(prePin)]) {
     const result = previewTemplate(deployed, running(ami), ami, desired);
     assert.equal(result.kind, "preview");
-    const t = (result as { template: typeof fixture }).template;
+    const t = (result as { template: typeof prePin }).template;
     assert.deepEqual(t.Parameters.AmiId, pinnedAmiParameter(ami));
     assert.deepEqual(t.Resources.AgentHost.Metadata, { [AMI_PIN_MARKER]: ami });
-    assert.deepEqual(t.Resources.AgentHost.Properties, fixture.Resources.AgentHost.Properties);
-    assert.deepEqual(t.Resources.AgentHost.Properties.UserData, fixture.Resources.AgentHost.Properties.UserData);
-    assert.deepEqual(withoutMarker({ ...t, Parameters: { ...t.Parameters, AmiId: fixture.Parameters.AmiId } }), fixture);
+    assert.deepEqual(t.Resources.AgentHost.Properties, prePin.Resources.AgentHost.Properties);
+    assert.deepEqual(t.Resources.AgentHost.Properties.UserData, prePin.Resources.AgentHost.Properties.UserData);
+    assert.notDeepEqual(t.Resources.AgentHost.Properties.UserData, desired.Resources.AgentHost.Properties.UserData);
+    assert.deepEqual(withoutMarker({ ...t, Parameters: { ...t.Parameters, AmiId: prePin.Parameters.AmiId } }), prePin);
     assert.deepEqual(previousParameters(t), ["SubnetId", "SecurityGroupId", "InstanceProfileName"].map((k) => `ParameterKey=${k},UsePreviousValue=true`));
     // What the kit's verifyAmiPin() reads back once this template is deployed.
     assert.deepEqual(previewTemplate(t, plainRunning(ami), ami, desired), { kind: "adopted" });
@@ -64,16 +78,16 @@ test("the adoption template is the deployed one with AmiId pinned and exactly th
 });
 
 test("adoption keeps other AgentHost Metadata keys and adds only the marker", () => {
-  const deployed = copy(fixture);
+  const deployed = copy(prePin);
   deployed.Resources.AgentHost = { Type: deployed.Resources.AgentHost.Type, Metadata: { Other: { keep: [1, 2] } }, Properties: deployed.Resources.AgentHost.Properties };
-  const want = copy(desired) as typeof fixture;
+  const want = copy(desired) as typeof prePin;
   want.Resources.AgentHost.Metadata = { Other: { keep: [1, 2] }, [AMI_PIN_MARKER]: ami };
   const result = previewTemplate(deployed, running(ami), ami, want);
   assert.equal(result.kind, "preview");
-  const t = (result as { template: typeof fixture }).template;
+  const t = (result as { template: typeof prePin }).template;
   assert.deepEqual(t.Resources.AgentHost.Metadata, { Other: { keep: [1, 2] }, [AMI_PIN_MARKER]: ami });
-  assert.deepEqual(t.Resources.AgentHost.Properties, fixture.Resources.AgentHost.Properties);
-  assert.deepEqual(withoutMarker({ ...t, Parameters: { ...t.Parameters, AmiId: fixture.Parameters.AmiId } }), deployed);
+  assert.deepEqual(t.Resources.AgentHost.Properties, prePin.Resources.AgentHost.Properties);
+  assert.deepEqual(withoutMarker({ ...t, Parameters: { ...t.Parameters, AmiId: prePin.Parameters.AmiId } }), deployed);
   // The desired template without the other key is a full deploy, as in the kit.
   assert.throws(() => previewTemplate(deployed, running(ami), ami, desired), /a full deploy\) at: \/Resources\/AgentHost\/Metadata\/Other$/);
 });
@@ -82,7 +96,7 @@ test("a 0.1.14 stack (plain pin, no marker) acquires the marker, read from Param
   const deployed = plain014();
   const result = previewTemplate(deployed, plainRunning(ami), ami, desired);
   assert.equal(result.kind, "preview");
-  const t = (result as { template: typeof fixture }).template;
+  const t = (result as { template: typeof prePin }).template;
   assert.deepEqual(t.Parameters.AmiId, pinnedAmiParameter(ami));
   assert.deepEqual(t.Resources.AgentHost.Metadata, { [AMI_PIN_MARKER]: ami });
   assert.deepEqual(withoutMarker(t), deployed);
@@ -97,7 +111,7 @@ test("adopted needs both the pinned AmiId and the marker", () => {
   // The parameter alone (0.1.14) is not adopted: the marker is still to come.
   assert.equal(previewTemplate(plain014(), plainRunning(ami), ami, desired).kind, "preview");
   // The marker alone, on an SSM-typed AmiId, is not adopted either.
-  const markerOnly = copy(fixture);
+  const markerOnly = copy(prePin);
   markerOnly.Resources.AgentHost.Metadata = { [AMI_PIN_MARKER]: ami };
   assert.notDeepEqual(previewTemplate(markerOnly, running(ami), ami, desired), { kind: "adopted" });
   // A marker for another AMI on the plain pin is neither adopted nor adoptable.
@@ -109,7 +123,7 @@ test("adopted needs both the pinned AmiId and the marker", () => {
 });
 
 test("a deployed plain AmiId for another AMI is refused as a full deploy", () => {
-  const other = { ...copy(fixture), Parameters: { ...fixture.Parameters, AmiId: pinnedAmiParameter("ami-0123456789abcdef0") } };
+  const other = { ...copy(prePin), Parameters: { ...prePin.Parameters, AmiId: pinnedAmiParameter("ami-0123456789abcdef0") } };
   assert.throws(() => previewTemplate(other, plainRunning("ami-0123456789abcdef0"), ami, desired), /neither SSM-typed nor the plain pin ami-08cf17e3856f70154 without the LayeredAgentAmiPin marker, nor adopted: a full deploy/);
   assert.throws(() => previewTemplate(other, plainRunning(ami), ami, desired), /a full deploy/);
 });
@@ -117,10 +131,10 @@ test("a deployed plain AmiId for another AMI is refused as a full deploy", () =>
 test("key order is not a difference, only content is", () => {
   const reordered = (v: unknown): unknown => Array.isArray(v) ? v.map(reordered)
     : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).reverse().map(([k, x]) => [k, reordered(x)])) : v;
-  const deployed = reordered(copy(fixture)) as typeof fixture;
-  assert.notEqual(JSON.stringify(deployed), JSON.stringify(fixture));
+  const deployed = reordered(copy(prePin)) as typeof prePin;
+  assert.notEqual(JSON.stringify(deployed), JSON.stringify(prePin));
   assert.equal(previewTemplate(deployed, running(ami), ami, desired).kind, "preview");
-  assert.deepEqual(differingPaths(deployed, fixture), []);
+  assert.deepEqual(differingPaths(deployed, prePin), []);
   assert.deepEqual(differingPaths({ a: 1, b: { c: 2, d: 3 } }, { b: { d: 3, c: 2 }, a: 1 }), []);
   // Paths, never values; array order still counts.
   assert.deepEqual(differingPaths({ a: 1, b: { c: "secret" } }, { b: { c: "other" }, a: 1, e: 0 }), ["/b/c", "/e"]);
@@ -128,9 +142,9 @@ test("key order is not a difference, only content is", () => {
 });
 
 test("a full deploy is refused before any change set: other AMI, unknown AMI, other template change", () => {
-  assert.throws(() => previewTemplate(fixture, running("ami-0123456789abcdef0"), ami, desired), /host runs ami-0123456789abcdef0: a full deploy/);
-  assert.throws(() => previewTemplate(fixture, stacks([]), ami, desired), /no resolved AmiId/);
-  const bigger = copy(fixture);
+  assert.throws(() => previewTemplate(prePin, running("ami-0123456789abcdef0"), ami, desired), /host runs ami-0123456789abcdef0: a full deploy/);
+  assert.throws(() => previewTemplate(prePin, stacks([]), ami, desired), /no resolved AmiId/);
+  const bigger = copy(prePin);
   bigger.Resources.AgentHost.Properties.InstanceType = "m7i.4xlarge";
   assert.throws(() => previewTemplate(bigger, running(ami), ami, desired), /beyond UserData, AmiId and the LayeredAgentAmiPin marker .* at: \/Resources\/AgentHost\/Properties\/InstanceType$/);
 });
@@ -237,7 +251,7 @@ test("allow_restart mode lists a replacement instead of failing, and checks ever
 function runScript(changeSetJson: object, mode = "run", opts: { deleteError?: string; env?: Record<string, string>; deployed?: object; stacks?: object } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "preview-change-set-"));
   try {
-    writeFileSync(join(dir, "deployed.json"), JSON.stringify(opts.deployed ?? fixture));
+    writeFileSync(join(dir, "deployed.json"), JSON.stringify(opts.deployed ?? prePin));
     writeFileSync(join(dir, "stacks.json"), JSON.stringify(opts.stacks ?? running(ami)));
     writeFileSync(join(dir, "change-set.json"), JSON.stringify(changeSetJson));
     if (opts.deleteError !== undefined) writeFileSync(join(dir, "delete-error"), opts.deleteError);

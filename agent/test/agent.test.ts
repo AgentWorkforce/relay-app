@@ -1,13 +1,9 @@
 /**
- * The relay-desktop host this folder defines must match the one
- * relaycast-cloud/agent-host built: the fixture is desktopComputeTemplate()
- * from relaycast-cloud main 0d51607 (stage dev). Everything but UserData, the
- * AmiId parameter and AgentHost's Metadata.LayeredAgentAmiPin marker is
- * byte-identical, so adopting it is a stop/start (new user data), never a
- * replacement. AmiId is pinned to the AMI the host runs where the fixture
- * follows Canonical's SSM pointer, and kit 0.1.15 marks AgentHost with that
- * pin (resource metadata, no EC2 property) so CloudFormation persists the
- * switch; the kit adopts the pin without touching the instance.
+ * The host this folder defines: its compute template pins the AMI the host
+ * runs (kit 0.1.15 marks AgentHost with that pin, resource metadata and no EC2
+ * property, so CloudFormation persists it), its user data stays under EC2's
+ * limit and carries no secret, and its lane scripts, workflows and parameter
+ * names are what the deploy and the host expect.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,25 +11,17 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { EC2_USER_DATA_ENCODED_LIMIT, RELAY_SESSIONS_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64, withoutUserData } from "@agentworkforce/layered-agent";
+import { EC2_USER_DATA_ENCODED_LIMIT, RELAY_SESSIONS_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64 } from "@agentworkforce/layered-agent";
 import agent from "../agent.config.ts";
 import { LANE_SCRIPTS, LANE_SCRIPTS_SHA_FILE, laneScriptsSha } from "../lane-scripts.ts";
 
-const fixture = JSON.parse(readFileSync(new URL("./fixtures/relaycast-cloud-main-desktop-template.json", import.meta.url), "utf8"));
 const read = fileReader(fileURLToPath(new URL("..", import.meta.url)));
 
-test("the compute template is byte-identical to relaycast-cloud main's except UserData, AmiId and the pin marker", () => {
+test("the compute template pins the AMI the host runs, marked on AgentHost and nowhere else", () => {
   const ours = hostTemplate(agent, userDataBase64(agent, read));
   assert.deepEqual(ours.Parameters.AmiId, { Type: "AWS::EC2::Image::Id", Default: "ami-08cf17e3856f70154" });
-  assert.deepEqual(fixture.Parameters.AmiId, { Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>", Default: "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id" });
-  // The marker is the pin in ours, and the only Metadata key; the fixture has none.
+  // The marker is the pin, and the only Metadata key.
   assert.deepEqual((ours.Resources.AgentHost as { Metadata?: unknown }).Metadata, { LayeredAgentAmiPin: "ami-08cf17e3856f70154" });
-  assert.ok(!("Metadata" in fixture.Resources.AgentHost), "the fixture's AgentHost has no Metadata");
-  // Everything else, AmiId's place among the parameters included, is the fixture's.
-  const fixtureAmi = JSON.parse(JSON.stringify({ ...ours, Parameters: { ...ours.Parameters, AmiId: fixture.Parameters.AmiId } }));
-  delete fixtureAmi.Resources.AgentHost.Metadata.LayeredAgentAmiPin;
-  if (Object.keys(fixtureAmi.Resources.AgentHost.Metadata).length === 0) delete fixtureAmi.Resources.AgentHost.Metadata;
-  assert.equal(JSON.stringify(withoutUserData(fixtureAmi), null, 2), JSON.stringify(withoutUserData(fixture), null, 2));
 });
 
 test("user data: under EC2's limit, every kit and lane file, no secret values", () => {
