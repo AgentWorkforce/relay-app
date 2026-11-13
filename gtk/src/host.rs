@@ -34,6 +34,12 @@ pub struct HostOptions {
     /// The version this app carries. A core an earlier run left running on
     /// another version is stopped, so this one is hosted. `None`: any.
     pub version: Option<String>,
+    /// Whether a core of an older release than [`HostOptions::version`] that
+    /// answers, however it was started, is asked to stop so this one is
+    /// hosted (once per release this run), rather than used: on Windows,
+    /// where nothing restarts a replaced core
+    /// (`executable_identity::app_replaces_older_core`).
+    pub replace_older_core: bool,
 }
 
 /// The hosted child, if any.

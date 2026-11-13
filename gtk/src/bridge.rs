@@ -276,6 +276,8 @@ impl BridgeOptions {
             host: Some(HostOptions {
                 probe,
                 version: Some(agent_relay_node::VERSION.to_string()),
+                replace_older_core:
+                    agent_relay_desktop_core::executable_identity::app_replaces_older_core(),
                 ..HostOptions::default()
             }),
             service: Some(service),
@@ -300,8 +302,13 @@ struct Inner {
     /// Set by [`Bridge::release_hosted`]: no core is hosted until one answers
     /// or [`Bridge::restart`], so the systemd unit can take the socket.
     released: AtomicBool,
-    /// Set while a core an earlier run left running is stopped for the unit.
+    /// Set while a core an earlier run left running is stopped for the unit,
+    /// or a core of an older release is stopped to be replaced.
     retiring: AtomicBool,
+    /// The older release whose core this run asked to stop
+    /// ([`HostOptions::replace_older_core`]); one of it answering again is
+    /// used, so a service that keeps starting it never loops.
+    replaced_release: Mutex<Option<String>>,
     stopping: watch::Sender<bool>,
     restart: Notify,
     events: Mutex<Option<JoinHandle<()>>>,
@@ -328,6 +335,7 @@ impl Bridge {
                 hosted: Hosted::default(),
                 released: AtomicBool::new(false),
                 retiring: AtomicBool::new(false),
+                replaced_release: Mutex::new(None),
                 stopping: watch::channel(false).0,
                 restart: Notify::new(),
                 events: Mutex::new(None),
