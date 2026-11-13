@@ -68,16 +68,37 @@ enum SessionFork {
         return .available(harness: harness, nodes: matched)
     }
 
-    /// `<source>-fork`, then `-fork-2` and on, within the 48-character name rule.
+    /// `<source>-fork`, then `<source>-fork-2` and on, within the 48-character name rule.
+    /// Keeps going past 99 until a free name remains; truncation can repeat a
+    /// candidate, and that occupied name is not offered again.
     static func suggestedName(for source: String, taken: Set<String>) -> String {
         let base = String("\(source)-fork".prefix(48))
         if !taken.contains(base) { return base }
-        for index in 2...99 {
+        var index = 2
+        var seen = Set<String>()
+        while true {
             let suffix = "-\(index)"
+            if suffix.count >= 48 { return base }
             let candidate = String(base.prefix(48 - suffix.count)) + suffix
             if !taken.contains(candidate) { return candidate }
+            if !seen.insert(candidate).inserted { return base }
+            index += 1
         }
-        return base
+    }
+
+    /// The spawn POST left the phone and no HTTP answer came back, so the
+    /// computer may already be starting the fork. The sheet must not send it again.
+    static let uncertainSubmission = "fork_submission_uncertain"
+
+    static func unanswered(_ error: Error) -> Error {
+        if error is CancellationError || error is RelayAPIError { return error }
+        return RelayAPIError(
+            message: "The fork may have started, but no reply arrived. Check Agents before trying again.",
+            code: uncertainSubmission)
+    }
+
+    static func submissionUncertain(_ error: Error) -> Bool {
+        (error as? RelayAPIError)?.code == uncertainSubmission
     }
 
     /// A node that answered that the agent isn't there: try the next one on

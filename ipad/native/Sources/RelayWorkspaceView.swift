@@ -1911,6 +1911,9 @@ struct RelayWorkspaceView: View {
                         + "Check Agents in a minute before trying again."
                 }
             } catch {
+                // A lost reply may already have started the fork. Stop the
+                // sheet from sending a second one; a server rejection can be retried.
+                if SessionFork.submissionUncertain(error) { forkAccepted = true }
                 forkNotice = error.localizedDescription
             }
             forking = false

@@ -50,6 +50,21 @@ final class SessionForkTests: XCTestCase {
         let name = SessionFork.suggestedName(for: long, taken: [String("\(long)-fork".prefix(48))])
         XCTAssertLessThanOrEqual(name.count, 48)
         XCTAssertTrue(name.hasSuffix("-2"))
+        var crowded: Set<String> = ["planner-fork"]
+        crowded.formUnion((2...99).map { "planner-fork-\($0)" })
+        let next = SessionFork.suggestedName(for: "planner", taken: crowded)
+        XCTAssertEqual(next, "planner-fork-100")
+        XCTAssertLessThanOrEqual(next.count, 48)
+    }
+
+    func testALostForkReplyIsNotARejection() {
+        let lost = SessionFork.unanswered(URLError(.timedOut))
+        XCTAssertTrue(SessionFork.submissionUncertain(lost))
+        XCTAssertTrue(lost.localizedDescription.contains("Check Agents"))
+        let refused = RelayAPIError(message: "spawn_fork_refused", status: 403, code: "spawn_fork_refused")
+        XCTAssertFalse(SessionFork.submissionUncertain(SessionFork.unanswered(refused)))
+        XCTAssertFalse(SessionFork.submissionUncertain(SessionFork.unanswered(CancellationError())))
+        XCTAssertFalse(SessionFork.triesNextNode(after: lost))
     }
 
     func testOnlyAMissingAgentMovesTheForkToTheNextInstallation() {

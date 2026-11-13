@@ -1853,9 +1853,19 @@ private enum SecureStore {
         } catch let error as RelayAPIError {
             throw RelayAPIError(message: SpawnFailure.message(error.message, node: node.name, name: name, harness: harness),
                                 status: error.status, code: error.code)
+        } catch {
+            // A server rejection keeps its HTTP status above. Anything else
+            // means the reply never arrived: a fork must not be sent again.
+            guard forkFrom != nil else { throw error }
+            throw SessionFork.unanswered(error)
         }
         let invocationID = string(accepted["invocation_id"])
         guard !invocationID.isEmpty else {
+            if forkFrom != nil {
+                throw RelayAPIError(
+                    message: "The fork may have started, but no receipt came back. Check Agents before trying again.",
+                    code: SessionFork.uncertainSubmission)
+            }
             throw RelayAPIError(message: "The start request did not return a receipt. Check Agents before trying again.")
         }
         let encodedID = invocationID.addingPercentEncoding(withAllowedCharacters: allowed) ?? invocationID
