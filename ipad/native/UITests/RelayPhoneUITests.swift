@@ -11,7 +11,7 @@ final class RelayPhoneUITests: XCTestCase {
         XCTAssertFalse(app.textFields["Mac bridge URL"].exists)
         XCTAssertFalse(app.textFields["Pairing code"].exists)
         signIn.tap()
-        XCTAssertTrue(app.links["Continue in Safari"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["Continue sign-in"].waitForExistence(timeout: 20))
     }
 
     func testCloudSignInEndToEnd() throws {
@@ -25,7 +25,7 @@ final class RelayPhoneUITests: XCTestCase {
             throw XCTSkip("Simulator is already signed in")
         }
         signIn.tap()
-        XCTAssertTrue(app.links["Continue in Safari"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["Continue sign-in"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.buttons["Agents"].waitForExistence(timeout: 120))
     }
 

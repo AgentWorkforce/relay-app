@@ -824,7 +824,7 @@ private enum SecureStore {
                 throw RelayAPIError(message: "Cloud returned an invalid sign-in link")
             }
             verificationURL = url
-            signInStatus = "Approve this device in your browser"
+            signInStatus = "Tap Continue sign-in and approve this device. The app finishes on its own."
             let seconds = min(max(grant["expires_in"] as? Int ?? 600, 30), 900)
             let interval = min(max(grant["interval"] as? Int ?? 5, 1), 60)
             let deadline = Date().addingTimeInterval(TimeInterval(seconds))

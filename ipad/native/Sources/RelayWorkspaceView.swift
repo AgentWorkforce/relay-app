@@ -79,6 +79,9 @@ struct RelayWorkspaceView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var client = RelayClient()
+    /// Cloud's sign-in and approval page, shown in the app.
+    @StateObject private var webSignIn = CloudWebSignIn()
+    @State private var showAccountDeletion = false
     @State private var page: WorkspacePage = .agents
     @State private var selected: RelayAgent?
     @State private var phonePath: [MobileConversationRoute] = []
@@ -294,6 +297,11 @@ struct RelayWorkspaceView: View {
         .onChange(of: client.paired) { _, paired in
             // Nothing of a call is kept over the sign-in screen.
             if !paired { voiceCalls.endCurrent(.signedOut) }
+        }
+        .onChange(of: client.verificationURL) { _, url in
+            // The device grant finished, failed, expired or was replaced, or
+            // the person signed out: the approval page has nothing left to do.
+            if webSignIn.openURL != nil, webSignIn.openURL != url { webSignIn.close() }
         }
         .onChange(of: client.relayAgents.map(\.id)) { _, _ in
             // Rejoin a call that was active before the app was relaunched.
@@ -1959,6 +1967,7 @@ struct RelayWorkspaceView: View {
         static let privacy = URL(string: "https://agentrelay.com/privacy")!
         static let support = URL(string: "https://agentrelay.com/support")!
         // Release blocker until Cloud deploys and verifies this direct deletion page.
+        // Opened in the app (Settings > Delete account), not in Safari.
         static let deletion = URL(string: "https://agentrelay.com/cloud/account/delete")!
     }
 
@@ -1969,7 +1978,8 @@ struct RelayWorkspaceView: View {
             Text("Sign in to your Agent Relay workspace to reach agents and messages anywhere.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             if let url = client.verificationURL {
-                Link("Continue in Safari", destination: url).buttonStyle(.borderedProminent)
+                // Sign-in and sign-up stay in the app (App Review guideline 4).
+                Button("Continue sign-in") { webSignIn.open(url) }.buttonStyle(.borderedProminent)
                 if !client.userCode.isEmpty { Text(client.userCode).font(.title2.monospaced().bold()) }
                 Text(client.signInStatus).font(.caption).foregroundStyle(.secondary)
             } else {
@@ -2004,14 +2014,15 @@ struct RelayWorkspaceView: View {
                             }
                         }.navigationTitle("Open-source licenses")
                     }
-                    Link("Delete account", destination: AccountLinks.deletion)
+                    // Cloud's deletion page, in the app (App Review guideline 5.1.1(v)).
+                    Button("Delete account", role: .destructive) { showAccountDeletion = true }
                         .foregroundStyle(.red)
                 }
                 Section("Session summaries") {
                     LabeledContent("Cloud access", value: client.canLoadSummaries ? "Enabled" : "Needs approval")
                     if !client.canLoadSummaries {
                         if let url = client.verificationURL {
-                            Link("Continue in Safari", destination: url)
+                            Button("Continue sign-in") { webSignIn.open(url) }
                             if !client.userCode.isEmpty { Text(client.userCode).font(.caption.monospaced().bold()) }
                             Text(client.signInStatus).font(.caption).foregroundStyle(.secondary)
                         } else {
@@ -2031,6 +2042,10 @@ struct RelayWorkspaceView: View {
             }
             .navigationTitle("Settings")
             .toolbar { Button("Done") { showSettings = false } }
+            .sheet(isPresented: $showAccountDeletion) {
+                InAppSafariPage(url: AccountLinks.deletion) { showAccountDeletion = false }
+                    .ignoresSafeArea()
+            }
         }.frame(minWidth: sheetMinWidth(420), minHeight: 320)
     }
     private var compose: some View {

@@ -1,6 +1,7 @@
 import AVFoundation
 import CallKit
 import Foundation
+import StoreKit
 
 /// Owns the active voice call for the whole app, independent of any view, so
 /// closing the call screen, navigating away, backgrounding or locking the
@@ -171,7 +172,9 @@ enum VoiceLiveReconnect {
 /// and call audio priority through CallKit, for one call. CallKit activates
 /// the audio session; the call starts its audio once `onActivate` runs.
 ///
-/// CallKit is not used where Apple does not allow it (China).
+/// CallKit is not used where Apple does not allow it (China mainland; see
+/// `VoiceCallPolicy`). There the call runs as plain VoIP: `isEnabled` is
+/// false, `start` returns false, and the call activates its own audio session.
 @MainActor final class VoiceCallSystem {
     var onActivate: ((AVAudioSession) -> Void)?
     /// iOS ended or reset this call: from the system call UI, another call, or itself.
@@ -193,6 +196,9 @@ enum VoiceLiveReconnect {
     /// Starts an outgoing call in the system UI and waits (briefly) for CallKit
     /// to activate the audio session. Returns whether CallKit activated it.
     func start(handle name: String) async -> Bool {
+        // Settles the China check and creates or removes the provider before
+        // anything is asked of CallKit.
+        await callKit.prepare()
         guard callKit.provider != nil else { return false }
         let id = UUID()
         callID = id
@@ -288,14 +294,21 @@ enum VoiceLiveReconnect {
 /// The app's one CallKit provider. Apple expects a single provider per app;
 /// one per call let an action or reset meant for an earlier call reach a new
 /// one. Each action goes to the call that owns its UUID.
+///
+/// The provider is created by `prepare()` at the start of a call, never
+/// earlier, and only when `isAllowed`, so no `CXProvider` exists in China
+/// mainland.
 @MainActor final class VoiceCallKit: NSObject {
     static let shared = VoiceCallKit()
 
+    /// Whether CallKit may be used, from the device region and the storefront
+    /// known now. While the storefront is unknown the region decides.
     static var isAllowed: Bool {
-        Locale.current.region?.identifier != "CN"
+        VoiceCallPolicy.allowsCallKit(regionIdentifier: Locale.current.region?.identifier,
+                                      storefrontCountryCode: VoiceCallStorefront.shared.countryCode)
     }
 
-    let provider: CXProvider?
+    private(set) var provider: CXProvider?
     let controller = CXCallController()
     private(set) var audioActive = false
     private var calls: [UUID: WeakCall] = [:]
@@ -310,19 +323,39 @@ enum VoiceLiveReconnect {
     private struct WeakCall { weak var system: VoiceCallSystem? }
 
     override init() {
-        if Self.isAllowed {
+        super.init()
+    }
+
+    /// Before each call: waits for the storefront lookup (bounded), then
+    /// creates the provider if CallKit is allowed, or removes it if it no
+    /// longer is (the storefront or region changed since the last call).
+    func prepare() async {
+        await VoiceCallStorefront.shared.settle()
+        let allowed = Self.isAllowed
+        let region = Locale.current.region?.identifier ?? "none"
+        let storefront = VoiceCallStorefront.shared.countryCode ?? "unknown"
+        let decision = allowed ? "allowed" : "not allowed"
+        VoiceCallLog.logger.info("CallKit \(decision, privacy: .public): region \(region, privacy: .public), storefront \(storefront, privacy: .public)")
+        if allowed {
+            guard provider == nil else { return }
             let configuration = CXProviderConfiguration()
             configuration.supportsVideo = false
             configuration.maximumCallsPerCallGroup = 1
             configuration.maximumCallGroups = 1
             configuration.supportedHandleTypes = [.generic]
             configuration.includesCallsInRecents = false
-            provider = CXProvider(configuration: configuration)
-        } else {
+            let newProvider = CXProvider(configuration: configuration)
+            newProvider.setDelegate(self, queue: .main)
+            provider = newProvider
+        } else if let existing = provider, !calls.values.contains(where: { $0.system?.callID != nil }) {
+            // A call still in CallKit keeps the provider until it ends; the
+            // next call checks again.
+            existing.invalidate()
             provider = nil
+            audioActive = false
+            activations.reset()
+            finishRelease()
         }
-        super.init()
-        provider?.setDelegate(self, queue: .main)
     }
 
     func register(_ system: VoiceCallSystem, for id: UUID) {
@@ -360,6 +393,49 @@ enum VoiceLiveReconnect {
         let waiters = releaseWaiters
         releaseWaiters = []
         waiters.forEach { $0.resume() }
+    }
+}
+
+/// The App Store storefront's country for the CallKit China check. Looked up
+/// at launch (`start()` from the app delegate) and kept current from
+/// `Storefront.updates`; `VoiceCallKit.prepare()` waits for the answer, at
+/// most a few seconds, before a call decides whether to use CallKit.
+@MainActor final class VoiceCallStorefront {
+    static let shared = VoiceCallStorefront()
+
+    /// ISO 3166-1 alpha-3 code ("CHN" for China mainland); nil while unknown.
+    private(set) var countryCode: String?
+    private var lookup: Task<Void, Never>?
+    private var updates: Task<Void, Never>?
+
+    /// Starts a lookup unless one is running or the country is known.
+    func start() {
+        if updates == nil {
+            updates = Task { @MainActor [weak self] in
+                for await storefront in Storefront.updates {
+                    self?.countryCode = storefront.countryCode
+                }
+            }
+        }
+        guard lookup == nil, countryCode == nil else { return }
+        lookup = Task { @MainActor [weak self] in
+            let code = await Storefront.current?.countryCode
+            guard let self else { return }
+            if let code { self.countryCode = code }
+            self.lookup = nil
+        }
+    }
+
+    /// Waits up to `timeout` for a running or new lookup, so a lookup still in
+    /// flight at the first call can answer. A storefront still unknown
+    /// afterwards leaves the decision to the device region.
+    func settle(timeout: Duration = .seconds(3)) async {
+        start()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while lookup != nil, countryCode == nil, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 }
 
