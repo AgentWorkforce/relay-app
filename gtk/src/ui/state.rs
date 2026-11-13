@@ -337,6 +337,11 @@ pub struct State {
     /// while the system answers.
     pub login_item: Option<bool>,
     pub login_item_wanted: PendingValue<bool>,
+    /// Whether sessions are shown teammates' overlapping work as their turn
+    /// ends, as desktop-core last reported it (None: not answered), and as
+    /// asked for while it answers.
+    pub coordination_advisories: Option<bool>,
+    pub coordination_advisories_wanted: PendingValue<bool>,
     /// The shown statuses: the core's last answer under the changes on their way.
     pub claude_delivery: Option<ClaudeDeliveryStatus>,
     pub claude_delivery_pending: PendingStatuses<ClaudeDeliveryStatus>,

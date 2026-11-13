@@ -54,6 +54,7 @@ mod spawn;
 mod spawn_handover;
 mod startup;
 mod teammate_native_input;
+mod coordination_advisories;
 mod time;
 mod transcript_presentation;
 
@@ -88,5 +89,6 @@ pub use spawn::*;
 pub use spawn_handover::*;
 pub use startup::*;
 pub use teammate_native_input::*;
+pub use coordination_advisories::*;
 pub use time::*;
 pub use transcript_presentation::*;

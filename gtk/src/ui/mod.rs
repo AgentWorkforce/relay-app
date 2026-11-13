@@ -76,6 +76,7 @@ mod startup;
 mod startup_detail;
 pub mod state;
 mod teammate_native_input;
+mod coordination_advisories;
 pub mod theme;
 mod tools;
 pub mod transcript;

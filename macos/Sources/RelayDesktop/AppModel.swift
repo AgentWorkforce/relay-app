@@ -302,6 +302,11 @@ final class AppModel {
     /// Counts the core's Settings invalidations, so rows that read their own
     /// status (Agent Relay tools) read it again, as Linux does.
     private(set) var settingsInvalidations = 0
+    /// Whether sessions are shown teammates' overlapping work as their turn
+    /// ends (`coordination_advisories.status`); nil while the core has not
+    /// answered, as a core built without an account never does.
+    private(set) var coordinationAdvisories: Bool?
+    private(set) var isCoordinationAdvisoriesPending = false
     var launchAtLogin = false
     private(set) var loginItemNeedsApproval = false
     /// Quitting leaves the core running unless the person turned this off;
@@ -2494,6 +2499,31 @@ final class AppModel {
     func loadSettings() async {
         let revision = connectionRevision
         if let loaded = try? await client.settingsGet(), revision == connectionRevision { confirmedSettings = loaded }
+        if !isCoordinationAdvisoriesPending,
+           let state = try? await client.coordinationAdvisoriesStatus(),
+           revision == connectionRevision, !isCoordinationAdvisoriesPending {
+            coordinationAdvisories = state.enabled
+        }
+    }
+
+    /// Turns the turn-end advisories on or off. The choice shows at once; a
+    /// failure reverts it and keeps the core's sentence in `settingErrors`.
+    func setCoordinationAdvisories(_ enabled: Bool) async {
+        guard let previous = coordinationAdvisories, previous != enabled else { return }
+        let revision = connectionRevision
+        settingErrors[CoordinationAdvisoriesCopy.settingKey] = nil
+        coordinationAdvisories = enabled
+        isCoordinationAdvisoriesPending = true
+        defer { isCoordinationAdvisoriesPending = false }
+        do {
+            let state = try await client.coordinationAdvisoriesSet(CoordinationAdvisoriesParams(enabled: enabled))
+            guard revision == connectionRevision else { return }
+            coordinationAdvisories = state.enabled
+        } catch {
+            guard revision == connectionRevision else { return }
+            coordinationAdvisories = previous
+            settingErrors[CoordinationAdvisoriesCopy.settingKey] = error.localizedDescription
+        }
     }
 
     private func showSettings() {

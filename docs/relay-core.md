@@ -633,6 +633,8 @@ dropped in the core. `identity_hash` joins a person to `roster.list`'s
 | `telemetry.record` | `{"operation","outcome","failure"?,"count"?,"mode"?,"surface"?,"agent_kind"?,"already_registered"?,"is_reply"?}` | `{}`; an unknown value is `invalid_params`. `update_install` success waits up to two seconds for the telemetry sender before replying, so a hosted core can be released after the reply. Desktop update callers bound each awaited telemetry RPC to three seconds; GTK awaits it off the UI thread. | 2c |
 | `login_item.set` (Linux) | `{"enabled"}` | `{}`; `refused` on macOS, where `SMAppService` is the app's | 2c |
 | `login_item.status` (Linux) | — | `{"enabled"}`; `refused` on macOS | 3 |
+| `coordination_advisories.status` | — | `{"enabled"}`: whether sessions are handed teammates' overlapping work as their turn ends; off by default; `refused` from a core built without an account | turn-end advisories |
+| `coordination_advisories.set` | `{"enabled"}` | `{"enabled"}` as saved in the app's data folder; off forgets every advisory waiting; `refused` from a core built without an account, `store_failed` when it cannot be saved | turn-end advisories |
 
 Telemetry goes to PostHog through `/i/v0/e/` on the configured release host only
 for the production site in a release build. Events use `desktop:<installation

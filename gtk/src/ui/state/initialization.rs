@@ -114,6 +114,8 @@ impl State {
             spawn_cap: Default::default(),
             login_item: None,
             login_item_wanted: PendingValue::default(),
+            coordination_advisories: None,
+            coordination_advisories_wanted: PendingValue::default(),
             claude_delivery: None,
             claude_delivery_pending: PendingStatuses::default(),
             claude_delivery_error: None,

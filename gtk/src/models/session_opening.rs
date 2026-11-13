@@ -250,6 +250,7 @@ mod tests {
             project: None,
             directory: Some("/repo".into()),
             live: true,
+            delivery_wait: None,
             running: Some(true),
             holder,
             updated_at_ms: None,

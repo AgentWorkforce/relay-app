@@ -178,6 +178,9 @@ pub struct Account {
     pub identity_sync: Arc<crate::desktop_identity::DesktopIdentitySync>,
     /// Contractor access, made on first use.
     contractors: OnceLock<Arc<crate::contractor_access::ContractorAccess>>,
+    /// Turn-end coordination advisories, where this build hands them out.
+    pub(crate) coordination_advisories:
+        OnceLock<Arc<crate::coordination_advisories::Advisories>>,
     /// The workspace operator's upload policy, which the uploader consults.
     pub(crate) operator_policy: Arc<crate::history::operator_policy::OperatorPolicy>,
     /// Operation telemetry, when this daemon reports it.
@@ -252,6 +255,7 @@ impl Account {
             disconnecting: tokio::sync::Mutex::new(()),
             identity_sync: Default::default(),
             contractors: OnceLock::new(),
+            coordination_advisories: OnceLock::new(),
             telemetry: None,
             upload_observations: Mutex::default(),
             upload_sample: AtomicU64::new(0),
@@ -1963,16 +1967,13 @@ pub fn with_account(
         .command_line_copy
         .then(|| site_choices::command_line_copy(executable, config));
     account.launch_at_login_after_sign_in = !headless;
-    let locations = Arc::new(crate::session_locations::SessionLocations::new(
-        plugin::session_location_config(config),
-    ));
-    plugins.extensions.push(locations.clone());
-    account.session_locations = Some(locations);
+    plugin::session_locations(config, &mut plugins, &mut account);
     plugins.spawn_callers = Some(account.service_callers.plugin());
     let telemetry = Telemetry::production(telemetry_config);
     account.telemetry = Some(telemetry.clone());
     let account = account.shared();
     plugins.cloud = account.clone();
+    plugin::coordination_advisories(config, &mut plugins, &account);
     plugins.settings.push(telemetry);
     let app_data = &config.app_data_dir;
     plugins.settings.push(Arc::new(crate::contractor_access::Setting::new(app_data)));

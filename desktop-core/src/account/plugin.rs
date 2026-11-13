@@ -26,6 +26,21 @@ pub(super) fn mcp_installer(
     installer
 }
 
+/// The core's turn-end advisories: always registered (plugins are fixed at
+/// startup), handing out nothing while the setting is off. The account
+/// starts their poller with its other watchers.
+pub(super) fn coordination_advisories(
+    config: &agent_relay_node::relay::daemon::Config,
+    plugins: &mut agent_relay_node::relay::daemon::Plugins,
+    account: &Arc<Account>,
+) {
+    let cloud: std::sync::Weak<dyn agent_relay_node::relay::cloud_session::CloudAccess> =
+        Arc::downgrade(account) as _;
+    let advisories = crate::coordination_advisories::for_account(config, cloud);
+    plugins.turn_end_advisories = Some(advisories.clone());
+    let _ = account.coordination_advisories.set(advisories);
+}
+
 fn provider_installer(
     config: &agent_relay_node::relay::daemon::Config,
     sessions: &Arc<dyn agent_relay_node::relay::sessions::SessionDirectory>,
@@ -61,6 +76,20 @@ fn provider_installer(
     });
     sessions.configure_copilot_helper(installer.copilot_helper());
     installer
+}
+
+/// The session locations discovery reads, as a method extension and on the
+/// account, which starts their watcher.
+pub(super) fn session_locations(
+    config: &agent_relay_node::relay::daemon::Config,
+    plugins: &mut agent_relay_node::relay::daemon::Plugins,
+    account: &mut Account,
+) {
+    let locations = Arc::new(crate::session_locations::SessionLocations::new(
+        session_location_config(config),
+    ));
+    plugins.extensions.push(locations.clone());
+    account.session_locations = Some(locations);
 }
 
 /// Where this computer's agents keep what proves a session's owner, as
@@ -150,6 +179,9 @@ impl MethodExtension for AccountMethods {
             if let Some(answer) = login_item_call(core, method, raw.clone()).await {
                 return Some(answer);
             }
+            if let Some(answer) = coordination_call(&self.0, method, raw.clone()).await {
+                return Some(answer);
+            }
             crate::account_methods::account_call(core, &self.0, method, raw).await
         })
     }
@@ -178,6 +210,52 @@ async fn login_item_call(
             answer::<method::LoginItemStatus, _>(raw, |_| async {
                 crate::login_item::status(&config.home, &config.env)
                     .map(|enabled| LoginItemState { enabled })
+            })
+            .await,
+        ),
+        _ => None,
+    }
+}
+
+/// `coordination_advisories.status` and `coordination_advisories.set`.
+async fn coordination_call(
+    account: &Arc<Account>,
+    method: &str,
+    raw: Value,
+) -> Option<Result<Value, RpcError>> {
+    use crate::contract::coordination::CoordinationAdvisoriesState;
+    use agent_relay_node::relay::protocol::ErrorKind;
+    let advisories = account.coordination_advisories.get().cloned();
+    let unavailable = || {
+        RpcError::new(
+            ErrorKind::Refused,
+            "Coordination advisories are not available in this build.",
+        )
+    };
+    match method {
+        method::CoordinationAdvisoriesStatus::NAME => Some(
+            answer::<method::CoordinationAdvisoriesStatus, _>(raw, |_| async move {
+                let advisories = advisories.ok_or_else(unavailable)?;
+                Ok(CoordinationAdvisoriesState {
+                    enabled: advisories.enabled(),
+                })
+            })
+            .await,
+        ),
+        method::CoordinationAdvisoriesSet::NAME => Some(
+            answer::<method::CoordinationAdvisoriesSet, _>(raw, |request| async move {
+                let advisories = advisories.ok_or_else(unavailable)?;
+                let saved = tokio::task::spawn_blocking(move || {
+                    advisories.set_enabled(request.enabled)?;
+                    Ok::<_, String>(advisories.enabled())
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    Err("The coordination advisories setting could not be saved.".into())
+                });
+                saved
+                    .map(|enabled| CoordinationAdvisoriesState { enabled })
+                    .map_err(|message| RpcError::new(ErrorKind::StoreFailed, message))
             })
             .await,
         ),

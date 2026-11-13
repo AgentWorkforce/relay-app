@@ -6,6 +6,7 @@ pub mod account;
 pub mod capy;
 pub mod chat;
 pub mod contractors;
+pub mod coordination;
 pub mod cursor_cloud;
 pub mod platform;
 pub mod replicas;
@@ -21,6 +22,7 @@ use agent_relay_node::relay::state::WorkspaceStatus;
 use capy::*;
 use chat::*;
 use contractors::*;
+use coordination::*;
 use cursor_cloud::*;
 use platform::*;
 use replicas::*;
@@ -118,6 +120,10 @@ methods! {
     // Launch at login.
     LoginItemSet = "login_item.set", LoginItemParams => Done;
     LoginItemStatus = "login_item.status", NoParams => LoginItemState;
+
+    // Turn-end coordination advisories.
+    CoordinationAdvisoriesStatus = "coordination_advisories.status", NoParams => CoordinationAdvisoriesState;
+    CoordinationAdvisoriesSet = "coordination_advisories.set", CoordinationAdvisoriesParams => CoordinationAdvisoriesState;
 
     // Skip chat.
     ChatConversation = "chat.conversation", NoParams => chat::ChatConversation;

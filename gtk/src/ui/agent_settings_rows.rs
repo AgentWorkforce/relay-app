@@ -24,6 +24,7 @@ impl App {
     pub(super) fn append_agent_relay_rows(&self, group: &gtk::Box) {
         self.append_mobile_native_continuation_row(group);
         self.append_teammate_native_input_row(group);
+        self.append_coordination_advisories_row(group);
         self.append_show_relay_messages_row(group);
         self.append_auto_join_general_row(group);
         self.append_agent_changes_row(group);

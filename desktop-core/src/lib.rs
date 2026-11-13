@@ -13,6 +13,7 @@ pub mod cloud_chat;
 pub mod command_line;
 pub mod contract;
 pub mod contractor_access;
+pub mod coordination_advisories;
 mod copilot_attestation;
 pub mod copilot_dispatch;
 pub mod desktop_identity;

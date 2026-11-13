@@ -122,6 +122,8 @@ public enum CoreMethod {
     public static let sessionsOverviewEvents = "sessions.overview.events"
     public static let loginItemSet = "login_item.set"
     public static let loginItemStatus = "login_item.status"
+    public static let coordinationAdvisoriesStatus = "coordination_advisories.status"
+    public static let coordinationAdvisoriesSet = "coordination_advisories.set"
     public static let chatConversation = "chat.conversation"
     public static let chatSend = "chat.send"
     public static let chatClear = "chat.clear"
@@ -2844,6 +2846,52 @@ public struct Conversations: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public struct CoordinationAdvisoriesParams: Codable, Equatable, Hashable, Sendable {
+    public let enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.enabled, forKey: .enabled)
+    }
+}
+
+/// Whether sessions are shown teammates' overlapping work as their turn
+/// ends. Off by default.
+public struct CoordinationAdvisoriesState: Codable, Equatable, Hashable, Sendable {
+    public let enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.enabled, forKey: .enabled)
+    }
+}
+
 /// The `notify` topic: a notification for the UI to show.
 public struct CoreNotification: Codable, Equatable, Hashable, Sendable {
     public let body: String
@@ -5518,6 +5566,9 @@ public struct LocalAgent: Codable, Equatable, Hashable, Sendable {
 
 /// A session on this computer, with its registration when it has one.
 public struct LocalSession: Codable, Equatable, Hashable, Sendable {
+    /// Registration/transport presence is not proof that the model can
+    /// receive a message. Absent on older cores and when no wait is known.
+    public let deliveryWait: String?
     public let directory: String?
     /// What holds this session's transcript, for a session that can be
     /// held at all (see [`SessionHolder`]).
@@ -5544,7 +5595,8 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
     public let title: String
     public let updatedAtMs: Int64?
 
-    public init(directory: String? = nil, holder: SessionHolder? = nil, host: String? = nil, live: Bool, project: String? = nil, registration: SessionRegistration? = nil, running: Bool? = nil, suggestedName: String, target: Target, title: String, updatedAtMs: Int64? = nil) {
+    public init(deliveryWait: String? = nil, directory: String? = nil, holder: SessionHolder? = nil, host: String? = nil, live: Bool, project: String? = nil, registration: SessionRegistration? = nil, running: Bool? = nil, suggestedName: String, target: Target, title: String, updatedAtMs: Int64? = nil) {
+        self.deliveryWait = deliveryWait
         self.directory = directory
         self.holder = holder
         self.host = host
@@ -5559,6 +5611,7 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case deliveryWait = "delivery_wait"
         case directory
         case holder
         case host
@@ -5574,6 +5627,7 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.deliveryWait = try c.decodeIfPresent(String.self, forKey: .deliveryWait)
         self.directory = try c.decodeIfPresent(String.self, forKey: .directory)
         self.holder = try c.decodeIfPresent(SessionHolder.self, forKey: .holder)
         self.host = try c.decodeIfPresent(String.self, forKey: .host)
@@ -5589,6 +5643,7 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.deliveryWait, forKey: .deliveryWait)
         try c.encode(self.directory, forKey: .directory)
         try c.encodeIfPresent(self.holder, forKey: .holder)
         try c.encodeIfPresent(self.host, forKey: .host)
@@ -13239,6 +13294,18 @@ extension CoreClient {
     @discardableResult
     public func loginItemStatus() async throws -> LoginItemState {
         try await call(CoreMethod.loginItemStatus, NoParams())
+    }
+
+    /// `coordination_advisories.status`; only a core built with an account answers it.
+    @discardableResult
+    public func coordinationAdvisoriesStatus() async throws -> CoordinationAdvisoriesState {
+        try await call(CoreMethod.coordinationAdvisoriesStatus, NoParams())
+    }
+
+    /// `coordination_advisories.set`; only a core built with an account answers it.
+    @discardableResult
+    public func coordinationAdvisoriesSet(_ params: CoordinationAdvisoriesParams) async throws -> CoordinationAdvisoriesState {
+        try await call(CoreMethod.coordinationAdvisoriesSet, params)
     }
 
     /// `chat.conversation`; only a core built with an account answers it.
