@@ -1033,7 +1033,7 @@ jobs:
           toolchain: ${{ steps.toolchain.outputs.identity }}
 
       - name: Test the desktop core's platform paths and session discovery
-        run: 'cargo test --manifest-path desktop-core/Cargo.toml --locked --lib -- mcp_settings:: install:: login_item:: history::probe::inventory::'
+        run: 'cargo test --manifest-path desktop-core/Cargo.toml --locked --lib -- mcp_settings:: install:: login_item:: history::probe::inventory:: history::probe::history::wsl:: history::probe::history::wsl_capture:: history::probe::history::extra_claude::'
 
       - name: Test the app's wording and state
         run: cargo test --manifest-path gtk/Cargo.toml --locked --no-default-features --features gtk --lib

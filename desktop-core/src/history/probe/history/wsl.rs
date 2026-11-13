@@ -94,22 +94,38 @@ pub fn still_running(path: &Path) -> bool {
     homes().iter().any(|home| path.starts_with(&home.home))
 }
 
-/// `path` as one spelling of a WSL share path: backslashes, lower case,
-/// `\\?\UNC\x` read as `\\x` and `\\wsl$\` as `\\wsl.localhost\`. Any other
-/// path is only lower-cased and given backslashes.
+/// `path` as one spelling of a WSL share path, with backslashes. The
+/// Windows side is compared without case: `\\?\UNC\x` is read as `\\x`,
+/// `\\wsl$\` as `\\wsl.localhost\`, and the server and distribution name
+/// are lower-cased. The Linux path after the distribution name keeps its
+/// case, since Linux tells `/home/ana` and `/home/Ana` apart. Any other path
+/// is a Windows one: only lower-cased and given backslashes.
 fn share_key(path: &Path) -> String {
-    let text = path
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase();
-    let text = match text.strip_prefix("\\\\?\\unc\\") {
+    let text = path.to_string_lossy().replace('/', "\\");
+    let text = match strip_prefix_ignoring_case(&text, "\\\\?\\UNC\\") {
         Some(rest) => format!("\\\\{rest}"),
         None => text,
     };
-    match text.strip_prefix("\\\\wsl$\\") {
-        Some(rest) => format!("\\\\wsl.localhost\\{rest}"),
-        None => text,
+    let Some(rest) = ["\\\\wsl.localhost\\", "\\\\wsl$\\"]
+        .iter()
+        .find_map(|server| strip_prefix_ignoring_case(&text, server))
+    else {
+        return text.to_ascii_lowercase();
+    };
+    match rest.split_once('\\') {
+        Some((distro, linux)) => format!(
+            "\\\\wsl.localhost\\{}\\{linux}",
+            distro.to_ascii_lowercase()
+        ),
+        None => format!("\\\\wsl.localhost\\{}", rest.to_ascii_lowercase()),
     }
+}
+
+/// `text` without `prefix`, matched without ASCII case.
+fn strip_prefix_ignoring_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| &text[prefix.len()..])
 }
 
 /// Whether `path` is inside a WSL distribution's share, which sends no file
@@ -642,6 +658,38 @@ mod tests {
         ] {
             assert!(!is_within(Path::new(path), dir), "{path}");
         }
+    }
+
+    /// Linux tells folders apart by case, so only the Windows side of a
+    /// share path (the UNC prefix, the server alias and the distribution
+    /// name) is compared without it.
+    #[test]
+    fn linux_path_case_tells_wsl_folders_apart() {
+        let dir = Path::new(r"\\wsl.localhost\Ubuntu\home\ana\.claude\projects");
+        for path in [
+            r"\\wsl.localhost\Ubuntu\home\Ana\.claude\projects",
+            r"\\wsl.localhost\Ubuntu\home\ana\.CLAUDE\projects",
+            r"\\WSL$\ubuntu\HOME\ana\.claude\projects",
+        ] {
+            assert!(!is_within(Path::new(path), dir), "{path}");
+            assert!(!is_within(dir, Path::new(path)), "{path}");
+        }
+        for path in [
+            r"\\wsl$\Ubuntu\home\ana\.claude\projects",
+            r"\\WSL.LOCALHOST\ubuntu\home\ana\.claude\projects",
+            r"\\?\unc\Wsl$\UBUNTU\home\ana\.claude\projects\",
+            "//wsl.localhost/Ubuntu/home/ana/.claude/projects",
+        ] {
+            assert!(is_within(Path::new(path), dir), "{path}");
+            assert!(is_within(dir, Path::new(path)), "{path}");
+        }
+        // The distribution alone, however its name is cased.
+        assert!(is_within(dir, Path::new(r"\\wsl$\UBUNTU")));
+        // A Windows path is still compared without case.
+        assert!(is_within(
+            Path::new(r"C:\Users\Ana\.claude"),
+            Path::new(r"c:\users\ana\.CLAUDE")
+        ));
     }
 
     #[test]
