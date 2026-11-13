@@ -36,6 +36,11 @@ pub(super) fn preview(options: SessionPreview) -> anyhow::Result<()> {
     let db = directory.join("catalog.db");
     let candidate_limit = recency_candidate_limit(options.limit as usize);
     if options.refresh {
+        // This process ends before the background WSL looks would finish:
+        // find the running distributions' homes now, which publishes them
+        // to the discovery below.
+        use super::super::history::wsl;
+        wsl::homes_now(wsl::ONE_SHOT_BUDGET);
         // A separate local metadata cache cannot wait behind the capture writer
         // or accidentally add unselected sessions to a delivery generation.
         super::super::history::discover(&db, Some(candidate_limit), || false)?;

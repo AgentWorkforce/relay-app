@@ -66,11 +66,7 @@ pub fn open(db: &Path) -> Result<SessionStore> {
 /// derived roots.
 fn base_roots(db: &Path) -> Option<ProviderRoots> {
     let env = |key: &str| std::env::var(key).ok();
-    let home = std::env::var_os("HOME");
-    // Windows names the home folder USERPROFILE; HOME is usually unset there.
-    #[cfg(windows)]
-    let home = home.or_else(|| std::env::var_os("USERPROFILE"));
-    let home = home.map(PathBuf::from)?;
+    let home = user_home()?;
     let default = claude_dirs::default_home(&env, &home);
     let dirs = ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home));
     if dirs.default_shared(&default) {
@@ -79,6 +75,15 @@ fn base_roots(db: &Path) -> Option<ProviderRoots> {
     let mut roots = ProviderRoots::from_env(home);
     roots.claude = db.with_extension("claude-not-shared");
     Some(roots)
+}
+
+/// The person's home folder: `HOME`, or on Windows, where `HOME` is usually
+/// unset, `USERPROFILE`.
+fn user_home() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME");
+    #[cfg(windows)]
+    let home = home.or_else(|| std::env::var_os("USERPROFILE"));
+    home.map(PathBuf::from)
 }
 
 /// Open `db` for reading. A database written before the shape this `ai-hist`
