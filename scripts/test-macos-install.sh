@@ -839,6 +839,22 @@ grep -q "could not unload $label; nothing was removed. Run: launchctl bootout gu
 { [ -f "$plist" ] && [ -x "$prefix/current/agent-relay-probe" ] && [ -f "$root/state/loaded-$label" ]; } \
   || fail "--uninstall removed files while the job was still loaded"
 rm "$root/state/bootout-fails"
+# A timeout that is not a whole number is refused before anything changes.
+for bad in abc 1.5 -5 60s; do
+  : > "$root/state/launchctl.log"
+  if AGENT_RELAY_STOP_TIMEOUT=$bad bash "$INSTALL" --uninstall > "$root/state/out" 2>&1; then fail "--uninstall accepted AGENT_RELAY_STOP_TIMEOUT=$bad"; fi
+  grep -Fq "AGENT_RELAY_STOP_TIMEOUT must be a whole number of seconds, not \"$bad\"" "$root/state/out" \
+    || { cat "$root/state/out"; fail "the AGENT_RELAY_STOP_TIMEOUT=$bad refusal does not name the variable and value"; }
+  { [ -f "$plist" ] && [ -e "$prefix/current" ] && [ -f "$root/state/loaded-$label" ]; } || fail "AGENT_RELAY_STOP_TIMEOUT=$bad changed the install"
+  ! grep -q '^bootout' "$root/state/launchctl.log" || fail "AGENT_RELAY_STOP_TIMEOUT=$bad unloaded the job"
+done
+: > "$root/state/launchctl.log"
+if AGENT_RELAY_HEALTH_TIMEOUT=abc bash "$INSTALL" > "$root/state/out" 2>&1; then fail "an install accepted AGENT_RELAY_HEALTH_TIMEOUT=abc"; fi
+grep -Fq 'AGENT_RELAY_HEALTH_TIMEOUT must be a whole number of seconds, not "abc"' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the AGENT_RELAY_HEALTH_TIMEOUT refusal does not name the variable and value"; }
+{ [ -f "$plist" ] && [ -e "$prefix/current" ] && [ -f "$root/state/loaded-$label" ]; } || fail "AGENT_RELAY_HEALTH_TIMEOUT=abc changed the install"
+[ ! -s "$root/state/launchctl.log" ] || fail "AGENT_RELAY_HEALTH_TIMEOUT=abc ran launchctl"
+pass "a timeout that is not a whole number of seconds is refused before anything changes"
 # launchd has unloaded the job while its core is still exiting, and the core's
 # detached session collector, outside the job, still holds its store's lock:
 # it stops a second after its executable is gone. Until both have, an install
@@ -881,6 +897,41 @@ if bash "$INSTALL" --status > "$root/state/out" 2>&1; then fail "--status after 
 grep -q "not installed" "$root/state/out" || fail "--status after --uninstall does not say it is not installed"
 pass "--uninstall keeps everything while the job will not unload, then removes the core and keeps its data"
 pass "--uninstall waits for the core and its session collector to exit"
+
+# Together with the clean-WAL fallback: the collector has released the store
+# when --uninstall returns, so the reinstall right after it may read the
+# history with immutable=1.
+bash "$INSTALL" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "an install before the fallback reinstall failed"; }
+python3 -I - "$store/delivery-queue.db" "$store/history.db" <<'PY'
+import json, sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute('CREATE TABLE _relay_delivery_sidecar(singleton PRIMARY KEY, phase, manifest)')
+c.execute('INSERT INTO _relay_delivery_sidecar VALUES(1, ?, ?)', ('ready', json.dumps({'version': 2})))
+c.commit()
+h = sqlite3.connect(sys.argv[2])
+h.execute('CREATE TABLE sessions(id)')
+h.commit()
+PY
+( { sleep 3; touch "$root/state/core-exited"; } > /dev/null 2>&1 & echo $! > "$root/state/core-pid" )
+# shellcheck disable=SC2016 # perl code
+own_collector "$store" "$root/state/held" '
+  my ($current, $stopped) = @rest;
+  for (1 .. 300) { last unless -e $current; select(undef, undef, undef, 0.1) }
+  sleep 1;
+  open(my $s, ">", $stopped); close($s);' "$prefix/current" "$root/state/collector-stopped"
+touch "$root/state/clean-wal-cantopen"
+: > "$root/state/immutable-opens"
+before_immutable="$(wc -l < "$root/state/immutable-opens")"
+AGENT_RELAY_STOP_TIMEOUT=10 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall failed before the fallback reinstall"; }
+bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "the reinstall right after --uninstall failed on a clean WAL database"; }
+[ -e "$root/state/collector-stopped" ] || fail "the reinstall ran while the session collector still held the history"
+[ "$(wc -l < "$root/state/immutable-opens")" -gt "$before_immutable" ] \
+  || fail "the reinstall after --uninstall did not use the immutable fallback"
+for pid in $holder; do wait "$pid" 2>/dev/null || true; done; holder=""
+rm -f "$root/state/clean-wal-cantopen" "$root/state/core-pid" "$root/state/core-exited" "$root/state/collector-stopped" "$root/state/held"
+bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall after the fallback reinstall failed"; }
+rm -rf "$store"
+pass "a reinstall right after --uninstall reads a clean WAL database with the immutable fallback"
 
 # A core and a collector of this install that never stop hold --uninstall up
 # only for AGENT_RELAY_STOP_TIMEOUT in all, not each; it then says so and
