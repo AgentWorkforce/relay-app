@@ -25,7 +25,8 @@
 #   3. Unpacks into versions/<version>, checks the binary reports that
 #      version, records the product beside it (versions/<version>/product),
 #      and points `current` at it atomically. The previous version stays for
-#      rollback; older ones beyond KEEP are removed.
+#      rollback (--rollback goes to the newest installed version older than
+#      the current one); older ones beyond KEEP are removed.
 #   4. Writes the user unit (only when it is missing or names another
 #      binary), reloads systemd, and restarts the service (or enables and
 #      starts it on a first install). Agents the core spawned run in scopes of
@@ -80,7 +81,7 @@ usage() {
 Usage: install.sh [--version X.Y.Z] [--rollback] [--dry-run]
 
   --version X.Y.Z  Install this release instead of the latest.
-  --rollback       Switch back to the previously installed version.
+  --rollback       Switch to the newest installed version older than the current one.
   --dry-run        Say what would change and change nothing.
 EOF
   if [ "$RELEASE_FEED" = cloud ]; then
@@ -548,10 +549,53 @@ installed_versions() { # oldest first
   find "$PREFIX/versions" -mindepth 1 -maxdepth 1 -type d ! -name '*.partial' ! -name '*.replaced' -printf '%f\n' | sort -V
 }
 
+# Whether release a is older than release b by SemVer precedence: the dotted
+# numeric core compares numerically (a missing component is 0), a prerelease
+# (1.2.0-rc.1) is older than its release (1.2.0), and prerelease identifiers
+# compare one by one, numbers numerically and before words, words in ASCII
+# order, with fewer identifiers older (beta.2 < beta.11, beta < beta.1).
+# Build metadata (+...) is ignored. sort -V puts 1.2.0-rc.1 after 1.2.0.
+version_older() { # a b
+  LC_ALL=C awk -v a="$1" -v b="$2" '
+    function cmp(x, y,   n, m, i, p, q, pa, pb, xp, yp, xn, yn) {
+      sub(/[+].*/, "", x); sub(/[+].*/, "", y)
+      pa = index(x, "-"); pb = index(y, "-")
+      xp = pa ? substr(x, pa + 1) : ""; if (pa) x = substr(x, 1, pa - 1)
+      yp = pb ? substr(y, pb + 1) : ""; if (pb) y = substr(y, 1, pb - 1)
+      n = split(x, p, "."); m = split(y, q, ".")
+      for (i = 1; i <= (n > m ? n : m); i++) {
+        if (p[i] + 0 < q[i] + 0) return -1
+        if (p[i] + 0 > q[i] + 0) return 1
+      }
+      if (!pa || !pb) return (pa ? -1 : 0) + (pb ? 1 : 0)
+      n = split(xp, p, "."); m = split(yp, q, ".")
+      for (i = 1; i <= n && i <= m; i++) {
+        xn = p[i] ~ /^[0-9]+$/; yn = q[i] ~ /^[0-9]+$/
+        if (xn && yn) {
+          if (p[i] + 0 != q[i] + 0) return p[i] + 0 < q[i] + 0 ? -1 : 1
+        } else if (xn != yn) {
+          return xn ? -1 : 1
+        } else if (p[i] "" != q[i] "") {
+          return p[i] "" < q[i] "" ? -1 : 1
+        }
+      }
+      return n < m ? -1 : n > m ? 1 : 0
+    }
+    BEGIN { exit !(cmp(a, b) < 0) }'
+}
+
 previous_version() {
   [ -d "$PREFIX/versions" ] || return 0
-  # Newest installed version other than the current one.
-  installed_versions | { grep -vxF "${current_version:-}" || true; } | tail -n 1
+  # Newest installed version older than the current one, so a second rollback
+  # keeps going back rather than returning to the version just left. Nothing
+  # when the current version is unknown or none is older.
+  [ -n "${current_version:-}" ] || return 0
+  local candidate prev=""
+  while read -r candidate; do
+    version_older "$candidate" "$current_version" || continue
+    if [ -z "$prev" ] || version_older "$prev" "$candidate"; then prev="$candidate"; fi
+  done < <(installed_versions)
+  [ -z "$prev" ] || printf '%s\n' "$prev"
 }
 
 # A version answering status.get says nothing about its ability to open local
