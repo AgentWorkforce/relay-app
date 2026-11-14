@@ -255,6 +255,7 @@ mod tests {
             updated_at_ms: None,
             host: None,
             registration: None,
+            delivery_wait: None,
             suggested_name: "repo".into(),
         };
         let background = session(Some(SessionHolder::Background));
