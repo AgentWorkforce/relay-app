@@ -25,6 +25,7 @@ fn session(kind: SessionKind, spawn: Option<SessionSpawn>) -> LocalSession {
             spawn,
             ..SessionRegistration::default()
         }),
+        delivery_wait: None,
         suggested_name: "c1".into(),
     }
 }

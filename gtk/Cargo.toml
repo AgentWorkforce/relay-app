@@ -37,7 +37,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to the
 # commit a core release was cut from. Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "d783c7d89adc0f6781cd82db50e3a42f41ebcdd8", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "4b9a528a4a03f5d11cb4f7ebcc7b6323f7f87e27", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:

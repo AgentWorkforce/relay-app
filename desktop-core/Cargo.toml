@@ -30,7 +30,7 @@ service-callers-dev-attest = []
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to the
 # commit a core release was cut from. Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "d783c7d89adc0f6781cd82db50e3a42f41ebcdd8", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "4b9a528a4a03f5d11cb4f7ebcc7b6323f7f87e27", default-features = false }
 # relayhistory 0.59.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
