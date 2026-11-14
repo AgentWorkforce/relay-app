@@ -285,7 +285,7 @@ pub(super) fn mark_label(mark: &str) -> &'static str {
 
 // The brand widgets built from these assets; the product name comes from
 // the build's profile.
-use crate::build_profile::{Profile, PRODUCT_NAME};
+use crate::build_profile::{CoBrand, MarkKind, Profile, PRODUCT_NAME};
 use gtk::prelude::*;
 use gtk4 as gtk;
 
@@ -300,11 +300,14 @@ pub fn brand(size: i32) -> gtk::Widget {
     }
 }
 
-/// The agentrelay wordmark, `height` points tall; the name in text when the
-/// SVG loader is missing, or when the build's profile names another product
-/// (the wordmark is Agent Relay's).
+/// The agentrelay wordmark of the sign-in lockup, `height` points tall; the
+/// name in text when the SVG loader is missing, or when the build's profile
+/// names another product (the wordmark is Agent Relay's). The lockup draws
+/// the co-brand line ([`cobrand_line`]) under it, so a co-branded build
+/// named Agent Relay draws the wordmark, without its badge, as macOS's
+/// `BrandWordmarkView` with `coBranded`.
 pub fn wordmark(height: i32) -> gtk::Widget {
-    if Profile::BUILT.names_in_text() {
+    if !Profile::BUILT.draws_wordmark_over_cobrand_line() {
         return profile_name(Profile::BUILT).upcast();
     }
     match super::svg_picture("agent-relay-wordmark", WORDMARK, height, PRODUCT_NAME) {
@@ -329,6 +332,69 @@ fn profile_name(profile: Profile) -> gtk::Box {
     name
 }
 
+/// The line a co-branded build draws under its Agent Relay lockup: "for",
+/// the customer's mark fitted into 16 points, and the customer's name, read
+/// out as "for <name>", as macOS's `CoBrandLineView`. None for a build
+/// without a co-brand.
+pub fn cobrand_line() -> Option<gtk::Box> {
+    Profile::BUILT
+        .cobrand
+        .map(|cobrand| cobrand_line_for(&cobrand))
+}
+
+/// [`cobrand_line`] for `cobrand`.
+fn cobrand_line_for(cobrand: &CoBrand) -> gtk::Box {
+    let line = super::hbox(6, &["cobrand-line"]);
+    line.set_halign(gtk::Align::Start);
+    let word = super::text("for", &["secondary", "cobrand-for"]);
+    word.set_valign(gtk::Align::Center);
+    line.append(&word);
+    // A mark the image loaders cannot read is left out, as on macOS.
+    if let Some(mark) = cobrand_mark(cobrand, 16) {
+        line.append(&mark);
+    }
+    let name = super::text(cobrand.name, &["cobrand-name"]);
+    name.set_valign(gtk::Align::Center);
+    name.set_single_line_mode(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    line.append(&name);
+    super::name(&line, &cobrand.accessible_label());
+    line
+}
+
+/// The customer's mark, an SVG or a PNG, fitted into `size` points square
+/// at its own aspect and sharp at the display's scale.
+fn cobrand_mark(cobrand: &CoBrand, size: i32) -> Option<super::Sized> {
+    let side = size * super::display_scale();
+    // The mark's own size, from a first read, picks the fitted raster's.
+    let loader = gtk::gdk_pixbuf::PixbufLoader::new();
+    loader.write(cobrand.mark).ok()?;
+    loader.close().ok()?;
+    let natural = loader.pixbuf()?;
+    let (width, height) = fitted(natural.width(), natural.height(), side);
+    let key = match cobrand.mark_kind {
+        MarkKind::Svg => "cobrand-mark-svg",
+        MarkKind::Png => "cobrand-mark-png",
+    };
+    let texture = super::raster(key, cobrand.mark, width, height)?;
+    let picture = gtk::Picture::for_paintable(&texture);
+    picture.set_can_shrink(true);
+    picture.set_keep_aspect_ratio(true);
+    let sized = super::Sized::new(size, size, &picture);
+    sized.set_valign(gtk::Align::Center);
+    Some(sized)
+}
+
+/// `width` by `height` fitted into a `side` square, keeping its aspect.
+fn fitted(width: i32, height: i32, side: i32) -> (i32, i32) {
+    let (width, height) = (width.max(1) as f64, height.max(1) as f64);
+    let scale = side as f64 / width.max(height);
+    (
+        ((width * scale).round() as i32).max(1),
+        ((height * scale).round() as i32).max(1),
+    )
+}
+
 /// Canonical mark and wordmark lockup for the shared application header.
 pub fn header_brand() -> gtk::Box {
     let lockup = super::hbox(10, &[]);
@@ -351,4 +417,18 @@ pub fn header_brand() -> gtk::Box {
         child = widget.next_sibling();
     }
     lockup
+}
+
+#[cfg(test)]
+mod cobrand_tests {
+    use super::fitted;
+
+    #[test]
+    fn a_mark_is_fitted_into_its_square_at_its_own_aspect() {
+        assert_eq!(fitted(64, 64, 32), (32, 32));
+        assert_eq!(fitted(200, 100, 16), (16, 8));
+        assert_eq!(fitted(10, 40, 16), (4, 16));
+        assert_eq!(fitted(1, 1000, 16), (1, 16));
+        assert_eq!(fitted(0, 0, 16), (16, 16));
+    }
 }

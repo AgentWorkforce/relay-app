@@ -338,7 +338,7 @@ Every script takes `--help`. In short:
 | Script | What it does |
 | --- | --- |
 | `scripts/build-probe.sh` | Builds `desktop-core/` (the core desktop ships) for one Rust target, stamped with a version, for one Agent Relay site and link scheme (`--site-url`, `--url-scheme`; an exported `AGENT_RELAY_SITE_URL` / `AGENT_RELAY_URL_SCHEME` when the option is omitted; production's when neither is given). Writes `agent-relay-probe`, `agent-relay-probe.sha256`, `probe-version.txt`, `probe-site.txt` and `probe-url-scheme.txt`; `build-app.sh` checks the last two against the bundle. |
-| `scripts/build-gtk.sh` | Builds the Linux app (`gtk/`, the probe crate's `gtk` feature) stamped with a version, for one Agent Relay site and link scheme as `build-probe.sh` does, and for one [site profile](docs/workspace-layout.md#site-profiles) (`--profile`, `--product-name`, `--releases-repository`, `--icon`; the default's when omitted). Writes `agent-relay`, `agent-relay.sha256`, `agent-relay-site.txt`, `agent-relay-url-scheme.txt`, `agent-relay-product-name.txt` and `agent-relay-releases-repository.txt`; `build-linux.sh` checks the site and scheme. |
+| `scripts/build-gtk.sh` | Builds the Linux app (`gtk/`, the probe crate's `gtk` feature) stamped with a version, for one Agent Relay site and link scheme as `build-probe.sh` does, and for one [site profile](docs/workspace-layout.md#site-profiles) (`--profile`, `--product-name`, `--releases-repository`, `--icon`, and a site profile's co-brand, `--cobrand-mark` with `--cobrand-name`; the default's when omitted). Writes `agent-relay`, `agent-relay.sha256`, `agent-relay-site.txt`, `agent-relay-url-scheme.txt`, `agent-relay-product-name.txt` and `agent-relay-releases-repository.txt`, and `agent-relay-cobrand-name.txt` for a co-branded build; `build-linux.sh` checks the site and scheme. |
 | `scripts/build-app.sh` | `swift build -c release --arch …`, assembles the app bundle for one site, link scheme, name, bundle id, update repository and icon (`--site-url`, `--url-scheme`, `--product-name`, `--bundle-id`, `--releases-repository`, `--icon`, and a site profile's co-brand, `--cobrand-mark` with `--cobrand-name`; production's `Agent Relay.app` when none is given; `--dev-site-url` for Agent Relay Dev), checks the probe is built for the same site and scheme, renders the icon, fills in `Info.plist` and records the profile in `Contents/Resources`, then signs (Developer ID → notarized, else ad-hoc). |
 | `scripts/package-dmg.sh` | Creates a branded Retina `.dmg` with fixed app and Applications icon positions, using `dmgbuild` without Finder automation, and writes `FILE.dmg.sha256`. |
 | `scripts/render-dmg-background.swift` | Composes the subdued relay-runner artwork with the source logo/wordmark, dashed drag arrow and install instruction at 1x and 2x, and, for a co-branded site profile (`--cobrand-mark FILE --cobrand-name NAME`, from `package-dmg.sh`), a "for <customer>" line under the lockup. Run with an output directory to preview; `scripts/dmg-settings.py` places the native Finder icons in the matching 768×576 layout. This artwork is specific to the macOS DMG. |
@@ -377,7 +377,8 @@ scripts/build-windows.sh --version 0.0.0 --arch x64 --out dist/windows
 `scripts/build-windows.sh` builds both programs and writes the portable tree,
 the zip with the GTK runtime, and the bare-core zip, for one site profile
 (`--site-url`, `--url-scheme`, `--profile`, `--product-name`,
-`--releases-repository`, `--support-url`, `--icon`; the default's when
+`--releases-repository`, `--support-url`, `--icon`, and a site profile's
+co-brand, `--cobrand-mark` with `--cobrand-name`; the default's when
 omitted, and the options alone count, never the shell's variables). See
 [`windows/README.md`](windows/README.md).
 

@@ -990,6 +990,13 @@ jobs:
             if [ -n "$RELEASES_REPOSITORY" ]; then args+=(--releases-repository "$RELEASES_REPOSITORY"); fi
             if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
             if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+            # A co-branded build says "for <customer>" under the lockup: the
+            # customer's mark and DESKTOP_COBRAND_NAME, never printed.
+            if [ -n "$BRANDING_COBRAND_MARK" ]; then
+              args+=(--cobrand-mark "$BRANDING_COBRAND_MARK" --cobrand-name "$COBRAND_NAME")
+            elif [ -n "$COBRAND_NAME" ]; then
+              echo "::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL, an archive holding cobrand.svg or cobrand.png (docs/workspace-layout.md, Site profiles)."; exit 1
+            fi
           fi
           scripts/build-gtk.sh --version "$VERSION" --out app-build ${args[@]+"${args[@]}"}
 
@@ -1134,6 +1141,13 @@ jobs:
             if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
             if [ -n "$SUPPORT_URL" ]; then args+=(--support-url "$SUPPORT_URL"); fi
             if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+            # A co-branded build says "for <customer>" under the lockup: the
+            # customer's mark and DESKTOP_COBRAND_NAME, never printed.
+            if [ -n "$BRANDING_COBRAND_MARK" ]; then
+              args+=(--cobrand-mark "$BRANDING_COBRAND_MARK" --cobrand-name "$COBRAND_NAME")
+            elif [ -n "$COBRAND_NAME" ]; then
+              echo "::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL, an archive holding cobrand.svg or cobrand.png (docs/workspace-layout.md, Site profiles)."; exit 1
+            fi
           fi
           scripts/build-windows.sh --version "$VERSION" --arch 'x64' --build-only '${{ matrix.component }}' --runtime-out runtime ${args[@]+"${args[@]}"}
 
@@ -1469,6 +1483,13 @@ jobs:
             if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
             if [ -n "$SUPPORT_URL" ]; then args+=(--support-url "$SUPPORT_URL"); fi
             if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+            # A co-branded build says "for <customer>" under the lockup: the
+            # customer's mark and DESKTOP_COBRAND_NAME, never printed.
+            if [ -n "$BRANDING_COBRAND_MARK" ]; then
+              args+=(--cobrand-mark "$BRANDING_COBRAND_MARK" --cobrand-name "$COBRAND_NAME")
+            elif [ -n "$COBRAND_NAME" ]; then
+              echo "::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL, an archive holding cobrand.svg or cobrand.png (docs/workspace-layout.md, Site profiles)."; exit 1
+            fi
           fi
           scripts/build-windows.sh --version "$VERSION" --arch 'arm64' --build-only '${{ matrix.component }}' --runtime-out runtime ${args[@]+"${args[@]}"}
 

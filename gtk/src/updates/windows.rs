@@ -1074,6 +1074,7 @@ mod tests {
             releases_repository: "example-owner/example-releases",
             asset_prefix: "Desktop-example-1",
             release_feed: "github:example-owner/example-releases",
+            cobrand: None,
         };
         let hive = Hive::default();
         let display_name = || {

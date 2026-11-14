@@ -49,6 +49,7 @@ mod tests {
         releases_repository: "example-owner/example-releases",
         asset_prefix: "Desktop-example-1",
         release_feed: "github:example-owner/example-releases",
+        cobrand: None,
     };
     const KEY: &str = r"Software\Classes\AppUserModelId\AgentWorkforce.AgentRelay";
     const PROTOCOL: &str = r"Software\Classes\agentrelay";

@@ -33,7 +33,10 @@
 # rsvg-convert; no binary asset is checked in. When this script builds the
 # executables it embeds the icon, the version and the product name in them
 # (AGENT_RELAY_WINDOWS_ICON and DESKTOP_PRODUCT_NAME, read by
-# desktop-core/build.rs and gtk/build.rs).
+# desktop-core/build.rs and gtk/build.rs), and a co-branded app the
+# customer it says it is "for" under the lockup (DESKTOP_COBRAND_MARK and
+# DESKTOP_COBRAND_NAME, read by gtk/build.rs), whose name it records beside
+# the app it stages (agent-relay-cobrand-name.txt).
 set -euo pipefail
 shopt -s nullglob
 
@@ -48,6 +51,7 @@ Usage: build-windows.sh --version VERSION [--arch x64|arm64] [--out DIR]
                         [--product-name NAME] [--releases-repository OWNER/NAME]
                         [--release-feed FEED] [--feed-public-key KEY]
                         [--support-url URL] [--icon FILE]
+                        [--cobrand-mark FILE --cobrand-name NAME]
 
 Builds the portable Windows tree and zips from a built app and relay core.
 Run it from an MSYS2 shell matching --arch: CLANG64 for x64, CLANGARM64 for
@@ -111,6 +115,14 @@ value exported in the shell never reaches a build here.
                      SITE/cloud/dashboard/downloads.
   --icon FILE        The app's mark, an SVG, rendered into the .ico and shipped
                      as the tree's icon: gtk/resources/linux/agent-relay-mark.svg.
+  --cobrand-mark FILE
+                     A co-branded build's customer mark, an SVG or a PNG,
+                     drawn in the "for <customer>" line under the lockup of
+                     the sign-in window. Needs --cobrand-name and --profile.
+  --cobrand-name NAME
+                     The customer a co-branded build says it is "for": one
+                     line of at most 80 characters, trimmed. Needs
+                     --cobrand-mark and --profile; never printed.
 EOF
 }
 
@@ -134,6 +146,9 @@ release_feed=""
 feed_key=""
 support_url=""
 icon_svg=""
+cobrand_mark=""
+cobrand_name=""
+cobrand_name_set=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --runtime-out) runtime_out="${2:?}"; shift 2 ;;
@@ -147,6 +162,8 @@ while [ $# -gt 0 ]; do
     --feed-public-key) feed_key="${2:?}"; shift 2 ;;
     --support-url) support_url="${2:?}"; shift 2 ;;
     --icon) icon_svg="${2:?}"; shift 2 ;;
+    --cobrand-mark) cobrand_mark="${2:?}"; shift 2 ;;
+    --cobrand-name) cobrand_name="${2-}"; cobrand_name_set=1; shift 2 ;;
     --version) version="${2:?}"; shift 2 ;;
     --app) app="${2:?}"; shift 2 ;;
     --probe) probe="${2:?}"; shift 2 ;;
@@ -228,13 +245,37 @@ if [ -n "$icon_svg" ]; then
   # working directory, and `cygpath -m` keeps a relative path relative.
   icon_svg="$(cd "$(dirname "$icon_svg")" && pwd)/$(basename "$icon_svg")"
 fi
+# A co-branded build takes the customer's mark and name together, only for a
+# site profile, and checks the name as the app does (build_profile.rs, as
+# scripts/build-gtk.sh): trimmed, not blank, one line, at most 80
+# characters. A refusal gives the name's length, never the name.
+if [ -n "$cobrand_name_set" ] && [ -z "$cobrand_mark" ]; then die "--cobrand-name needs --cobrand-mark"; fi
+if [ -n "$cobrand_mark" ]; then
+  [ -n "$cobrand_name_set" ] || die "--cobrand-mark needs --cobrand-name"
+  [ -n "$profile" ] || die "--cobrand-mark and --cobrand-name need --profile; the default profile is Agent Relay's own"
+  [ -f "$cobrand_mark" ] || die "--cobrand-mark: no file at $cobrand_mark"
+  case "$cobrand_mark" in
+    *.svg|*.SVG) grep -q '<svg' "$cobrand_mark" || die "--cobrand-mark must be an SVG or a PNG; $cobrand_mark is not an SVG" ;;
+    *.png|*.PNG) [ "$(head -c 4 "$cobrand_mark" | od -An -tx1 | tr -d ' \n')" = 89504e47 ] \
+                   || die "--cobrand-mark must be an SVG or a PNG; $cobrand_mark is not a PNG" ;;
+    *) die "--cobrand-mark must be an SVG or a PNG, got: $cobrand_mark" ;;
+  esac
+  cobrand_name="${cobrand_name#"${cobrand_name%%[![:space:]]*}"}"
+  cobrand_name="${cobrand_name%"${cobrand_name##*[![:space:]]}"}"
+  [ -n "$cobrand_name" ] || die "--cobrand-name must not be empty or blank"
+  [[ "$cobrand_name" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
+  [ "${#cobrand_name}" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has ${#cobrand_name}"
+  # Absolute before cargo sees it, as the icon.
+  cobrand_mark="$(cd "$(dirname "$cobrand_mark")" && pwd)/$(basename "$cobrand_mark")"
+fi
 [ -z "$profile" ] || note "building the site profile $profile (artifacts named $asset_prefix-...)"
 # What each cargo build sees of the profile: nothing from the shell, then
 # the values that differ from the default (each build script applies the
 # default to an unset variable, so the default profile builds as before).
 cargo_env=(env -u AGENT_RELAY_SITE_URL -u AGENT_RELAY_URL_SCHEME -u DESKTOP_PRODUCT_NAME
   -u RELEASES_REPOSITORY -u DESKTOP_ASSET_PREFIX -u DESKTOP_ICON
-  -u RELEASE_FEED -u DESKTOP_FEED_PUBLIC_KEY -u DESKTOP_PROFILE_ID)
+  -u RELEASE_FEED -u DESKTOP_FEED_PUBLIC_KEY -u DESKTOP_PROFILE_ID
+  -u DESKTOP_COBRAND_MARK -u DESKTOP_COBRAND_NAME)
 [ "$site" = "https://agentrelay.com" ] || cargo_env+=("AGENT_RELAY_SITE_URL=$site")
 [ "$scheme" = "agentrelay" ] || cargo_env+=("AGENT_RELAY_URL_SCHEME=$scheme")
 [ "$product" = "$DEFAULT_PRODUCT_NAME" ] || cargo_env+=("DESKTOP_PRODUCT_NAME=$product")
@@ -244,6 +285,7 @@ cargo_env=(env -u AGENT_RELAY_SITE_URL -u AGENT_RELAY_URL_SCHEME -u DESKTOP_PROD
 [ -z "$feed_key" ] || cargo_env+=("DESKTOP_FEED_PUBLIC_KEY=$feed_key")
 [ -z "$profile" ] || cargo_env+=("DESKTOP_PROFILE_ID=$profile")
 [ -z "$icon_svg" ] || cargo_env+=("DESKTOP_ICON=$(cygpath -m "$icon_svg")")
+[ -z "$cobrand_mark" ] || cargo_env+=("DESKTOP_COBRAND_MARK=$(cygpath -m "$cobrand_mark")" "DESKTOP_COBRAND_NAME=$cobrand_name")
 
 source_revision=""
 if [ -n "$runtime_out" ]; then
@@ -329,6 +371,10 @@ if [ -z "$app" ] || [ -z "$probe" ]; then
     cp "$1" "$staged/$(basename "$1")"
     printf '%s\n' "$site" > "$staged/$2-site.txt"
     printf '%s\n' "$scheme" > "$staged/$2-url-scheme.txt"
+    # A co-branded app's customer, recorded as scripts/build-gtk.sh does.
+    if [ "$2" = agent-relay ] && [ -n "$cobrand_mark" ]; then
+      printf '%s\n' "$cobrand_name" > "$staged/$2-cobrand-name.txt"
+    fi
     printf '%s\n' "$staged/$(basename "$1")"
   }
   # The core builds without `gtk` so it never links the GTK stack, as on Linux.
