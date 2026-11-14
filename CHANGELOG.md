@@ -15,6 +15,7 @@ whose `## Unreleased` section has no bullet stops before building.
 ## Unreleased
 
 - **Co-branding reaches Linux and Windows.** With a customer mark in its branding archive and a `DESKTOP_COBRAND_NAME`, the Linux and Windows sign-in window says "for <customer>" under the Agent Relay lockup, as macOS does since v2026.11.7; their signed-out menu is text only and the Windows installer has no artwork.
+- **macOS: reinstalling right after `install.sh --uninstall` no longer fails.** On macOS, `macos/install.sh --uninstall` now waits, up to a minute in all, for the core and the session collector it started to exit before it finishes, so running the installer again straight away no longer stops at "could not verify local history compatibility". If either is still running after that, it says so. It does not wait for the app's or another install's collectors.
 
 ## v2026.11.7
 
