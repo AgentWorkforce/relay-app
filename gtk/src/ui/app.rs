@@ -653,6 +653,11 @@ impl App {
         brand.append(&widgets::wordmark(28));
         widgets::name(&brand, "Sign in to Agent Relay");
         form.append(&brand);
+        // A co-branded build's "for <customer>" line, under the lockup.
+        if let Some(line) = widgets::cobrand_line() {
+            super::zoom::margins(&line, 12, 0, 0, 0);
+            form.append(&line);
+        }
         if let Some(site) = self.site_brand() {
             super::zoom::margins(&site, 12, 0, 0, 0);
             form.append(&site);

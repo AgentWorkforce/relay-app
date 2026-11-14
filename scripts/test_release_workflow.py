@@ -1182,35 +1182,46 @@ esac
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(exported[-2:], ['BRANDING_ICON=branding/icon.svg', 'BRANDING_COBRAND_MARK=branding/cobrand.svg'])
 
-    def test_cobrand_reaches_only_the_macos_build_and_image(self):
+    def test_cobrand_reaches_every_app_build_and_the_macos_image(self):
         for text in (self.workflow, self.promote):
             uses = text.count('uses: ./.github/actions/site-profile')
             self.assertEqual(text.count('cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}'), uses)
             self.assertNotRegex(text, r'echo[^\n]*(COBRAND_NAME|secrets\.DESKTOP_COBRAND_NAME)\b(?!\s+needs)')
         steps = re.split(r'\n      - name: ', self.workflow)
         cobranded = [step.split('\n', 1)[0] for step in steps if '--cobrand-mark' in step]
-        self.assertEqual(cobranded, ['Assemble and sign the app bundle', 'Package the disk image'])
+        windows = 'Compile the versioned executable with its icon'
+        self.assertEqual(cobranded, ['Assemble and sign the app bundle', 'Package the disk image',
+                                     'Build the app', windows, windows])
+        # The packages only wrap the app, which embeds its co-brand.
         for step in steps:
-            for script in ('build-gtk.sh', 'build-linux.sh', 'build-windows.sh'):
-                if f'scripts/{script}' in step:
-                    self.assertNotIn('cobrand', step.lower(), script)
+            if 'scripts/build-linux.sh' in step:
+                self.assertNotIn('cobrand', step.lower())
         # Run as the runner would: the options only with a mark, never for
         # the default profile, and a name without a mark is refused.
-        for title, script in (('Assemble and sign the app bundle', 'scripts/build-app.sh'),
-                              ('Package the disk image', 'scripts/package-dmg.sh')):
-            [step] = [step for step in steps if step.startswith(title + '\n')]
-            run = step[step.index('run: |') + len('run: |'):]
-            run = textwrap.dedent(run).replace(script, 'printf "%s\\n"').replace('${{ matrix.arch }}', 'arm64')
+        runs = []
+        for title, script, name in (('Assemble and sign the app bundle', 'scripts/build-app.sh', 'Acme Corp'),
+                                    ('Package the disk image', 'scripts/package-dmg.sh', 'Acme Corp'),
+                                    ('Build the app', 'scripts/build-gtk.sh', 'Example Customer'),
+                                    (windows, 'scripts/build-windows.sh', 'Example Customer')):
+            found = [step for step in steps if step.startswith(title + '\n') and script in step]
+            self.assertEqual(len(found), 2 if script == 'scripts/build-windows.sh' else 1, title)
+            for step in found:
+                run = step[step.index('run: |') + len('run: |'):]
+                run = (textwrap.dedent(run).replace(script, 'printf "%s\\n"')
+                       .replace('${{ matrix.arch }}', 'arm64').replace('${{ matrix.component }}', 'app'))
+                runs.append((title, run, name))
+        for title, run, cobrand in runs:
             base = dict(os.environ, PROFILE='acme-7', SITE_URL='https://relay.example', URL_SCHEME='acme-relay',
                         PRODUCT_NAME='Acme Desktop', BUNDLE_ID='com.acme.desktop', ASSET_PREFIX='Desktop-acme-7',
                         RELEASE_FEED='github:acme/desktop-releases', RELEASES_REPOSITORY='acme/desktop-releases',
-                        FEED_PUBLIC_KEY='', BRANDING_ICON='', COEXIST='', VERSION='1.2.3', GITHUB_RUN_NUMBER='1')
-            for name, change, want in [
+                        FEED_PUBLIC_KEY='', SUPPORT_URL='', BRANDING_ICON='', COEXIST='', VERSION='1.2.3',
+                        GITHUB_RUN_NUMBER='1')
+            for case, change, want in [
                     ('no co-brand', dict(BRANDING_COBRAND_MARK='', COBRAND_NAME=''), None),
                     ('the default profile', dict(PROFILE='', BRANDING_COBRAND_MARK='', COBRAND_NAME=''), None),
-                    ('a co-brand', dict(BRANDING_COBRAND_MARK='branding/cobrand.svg', COBRAND_NAME='Acme Corp'),
-                     ['--cobrand-mark', 'branding/cobrand.svg', '--cobrand-name', 'Acme Corp'])]:
-                with self.subTest(title=title, case=name):
+                    ('a co-brand', dict(BRANDING_COBRAND_MARK='branding/cobrand.svg', COBRAND_NAME=cobrand),
+                     ['--cobrand-mark', 'branding/cobrand.svg', '--cobrand-name', cobrand])]:
+                with self.subTest(title=title, case=case):
                     with tempfile.TemporaryDirectory() as temporary:
                         # The bundle and probe the steps around them expect.
                         (Path(temporary) / 'dist' / 'Acme Desktop.app').mkdir(parents=True)
@@ -1225,16 +1236,19 @@ esac
                     else:
                         start = args.index('--cobrand-mark')
                         self.assertEqual(args[start:start + 4], want)
-        [step] = [step for step in steps if step.startswith('Assemble and sign the app bundle\n')]
-        run = textwrap.dedent(step[step.index('run: |') + len('run: |'):]).replace('scripts/build-app.sh', 'printf "%s\\n"')
-        result = subprocess.run(['bash', '-c', run], env=dict(
-            os.environ, PROFILE='acme-7', SITE_URL='', URL_SCHEME='', PRODUCT_NAME='', BUNDLE_ID='', ASSET_PREFIX='',
-            RELEASE_FEED='', RELEASES_REPOSITORY='', FEED_PUBLIC_KEY='', BRANDING_ICON='', COEXIST='',
-            BRANDING_COBRAND_MARK='', COBRAND_NAME='Acme Corp', VERSION='1.2.3', GITHUB_RUN_NUMBER='1'),
-            capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL', result.stdout)
-        self.assertNotIn('Acme Corp', result.stdout + result.stderr)
+        # The disk image wraps an app already built with its co-brand.
+        for title, run, cobrand in runs:
+            if title == 'Package the disk image':
+                continue
+            with self.subTest(title=title, case='a name without a mark'):
+                result = subprocess.run(['bash', '-c', run], env=dict(
+                    os.environ, PROFILE='acme-7', SITE_URL='', URL_SCHEME='', PRODUCT_NAME='', BUNDLE_ID='',
+                    ASSET_PREFIX='', RELEASE_FEED='', RELEASES_REPOSITORY='', FEED_PUBLIC_KEY='', SUPPORT_URL='',
+                    BRANDING_ICON='', COEXIST='', BRANDING_COBRAND_MARK='', COBRAND_NAME=cobrand,
+                    VERSION='1.2.3', GITHUB_RUN_NUMBER='1'), capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL', result.stdout)
+                self.assertNotIn(cobrand, result.stdout + result.stderr)
 
     def test_site_profile_feed_inputs_reach_every_use_and_the_token_only_as_presence(self):
         for text in (self.workflow, self.promote):

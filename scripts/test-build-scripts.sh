@@ -22,6 +22,8 @@ printf '%s site=%s scheme=%s product=%s repository=%s prefix=%s icon=%s\n' "$*" 
 # The release feed's variables, in a log of their own.
 printf 'feed=%s key=%s id=%s repository=%s\n' "${RELEASE_FEED-unset}" "${DESKTOP_FEED_PUBLIC_KEY-unset}" "${DESKTOP_PROFILE_ID-unset}" \
   "${RELEASES_REPOSITORY-unset}" >> "$CARGO_LOG.feed"
+# The co-brand's variables, in a log of their own.
+printf 'mark=%s name=%s\n' "${DESKTOP_COBRAND_MARK-unset}" "${DESKTOP_COBRAND_NAME-unset}" >> "$CARGO_LOG.cobrand"
 target=""; bin=""
 while [ $# -gt 0 ]; do
   case "$1" in --target) target="$2"; shift 2 ;; --bin) bin="$2"; shift 2 ;; *) shift ;; esac
@@ -38,7 +40,7 @@ export CARGO_TARGET_DIR="$work/target"
 export CARGO_LOG="$work/cargo.log"
 
 unset AGENT_RELAY_SITE_URL AGENT_RELAY_URL_SCHEME DESKTOP_PRODUCT_NAME RELEASES_REPOSITORY DESKTOP_ASSET_PREFIX DESKTOP_ICON \
-  RELEASE_FEED DESKTOP_FEED_PUBLIC_KEY DESKTOP_PROFILE_ID
+  RELEASE_FEED DESKTOP_FEED_PUBLIC_KEY DESKTOP_PROFILE_ID DESKTOP_COBRAND_MARK DESKTOP_COBRAND_NAME
 
 failed=0
 fail() { printf '%s\n' "$*"; failed=1; }
@@ -294,6 +296,51 @@ mkdir -p "$work/guard/.github/workflows"
 printf 'run: cargo build --features %s\n' "$feature" > "$work/guard/.github/workflows/build.yml"
 { [ -n "$feature" ] && ! bash "$SCRIPTS/test-dev-attest-guard.sh" "$work/guard" >/dev/null; } \
   || fail "test-dev-attest-guard.sh passed a workflow that enables the preview feature"
+
+# A co-brand: the mark (an SVG or a PNG) and the name together, only for a
+# site profile; the name trimmed and checked as the app checks it, reaching
+# cargo and the record beside the app but never the output.
+cobrand_log() { tail -n 1 "$CARGO_LOG.cobrand"; }
+printf '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"/>\n' > "$work/cobrand.svg"
+printf '\x89PNG\r\n\x1a\n' > "$work/cobrand.png"
+printf 'not an image\n' > "$work/fake.png"
+output="$(gtk -- --out "$work/c1" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name "  Example Customer  " 2>&1)" \
+  || fail "build-gtk.sh with a co-brand failed"
+[ "$(cobrand_log)" = "mark=$work/cobrand.svg name=Example Customer" ] || fail "build-gtk.sh: the co-brand reached cargo as: $(cobrand_log)"
+[ "$(cat "$work/c1/agent-relay-cobrand-name.txt")" = "Example Customer" ] || fail "build-gtk.sh: co-brand record"
+[[ "$output" != *"Example Customer"* ]] || fail "build-gtk.sh: the co-brand name was printed"
+( cd "$work" && gtk -- --out "$work/c2" --profile example-7 --cobrand-mark cobrand.png --cobrand-name "Example Customer" >/dev/null ) \
+  || fail "build-gtk.sh with a relative PNG co-brand mark failed"
+[ "$(cobrand_log)" = "mark=$work/cobrand.png name=Example Customer" ] || fail "build-gtk.sh: a relative --cobrand-mark reached cargo as: $(cobrand_log)"
+gtk -- --out "$work/c1" --profile example-7 >/dev/null || fail "build-gtk.sh without a co-brand failed"
+[ "$(cobrand_log)" = "mark=unset name=unset" ] || fail "build-gtk.sh: no co-brand reached cargo as: $(cobrand_log)"
+[ ! -e "$work/c1/agent-relay-cobrand-name.txt" ] || fail "build-gtk.sh: a build without a co-brand kept a co-brand record"
+gtk DESKTOP_COBRAND_MARK="$work/cobrand.svg" DESKTOP_COBRAND_NAME="Example Customer" -- --out "$work/c3" --profile example-7 >/dev/null \
+  || fail "build-gtk.sh with exported co-brand variables failed"
+[ "$(cobrand_log)" = "mark=unset name=unset" ] || fail "build-gtk.sh: exported co-brand variables reached cargo as: $(cobrand_log)"
+gtk -- --out "$work/c4" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name "$(printf 'A%.0s' {1..80})" >/dev/null \
+  || fail "build-gtk.sh refused an 80-character co-brand name"
+calls="$(wc -l < "$CARGO_LOG")"
+refuse_cobrand() { # WHY ARGS...
+  local why="$1" out; shift
+  if out="$(gtk -- --out "$work/c5" "$@" 2>&1)"; then fail "build-gtk.sh accepted a co-brand: $why"; return; fi
+  [[ "$out" == *"$why"* ]] || fail "build-gtk.sh: refused without saying \"$why\": $out"
+  [[ "$out" != *"Example Customer"* ]] || fail "build-gtk.sh: a co-brand refusal printed the name"
+}
+refuse_cobrand "--cobrand-name needs --cobrand-mark" --profile example-7 --cobrand-name "Example Customer"
+refuse_cobrand "--cobrand-mark needs --cobrand-name" --profile example-7 --cobrand-mark "$work/cobrand.svg"
+refuse_cobrand "need --profile" --cobrand-mark "$work/cobrand.svg" --cobrand-name "Example Customer"
+refuse_cobrand "--cobrand-mark: no file at" --profile example-7 --cobrand-mark "$work/missing.svg" --cobrand-name "Example Customer"
+refuse_cobrand "--cobrand-mark must be an SVG or a PNG" --profile example-7 --cobrand-mark "$work/fake.png" --cobrand-name "Example Customer"
+refuse_cobrand "--cobrand-mark must be an SVG or a PNG" --profile example-7 --cobrand-mark "$work/icon.png" --cobrand-name "Example Customer"
+refuse_cobrand "--cobrand-name must not be empty or blank" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name ""
+refuse_cobrand "--cobrand-name must not be empty or blank" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name $' \t '
+refuse_cobrand "--cobrand-name must be one line" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name $'Example\nCustomer'
+refuse_cobrand "--cobrand-name must be one line" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name $'Example\aCustomer'
+refuse_cobrand "--cobrand-name must be at most 80 characters; it has 81" --profile example-7 --cobrand-mark "$work/cobrand.svg" \
+  --cobrand-name "Example Customer $(printf 'x%.0s' {1..64})"
+[ "$(wc -l < "$CARGO_LOG")" = "$calls" ] || fail "cargo ran for a refused co-brand"
+[ ! -e "$work/c5" ] || fail "a refused co-brand build wrote outputs"
 
 [ "$failed" = 0 ] && echo "build-probe.sh, build-gtk.sh, build-linux.sh, package-dmg.sh and the dev-attest guard: ok"
 exit "$failed"

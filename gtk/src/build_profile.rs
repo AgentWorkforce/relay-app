@@ -2,7 +2,8 @@
 //! "Site profiles"), as `build.rs` handed it to the compiler: the product
 //! name shown for the app, the GitHub repository the updater reads releases
 //! from, what those releases' artifact names start with, and the release
-//! feed with the key its records are signed with. The default
+//! feed with the key its records are signed with, and the customer a
+//! co-branded build says it is "for". The default
 //! profile's values are built in when `scripts/build-gtk.sh` (or
 //! `build-windows.sh`) is given no others; nothing at run time changes
 //! them. The site and link scheme are the core's
@@ -30,6 +31,12 @@ pub const FEED_PUBLIC_KEY: &str = env!("DESKTOP_FEED_PUBLIC_KEY");
 /// The profile's opaque id, as its asset prefix carries it; empty for the
 /// default profile.
 pub const PROFILE_ID: &str = env!("DESKTOP_PROFILE_ID");
+/// The customer a co-branded build says it is "for" under its lockup
+/// (`DESKTOP_COBRAND_NAME`); empty for a build without a co-brand.
+pub const COBRAND_NAME: &str = env!("DESKTOP_COBRAND_NAME");
+/// The customer's mark, as `build.rs` read it from `DESKTOP_COBRAND_MARK`;
+/// empty for a build without a co-brand.
+const COBRAND_MARK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cobrand.mark"));
 /// The default profile's release feed.
 pub const DEFAULT_RELEASE_FEED: &str = "github:AgentWorkforce/relay-desktop-releases";
 /// The release feed of a build whose releases come from its site rather
@@ -74,6 +81,58 @@ pub fn cloud_downloads_page(site: &str) -> String {
     format!("{}/cloud/dashboard/downloads", site.trim_end_matches('/'))
 }
 
+/// The kind of image a co-brand's mark is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    Svg,
+    Png,
+}
+
+/// A co-branded build's customer (docs/workspace-layout.md, "Site
+/// profiles"): the line "for", the customer's mark and name drawn under the
+/// Agent Relay lockup, as on macOS (`AppInfo.coBrand`). The product stays
+/// the profile's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoBrand {
+    /// The customer's name: trimmed, one line, at most 80 characters.
+    pub name: &'static str,
+    /// What the mark's bytes are.
+    pub mark_kind: MarkKind,
+    /// The mark's file, an SVG or a PNG.
+    pub mark: &'static [u8],
+}
+
+impl CoBrand {
+    /// The build's co-brand: none unless `build.rs` was given both a name
+    /// and a mark.
+    const BUILT: Option<Self> = if COBRAND_NAME.is_empty() || COBRAND_MARK.is_empty() {
+        None
+    } else {
+        Some(Self {
+            name: COBRAND_NAME,
+            mark_kind: match env!("DESKTOP_COBRAND_MARK_KIND").as_bytes() {
+                b"png" => MarkKind::Png,
+                _ => MarkKind::Svg,
+            },
+            mark: COBRAND_MARK,
+        })
+    };
+
+    /// The name `text` gives a co-brand, as macOS's `AppInfo.coBrandName`
+    /// reads it: trimmed, and none when blank, over 80 characters or
+    /// holding a control character.
+    pub fn name_from(text: &str) -> Option<&str> {
+        let name = text.trim();
+        (!name.is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control))
+            .then_some(name)
+    }
+
+    /// What a screen reader says for the line: "for <name>".
+    pub fn accessible_label(&self) -> String {
+        format!("for {}", self.name)
+    }
+}
+
 /// A site profile's own values. The app runs with [`Profile::BUILT`]; code
 /// that branches on the profile takes one, so tests can hand it any profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +146,8 @@ pub struct Profile {
     /// Where the updater's releases come from: `github:<owner>/<name>` or
     /// [`CLOUD_RELEASE_FEED`].
     pub release_feed: &'static str,
+    /// The customer a co-branded build says it is "for"; none for any other.
+    pub cobrand: Option<CoBrand>,
 }
 
 impl Profile {
@@ -96,6 +157,7 @@ impl Profile {
         releases_repository: RELEASES_REPOSITORY,
         asset_prefix: ASSET_PREFIX,
         release_feed: RELEASE_FEED,
+        cobrand: CoBrand::BUILT,
     };
     /// The default profile: Agent Relay.
     pub const DEFAULT: Self = Self {
@@ -103,6 +165,7 @@ impl Profile {
         releases_repository: "AgentWorkforce/relay-desktop-releases",
         asset_prefix: "AgentRelay",
         release_feed: DEFAULT_RELEASE_FEED,
+        cobrand: None,
     };
 
     /// Whether the profile's releases come from its site's signed feed
@@ -166,6 +229,18 @@ impl Profile {
     /// default's name is still told apart by its asset prefix.
     pub fn names_in_text(&self) -> bool {
         self.product_name != DEFAULT_PRODUCT_NAME || self.asset_prefix != Self::DEFAULT.asset_prefix
+    }
+
+    /// Whether a lockup that draws the co-brand line under it (the sign-in
+    /// window's; [`crate::ui::widgets::cobrand_line`]) draws the wordmark:
+    /// as everywhere for the default profile, and for a co-branded build
+    /// named Agent Relay too, since the line tells it apart, as macOS's
+    /// `AppInfo.drawsWordmark` with `coBranded`; beside the wordmark there
+    /// is no badge. Everywhere else (the header, the window title) such a
+    /// build is named in text with its badge.
+    pub fn draws_wordmark_over_cobrand_line(&self) -> bool {
+        !self.names_in_text()
+            || (self.product_name == DEFAULT_PRODUCT_NAME && self.cobrand.is_some())
     }
 
     /// Whether the profile is named for its own product rather than Agent
@@ -262,6 +337,18 @@ pub(crate) mod tests {
             assert_eq!(feed_public_key(), "");
             assert_eq!(profile_id(), "");
         }
+        // A co-brand is a site profile's, its name as the app reads one.
+        if let Some(cobrand) = Profile::BUILT.cobrand {
+            assert!(!profile_id().is_empty());
+            assert_eq!(CoBrand::name_from(cobrand.name), Some(cobrand.name));
+            assert!(!cobrand.mark.is_empty());
+        } else {
+            assert_eq!(COBRAND_NAME, "");
+            assert!(COBRAND_MARK.is_empty());
+        }
+        if std::env::var_os("DESKTOP_COBRAND_NAME").is_none() {
+            assert_eq!(Profile::BUILT.cobrand, None);
+        }
     }
 
     /// A profile other than the default, by its opaque id.
@@ -270,6 +357,7 @@ pub(crate) mod tests {
         releases_repository: "example-org/example-desktop-releases",
         asset_prefix: "Desktop-example-7",
         release_feed: "github:example-org/example-desktop-releases",
+        cobrand: None,
     };
 
     /// A profile whose releases come from its site's feed.
@@ -278,6 +366,7 @@ pub(crate) mod tests {
         releases_repository: "",
         asset_prefix: "Desktop-example-7",
         release_feed: CLOUD_RELEASE_FEED,
+        cobrand: None,
     };
 
     #[test]
