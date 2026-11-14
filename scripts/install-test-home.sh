@@ -38,12 +38,20 @@ install_test_home_init() {
 # which contains the test HOME itself (TMPDIR under the starting HOME, or
 # HOME=/tmp) is skipped: the harness's own mktemp HOME may legitimately lie
 # there, and the XDG directories must still lie under that HOME. Resolved
-# with realpath -m, so it need not exist yet.
+# without requiring GNU realpath -m, so it need not exist yet.
+install_test_realpath() { # path
+  if realpath -m -- "$1" 2>/dev/null; then return 0; fi
+  python3 -I - "$1" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
 install_test_xdg_reason() { # name resolved-home
   local name="$1" home="$2" value resolved protected real
   value="${!name:-}"
   [ -n "$value" ] || { echo "$name is not set"; return; }
-  resolved="$(realpath -m -- "$value")"
+  resolved="$(install_test_realpath "$value")"
   case "$resolved/" in
     "$home"/?*) ;;
     *) echo "$name ($value) is not under the test's HOME"; return ;;
@@ -52,7 +60,7 @@ install_test_xdg_reason() { # name resolved-home
   for protected in "$real" "${INSTALL_TEST_ORIGINAL_HOME:-}" \
     "${INSTALL_TEST_ORIGINAL_XDG_CONFIG_HOME:-}" "${INSTALL_TEST_ORIGINAL_XDG_DATA_HOME:-}"; do
     [ -n "$protected" ] || continue
-    protected="$(realpath -m -- "$protected")"
+    protected="$(install_test_realpath "$protected")"
     [ "$protected" != / ] || continue
     case "$home/" in
       "$protected"/*) continue ;;
@@ -90,8 +98,8 @@ require_disposable_home() {
   if [ -z "$reason" ] && { [ ! -f "$home/$INSTALL_TEST_HOME_MARKER" ] || [ -L "$home/$INSTALL_TEST_HOME_MARKER" ]; }; then
     reason="HOME ($home) has no $INSTALL_TEST_HOME_MARKER marker"
   fi
-  [ -n "$reason" ] || reason="$(install_test_xdg_reason XDG_CONFIG_HOME "$(realpath -m -- "$resolved")")"
-  [ -n "$reason" ] || reason="$(install_test_xdg_reason XDG_DATA_HOME "$(realpath -m -- "$resolved")")"
+  [ -n "$reason" ] || reason="$(install_test_xdg_reason XDG_CONFIG_HOME "$(install_test_realpath "$resolved")")"
+  [ -n "$reason" ] || reason="$(install_test_xdg_reason XDG_DATA_HOME "$(install_test_realpath "$resolved")")"
   [ -z "$reason" ] && return 0
   {
     echo "refusing to run the installer test: $reason."

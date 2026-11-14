@@ -162,6 +162,7 @@ start() {
 case "\$*" in
   "--user daemon-reload") ;;
   "--user is-enabled --quiet agent-relay.service") [ -f "$root/state/enabled" ] ;;
+  "--user is-active --quiet agent-relay.service") [ -f "$root/state/running" ] ;;
   "--user reset-failed agent-relay.service") ;;
   "--user restart agent-relay.service")
     if [ -f "$root/state/restart-fails" ]; then rm "$root/state/restart-fails"; exit 1; fi

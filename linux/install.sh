@@ -648,14 +648,56 @@ unlock_storage_migrations() {
 storage_compatible() { # candidate binary; a check, never a schema repair
   [ -d "$HOME/.agentworkforce/probe" ] || return 0
   have python3 || { note "python3 is required to check local history compatibility"; return 1; }
-  python3 -I - "$1" "$HOME/.agentworkforce/probe" <<'PY'
-import json, pathlib, sqlite3, subprocess, sys
+  local allow_immutable=0
+  # A clean WAL database can have neither sidecar. A read-only connection may
+  # then need immutable=1, which ignores locks and WAL; permit it only with no
+  # running service. Python takes the collector lock and rechecks both
+  # sidecars before opening that way.
+  systemctl --user is-active --quiet "$UNIT" 2>/dev/null || allow_immutable=1
+  python3 -I - "$1" "$HOME/.agentworkforce/probe" "$allow_immutable" "$UNIT" <<'PY'
+import fcntl, json, os, pathlib, sqlite3, subprocess, sys
 
 def refuse(message):
     print('agent-relay install: ' + message, file=sys.stderr)
     raise SystemExit(1)
 
 required = set()
+collector_locks = {}
+
+def connect(path):
+    uri = path.resolve().as_uri()
+    try:
+        return sqlite3.connect(uri + '?mode=ro', uri=True, timeout=1)
+    except sqlite3.Error as error:
+        wal = pathlib.Path(str(path) + '-wal')
+        shm = pathlib.Path(str(path) + '-shm')
+        if sys.argv[3] != '1' or wal.exists() or shm.exists():
+            raise
+        store = path.parent
+        lock = collector_locks.get(store)
+        if lock is None:
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+            try:
+                fd = os.open(store / 'collector.lock', flags, 0o600)
+                lock = os.fdopen(fd, 'a+b')
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, BlockingIOError):
+                try:
+                    lock.close()
+                except (AttributeError, OSError):
+                    pass
+                raise error
+            collector_locks[store] = lock
+        if wal.exists() or shm.exists():
+            raise error
+        active = subprocess.run(
+            ['systemctl', '--user', 'is-active', '--quiet', sys.argv[4]],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=False)
+        if active.returncode == 0 or wal.exists() or shm.exists():
+            raise error
+        return sqlite3.connect(uri + '?mode=ro&immutable=1', uri=True, timeout=1)
+
 try:
     for store in pathlib.Path(sys.argv[2]).iterdir():
         if not store.is_dir():
@@ -666,7 +708,7 @@ try:
                 continue
             if (name == 'delivery-queue.db' and path.is_symlink()) or not path.is_file():
                 refuse('local history format cannot be verified; saved uploads were not changed')
-            connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)
+            connection = connect(path)
             try:
                 marker = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_relay_delivery_sidecar'").fetchone()
                 if marker:

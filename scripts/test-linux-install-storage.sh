@@ -96,6 +96,55 @@ bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || fail "compatible rollback
 [ "$(current)" = 3.0.0 ] || fail "compatible rollback selected the wrong version"
 pass "rollback to a binary that supports the migrated format still works"
 
+# A cleanly closed WAL database can have no -wal/-shm files. In a directory
+# where SQLite cannot create -shm, mode=ro fails and immutable=1 is the only
+# read-only form that works. It is permitted only with the service stopped,
+# both sidecars absent and collector.lock held by the installer.
+python3 - "$storage" <<'PY'
+import pathlib, sqlite3, sys
+for path in pathlib.Path(sys.argv[1]).glob('*.db'):
+    c = sqlite3.connect(path)
+    c.execute('PRAGMA journal_mode=WAL')
+    c.commit(); c.close()
+    pathlib.Path(str(path) + '-wal').unlink(missing_ok=True)
+    pathlib.Path(str(path) + '-shm').unlink(missing_ok=True)
+PY
+touch "$storage/collector.lock" "$storage/delivery-queue.migration-lock"
+chmod 0555 "$storage"
+before_current="$(current)"; before_restarts="$(restarts)"
+if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
+  fail "a running service allowed an immutable SQLite check"
+fi
+[ "$(current)" = "$before_current" ] && [ "$(restarts)" = "$before_restarts" ] \
+  || fail "a refused immutable check changed or restarted the core"
+rm "$root/state/running"
+before_sum="$(sha256sum "$storage/history.db" "$storage/delivery-queue.db")"
+bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "a stopped service could not verify clean WAL databases"; }
+[ "$(sha256sum "$storage/history.db" "$storage/delivery-queue.db")" = "$before_sum" ] \
+  || fail "the immutable compatibility check changed a database"
+rm "$root/state/running"
+exec {collector_fd}>>"$storage/collector.lock"
+flock -n "$collector_fd"
+if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
+  fail "a held collector lock allowed an immutable SQLite check"
+fi
+flock -u "$collector_fd"; exec {collector_fd}>&-
+for suffix in wal shm; do
+  chmod 0755 "$storage"; touch "$storage/history.db-$suffix"; chmod 0555 "$storage"
+  if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
+    fail "a present -$suffix sidecar allowed an immutable SQLite check"
+  fi
+  chmod 0755 "$storage"; rm "$storage/history.db-$suffix"; chmod 0555 "$storage"
+done
+chmod 0700 "$storage"
+bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "the service did not restart after the immutable guards"; }
+bash "$INSTALL" --rollback > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "the clean-WAL fixture did not restore the earlier version"; }
+[ "$(current)" = 3.0.0 ] || fail "the clean-WAL fixture left $(current), not 3.0.0"
+pass "clean WAL databases use immutable reads only with no service, sidecars or collector"
+
 QUEUE_FORMATS=0,1 release 3.2.0 broken
 if bash "$INSTALL" --version 3.2.0 > "$root/state/out" 2>&1; then fail "broken core accepted"; fi
 [ "$(current)" = 3.0.0 ] || fail "compatible automatic rollback did not run"

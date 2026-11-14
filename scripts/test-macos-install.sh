@@ -215,7 +215,8 @@ EOF
 # The sqlite3 command line every Mac ships, as far as the installer uses it.
 cat > "$root/bin/sqlite3" <<'EOF'
 #!/usr/bin/env python3
-import sqlite3, sys
+import pathlib, sqlite3, sys
+from urllib.parse import unquote, urlparse
 args = sys.argv[1:]
 rest = []
 while args:
@@ -227,7 +228,21 @@ while args:
     else:
         rest.append(arg)
 db, sql = rest
-connection = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
+state = pathlib.Path(__file__).resolve().parent.parent / "state"
+immutable = "immutable=1" in db
+if db.startswith("file:"):
+    local = pathlib.Path(unquote(urlparse(db).path))
+    uri = db
+else:
+    local = pathlib.Path(db)
+    uri = "file:" + db + "?mode=ro"
+if (state / "clean-wal-cantopen").exists() and not immutable:
+    print("Error: in prepare, unable to open database file (14)", file=sys.stderr)
+    raise SystemExit(14)
+if immutable:
+    with (state / "immutable-opens").open("a") as out:
+        print(local, file=out)
+connection = sqlite3.connect(uri, uri=True)
 for row in connection.execute(sql):
     print("|".join("" if value is None else str(value) for value in row))
 EOF
@@ -283,7 +298,12 @@ no_current_gap() { # what was checked
   [ ! -s "$root/state/current-violations" ] || { cat "$root/state/current-violations" >&2; fail "$1 removed or replaced current other than by rename"; }
 }
 starts() { grep -cE '^(bootstrap|kickstart)' "$root/state/launchctl.log" 2>/dev/null || true; }
-kept() { (find "$prefix/versions" -mindepth 1 -maxdepth 1 -printf "%f\n" | sort -t. -k1,1n -k2,2n -k3,3n | tr '\n' ' '); }
+kept() {
+  local entry
+  for entry in "$prefix/versions"/*; do
+    [ -d "$entry" ] && [ ! -L "$entry" ] && basename "$entry"
+  done | sort -t. -k1,1n -k2,2n -k3,3n | tr '\n' ' '
+}
 no_secret() { ! grep -q secret-token "$root/state/out" || fail "$1 printed the account secret"; }
 
 # The core's data: settings, sign-in, agents. Never touched, not even by --uninstall.
@@ -488,8 +508,15 @@ pass "--rollback goes from 1.2.0 to 1.1.0 to 1.0.0, then refuses rather than goi
 # comparator itself (beta.2 is older than beta.11, not lexically; build
 # metadata is ignored), then --rollback from a later beta and from the release.
 eval "$(grep '^valid_version() ' "$INSTALL")"
+installer_function() { # name
+  awk -v signature="$1() {" '
+    index($0, signature) == 1 { inside = 1 }
+    inside { print }
+    inside && $0 == "}" { exit }
+  ' "$INSTALL"
+}
 for fn in installed_versions version_older rollback_target; do
-  eval "$(sed -n "/^$fn() {/,/^}/p" "$INSTALL")"
+  eval "$(installer_function "$fn")"
 done
 # shellcheck disable=SC2034 # read by the functions above
 PREFIX="$prefix"
@@ -613,13 +640,13 @@ echo once > "$root/state/swap-lock"
 : > "$root/state/swaps"
 bash "$INSTALL" --version 1.0.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "an installer whose lock file was removed while locking did not retry"; }
 grep -q "already up to date" "$root/state/out" || { cat "$root/state/out"; fail "the retried installer did not finish"; }
-{ [ ! -e "$root/state/swap-lock" ] && [ "$(wc -l < "$root/state/swaps")" = 1 ]; } || fail "the lock file was not removed exactly once"
+{ [ ! -e "$root/state/swap-lock" ] && [ "$(wc -l < "$root/state/swaps")" -eq 1 ]; } || fail "the lock file was not removed exactly once"
 [ -f "$prefix/.install-lock" ] || fail "the retried installer did not lock a new lock file"
 echo always > "$root/state/swap-lock"
 : > "$root/state/swaps"
 if bash "$INSTALL" --version 1.0.0 > "$root/state/out" 2>&1; then fail "an installer ran on a lock file that kept being removed"; fi
 grep -q "kept being removed or replaced while it was being locked" "$root/state/out" || { cat "$root/state/out"; fail "the lock retries do not say why they gave up"; }
-[ "$(wc -l < "$root/state/swaps")" = 5 ] || fail "the installer tried $(wc -l < "$root/state/swaps") times, not 5"
+[ "$(wc -l < "$root/state/swaps")" -eq 5 ] || fail "the installer tried $(wc -l < "$root/state/swaps") times, not 5"
 rm -f "$root/state/swap-lock" "$root/state/swaps"
 [ "$(current)" = 1.0.0 ] || fail "the lock retries changed current"
 pass "a lock on a removed lock file does not count: the installer locks the new file, and gives up after 5 tries"
@@ -715,6 +742,51 @@ bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1 || { cat "$root/state/
 if bash "$INSTALL" --rollback > "$root/state/out" 2>&1; then fail "rolled back to a core that cannot read the history"; fi
 grep -q "rollback refused before changing the installation" "$root/state/out" || fail "the unsafe rollback refusal does not say why"
 [ "$(current)" = 12.1.0 ] || fail "the refused rollback changed current"
+
+# sqlite3 -readonly cannot open a clean WAL-mode database without its
+# sidecars on macOS because it would have to create -shm. The installer may
+# use immutable=1 only while the service and collector are stopped and both
+# sidecars are absent.
+touch "$root/state/clean-wal-cantopen"
+: > "$root/state/immutable-opens"
+before_immutable="$(wc -l < "$root/state/immutable-opens")"
+if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
+  fail "a loaded service allowed an immutable SQLite check"
+fi
+[ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
+  || fail "a loaded service used immutable SQLite"
+launchctl bootout "gui/$uid/$label"
+bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "a stopped service could not verify a clean WAL database"; }
+[ "$(wc -l < "$root/state/immutable-opens")" -gt "$before_immutable" ] \
+  || fail "a clean WAL database did not use the immutable fallback"
+launchctl bootout "gui/$uid/$label"
+perl -MFcntl=:flock -e 'open(my $h, ">>", $ARGV[0]) or die; flock($h, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close($r); sleep 60' \
+  "$store/collector.lock" "$root/state/held" &
+holder=$!
+for _ in $(seq 50); do [ -e "$root/state/held" ] && break; sleep 0.1; done
+before_immutable="$(wc -l < "$root/state/immutable-opens")"
+if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
+  fail "a held collector lock allowed an immutable SQLite check"
+fi
+[ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
+  || fail "a held collector lock used immutable SQLite"
+kill "$holder"; wait "$holder" 2>/dev/null || true; holder=""
+rm -f "$root/state/held"
+for suffix in wal shm; do
+  touch "$store/history.db-$suffix"
+  if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
+    fail "a present -$suffix sidecar allowed an immutable SQLite check"
+  fi
+  [ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
+    || fail "a present -$suffix sidecar used immutable SQLite"
+  rm "$store/history.db-$suffix"
+done
+rm "$root/state/clean-wal-cantopen"
+bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "the service did not restart after the immutable guards"; }
+pass "a clean WAL database uses immutable reads only with no service, sidecars or collector"
+
 require_disposable_home
 rm -rf "$HOME/.agentworkforce"
 pass "a compatible core is installed, and an unsafe rollback refused"

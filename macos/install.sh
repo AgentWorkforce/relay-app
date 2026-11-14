@@ -485,19 +485,75 @@ unlock_storage_migrations() {
 storage_compatible() { # candidate binary
   [ -d "$HOME/.agentworkforce/probe" ] || return 0
   have sqlite3 || { note "sqlite3 is required to check local history compatibility"; return 1; }
+  local allow_immutable=0
+  # A clean WAL database has no -wal/-shm files. macOS sqlite3 cannot open
+  # that state with -readonly because it would have to create -shm. Only a
+  # stopped service may use immutable=1 instead: it ignores locks and WAL, so
+  # the collector lock and the absence of both sidecars are mandatory too.
+  loaded || allow_immutable=1
   perl -MJSON::PP -MCwd=abs_path -MB -e '
 use strict; use warnings;
-my ($core, $root) = @ARGV;
+use Encode qw(encode);
+use Fcntl qw(:DEFAULT :flock);
+my ($core, $root, $allow_immutable, $service) = @ARGV;
+my %collector_locks;
 sub refuse { print STDERR "agent-relay install: $_[0]\n"; exit 1 }
-sub query {
+sub sqlite_query {
     my ($db, $sql) = @_;
-    open(my $out, "-|", "sqlite3", "-readonly", "-batch", "-noheader", "-cmd", ".timeout 1000", $db, $sql)
-        or die "sqlite3\n";
+    my $pid = open(my $out, "-|");
+    defined $pid or die "sqlite3\n";
+    if (!$pid) {
+        open(STDIN, "<", "/dev/null"); open(STDERR, ">", "/dev/null");
+        exec("sqlite3", "-readonly", "-batch", "-noheader", "-cmd", ".timeout 1000", $db, $sql);
+        exit 127;
+    }
     local $/;
     my $text = <$out>;
-    close($out) or die "sqlite3\n";
+    my $ok = close($out);
     $text = "" unless defined $text;
     $text =~ s/\n\z//;
+    return ($ok, $text);
+}
+sub collector_stopped {
+    my ($store) = @_;
+    return 1 if exists $collector_locks{$store};
+    my $path = "$store/collector.lock";
+    return 0 if -l $path;
+    my $old = umask(077);
+    my $opened = sysopen(my $lock, $path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
+    umask($old);
+    return 0 unless $opened && flock($lock, LOCK_EX | LOCK_NB);
+    $collector_locks{$store} = $lock;
+    return 1;
+}
+sub immutable_uri {
+    my ($db) = @_;
+    my $bytes = encode("UTF-8", $db);
+    $bytes =~ s/([^A-Za-z0-9._~\/-])/sprintf("%%%02X", ord($1))/ge;
+    return "file:$bytes?mode=ro&immutable=1";
+}
+sub service_stopped {
+    my $pid = fork();
+    defined $pid or return 0;
+    if (!$pid) {
+        open(STDIN, "<", "/dev/null"); open(STDOUT, ">", "/dev/null"); open(STDERR, ">", "/dev/null");
+        exec("launchctl", "print", $service);
+        exit 127;
+    }
+    waitpid($pid, 0);
+    return $? != 0;
+}
+sub query {
+    my ($db, $sql, $store) = @_;
+    my ($ok, $text) = sqlite_query($db, $sql);
+    return $text if $ok;
+    die "sqlite3\n" unless $allow_immutable eq "1"
+        && !-e "$db-wal" && !-e "$db-shm"
+        && collector_stopped($store)
+        && service_stopped()
+        && !-e "$db-wal" && !-e "$db-shm";
+    ($ok, $text) = sqlite_query(immutable_uri($db), $sql);
+    die "sqlite3\n" unless $ok;
     return $text;
 }
 sub is_int {
@@ -520,11 +576,11 @@ my $verified = eval {
                 refuse("local history format cannot be verified; saved uploads were not changed");
             }
             my $db = abs_path($path);
-            if (query($db, "SELECT 1 FROM sqlite_master WHERE type=\x27table\x27 AND name=\x27_relay_delivery_sidecar\x27") eq "1") {
-                if (query($db, "SELECT count(*) FROM _relay_delivery_sidecar WHERE singleton=1") ne "1") {
+            if (query($db, "SELECT 1 FROM sqlite_master WHERE type=\x27table\x27 AND name=\x27_relay_delivery_sidecar\x27", $store) eq "1") {
+                if (query($db, "SELECT count(*) FROM _relay_delivery_sidecar WHERE singleton=1", $store) ne "1") {
                     refuse("local history migration metadata is incomplete; saved uploads were not changed");
                 }
-                my $hex = query($db, "SELECT hex(manifest) FROM _relay_delivery_sidecar WHERE singleton=1");
+                my $hex = query($db, "SELECT hex(manifest) FROM _relay_delivery_sidecar WHERE singleton=1", $store);
                 my $manifest = eval { JSON::PP->new->utf8->decode(pack("H*", $hex)) };
                 refuse("local history migration metadata is invalid; saved uploads were not changed")
                     unless ref $manifest eq "HASH";
@@ -535,11 +591,11 @@ my $verified = eval {
             } elsif ($name eq "delivery-queue.db") {
                 # An empty queue file can precede the copy'"'"'s first commit; the
                 # owner resumes that. Only a populated foreign queue is unverifiable.
-                if (query($db, "SELECT 1 FROM sqlite_master WHERE name NOT GLOB \x27sqlite_*\x27 LIMIT 1") eq "1") {
+                if (query($db, "SELECT 1 FROM sqlite_master WHERE name NOT GLOB \x27sqlite_*\x27 LIMIT 1", $store) eq "1") {
                     refuse("local upload queue has no migration metadata; saved uploads were not changed");
                 }
             } else {
-                if (query($db, "SELECT 1 FROM sqlite_master WHERE type=\x27view\x27 AND name=\x27delivery_jobs\x27") eq "1") {
+                if (query($db, "SELECT 1 FROM sqlite_master WHERE type=\x27view\x27 AND name=\x27delivery_jobs\x27", $store) eq "1") {
                     refuse("local history has an unverified upload migration; saved uploads were not changed");
                 }
                 $required{0} = 1;
@@ -581,7 +637,7 @@ my $verified = eval {
     1;
 };
 refuse("could not verify local history compatibility; saved uploads were not changed") unless $verified;
-' "$1" "$HOME/.agentworkforce/probe" < /dev/null
+' "$1" "$HOME/.agentworkforce/probe" "$allow_immutable" "$DOMAIN/$LABEL" < /dev/null
 }
 
 # --- the LaunchAgent ------------------------------------------------------------
