@@ -169,6 +169,20 @@ watchdog exposes retry and diagnostics if the service has not become ready.
   turning the setting off first turns off the systemd unit with the person's
   agreement. A core an earlier run left running on another version is
   stopped and replaced.
+- **macOS without the app.** `macos/install.sh` installs the core alone, for
+  a Mac that runs agents but not the app, under
+  `~/.local/lib/agent-relay/current` and runs it as the LaunchAgent
+  `com.agentrelay.desktop.core.headless` in `~/Library/LaunchAgents`:
+  `agent-relay-probe relay serve --headless` in the user's `gui/<uid>` session,
+  `RunAtLoad`, and `KeepAlive` only after an unsuccessful exit. It uses the
+  app's socket and data directory. Every 5 seconds a headless core checks
+  whether an installed `Agent Relay.app` has its core job
+  (`com.agentrelay.desktop.core`) loaded, and if so shuts down cleanly to hand
+  over to it; the clean exit keeps launchd from starting it again. The
+  installer refuses while the app is installed, and `--uninstall` removes the
+  job before the app is installed. A `gui/<uid>` job runs only while the
+  user is logged in, so an unattended Mac needs automatic login. See
+  [macos/README.md](../macos/README.md#headless-no-app).
 - **Shutdown.** SIGTERM, SIGINT, `daemon.shutdown`, or stdin closing (with
   `--exit-on-stdin-eof`). The daemon publishes the `shutdown` event to every
   greeted client, stops push channels, closes connections, and removes its

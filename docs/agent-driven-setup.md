@@ -100,6 +100,28 @@ bundled helper. Check `launchctl print "gui/$(id -u)/com.agentrelay.desktop.core
 and wait for the socket again. Do not use `sfltool resetbtm`: it resets other
 apps' background items too.
 
+### A Mac without the app
+
+To run agents on a Mac without installing the app, install the core alone
+with [`macos/install.sh`](../macos/install.sh), the counterpart of
+[`linux/install.sh`](../linux/install.sh). It downloads
+`AgentRelay-<version>-macOS-<arch>-probe.tar.gz`, checks it against the
+release's `.sha256` and the core's Developer ID signature, installs it under
+`~/.local/lib/agent-relay`, and runs it as the LaunchAgent
+`com.agentrelay.desktop.core.headless`, using the same socket and data
+directory as the app. No administrator rights are needed.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay-app/main/macos/install.sh | bash
+~/.local/lib/agent-relay/current/agent-relay-probe setup
+```
+
+The core runs in the user's login session (`gui/<uid>`), so the user must be
+logged in at the Mac; an unattended Mac needs automatic login. The installer
+refuses while the app is installed. Run it with `--uninstall` before
+installing the app; settings and sign-in are kept. See
+[macos/README.md](../macos/README.md#headless-no-app).
+
 ## Scriptable Windows installation
 
 The supported path for a Windows PC or server without the app is the bare
