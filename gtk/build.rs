@@ -1,5 +1,6 @@
 #[path = "../desktop-core/build_version.rs"]
 mod build_version;
+mod cobrand_mark;
 #[path = "../desktop-core/windows_resources.rs"]
 mod windows_resources;
 
@@ -183,16 +184,12 @@ fn cobrand(out: &Path, profile_id: &str) {
             println!("cargo:rerun-if-changed={}", mark.display());
             let data = fs::read(&mark)
                 .unwrap_or_else(|error| panic!("DESKTOP_COBRAND_MARK {}: {error}", mark.display()));
-            let kind = if data.starts_with(b"\x89PNG") {
-                "png"
-            } else if String::from_utf8_lossy(&data).contains("<svg") {
-                "svg"
-            } else {
+            let kind = cobrand_mark::mark_kind(&data).unwrap_or_else(|| {
                 panic!(
                     "DESKTOP_COBRAND_MARK must be an SVG or a PNG: {}",
                     mark.display()
                 )
-            };
+            });
             (name, data, kind)
         }
     };

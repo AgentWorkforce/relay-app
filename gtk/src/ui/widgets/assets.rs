@@ -285,9 +285,18 @@ pub(super) fn mark_label(mark: &str) -> &'static str {
 
 // The brand widgets built from these assets; the product name comes from
 // the build's profile.
-use crate::build_profile::{CoBrand, MarkKind, Profile, PRODUCT_NAME};
-use gtk::prelude::*;
+use crate::build_profile::{CoBrand, Profile, PRODUCT_NAME};
+use gtk::{gdk, gdk_pixbuf, prelude::*};
 use gtk4 as gtk;
+use std::{cell::RefCell, collections::HashMap};
+
+/// Each co-brand mark fitted into its square, by the mark's file and the
+/// side in pixels; none for a mark the image loaders cannot read.
+type FittedMarks = HashMap<(&'static [u8], i32), Option<gdk::Texture>>;
+
+thread_local! {
+    static COBRAND_MARKS: RefCell<FittedMarks> = RefCell::default();
+}
 
 /// The app's mark, `size` points square.
 pub fn brand(size: i32) -> gtk::Widget {
@@ -332,6 +341,23 @@ fn profile_name(profile: Profile) -> gtk::Box {
     name
 }
 
+/// The sign-in window's lockup: the app's mark and the wordmark, read out
+/// as "Sign in to Agent Relay", and under it a co-branded build's "for
+/// <customer>" line ([`cobrand_line`]).
+pub fn signin_lockup() -> gtk::Box {
+    let lockup = super::vbox(0, &[]);
+    let row = super::hbox(12, &[]);
+    row.append(&brand(42));
+    row.append(&wordmark(28));
+    super::name(&row, "Sign in to Agent Relay");
+    lockup.append(&row);
+    if let Some(line) = cobrand_line() {
+        crate::ui::zoom::margins(&line, 12, 0, 0, 0);
+        lockup.append(&line);
+    }
+    lockup
+}
+
 /// The line a co-branded build draws under its Agent Relay lockup: "for",
 /// the customer's mark fitted into 16 points, and the customer's name, read
 /// out as "for <name>", as macOS's `CoBrandLineView`. None for a build
@@ -343,7 +369,7 @@ pub fn cobrand_line() -> Option<gtk::Box> {
 }
 
 /// [`cobrand_line`] for `cobrand`.
-fn cobrand_line_for(cobrand: &CoBrand) -> gtk::Box {
+pub fn cobrand_line_for(cobrand: &CoBrand) -> gtk::Box {
     let line = super::hbox(6, &["cobrand-line"]);
     line.set_halign(gtk::Align::Start);
     let word = super::text("for", &["secondary", "cobrand-for"]);
@@ -365,24 +391,35 @@ fn cobrand_line_for(cobrand: &CoBrand) -> gtk::Box {
 /// The customer's mark, an SVG or a PNG, fitted into `size` points square
 /// at its own aspect and sharp at the display's scale.
 fn cobrand_mark(cobrand: &CoBrand, size: i32) -> Option<super::Sized> {
-    let side = size * super::display_scale();
-    // The mark's own size, from a first read, picks the fitted raster's.
-    let loader = gtk::gdk_pixbuf::PixbufLoader::new();
-    loader.write(cobrand.mark).ok()?;
-    loader.close().ok()?;
-    let natural = loader.pixbuf()?;
-    let (width, height) = fitted(natural.width(), natural.height(), side);
-    let key = match cobrand.mark_kind {
-        MarkKind::Svg => "cobrand-mark-svg",
-        MarkKind::Png => "cobrand-mark-png",
-    };
-    let texture = super::raster(key, cobrand.mark, width, height)?;
+    let texture = fitted_mark(cobrand.mark, size * super::display_scale())?;
     let picture = gtk::Picture::for_paintable(&texture);
     picture.set_can_shrink(true);
     picture.set_keep_aspect_ratio(true);
     let sized = super::Sized::new(size, size, &picture);
     sized.set_valign(gtk::Align::Center);
     Some(sized)
+}
+
+/// `data` decoded once, fitted into a `side` pixels square at its own
+/// aspect: the loader learns the mark's size before it decodes and is told
+/// the fitted one then. Kept by `data` and `side` for the next lockup.
+fn fitted_mark(data: &'static [u8], side: i32) -> Option<gdk::Texture> {
+    if let Some(found) = COBRAND_MARKS.with(|marks| marks.borrow().get(&(data, side)).cloned()) {
+        return found;
+    }
+    let loader = gdk_pixbuf::PixbufLoader::new();
+    loader.connect_size_prepared(move |loader, width, height| {
+        let (width, height) = fitted(width, height, side);
+        loader.set_size(width, height);
+    });
+    let texture = loader
+        .write(data)
+        .and_then(|_| loader.close())
+        .ok()
+        .and_then(|_| loader.pixbuf())
+        .map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf));
+    COBRAND_MARKS.with(|marks| marks.borrow_mut().insert((data, side), texture.clone()));
+    texture
 }
 
 /// `width` by `height` fitted into a `side` square, keeping its aspect.

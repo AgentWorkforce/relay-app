@@ -264,7 +264,11 @@ if [ -n "$cobrand_mark" ]; then
   cobrand_name="${cobrand_name%"${cobrand_name##*[![:space:]]}"}"
   [ -n "$cobrand_name" ] || die "--cobrand-name must not be empty or blank"
   [[ "$cobrand_name" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
-  [ "${#cobrand_name}" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has ${#cobrand_name}"
+  # Its length in characters, as gtk/build.rs counts them, whatever the
+  # locale: its bytes but UTF-8's continuation bytes (bash's ${#} counts
+  # bytes under LC_ALL=C).
+  cobrand_name_length="$(printf '%s' "$cobrand_name" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')"
+  [ "$cobrand_name_length" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has $cobrand_name_length"
   # Absolute before cargo sees it, as the icon.
   cobrand_mark="$(cd "$(dirname "$cobrand_mark")" && pwd)/$(basename "$cobrand_mark")"
 fi

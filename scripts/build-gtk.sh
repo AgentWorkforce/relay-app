@@ -206,7 +206,11 @@ if [ -n "$COBRAND_MARK" ]; then
   COBRAND_NAME="${COBRAND_NAME%"${COBRAND_NAME##*[![:space:]]}"}"
   [ -n "$COBRAND_NAME" ] || die "--cobrand-name must not be empty or blank"
   [[ "$COBRAND_NAME" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
-  [ "${#COBRAND_NAME}" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has ${#COBRAND_NAME}"
+  # Its length in characters, as gtk/build.rs counts them, whatever the
+  # locale: its bytes but UTF-8's continuation bytes (bash's ${#} counts
+  # bytes under LC_ALL=C).
+  COBRAND_NAME_LENGTH="$(printf '%s' "$COBRAND_NAME" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')"
+  [ "$COBRAND_NAME_LENGTH" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has $COBRAND_NAME_LENGTH"
   COBRAND_MARK="$(cd "$(dirname "$COBRAND_MARK")" && pwd)/$(basename "$COBRAND_MARK")"
 fi
 # What gtk/build.rs reads. The default of each is applied there, so an
