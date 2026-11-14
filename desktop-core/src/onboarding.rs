@@ -9,6 +9,14 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// The Linux systemd user unit that runs the headless core.
+const SYSTEMD_UNIT: &str = "agent-relay.service";
+/// The macOS headless LaunchAgent label and plist file name, as written by
+/// `macos/install.sh`; keep the two in step.
+const LAUNCH_AGENT_LABEL: &str = "com.agentrelay.desktop.core.headless";
+#[cfg(target_os = "macos")]
+const LAUNCH_AGENT_PLIST: &str = "com.agentrelay.desktop.core.headless.plist";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Sharing {
     Selected,
@@ -110,19 +118,42 @@ impl Backend for LocalCore {
     fn start_service(&mut self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            std::process::Command::new("systemctl")
-                .args(["--user", "start", "agent-relay.service"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
+            run_quiet("systemctl", &["--user", "start", SYSTEMD_UNIT])
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            let target = format!("gui/{}/{LAUNCH_AGENT_LABEL}", nix::unistd::getuid());
+            if run_quiet("launchctl", &["kickstart", &target]) {
+                return true;
+            }
+            // Not loaded yet: load the installed plist, then kick it again.
+            let Some(home) = std::env::var_os("HOME") else {
+                return false;
+            };
+            let plist = PathBuf::from(home)
+                .join("Library/LaunchAgents")
+                .join(LAUNCH_AGENT_PLIST);
+            let domain = format!("gui/{}", nix::unistd::getuid());
+            run_quiet(
+                "launchctl",
+                &["bootstrap", &domain, &plist.to_string_lossy()],
+            ) && run_quiet("launchctl", &["kickstart", &target])
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             false
         }
     }
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_quiet(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 struct Terminal {
     json: bool,
