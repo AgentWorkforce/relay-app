@@ -1889,22 +1889,26 @@ jobs:
           # (a cloud profile: from its own feed) so their one-line installs
           # keep working wherever the source lives. Every product installs
           # into the same prefix and user unit (one Agent Relay app per
-          # machine), so a profile release publishes both, set to install the
-          # profile's own releases: its product name, releases repository,
-          # asset prefix, feed (github or cloud), site, profile id and feed
-          # public key replace the default's seven assignments in each
-          # (docs/workspace-layout.md, "Site profiles"). A github: profile
+          # machine), so a profile release publishes all three (install.sh
+          # for Linux, install-macos.sh for macOS, install.ps1 for Windows),
+          # set to install the profile's own releases: its product name,
+          # releases repository, asset prefix, feed (github or cloud), site,
+          # profile id and feed public key replace the default's seven
+          # assignments in each (docs/workspace-layout.md, "Site profiles").
+          # install-macos.sh reads releases repositories only and refuses a
+          # cloud feed, which carries no macOS core bundle. A github: profile
           # needs its releases repository and a cloud profile its site, id
           # and key; with neither a repository nor a site there is nothing
           # to install from, and the step fails. Nothing is logged but the
           # opaque id.
           if [ -z "$PROFILE" ]; then
             cp linux/install.sh release-assets/install.sh
+            cp macos/install.sh release-assets/install-macos.sh
             cp windows/install.ps1 release-assets/install.ps1
           else
-            python3 - linux/install.sh windows/install.ps1 release-assets <<'PY'
+            python3 - linux/install.sh macos/install.sh windows/install.ps1 release-assets <<'PY'
           import os, re, shlex, sys
-          shell, powershell, target = sys.argv[1:]
+          shell, mac_shell, powershell, target = sys.argv[1:]
           env = {name: os.environ.get(name, "") for name in (
               "PROFILE", "PRODUCT_NAME", "RELEASES_REPOSITORY", "ASSET_PREFIX",
               "RELEASE_FEED", "SITE_URL", "FEED_PUBLIC_KEY")}
@@ -1959,6 +1963,7 @@ jobs:
           }
           for source, name, assign in (
               (shell, "install.sh", lambda key, value: (rf"^{key}=.*$", f"{key}={shlex.quote(value)}")),
+              (mac_shell, "install-macos.sh", lambda key, value: (rf"^{key}=.*$", f"{key}={shlex.quote(value)}")),
               (powershell, "install.ps1", lambda key, value: (
                   rf"^\${PS_NAMES[key]} = .*$", f"${PS_NAMES[key]} = {powershell_string(value)}")),
           ):
@@ -1972,9 +1977,9 @@ jobs:
               with open(os.path.join(target, name), "w", encoding="utf-8", newline="") as file:
                   file.write(text)
           PY
-            echo "Profile $PROFILE: install.sh and install.ps1 for the profile's releases."
+            echo "Profile $PROFILE: install.sh, install-macos.sh and install.ps1 for the profile's releases."
           fi
-          ( cd release-assets && sha256sum install.sh > install.sh.sha256 && sha256sum install.ps1 > install.ps1.sha256 )
+          ( cd release-assets && for script in install.sh install-macos.sh install.ps1; do sha256sum "$script" > "$script.sha256"; done )
           ( cd release-assets && for package in *.dmg *.tar.gz *.deb *.zip *.exe; do sha256sum "$package" > "$package.sha256"; done )
 
           probe_version=""
@@ -2056,7 +2061,7 @@ jobs:
           retention-days: 7
 
       # A cloud feed: declare the candidate's versioned packages,
-      # install.sh and install.ps1 (never the unversioned aliases or .sha256 files: the feed
+      # install.sh and install.ps1 (never the unversioned aliases, install-macos.sh or .sha256 files: the feed
       # binds names to <asset_prefix>-<version>- and records each sha256),
       # upload each, then publish. Stable is published as latest; beta is
       # not. A failed upload or publish leaves the feed's draft unpublished
@@ -2105,6 +2110,8 @@ jobs:
           files: |
             release-assets/install.sh
             release-assets/install.sh.sha256
+            release-assets/install-macos.sh
+            release-assets/install-macos.sh.sha256
             release-assets/install.ps1
             release-assets/install.ps1.sha256
             release-assets/${{ env.ASSET_PREFIX }}-${{ needs.version.outputs.version }}-macOS*-arm64.dmg

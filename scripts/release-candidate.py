@@ -17,8 +17,14 @@ import sys
 MANIFEST = "release-candidate.json"
 WORKFLOW = ".github/workflows/desktop-release.yml"
 ARCHITECTURES = ["macOS-arm64", "macOS-x64", "Linux-arm64", "Linux-x64", "Windows-arm64", "Windows-x64"]
-# The headless installers every release carries, set to its own releases.
+# The headless installers every release carries, set to its own releases:
+# Linux and Windows. install-macos.sh is optional in a candidate (see
+# required_assets).
 INSTALL_SCRIPTS = ("install.sh", "install.ps1")
+OPTIONAL_INSTALL_SCRIPTS = ("install-macos.sh",)
+# The installers a cloud feed publishes. install-macos.sh stays out: the feed
+# carries no macOS probe bundle for it to install, and a cloud copy refuses.
+CLOUD_INSTALL_SCRIPTS = ("install.sh", "install.ps1")
 # A site profile's opaque id (docs/workspace-layout.md, "Site profiles");
 # empty is the default profile. The manifest records the id, never a product
 # name, and the assets are named by it (scripts/site-origin.sh asset_prefix).
@@ -65,7 +71,9 @@ def asset_prefix(profile):
 
 def required_assets(version, profile=""):
     # Every profile's release has install.sh and install.ps1, set to its own
-    # releases.
+    # releases; install-macos.sh is published by every release built since it
+    # existed, so candidates built before it, and hotfixes prepared from older
+    # bases, verify without it.
     prefix = asset_prefix(profile)
     return {
         f"{prefix}-{pinned}{platform}-{arch}{suffix}"
@@ -92,6 +100,7 @@ def inventory(directory, version, profile=""):
     if not (directory / "release-notes.md").is_file():
         raise ValueError("missing prepared release-notes.md")
     required = required_assets(version, profile)
+    required |= {name for name in OPTIONAL_INSTALL_SCRIPTS if (assets / name).is_file()}
     floors = []
     for arch in ("arm64", "x64"):
         images = list(assets.glob(f"{prefix}-{version}-macOS[0-9]*-{arch}.dmg"))
@@ -134,7 +143,7 @@ def cloud_assets(files, version, profile, log=None):
     """The names a cloud feed publishes, from a candidate's inventory: the
     fixed cloud set (CLOUD_PACKAGE) of version-pinned packages, install.sh
     and install.ps1, exactly 16. The unversioned aliases, the .sha256 files,
-    the macOS probes and the unfloored disk images stay out: the feed binds every
+    install-macos.sh, the macOS probes and the unfloored disk images stay out: the feed binds every
     name but the installers to <asset_prefix>-<version>-, and its signed
     manifest carries each sha256. Every selected and omitted name is logged
     (to stderr by default), so nothing is dropped silently."""
@@ -143,11 +152,11 @@ def cloud_assets(files, version, profile, log=None):
     bound = f"{prefix}-{version}-"
     names = sorted(
         name for name in (path.removeprefix("assets/") for path in files if path.startswith("assets/"))
-        if not name.endswith(".sha256") and (name in INSTALL_SCRIPTS or name.startswith(bound))
+        if not name.endswith(".sha256") and (name in INSTALL_SCRIPTS + OPTIONAL_INSTALL_SCRIPTS or name.startswith(bound))
     )
     selected = [name for name in names
-                if name in INSTALL_SCRIPTS or CLOUD_PACKAGE.fullmatch(name[len(bound):])]
-    if not set(INSTALL_SCRIPTS) <= set(selected) or len(selected) != CLOUD_ASSET_COUNT:
+                if name in CLOUD_INSTALL_SCRIPTS or CLOUD_PACKAGE.fullmatch(name[len(bound):])]
+    if not set(CLOUD_INSTALL_SCRIPTS) <= set(selected) or len(selected) != CLOUD_ASSET_COUNT:
         raise ValueError(f"a cloud release needs exactly {CLOUD_ASSET_COUNT} assets: install.sh, install.ps1 and"
                          " the floored macOS images, Linux tarballs, debs and probe bundles and Windows zips,"
                          f" Setup.exes and probe bundles of both architectures; found {len(selected)}")

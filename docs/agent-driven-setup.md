@@ -109,11 +109,18 @@ with [`macos/install.sh`](../macos/install.sh), the counterpart of
 release's `.sha256` and the core's Developer ID signature, installs it under
 `~/.local/lib/agent-relay`, and runs it as the LaunchAgent
 `com.agentrelay.desktop.core.headless`, using the same socket and data
-directory as the app. No administrator rights are needed.
+directory as the app. No administrator rights are needed. Every release
+publishes it as `install-macos.sh`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay-app/main/macos/install.sh | bash
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash
 ~/.local/lib/agent-relay/current/agent-relay-probe setup
+```
+
+To remove it again (settings and sign-in are kept):
+
+```sh
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash -s -- --uninstall
 ```
 
 The core runs in the user's login session (`gui/<uid>`), so the user must be

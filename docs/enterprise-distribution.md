@@ -85,7 +85,10 @@ Every updater reads the unauthenticated public GitHub Releases API:
   download base can be overridden by environment (`:57-58`). It fetches with
   `curl --proto '=https'` and no credentials (`:122`) and checks the sha256
   (`:329-332`). `windows/install.ps1` hardcodes the default repository
-  (`:70-71`) and is not substituted per profile.
+  (`:70-71`) and is not substituted per profile. `macos/install.sh`,
+  published as `install-macos.sh`, carries the same seven values as
+  `linux/install.sh` and is substituted per profile the same way; it reads
+  a releases repository only and refuses a `cloud` feed.
 
 What is unsigned: Linux and Windows artifacts (`linux/install.sh:20-22`,
 `docs/windows-app.md:207-208`). No release carries a signed checksum list or
@@ -125,6 +128,7 @@ The feed is compiled in next to the site, with the feed public key:
 | `scripts/build-gtk.sh`, `scripts/build-windows.sh` | `--releases-repository` | `--release-feed`, `--feed-public-key` |
 | `windows/installer/AgentRelay.iss` | `SupportUrl` defaults to the releases page | for `cloud`, `SupportUrl` defaults to `{site}/cloud/dashboard/downloads` |
 | `linux/install.sh`, `windows/install.ps1` | substituted repository (Linux only) | substituted `RELEASE_FEED`, `SITE_URL`, `PROFILE_ID`, `FEED_PUBLIC_KEY` on both |
+| `macos/install.sh` (published as `install-macos.sh`) | substituted, all seven values | a `cloud` feed path; until then a `cloud` copy refuses to install |
 
 No app code reads a feed from the environment. The `AGENT_RELAY_RELEASES_API`
 and `AGENT_RELAY_DOWNLOAD_BASE` overrides of the install scripts stay for a
@@ -369,6 +373,11 @@ and result codes below are the draft's and may change.
   and so on). The repository's copies are the default product's
   (`RELEASE_FEED='github'`); Desktop Release stages a profile's copies with
   its own values (see [Publish pipeline](#publish-pipeline)).
+- `macos/install.sh`, published as `install-macos.sh`, takes the same seven
+  values but has no `cloud` path yet: a `cloud` copy refuses to install
+  ("the macOS installer does not support the cloud feed yet"; `--status`
+  and `--uninstall` still work), and the feed does not carry it, since the
+  feed has no macOS probe bundle for it to install.
 - For a `cloud` profile, either script refuses `AGENT_RELAY_RELEASES_API`
   and `AGENT_RELAY_DOWNLOAD_BASE`, then reads the proposed
   `GET {site}/cloud/api/v1/desktop/feed/manifest?channel=stable` with

@@ -9,10 +9,16 @@
 # later runs updates it in place. Run it again at any time; an up-to-date
 # healthy install is left alone.
 #
-#   curl -fsSL <this script> | bash
+#   curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash
+#   curl -fsSL <same URL> | bash -s -- --uninstall      (any option, the same way)
 #   bash install.sh [--version X.Y.Z] [--update] [--rollback] [--dry-run]
 #   bash install.sh --status
 #   bash install.sh --uninstall
+#
+# Every release publishes this script as the asset install-macos.sh (Stage
+# the release assets, .github/workflows/desktop-release.yml). Piped into
+# bash, the script itself is bash's standard input: no command here may read
+# it, so every one that could is given /dev/null.
 #
 # What it does:
 #   1. Refuses when the Agent Relay app is installed or its core is loaded:
@@ -39,9 +45,26 @@
 # `find -printf`, `mv -T`, flock(1), associative arrays or {fd} redirections.
 set -euo pipefail
 
+# The product whose releases this installs. A site profile's release
+# publishes a copy with these lines set to its own (Stage the release
+# assets, .github/workflows/desktop-release.yml); keep each one assignment.
+# RELEASE_FEED is 'github' (the releases repository) or 'cloud' (the signed
+# release feed of SITE_URL for PROFILE_ID, checked with FEED_PUBLIC_KEY), as
+# in linux/install.sh. This script reads the releases repository only: a
+# cloud feed carries no macOS core bundle, so a cloud profile's copy refuses
+# to install.
 PRODUCT_NAME='Agent Relay'
 RELEASES_REPOSITORY='AgentWorkforce/relay-desktop-releases'
 ASSET_PREFIX='AgentRelay'
+RELEASE_FEED='github'
+# The cloud feed's three values are substituted with the rest but not read
+# until the macOS installer has a cloud path.
+# shellcheck disable=SC2034
+SITE_URL=''
+# shellcheck disable=SC2034
+PROFILE_ID=''
+# shellcheck disable=SC2034
+FEED_PUBLIC_KEY=''
 
 SCRIPT_NAME="agent-relay install"
 RELEASES_API="${AGENT_RELAY_RELEASES_API:-https://api.github.com/repos/$RELEASES_REPOSITORY/releases}"
@@ -67,9 +90,9 @@ ACTION=install
 
 usage() {
   cat <<EOF
-Usage: install.sh [--version X.Y.Z] [--update] [--rollback] [--dry-run]
-       install.sh --status
-       install.sh --uninstall [--dry-run]
+Usage: install-macos.sh [--version X.Y.Z] [--update] [--rollback] [--dry-run]
+       install-macos.sh --status
+       install-macos.sh --uninstall [--dry-run]
 
   --version X.Y.Z  Install this release instead of the latest.
   --update         Update an existing install (fails when there is none).
@@ -87,7 +110,7 @@ run() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '%s: would run: %s\n' "$SCRIPT_NAME" "$*"
   else
-    "$@"
+    "$@" < /dev/null
   fi
 }
 
@@ -133,18 +156,18 @@ valid_version() { printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A
 have() { command -v "$1" >/dev/null 2>&1; }
 
 fetch() { # url dest
-  curl -fsSL --proto '=https' --retry 3 -o "$2" "$1"
+  curl -fsSL --proto '=https' --retry 3 -o "$2" "$1" < /dev/null
 }
 
 probe_version() { # binary -> version it reports
-  "$1" --version 2>/dev/null | awk '{print $NF}' | head -n 1
+  "$1" --version < /dev/null 2>/dev/null | awk '{print $NF}' | head -n 1
 }
 
 # The unit and the health check say `relay serve` and `relay call`, as
 # linux/install.sh does: earlier releases' cores need that word and later ones
 # drop it, so a rollback to an earlier core still starts and answers.
 core_version() { # -> what the running core reports, or nothing
-  "$PROBE" relay call status.get --json 2>/dev/null \
+  "$PROBE" relay call status.get --json < /dev/null 2>/dev/null \
     | grep -o '"daemon":{[^}]*}' | grep -o '"version":"[^"]*"' | head -n 1 | cut -d'"' -f4
 }
 
@@ -170,7 +193,7 @@ installed_versions() { # oldest first
   done | sort -t. -k1,1n -k2,2n -k3,3n
 }
 
-loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
+loaded() { launchctl print "$DOMAIN/$LABEL" < /dev/null >/dev/null 2>&1; }
 
 # One installer at a time per prefix: install, update, rollback and uninstall
 # all change versions/ and `current`, and two at once can leave `current`
@@ -210,7 +233,7 @@ if [ "$ACTION" = status ]; then
   [ -z "$versions" ] || note "versions kept: $versions"
   if [ -f "$PLIST" ]; then note "LaunchAgent: $PLIST"; else note "LaunchAgent: none"; fi
   if loaded; then
-    pid="$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}')"
+    pid="$(launchctl print "$DOMAIN/$LABEL" < /dev/null 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}')"
     note "launchd: $LABEL is loaded in $DOMAIN${pid:+, pid $pid}"
   else
     note "launchd: $LABEL is not loaded in $DOMAIN"
@@ -264,6 +287,13 @@ fi
 
 # --- install, update, rollback: preflight -------------------------------------
 
+# --status and --uninstall above need no feed; installing does.
+case "$RELEASE_FEED" in
+  github) ;;
+  cloud) die "the macOS installer does not support the cloud feed yet; install the $PRODUCT_NAME app from your workspace's downloads page" ;;
+  *) die "this copy of install-macos.sh names an unknown release feed" ;;
+esac
+
 [ "$UPDATE" = 0 ] || [ -n "$current_version" ] || die "--update: nothing is installed in $PREFIX; run without --update to install"
 
 # The app's core and this one serve the same socket: the second to start
@@ -275,7 +305,7 @@ for apps in /Applications "$HOME/Applications"; do
 done
 if [ -z "$app_reason" ]; then
   for app_label in $APP_LABELS; do
-    if launchctl print "$DOMAIN/$app_label" >/dev/null 2>&1; then app_reason="the app's core ($app_label) is loaded"; break; fi
+    if launchctl print "$DOMAIN/$app_label" < /dev/null >/dev/null 2>&1; then app_reason="the app's core ($app_label) is loaded"; break; fi
   done
 fi
 if [ -n "$app_reason" ]; then
@@ -284,7 +314,7 @@ fi
 
 # gui/<uid> exists only while the user is logged in at the Mac (or by
 # automatic login); an SSH session alone has no such domain.
-launchctl print "$DOMAIN" >/dev/null 2>&1 \
+launchctl print "$DOMAIN" < /dev/null >/dev/null 2>&1 \
   || die "there is no login session ($DOMAIN) for $(id -un): log in at the Mac's screen once (or turn on automatic login), then run this again; SSH alone cannot start a LaunchAgent"
 
 # Read the installation again under the lock: another installer may have
@@ -455,7 +485,7 @@ my $verified = eval {
     1;
 };
 refuse("could not verify local history compatibility; saved uploads were not changed") unless $verified;
-' "$1" "$HOME/.agentworkforce/probe"
+' "$1" "$HOME/.agentworkforce/probe" < /dev/null
 }
 
 # --- the LaunchAgent ------------------------------------------------------------
@@ -520,7 +550,7 @@ ensure_plist() {
   printf '%s\n' "$wanted" > "$PLIST.new"
   chmod 0644 "$PLIST.new"
   if have plutil; then
-    plutil -lint "$PLIST.new" >/dev/null || { rm -f "$PLIST.new"; die "the LaunchAgent written is not a valid property list"; }
+    plutil -lint "$PLIST.new" < /dev/null >/dev/null || { rm -f "$PLIST.new"; die "the LaunchAgent written is not a valid property list"; }
   fi
   mv "$PLIST.new" "$PLIST"
 }
@@ -558,7 +588,7 @@ switch_to() { # version
 next_steps() {
   [ "$DRY_RUN" = 0 ] || return 0
   [ -x "$PROBE" ] || return 0
-  if "$PROBE" setup --help >/dev/null 2>&1; then
+  if "$PROBE" setup --help < /dev/null >/dev/null 2>&1; then
     note "finish signing in and choosing providers with:"
     printf '  %q setup\n' "$PROBE"
     note "approve the displayed device code in a browser on any computer."
@@ -654,7 +684,7 @@ if [ "$has_license" = 1 ]; then
     || die "the archive's LICENSE is not a plain file"
 fi
 # The signature is checked before the core is run at all.
-codesign --verify --strict "-R=$REQUIREMENT" "$candidate" 2>/dev/null \
+codesign --verify --strict "-R=$REQUIREMENT" "$candidate" < /dev/null 2>/dev/null \
   || die "the downloaded core is not signed with $PRODUCT_NAME's Developer ID (team QUJ7SA6X8X)"
 note "signature verified"
 reported="$(probe_version "$candidate" || true)"

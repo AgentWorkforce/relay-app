@@ -8,8 +8,11 @@
 # rerun, an update, a bad checksum, an unsigned core (never run), a stray
 # archive, a new version that never answers or that launchd refuses to
 # restart (rolled back), --rollback, --dry-run, --status, pruning to three
-# versions in numeric order, the local history checks, and --uninstall, which
-# keeps the core's data directory. Nothing here talks to a real launchd.
+# versions in numeric order, the local history checks, --uninstall, which
+# keeps the core's data directory, the script piped into bash as the release
+# asset's one-line install is (no command it runs may read the script from
+# standard input), --help and an unknown option, and a cloud profile's copy,
+# which refuses to install. Nothing here talks to a real launchd.
 #
 #   scripts/test-macos-install.sh
 set -euo pipefail
@@ -42,6 +45,15 @@ plist="$HOME/Library/LaunchAgents/$label.plist"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok - $*"; }
 
+# Piped into bash (curl ... | bash), the installer is bash's standard input.
+# With STDIN_CHECK set, the fake core, codesign, curl and launchctl each read
+# a byte of theirs and record it if there was one: a command that reads the
+# script eats the rest of the installer.
+stdin_check="if [ -n \"\${STDIN_CHECK:-}\" ] && [ -n \"\$(head -c 1)\" ]; then echo \"\$0 read standard input\" >> \"$root/state/stdin-violations\"; fi"
+# The script as curl hands it to bash: on a pipe, not a seekable file
+# (`bash -s < file` would let a stray read skip the script, not starve it).
+piped() { cat "$1"; }
+
 # A fake core: reports its version, and answers status.get with it (and an
 # account secret the installer must never print) only while the fake launchd
 # says it is the one running. KIND: ok, broken (never answers) or unsigned
@@ -54,6 +66,7 @@ release() { # version [kind]
   cat > "$tree/agent_relay/helpers/agent-relay-probe" <<EOF
 #!/usr/bin/env bash
 # kind: $kind
+$stdin_check
 [ "$kind" != unsigned ] || touch "$root/state/ran-unsigned"
 if [ "\$1" = --version ]; then echo "agent-relay-probe $version"; exit 0; fi
 if [ "\$1" = --local-storage-capabilities ]; then
@@ -112,6 +125,7 @@ requirement='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2
 printf '%s\n' "-R=$requirement" > "$root/state/requirement"
 cat > "$root/bin/codesign" <<EOF
 #!/usr/bin/env bash
+$stdin_check
 # Passes a core unless it is the unsigned kind; the requirement must be the
 # full Developer ID requirement, exactly.
 echo "\$*" >> "$root/state/codesign.log"
@@ -122,6 +136,7 @@ exit 0
 EOF
 cat > "$root/bin/curl" <<EOF
 #!/usr/bin/env bash
+$stdin_check
 out=""; url=""
 while [ \$# -gt 0 ]; do
   case "\$1" in -o) out="\$2"; shift 2 ;; --proto|--retry) shift 2 ;; -*) shift ;; *) url="\$1"; shift ;; esac
@@ -138,6 +153,7 @@ EOF
 # and records the version `current` points at as the running core.
 cat > "$root/bin/launchctl" <<EOF
 #!/usr/bin/env bash
+$stdin_check
 echo "\$*" >> "$root/state/launchctl.log"
 state="$root/state"
 if [ -n "\${CURRENT_GUARD:-}" ] && [ ! -L "\$CURRENT_GUARD" ]; then
@@ -246,6 +262,29 @@ if FAKE_UNAME_S=Linux bash "$INSTALL" > "$root/state/out" 2>&1; then fail "insta
 grep -q "installs the macOS core" "$root/state/out" || fail "the non-Darwin refusal does not say why"
 pass "refuses to run anywhere but macOS"
 
+bash "$INSTALL" --help > "$root/state/out" 2>&1 || fail "--help failed"
+grep -q "^Usage: install-macos.sh" "$root/state/out" || fail "--help prints no usage"
+piped "$INSTALL" | bash -s -- -h > "$root/state/out" 2>&1 || fail "-h through a pipe failed"
+grep -q "^Usage: install-macos.sh" "$root/state/out" || fail "-h through a pipe prints no usage"
+rc=0; bash "$INSTALL" --frobnicate > "$root/state/out" 2> "$root/state/err" || rc=$?
+[ "$rc" = 2 ] || fail "an unknown option exited $rc, not 2"
+grep -q "^Usage: install-macos.sh" "$root/state/err" || fail "an unknown option prints no usage on stderr"
+{ [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "--help or an unknown option left files behind"
+pass "--help and -h print usage and exit 0; an unknown option exits 2 with usage"
+
+# A cloud profile's copy: the Stage step sets the seven assignments.
+cloud_copy="$root/install-cloud.sh"
+sed -e "s/^RELEASE_FEED=.*/RELEASE_FEED=cloud/" -e "s|^SITE_URL=.*|SITE_URL=https://relay.acme.test|" \
+  -e "s/^PROFILE_ID=.*/PROFILE_ID=x7k2q/" "$INSTALL" > "$cloud_copy"
+[ "$(grep -c '^RELEASE_FEED=cloud$' "$cloud_copy")" = 1 ] || fail "the cloud copy does not set RELEASE_FEED once"
+: > "$root/state/curl.log"
+if piped "$cloud_copy" | bash -s > "$root/state/out" 2>&1; then fail "a cloud profile's copy installed"; fi
+grep -q "the macOS installer does not support the cloud feed yet" "$root/state/out" || { cat "$root/state/out"; fail "the cloud refusal does not say why"; }
+[ ! -s "$root/state/curl.log" ] || fail "a cloud profile's copy downloaded something"
+{ [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a cloud profile's copy left files behind"
+bash "$cloud_copy" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a cloud profile's copy could not --uninstall"; }
+pass "a cloud profile's copy refuses to install, and can still --uninstall"
+
 app="$HOME/Applications/Agent Relay.app/Contents/Library/LaunchAgents"
 mkdir -p "$app" && touch "$app/com.agentrelay.desktop.core.plist"
 if bash "$INSTALL" > "$root/state/out" 2>&1; then fail "installed beside the app"; fi
@@ -272,6 +311,13 @@ FAKE_UNAME_M=x86_64 FAKE_TRANSLATED=1 bash "$INSTALL" --dry-run > "$root/state/o
 grep -q "release: 1.0.0 (arm64)" "$root/state/out" || fail "a shell under Rosetta did not pick arm64"
 { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "--dry-run left files behind"
 pass "picks x64 on Intel and arm64 under Rosetta"
+
+piped "$INSTALL" | STDIN_CHECK=1 bash -s -- --dry-run > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a piped --dry-run failed"; }
+grep -q "release: 1.0.0 (arm64)" "$root/state/out" || { cat "$root/state/out"; fail "a piped --dry-run did not resolve the release"; }
+grep -q "would run: launchctl bootstrap gui/$uid $plist" "$root/state/out" || { cat "$root/state/out"; fail "a piped --dry-run did not reach the end"; }
+[ ! -s "$root/state/stdin-violations" ] || { cat "$root/state/stdin-violations" >&2; fail "a piped --dry-run let a command read the script"; }
+{ [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a piped --dry-run left files behind"
+pass "bash -s -- --dry-run through a pipe runs to the end and changes nothing"
 
 # --- install, rerun, update ----------------------------------------------------------
 
@@ -480,4 +526,18 @@ grep -Fq "kept settings, sign-in and agent registrations in: $data" "$root/state
 if bash "$INSTALL" --status > "$root/state/out" 2>&1; then fail "--status after --uninstall reported success"; fi
 grep -q "not installed" "$root/state/out" || fail "--status after --uninstall does not say it is not installed"
 pass "--uninstall keeps everything while the job will not unload, then removes the core and keeps its data"
+
+# The release asset's one-line install and uninstall: curl ... | bash, and
+# curl ... | bash -s -- --uninstall.
+piped "$INSTALL" | STDIN_CHECK=1 bash > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a piped install failed"; }
+latest="$(cat "$root/state/latest")"
+[ "$(current)" = "$latest" ] || fail "a piped install points at $(current), not $latest"
+[ "$(cat "$root/state/running")" = "$latest" ] || fail "$latest is not running after a piped install"
+grep -q "before installing the Agent Relay app on this Mac" "$root/state/out" || { cat "$root/state/out"; fail "a piped install did not reach the end"; }
+piped "$INSTALL" | STDIN_CHECK=1 bash -s -- --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a piped --uninstall failed"; }
+{ [ ! -e "$plist" ] && [ ! -e "$prefix" ] && [ ! -e "$root/state/loaded-$label" ]; } || fail "a piped --uninstall left the core behind"
+grep -Fq "kept settings, sign-in and agent registrations in: $data" "$root/state/out" || fail "a piped --uninstall does not say the data is kept"
+[ ! -s "$root/state/stdin-violations" ] || { cat "$root/state/stdin-violations" >&2; fail "a piped run let a command read the script"; }
+[ "$(sha256sum "$data/injectable-agents.json")" = "$data_sum" ] || fail "the core's data changed"
+pass "curl | bash installs and curl | bash -s -- --uninstall removes it, and no command reads the script"
 echo "all macOS install tests passed"
