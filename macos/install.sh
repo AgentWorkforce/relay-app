@@ -83,6 +83,9 @@ RELEASES_API="${AGENT_RELAY_RELEASES_API:-https://api.github.com/repos/$RELEASES
 DOWNLOAD_BASE="${AGENT_RELAY_DOWNLOAD_BASE:-https://github.com/$RELEASES_REPOSITORY/releases/download}"
 KEEP=3
 HEALTH_TIMEOUT="${AGENT_RELAY_HEALTH_TIMEOUT:-60}"
+# How long --uninstall waits for the core, and the session collectors it
+# started, to exit.
+STOP_TIMEOUT="${AGENT_RELAY_STOP_TIMEOUT:-60}"
 # The label is the app's core label plus `.headless`: the app's own jobs
 # (com.agentrelay.desktop.core, .core.local, .core.session) never match it,
 # and its ProductTakeover only looks at plists carrying AgentRelayProduct,
@@ -264,6 +267,37 @@ read_current_product() {
 }
 
 loaded() { launchctl print "$DOMAIN/$LABEL" < /dev/null >/dev/null 2>&1; }
+job_pid() { # -> the loaded job's pid, or nothing
+  launchctl print "$DOMAIN/$LABEL" < /dev/null 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}'
+}
+
+# The core starts each install's session collector as a process of its own
+# (setsid), outside the LaunchAgent's job, so unloading the job does not stop
+# it: it stops by itself within seconds of its executable being removed,
+# closing the session history it holds open. Until it has, a new install's
+# history check can find that history mid-close and fail ("unable to open
+# database file"). This waits until no collector holds its store's lock
+# (collector.lock, flock(2) like the history locks), or STOP_TIMEOUT.
+wait_for_collectors() {
+  [ "$DRY_RUN" = 0 ] || return 0
+  [ -d "$HOME/.agentworkforce/probe" ] || return 0
+  perl -MFcntl=:flock -e '
+    my ($root, $timeout) = @ARGV;
+    my $deadline = time + $timeout;
+    opendir(my $dir, $root) or exit 0;
+    for my $entry (sort readdir($dir)) {
+        next if $entry eq "." || $entry eq "..";
+        my $path = "$root/$entry/collector.lock";
+        next if -l $path || !-f $path;
+        open(my $lock, "<", $path) or next;
+        until (flock($lock, LOCK_SH | LOCK_NB)) {
+            exit 1 if time >= $deadline;
+            select(undef, undef, undef, 0.2);
+        }
+        close($lock);
+    }
+    exit 0' "$HOME/.agentworkforce/probe" "$STOP_TIMEOUT" < /dev/null
+}
 
 # One installer at a time per prefix: install, update, rollback and uninstall
 # all change versions/ and `current`, and two at once can leave `current`
@@ -328,7 +362,7 @@ if [ "$ACTION" = status ]; then
   [ -z "$versions" ] || note "versions kept: $versions"
   if [ -f "$PLIST" ]; then note "LaunchAgent: $PLIST"; else note "LaunchAgent: none"; fi
   if loaded; then
-    pid="$(launchctl print "$DOMAIN/$LABEL" < /dev/null 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}')"
+    pid="$(job_pid)"
     note "launchd: $LABEL is loaded in $DOMAIN${pid:+, pid $pid}"
   else
     note "launchd: $LABEL is not loaded in $DOMAIN"
@@ -352,8 +386,10 @@ if [ "$ACTION" = uninstall ]; then
     ""|/|"$HOME"|"$HOME"/) die "refusing to remove the install prefix $PREFIX" ;;
   esac
   if [ -d "$PREFIX" ]; then lock_installer; fi
+  core_pid=""
   if loaded; then
     note "stopping $LABEL"
+    core_pid="$(job_pid || true)"
     run launchctl bootout "$DOMAIN/$LABEL" || true
     # Nothing is deleted while the job is still loaded: launchd would keep
     # (or restart) a core whose executable is gone.
@@ -362,10 +398,27 @@ if [ "$ACTION" = uninstall ]; then
     if [ "$DRY_RUN" = 0 ] && loaded; then
       die "launchctl could not unload $LABEL; nothing was removed. Run: launchctl bootout $DOMAIN/$LABEL, then run this with --uninstall again"
     fi
+    # bootout can return, and the job be gone, while the core is still
+    # exiting: wait for the process itself too.
+    waited=0
+    while [ "$DRY_RUN" = 0 ] && [ -n "$core_pid" ] && kill -0 "$core_pid" 2>/dev/null && [ "$waited" -lt "$STOP_TIMEOUT" ]; do
+      sleep 1; waited=$((waited + 1))
+    done
+    if [ "$DRY_RUN" = 0 ] && [ -n "$core_pid" ] && kill -0 "$core_pid" 2>/dev/null; then
+      note "the core (pid $core_pid) has not exited yet; it was unloaded and will not start again"
+    fi
   fi
   if [ -f "$PLIST" ] || [ -L "$PLIST" ]; then run rm -f "$PLIST"; fi
+  removed_core=0
   if [ -e "$PREFIX/current" ] || [ -L "$PREFIX/current" ] || [ -d "$PREFIX/versions" ]; then
     run rm -rf "${PREFIX:?}/versions" "${PREFIX:?}/current" "${PREFIX:?}/current.new"
+    removed_core=1
+  fi
+  # After the removal, which is what tells a collector of this core to stop,
+  # and still under the installer lock, so no install starts meanwhile.
+  if [ "$removed_core" = 1 ] && ! wait_for_collectors; then
+    note "a session collector is still closing local session history in $HOME/.agentworkforce/probe;"
+    note "wait for it to stop before installing again, or the install's history check can fail"
   fi
   if [ "$DRY_RUN" = 0 ] && [ -d "$PREFIX" ]; then
     # Safe while held: every other installer takes the lock without waiting,
