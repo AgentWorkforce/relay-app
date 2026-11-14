@@ -2103,10 +2103,8 @@ private struct WorkspaceLogoToolbar: ViewModifier {
     }
 
     private var lockup: some View {
-        HStack(spacing: 8) {
-            Image("BrandMark").resizable().scaledToFit().frame(width: 27, height: 22)
-                .accessibilityIdentifier("Workspace logo")
-            Text("Agent Relay").font(.headline)
-        }
+        Image("BrandMark").resizable().scaledToFit().frame(width: 27, height: 22)
+            .accessibilityLabel("Agent Relay")
+            .accessibilityIdentifier("Workspace logo")
     }
 }
