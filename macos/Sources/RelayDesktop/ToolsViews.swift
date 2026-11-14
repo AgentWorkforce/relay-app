@@ -78,6 +78,8 @@ struct ToolsList: View {
 
 struct ChooseToolsView: View {
     var tools: ToolsModel
+    /// Room for the system focus ring, which is drawn outside the control.
+    private static let focusRingInset: CGFloat = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -85,8 +87,16 @@ struct ChooseToolsView: View {
             Text("Choose where to enable Agent Relay. Running chats may need a reload or a new session.")
                 .zoomFont(size: 13).foregroundStyle(CloudTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ScrollView { ToolsList(tools: tools).frame(maxWidth: .infinity, alignment: .leading) }
-                .frame(maxHeight: .infinity)
+            // The scroll view clips at its bounds, which cut off the leading
+            // edge of a focused checkbox's focus ring. Inset the rows by the
+            // ring's width and pull the scroll view out by the same amount, so
+            // the ring has room and the rows stay aligned with the title.
+            ScrollView {
+                ToolsList(tools: tools).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Self.focusRingInset)
+            }
+            .padding(.horizontal, -Self.focusRingInset)
+            .frame(maxHeight: .infinity)
             if tools.offersTeammateContext { TeammateContextChoice(tools: tools) }
             if tools.eligibleIDs.isEmpty {
                 Text("No supported providers were detected. You can continue and add providers later in Settings › Providers.")
