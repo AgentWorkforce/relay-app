@@ -100,6 +100,9 @@ pass "rollback to a binary that supports the migrated format still works"
 # where SQLite cannot create -shm, mode=ro fails and immutable=1 is the only
 # read-only form that works. It is permitted only with the service stopped,
 # both sidecars absent and collector.lock held by the installer.
+if [ "$(id -u)" = 0 ]; then
+  pass "clean WAL immutable-read guards are skipped as root (root bypasses directory mode bits)"
+else
 python3 - "$storage" <<'PY'
 import pathlib, sqlite3, sys
 for path in pathlib.Path(sys.argv[1]).glob('*.db'):
@@ -115,9 +118,26 @@ before_current="$(current)"; before_restarts="$(restarts)"
 if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
   fail "a running service allowed an immutable SQLite check"
 fi
-[ "$(current)" = "$before_current" ] && [ "$(restarts)" = "$before_restarts" ] \
-  || fail "a refused immutable check changed or restarted the core"
+grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the running-service guard did not report a storage refusal"; }
+if [ "$(current)" != "$before_current" ] || [ "$(restarts)" != "$before_restarts" ]; then
+  fail "a refused immutable check changed or restarted the core"
+fi
+
+# The service is stopped at the shell check, then appears after the collector
+# lock is taken. The in-process recheck must still refuse immutable=1.
 rm "$root/state/running"
+touch "$root/state/activate-on-second-check"
+: > "$root/state/active-checks"
+if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
+  fail "a service that started after the collector lock allowed an immutable SQLite check"
+fi
+grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the post-lock service guard did not report a storage refusal"; }
+[ "$(cat "$root/state/active-checks")" = 2 ] \
+  || fail "the service was checked $(cat "$root/state/active-checks") times, not before and after the lock"
+rm -f "$root/state/activate-on-second-check" "$root/state/active-checks" "$root/state/running"
+
 before_sum="$(sha256sum "$storage/history.db" "$storage/delivery-queue.db")"
 bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1 \
   || { cat "$root/state/out"; fail "a stopped service could not verify clean WAL databases"; }
@@ -129,12 +149,16 @@ flock -n "$collector_fd"
 if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
   fail "a held collector lock allowed an immutable SQLite check"
 fi
+grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the collector-lock guard did not report a storage refusal"; }
 flock -u "$collector_fd"; exec {collector_fd}>&-
 for suffix in wal shm; do
   chmod 0755 "$storage"; touch "$storage/history.db-$suffix"; chmod 0555 "$storage"
   if bash "$INSTALL" --version 3.1.0 > "$root/state/out" 2>&1; then
     fail "a present -$suffix sidecar allowed an immutable SQLite check"
   fi
+  grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+    || { cat "$root/state/out"; fail "the -$suffix guard did not report a storage refusal"; }
   chmod 0755 "$storage"; rm "$storage/history.db-$suffix"; chmod 0555 "$storage"
 done
 chmod 0700 "$storage"
@@ -144,6 +168,7 @@ bash "$INSTALL" --rollback > "$root/state/out" 2>&1 \
   || { cat "$root/state/out"; fail "the clean-WAL fixture did not restore the earlier version"; }
 [ "$(current)" = 3.0.0 ] || fail "the clean-WAL fixture left $(current), not 3.0.0"
 pass "clean WAL databases use immutable reads only with no service, sidecars or collector"
+fi
 
 QUEUE_FORMATS=0,1 release 3.2.0 broken
 if bash "$INSTALL" --version 3.2.0 > "$root/state/out" 2>&1; then fail "broken core accepted"; fi

@@ -185,6 +185,14 @@ case "\$1" in
   print)
     case "\$2" in
       gui/$uid) [ ! -f "\$state/no-gui" ] ;;
+      gui/$uid/$label)
+        if [ -f "\$state/load-on-second-print" ]; then
+          checks="\$(cat "\$state/headless-print-checks" 2>/dev/null || echo 0)"
+          checks=\$((checks + 1)); echo "\$checks" > "\$state/headless-print-checks"
+          [ "\$checks" -lt 2 ] || touch "\$state/loaded-$label"
+        fi
+        [ -f "\$state/loaded-$label" ] || exit 113
+        printf '\tstate = running\n\tpid = 4242\n' ;;
       gui/$uid/*) [ -f "\$state/loaded-\${2##*/}" ] || exit 113; printf '\tstate = running\n\tpid = 4242\n' ;;
       *) exit 113 ;;
     esac ;;
@@ -753,9 +761,28 @@ before_immutable="$(wc -l < "$root/state/immutable-opens")"
 if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
   fail "a loaded service allowed an immutable SQLite check"
 fi
+grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the loaded-service guard did not report a storage refusal"; }
 [ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
   || fail "a loaded service used immutable SQLite"
 launchctl bootout "gui/$uid/$label"
+
+# The job is absent at the shell check, then appears after collector.lock is
+# taken. The in-process launchctl recheck must still refuse immutable=1.
+touch "$root/state/load-on-second-print"
+: > "$root/state/headless-print-checks"
+if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
+  fail "a service loaded after the collector lock allowed an immutable SQLite check"
+fi
+grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the post-lock service guard did not report a storage refusal"; }
+[ "$(cat "$root/state/headless-print-checks")" = 2 ] \
+  || fail "the headless job was checked $(cat "$root/state/headless-print-checks") times, not before and after the lock"
+[ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
+  || fail "a service loaded after the collector lock used immutable SQLite"
+rm -f "$root/state/load-on-second-print" "$root/state/headless-print-checks" \
+  "$root/state/loaded-$label" "$root/state/running"
+
 bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1 \
   || { cat "$root/state/out"; fail "a stopped service could not verify a clean WAL database"; }
 [ "$(wc -l < "$root/state/immutable-opens")" -gt "$before_immutable" ] \
@@ -769,6 +796,8 @@ before_immutable="$(wc -l < "$root/state/immutable-opens")"
 if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
   fail "a held collector lock allowed an immutable SQLite check"
 fi
+grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the collector-lock guard did not report a storage refusal"; }
 [ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
   || fail "a held collector lock used immutable SQLite"
 kill "$holder"; wait "$holder" 2>/dev/null || true; holder=""
@@ -778,6 +807,8 @@ for suffix in wal shm; do
   if bash "$INSTALL" --version 12.1.0 > "$root/state/out" 2>&1; then
     fail "a present -$suffix sidecar allowed an immutable SQLite check"
   fi
+  grep -Fq 'could not verify local history compatibility' "$root/state/out" \
+    || { cat "$root/state/out"; fail "the -$suffix guard did not report a storage refusal"; }
   [ "$(wc -l < "$root/state/immutable-opens")" = "$before_immutable" ] \
     || fail "a present -$suffix sidecar used immutable SQLite"
   rm "$store/history.db-$suffix"

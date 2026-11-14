@@ -666,9 +666,18 @@ collector_locks = {}
 
 def connect(path):
     uri = path.resolve().as_uri()
+    connection = None
     try:
-        return sqlite3.connect(uri + '?mode=ro', uri=True, timeout=1)
+        connection = sqlite3.connect(uri + '?mode=ro', uri=True, timeout=1)
+        # sqlite3.connect is lazy: a clean WAL database can report CANTOPEN
+        # only when the first statement tries to create -shm. Make that
+        # happen inside this try so the guarded immutable fallback is
+        # reachable.
+        connection.execute('SELECT 1 FROM sqlite_master LIMIT 1').fetchone()
+        return connection
     except sqlite3.Error as error:
+        if connection is not None:
+            connection.close()
         wal = pathlib.Path(str(path) + '-wal')
         shm = pathlib.Path(str(path) + '-shm')
         if sys.argv[3] != '1' or wal.exists() or shm.exists():
