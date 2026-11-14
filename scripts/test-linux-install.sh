@@ -162,6 +162,13 @@ start() {
 case "\$*" in
   "--user daemon-reload") ;;
   "--user is-enabled --quiet agent-relay.service") [ -f "$root/state/enabled" ] ;;
+  "--user is-active --quiet agent-relay.service")
+    if [ -f "$root/state/activate-on-second-check" ]; then
+      checks="\$(cat "$root/state/active-checks" 2>/dev/null || echo 0)"
+      checks=\$((checks + 1)); echo "\$checks" > "$root/state/active-checks"
+      [ "\$checks" -lt 2 ] || touch "$root/state/running"
+    fi
+    [ -f "$root/state/running" ] ;;
   "--user reset-failed agent-relay.service") ;;
   "--user restart agent-relay.service")
     if [ -f "$root/state/restart-fails" ]; then rm "$root/state/restart-fails"; exit 1; fi

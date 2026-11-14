@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **The headless installer can reinstall after a clean shutdown.** On macOS and Linux, when a cleanly closed upload queue stays in SQLite WAL mode but has no WAL sidecars, the installer can verify it without rewriting it and reinstall immediately after `--uninstall`; it used to refuse with SQLite error 14 on macOS. The lock-free read is used only while the core and collector are stopped.
 - **The first provider's checkbox is no longer cut off.** On macOS, in Choose your providers, the left edge of the first checkbox's focus ring was clipped by the edge of the list; the list now leaves room for it.
 - **A site profile can co-brand the app.** With a customer mark in its branding archive and a `DESKTOP_COBRAND_NAME`, the macOS sign-in window, the signed-out menu and the installer image say "for <customer>" under the Agent Relay lockup; the product stays Agent Relay. Linux and Windows follow.
 - **The Claude Code "check what teammates are working on" hook is removed.** On macOS, Linux and Windows, the provider chooser line and the Settings › Providers › Claude Code switch are gone, and Agent Relay removes the hook it installed from every Claude Code login at its next setup refresh, signed in or not. A session that still runs an old copy of the hook gets no instructions from it.
