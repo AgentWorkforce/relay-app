@@ -1077,15 +1077,17 @@ cat "$CI_FIXTURE"
 
     def test_install_sh_is_published_for_every_profile(self):
         # Every product installs into the same prefix and user unit (one app
-        # per machine), so every release publishes install.sh and
-        # install.ps1: the default's as they are, a profile's set to its own
-        # releases.
+        # per machine), so every release publishes install.sh,
+        # install-macos.sh and install.ps1: the default's as they are, a
+        # profile's set to its own releases.
         stage = block(self.publish, '- name: Stage the release assets', 6)
         self.assertIn('if [ -z "$PROFILE" ]; then\n            cp linux/install.sh release-assets/install.sh\n'
+                      '            cp macos/install.sh release-assets/install-macos.sh\n'
                       '            cp windows/install.ps1 release-assets/install.ps1\n', stage)
-        self.assertIn('sha256sum install.ps1 > install.ps1.sha256', stage)
+        self.assertIn('for script in install.sh install-macos.sh install.ps1; do sha256sum "$script" > "$script.sha256"', stage)
         release = block(self.publish, '- name: Create the release', 6)
-        for name in ('install.sh', 'install.sh.sha256', 'install.ps1', 'install.ps1.sha256'):
+        for name in ('install.sh', 'install.sh.sha256', 'install-macos.sh', 'install-macos.sh.sha256',
+                     'install.ps1', 'install.ps1.sha256'):
             self.assertIn(f'            release-assets/{name}\n', release)
         self.assertNotIn("env.PROFILE == ''", release)
 
@@ -1111,6 +1113,7 @@ cat "$CI_FIXTURE"
             (root / 'macos/Package.swift').write_text('platforms: [.macOS(.v13)]')
             (root / 'linux').mkdir()
             shutil.copyfile(checkout / 'linux/install.sh', root / 'linux/install.sh')
+            shutil.copyfile(checkout / 'macos/install.sh', root / 'macos/install.sh')
             (root / 'windows').mkdir()
             shutil.copyfile(checkout / 'windows/install.ps1', root / 'windows/install.ps1')
             for arch in ('arm64', 'x64'):
@@ -1147,7 +1150,8 @@ cat "$CI_FIXTURE"
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 if name == 'Stage the release assets' and profile:
                     # The log names the profile by its opaque id only.
-                    self.assertIn(f"Profile {profile}: install.sh and install.ps1 for the profile's releases.", result.stdout)
+                    self.assertIn(f"Profile {profile}: install.sh, install-macos.sh and install.ps1 for the profile's releases.",
+                                  result.stdout)
                     self.assertNotIn('Acme', result.stdout + result.stderr)
                     self.assertNotIn(repository, result.stdout + result.stderr)
             manifest = json.loads((root / 'candidate/release-candidate.json').read_text())
@@ -1155,21 +1159,26 @@ cat "$CI_FIXTURE"
             self.assertEqual(branding, {path.name: path.read_bytes() for path in (root / 'assets').iterdir() if path.is_file()})
             self.assertTrue(all(f'assets/{name}' not in manifest['files'] for name in branding))
             # Every published name starts with the profile's prefix, but
-            # the installers. The default profile publishes linux/install.sh
-            # and windows/install.ps1 as they are; a profile's set the
+            # the installers. The default profile publishes linux/install.sh,
+            # macos/install.sh (as install-macos.sh) and windows/install.ps1
+            # as they are; a profile's set the
             # product, releases, asset names, feed, site and id to its own,
             # and run.
             staged = {path.name for path in (root / 'release-assets').iterdir()}
-            self.assertTrue(all(name.startswith((f'{prefix}-', 'install.sh', 'install.ps1')) for name in staged), staged)
-            for name in ('install.sh', 'install.ps1'):
+            self.assertTrue(all(name.startswith((f'{prefix}-', 'install.sh', 'install-macos.sh', 'install.ps1'))
+                                for name in staged), staged)
+            for name in ('install.sh', 'install-macos.sh', 'install.ps1'):
                 self.assertIn(f'{name}.sha256', staged)
                 self.assertIn(f'assets/{name}', manifest['files'])
             windows_source = (checkout / 'windows/install.ps1').read_text()
             windows_installer = (root / 'release-assets/install.ps1').read_text()
             source = (checkout / 'linux/install.sh').read_text()
             installer = (root / 'release-assets/install.sh').read_text()
+            mac_source = (checkout / 'macos/install.sh').read_text()
+            mac_installer = (root / 'release-assets/install-macos.sh').read_text()
             if profile:
-                expected = (source
+                def profiled(source):
+                    return (source
                             .replace("PRODUCT_NAME='Agent Relay'\n", "PRODUCT_NAME='Acme $Desktop & Co'\n", 1)
                             .replace("RELEASES_REPOSITORY='AgentWorkforce/relay-desktop-releases'\n",
                                      f"RELEASES_REPOSITORY={repository}\n", 1)
@@ -1177,8 +1186,14 @@ cat "$CI_FIXTURE"
                             .replace("RELEASE_FEED='github'\n", "RELEASE_FEED=github\n", 1)
                             .replace("SITE_URL=''\n", "SITE_URL=https://relay.acme.test\n", 1)
                             .replace("PROFILE_ID=''\n", f"PROFILE_ID={profile}\n", 1))
+                expected = profiled(source)
                 self.assertNotEqual(expected, source)
                 self.assertEqual(installer, expected)
+                # The macOS installer has the same seven assignments and
+                # takes the same values.
+                mac_expected = profiled(mac_source)
+                self.assertNotEqual(mac_expected, mac_source)
+                self.assertEqual(mac_installer, mac_expected)
                 self.assertEqual(windows_installer, windows_source
                                  .replace("$ProductName = 'Agent Relay'\n", "$ProductName = 'Acme $Desktop & Co'\n", 1)
                                  .replace("$ReleasesRepository = 'AgentWorkforce/relay-desktop-releases'\n",
@@ -1186,13 +1201,15 @@ cat "$CI_FIXTURE"
                                  .replace("$AssetPrefix = 'AgentRelay'\n", f"$AssetPrefix = '{prefix}'\n", 1)
                                  .replace("$SiteUrl = ''\n", "$SiteUrl = 'https://relay.acme.test'\n", 1)
                                  .replace("$ProfileId = ''\n", f"$ProfileId = '{profile}'\n", 1))
-                probe = subprocess.run(
-                    ['bash', '-c', 'eval "$(grep -E \'^(PRODUCT_NAME|RELEASES_REPOSITORY|ASSET_PREFIX)=\' "$1")"; '
-                     'printf "%s|%s|%s" "$PRODUCT_NAME" "$RELEASES_REPOSITORY" "$ASSET_PREFIX"', '-',
-                     str(root / 'release-assets/install.sh')], capture_output=True, text=True)
-                self.assertEqual(probe.stdout, f'Acme $Desktop & Co|{repository}|{prefix}', probe.stderr)
+                for shell_installer in ('install.sh', 'install-macos.sh'):
+                    probe = subprocess.run(
+                        ['bash', '-c', 'eval "$(grep -E \'^(PRODUCT_NAME|RELEASES_REPOSITORY|ASSET_PREFIX)=\' "$1")"; '
+                         'printf "%s|%s|%s" "$PRODUCT_NAME" "$RELEASES_REPOSITORY" "$ASSET_PREFIX"', '-',
+                         str(root / 'release-assets' / shell_installer)], capture_output=True, text=True)
+                    self.assertEqual(probe.stdout, f'Acme $Desktop & Co|{repository}|{prefix}', probe.stderr)
             else:
                 self.assertEqual(installer, source)
+                self.assertEqual(mac_installer, mac_source)
                 self.assertEqual(windows_installer, windows_source)
             # Normal publication and prepare-only must select the same packages
             # and checksums, with every configured upload pattern matching files.

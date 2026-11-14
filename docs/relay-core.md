@@ -169,7 +169,8 @@ watchdog exposes retry and diagnostics if the service has not become ready.
   turning the setting off first turns off the systemd unit with the person's
   agreement. A core an earlier run left running on another version is
   stopped and replaced.
-- **macOS without the app.** `macos/install.sh` installs the core alone, for
+- **macOS without the app.** `macos/install.sh` (published with every
+  release as `install-macos.sh`) installs the core alone, for
   a Mac that runs agents but not the app, under
   `~/.local/lib/agent-relay/current` and runs it as the LaunchAgent
   `com.agentrelay.desktop.core.headless` in `~/Library/LaunchAgents`:
