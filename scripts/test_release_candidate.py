@@ -504,10 +504,14 @@ class CandidateTests(unittest.TestCase):
         script, checksum = assets / "install-macos.sh", assets / "install-macos.sh.sha256"
         self.assertTrue(script.is_file())
         candidate.verify(self.args)
-        # A candidate built before it, or a hotfix from an older base, has neither.
+        # A candidate built before it, or a hotfix from an older base, has neither,
+        # and its manifest, written then, never listed them.
         saved = script.read_bytes(), checksum.read_bytes()
         script.unlink()
         checksum.unlink()
+        with self.assertRaisesRegex(ValueError, "file inventory, sizes or SHA-256 hashes differ"):
+            candidate.verify(self.args)
+        candidate.create(self.args)
         candidate.verify(self.args)
         # A checksum without its script is unexpected.
         checksum.write_bytes(saved[1])

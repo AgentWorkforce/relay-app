@@ -7,8 +7,12 @@
 # installed), a first install and the LaunchAgent it writes, an idempotent
 # rerun, an update, a bad checksum, an unsigned core (never run), a stray
 # archive, a new version that never answers or that launchd refuses to
-# restart (rolled back), --rollback, --dry-run, --status, pruning to three
-# versions in numeric order, the local history checks, --uninstall, which
+# restart (rolled back), --rollback (only ever to an older version), a
+# LaunchAgent that cannot be written (nothing switched), --dry-run, the
+# installer lock (held through a whole install, and taken again when the lock
+# file is removed while it is being locked), --status, another product's copy
+# at the same version (replaced, and put back when it never answers), pruning
+# to three versions in numeric order, the local history checks, --uninstall, which
 # keeps the core's data directory, the script piped into bash as the release
 # asset's one-line install is (no command it runs may read the script from
 # standard input), --help and an unknown option, and a cloud profile's copy,
@@ -29,6 +33,7 @@ command -v python3 >/dev/null || { echo "python3 is required (for the fake sqlit
 . "$REPO/scripts/install-test-home.sh"
 real_uname="$(command -v uname)"
 real_sha256="$(command -v sha256sum || true)"
+real_perl="$(command -v perl)"
 root="$(mktemp -d)"
 holder=""
 trap '[ -z "$holder" ] || kill "$holder" 2>/dev/null || true; rm -rf "$root"' EXIT
@@ -57,15 +62,17 @@ piped() { cat "$1"; }
 # A fake core: reports its version, and answers status.get with it (and an
 # account secret the installer must never print) only while the fake launchd
 # says it is the one running. KIND: ok, broken (never answers) or unsigned
-# (fails codesign, and records being run at all).
+# (fails codesign, and records being run at all). RELEASE_ASSET_PREFIX names
+# the product whose asset it is (AgentRelay by default).
 release() { # version [kind]
   local version="$1" kind="${2:-ok}" dir="$root/releases/v$1" tree extra="${ARCHIVE_EXTRA:-license}"
-  local formats="${QUEUE_FORMATS:-0,1}"
+  local formats="${QUEUE_FORMATS:-0,1}" product="${RELEASE_ASSET_PREFIX:-AgentRelay}"
   tree="$(mktemp -d)"
   mkdir -p "$dir" "$tree/agent_relay/helpers"
   cat > "$tree/agent_relay/helpers/agent-relay-probe" <<EOF
 #!/usr/bin/env bash
 # kind: $kind
+# asset: $product
 $stdin_check
 [ "$kind" != unsigned ] || touch "$root/state/ran-unsigned"
 if [ "\$1" = --version ]; then echo "agent-relay-probe $version"; exit 0; fi
@@ -94,7 +101,7 @@ EOF
     license) echo "License" > "$tree/agent_relay/LICENSE" ;;
     stray) echo "License" > "$tree/agent_relay/LICENSE"; echo x > "$tree/agent_relay/README" ;;
   esac
-  local asset="AgentRelay-$version-macOS-arm64-probe.tar.gz"
+  local asset="$product-$version-macOS-arm64-probe.tar.gz"
   tar -czf "$dir/$asset" -C "$tree" agent_relay
   (cd "$dir" && sha256sum "$asset" > "$asset.sha256")
   rm -rf "$tree"
@@ -142,6 +149,15 @@ while [ \$# -gt 0 ]; do
   case "\$1" in -o) out="\$2"; shift 2 ;; --proto|--retry) shift 2 ;; -*) shift ;; *) url="\$1"; shift ;; esac
 done
 echo "\$url" >> "$root/state/curl.log"
+# While state/curl-pause exists, a core download waits (up to 30 s), so a
+# test can hold a real installer in the middle of an install.
+case "\$url" in
+  *.tar.gz)
+    if [ -e "$root/state/curl-pause" ]; then
+      touch "$root/state/curl-paused"
+      for _ in \$(seq 300); do [ -e "$root/state/curl-pause" ] || break; sleep 0.1; done
+    fi ;;
+esac
 case "\$url" in
   https://api.test/releases/latest) printf '{"tag_name": "v%s"}' "\$(cat "$root/state/latest")" > "\$out" ;;
   https://releases.test/*) cp "$root/releases/\${url#https://releases.test/}" "\$out" 2>/dev/null || exit 22 ;;
@@ -214,6 +230,31 @@ db, sql = rest
 connection = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
 for row in connection.execute(sql):
     print("|".join("" if value is None else str(value) for value in row))
+EOF
+# plutil -lint, failing while state/plutil-fails exists.
+cat > "$root/bin/plutil" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = -lint ] || exit 2
+[ ! -e "$root/state/plutil-fails" ] || { echo "\$2: invalid" >&2; exit 1; }
+echo "\$2: OK"
+EOF
+# perl, but while state/swap-lock exists, a perl given the installer lock's
+# path first removes that file, as --uninstall does while holding it: the
+# installer has opened it and has not yet locked it. "once" in swap-lock
+# removes it once; "always" on every attempt.
+cat > "$root/bin/perl" <<EOF
+#!/usr/bin/env bash
+if [ -e "$root/state/swap-lock" ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+      */.install-lock)
+        "$(command -v rm)" -f "\$arg"
+        [ "\$(cat "$root/state/swap-lock")" = always ] || "$(command -v rm)" -f "$root/state/swap-lock"
+        echo swapped >> "$root/state/swaps" ;;
+    esac
+  done
+fi
+exec "$real_perl" "\$@"
 EOF
 # While CURRENT_GUARD names the \`current\` link, rm, ln, mv and unlink record
 # any call that names it, and any call made while it is absent: the installer
@@ -425,6 +466,52 @@ no_current_gap "--rollback"
 [ "$(cat "$root/state/running")" = 1.0.0 ] || fail "1.0.0 is not running after --rollback"
 pass "--rollback switches to the earlier version"
 
+# --rollback only ever goes back: never to a version it rolled back from.
+release 1.2.0 # a good .sha256 again; the checksum test above broke it
+for version in 1.1.0 1.2.0; do
+  bash "$INSTALL" --version "$version" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "install of $version failed"; }
+done
+[ "$(kept)" = "1.0.0 1.1.0 1.2.0 " ] || fail "kept $(kept) rather than 1.0.0 1.1.0 1.2.0"
+bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback from 1.2.0 failed"; }
+{ [ "$(current)" = 1.1.0 ] && [ "$(cat "$root/state/running")" = 1.1.0 ]; } || fail "rollback from 1.2.0 picked $(current)"
+bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback from 1.1.0 failed"; }
+{ [ "$(current)" = 1.0.0 ] && [ "$(cat "$root/state/running")" = 1.0.0 ]; } || fail "rollback from 1.1.0 picked $(current), not 1.0.0"
+before="$(starts)"
+if CURRENT_GUARD="$prefix/current" bash "$INSTALL" --rollback > "$root/state/out" 2>&1; then fail "--rollback from the oldest version succeeded ($(current))"; fi
+grep -q "no earlier version to roll back to" "$root/state/out" || { cat "$root/state/out"; fail "the refused rollback does not say why"; }
+no_current_gap "a refused --rollback"
+{ [ "$(current)" = 1.0.0 ] && [ "$(starts)" = "$before" ] && [ "$(cat "$root/state/running")" = 1.0.0 ]; } \
+  || fail "a refused --rollback changed something"
+pass "--rollback goes from 1.2.0 to 1.1.0 to 1.0.0, then refuses rather than going forward"
+
+# A LaunchAgent that cannot be written: nothing is switched or restarted.
+echo '<plist version="1.0"><dict/></plist>' > "$plist"
+touch "$root/state/plutil-fails"
+before="$(starts)"
+if bash "$INSTALL" --version 1.2.0 > "$root/state/out" 2>&1; then fail "an update succeeded without its LaunchAgent"; fi
+grep -q "the LaunchAgent written is not a valid property list" "$root/state/out" || { cat "$root/state/out"; fail "the plist failure does not say why"; }
+{ [ "$(current)" = 1.0.0 ] && [ "$(cat "$root/state/running")" = 1.0.0 ] && [ "$(starts)" = "$before" ]; } \
+  || fail "a failed LaunchAgent write during an update switched to $(current) or restarted the core"
+{ [ ! -e "$plist.new" ] && grep -q '<dict/>' "$plist" && [ ! -e "$prefix/versions/1.2.0.replaced" ]; } \
+  || fail "a failed LaunchAgent write changed the LaunchAgent or the versions"
+rm "$root/state/plutil-fails"
+bash "$INSTALL" --version 1.2.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "the update after the plist failure failed"; }
+[ "$(current)" = 1.2.0 ] || fail "the update after the plist failure points at $(current)"
+echo '<plist version="1.0"><dict/></plist>' > "$plist"
+touch "$root/state/plutil-fails"
+before="$(starts)"
+if bash "$INSTALL" --rollback > "$root/state/out" 2>&1; then fail "a rollback succeeded without its LaunchAgent"; fi
+grep -q "the LaunchAgent written is not a valid property list" "$root/state/out" || { cat "$root/state/out"; fail "the plist failure on rollback does not say why"; }
+{ [ "$(current)" = 1.2.0 ] && [ "$(cat "$root/state/running")" = 1.2.0 ] && [ "$(starts)" = "$before" ]; } \
+  || fail "a failed LaunchAgent write during a rollback switched to $(current) or restarted the core"
+rm "$root/state/plutil-fails"
+for _ in 1 2; do
+  bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback after the plist failure failed"; }
+done
+{ [ "$(current)" = 1.0.0 ] && grep -q '<string>com.agentrelay.desktop.core.headless</string>' "$plist"; } \
+  || fail "the rollbacks after the plist failure left $(current)"
+pass "a LaunchAgent that cannot be written leaves current and the running core alone, on update and rollback"
+
 before="$(starts)"
 bash "$INSTALL" --dry-run --version 1.1.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--dry-run failed"; }
 if [ "$(current)" != 1.0.0 ] || [ "$(starts)" != "$before" ]; then fail "--dry-run changed something"; fi
@@ -448,6 +535,44 @@ kill "$holder"; wait "$holder" 2>/dev/null || true; holder=""; rm -f "$root/stat
   || fail "a refused concurrent installer changed something"
 pass "install, rollback and uninstall refuse while another installer holds the lock"
 
+# A real installer holds the lock for the whole install: paused in the
+# middle of its download, it keeps a second one out.
+rm -f "$root/state/curl-paused"
+touch "$root/state/curl-pause"
+bash "$INSTALL" --version 1.2.0 > "$root/state/out-first" 2>&1 &
+holder=$!
+for _ in $(seq 100); do [ -e "$root/state/curl-paused" ] && break; sleep 0.1; done
+[ -e "$root/state/curl-paused" ] || { rm -f "$root/state/curl-pause"; cat "$root/state/out-first"; fail "the first installer never reached its download"; }
+if bash "$INSTALL" --version 1.1.0 > "$root/state/out" 2>&1; then fail "a second installer ran beside a paused install"; fi
+grep -q "another install, update, rollback or uninstall is running" "$root/state/out" || { cat "$root/state/out"; fail "the second installer does not say another is running"; }
+rm -f "$root/state/curl-pause" "$root/state/curl-paused"
+wait "$holder" || { holder=""; cat "$root/state/out-first"; fail "the paused install failed"; }
+holder=""
+[ "$(current)" = 1.2.0 ] || fail "the paused install points at $(current)"
+for _ in 1 2; do
+  bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback after the paused install failed"; }
+done
+[ "$(current)" = 1.0.0 ] || fail "the rollbacks after the paused install left $(current)"
+pass "a running install holds the lock until it finishes"
+
+# The lock file removed (as --uninstall does) after the installer opened it
+# and before it locked it: the lock it took is on a file nobody else can open,
+# so it opens the path again and locks that.
+echo once > "$root/state/swap-lock"
+: > "$root/state/swaps"
+bash "$INSTALL" --version 1.0.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "an installer whose lock file was removed while locking did not retry"; }
+grep -q "already up to date" "$root/state/out" || { cat "$root/state/out"; fail "the retried installer did not finish"; }
+{ [ ! -e "$root/state/swap-lock" ] && [ "$(wc -l < "$root/state/swaps")" = 1 ]; } || fail "the lock file was not removed exactly once"
+[ -f "$prefix/.install-lock" ] || fail "the retried installer did not lock a new lock file"
+echo always > "$root/state/swap-lock"
+: > "$root/state/swaps"
+if bash "$INSTALL" --version 1.0.0 > "$root/state/out" 2>&1; then fail "an installer ran on a lock file that kept being removed"; fi
+grep -q "kept being removed or replaced while it was being locked" "$root/state/out" || { cat "$root/state/out"; fail "the lock retries do not say why they gave up"; }
+[ "$(wc -l < "$root/state/swaps")" = 5 ] || fail "the installer tried $(wc -l < "$root/state/swaps") times, not 5"
+rm -f "$root/state/swap-lock" "$root/state/swaps"
+[ "$(current)" = 1.0.0 ] || fail "the lock retries changed current"
+pass "a lock on a removed lock file does not count: the installer locks the new file, and gives up after 5 tries"
+
 # --- status ---------------------------------------------------------------------
 
 bash "$INSTALL" --status > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--status of a running core failed"; }
@@ -456,6 +581,44 @@ grep -q "is loaded in gui/$uid, pid 4242" "$root/state/out" || fail "--status do
 grep -q "core: answering, version 1.0.0" "$root/state/out" || fail "--status does not say the core answers"
 no_secret "--status"
 pass "--status reports the version, the job and the answering core"
+
+# --- another product's copy at the same version ---------------------------------
+
+# A site profile's copy: the Stage step sets its own product.
+site_copy="$root/install-site.sh"
+sed -e "s/^ASSET_PREFIX=.*/ASSET_PREFIX='Desktop-x7k2q'/" -e "s/^PRODUCT_NAME=.*/PRODUCT_NAME='Acme Relay'/" "$INSTALL" > "$site_copy"
+[ "$(grep -c "^ASSET_PREFIX='Desktop-x7k2q'$" "$site_copy")" = 1 ] || fail "the site copy does not set ASSET_PREFIX once"
+grep -qx "DEFAULT_ASSET_PREFIX='AgentRelay'" "$site_copy" || fail "the site copy changed the default product"
+probe_asset() { sed -n 's/^# asset: //p' "$prefix/versions/1.0.0/agent-relay-probe"; }
+# An install from before the product record is Agent Relay's.
+[ "$(cat "$prefix/versions/1.0.0/product")" = AgentRelay ] || fail "the install did not record its product"
+rm "$prefix/versions/1.0.0/product"
+bash "$INSTALL" --version 1.0.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "the default copy over an unrecorded install failed"; }
+grep -q "already up to date" "$root/state/out" || { cat "$root/state/out"; fail "an unrecorded install is not the default product's"; }
+bash "$INSTALL" --status > "$root/state/out" 2>&1 || fail "--status failed"
+grep -q "product: AgentRelay" "$root/state/out" || fail "--status does not name the product"
+# Its new core never answers: Agent Relay's copy of 1.0.0 comes back.
+RELEASE_ASSET_PREFIX=Desktop-x7k2q release 1.0.0 broken
+if bash "$site_copy" --version 1.0.0 > "$root/state/out" 2>&1; then fail "another product's core that never answers was accepted"; fi
+grep -q "replacing the installed 1.0.0 failed and it is running again" "$root/state/out" || { cat "$root/state/out"; fail "the failed replacement does not say so"; }
+{ [ "$(probe_asset)" = AgentRelay ] && [ ! -e "$prefix/versions/1.0.0/product" ] && [ ! -e "$prefix/versions/1.0.0.replaced" ]; } \
+  || fail "the failed replacement did not put Agent Relay's 1.0.0 back"
+{ [ "$(current)" = 1.0.0 ] && [ "$(cat "$root/state/running")" = 1.0.0 ]; } || fail "Agent Relay's 1.0.0 is not running after the failed replacement"
+RELEASE_ASSET_PREFIX=Desktop-x7k2q release 1.0.0
+: > "$root/state/curl.log"
+bash "$site_copy" --version 1.0.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "the site copy at the same version failed"; }
+! grep -q "already up to date" "$root/state/out" || fail "the site copy took Agent Relay's 1.0.0 as its own"
+grep -q "the installed 1.0.0 is another product's; replacing it with Acme Relay's" "$root/state/out" || { cat "$root/state/out"; fail "the site copy does not say it replaces another product"; }
+grep -q "/v1.0.0/Desktop-x7k2q-1.0.0-macOS-arm64-probe.tar.gz$" "$root/state/curl.log" || fail "the site copy did not download its own asset"
+{ [ "$(cat "$prefix/versions/1.0.0/product")" = Desktop-x7k2q ] && [ "$(probe_asset)" = Desktop-x7k2q ]; } || fail "the site copy did not install and record its product"
+{ [ "$(current)" = 1.0.0 ] && [ "$(cat "$root/state/running")" = 1.0.0 ] && [ ! -e "$prefix/versions/1.0.0.replaced" ]; } \
+  || fail "the site copy's 1.0.0 is not running cleanly"
+bash "$site_copy" --version 1.0.0 > "$root/state/out" 2>&1 || fail "the site copy's rerun failed"
+grep -q "already up to date" "$root/state/out" || { cat "$root/state/out"; fail "the site copy's rerun was not a no-op"; }
+bash "$INSTALL" --version 1.0.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "the default copy over the site copy failed"; }
+grep -q "replacing it with Agent Relay's" "$root/state/out" || { cat "$root/state/out"; fail "the default copy did not replace the site copy"; }
+{ [ "$(cat "$prefix/versions/1.0.0/product")" = AgentRelay ] && [ "$(probe_asset)" = AgentRelay ]; } || fail "the default copy did not put Agent Relay's 1.0.0 back"
+pass "another product's copy at the same version replaces the installed core, and is put back when it never answers"
 
 # --- pruning, in numeric version order ------------------------------------------
 
