@@ -475,6 +475,11 @@ The source stays in this repository. Each release contains these assets:
   newer glibc (`scripts/check-glibc-floor.sh`). `linux/install.sh` and
   `macos/install.sh` install it per user without the app, as a systemd user
   service or a LaunchAgent.
+- `install.sh`, `install-macos.sh` and `install.ps1` + `.sha256`: those
+  headless installers (`linux/install.sh`, `macos/install.sh`,
+  `windows/install.ps1`), so on a Mac
+  `curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash`
+  installs the core, and `... | bash -s -- --uninstall` removes it.
 
 Installed builds check the public repository's latest stable release once per
 day by default. When an update is available, the app shows a blue update button

@@ -22,10 +22,13 @@ current session separately and does not schedule a session-only job at login.
 A Mac that runs agents but not the app (a Mac mini in a rack, a build Mac)
 can run the core alone. One command installs it for the current user and
 runs it as the LaunchAgent `com.agentrelay.desktop.core.headless`; run it
-again to update:
+again to update. Every release publishes `macos/install.sh` as
+`install-macos.sh` (with `install-macos.sh.sha256`), next to the Linux
+`install.sh`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay-app/main/macos/install.sh | bash
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash -s -- --uninstall
 bash macos/install.sh --version 2026.10.34   # a given release
 bash macos/install.sh --update               # update an existing install only
 bash macos/install.sh --rollback             # back to the previous one

@@ -352,22 +352,27 @@ class CloudWorkflowTests(unittest.TestCase):
                'SITE_URL': 'https://relay.acme.test', 'FEED_PUBLIC_KEY': 'A' * 43 + '='}
         env.update(values)
         return subprocess.run(['python3', '-I', str(root / 'stage.py'), str(checkout / 'linux/install.sh'),
-                               str(checkout / 'windows/install.ps1'), str(root / 'out')],
+                               str(checkout / 'macos/install.sh'), str(checkout / 'windows/install.ps1'),
+                               str(root / 'out')],
                               env=env, capture_output=True, text=True)
 
-    def test_a_cloud_profile_stages_both_installers_for_its_site(self):
+    def test_a_cloud_profile_stages_every_installer_for_its_site(self):
+        # install-macos.sh takes the same seven values as install.sh; a
+        # cloud copy refuses to install (scripts/test-macos-install.sh), and
+        # the feed never carries it (release-candidate.py cloud_assets).
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             result = self.stage_installers(root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout + result.stderr, '')
-            shell = subprocess.run(
-                ['bash', '-c', 'eval "$(grep -E \'^(PRODUCT_NAME|RELEASES_REPOSITORY|ASSET_PREFIX|RELEASE_FEED|SITE_URL'
-                 '|PROFILE_ID|FEED_PUBLIC_KEY)=\' "$1")"; printf "%s|" "$PRODUCT_NAME" "$RELEASES_REPOSITORY" '
-                 '"$ASSET_PREFIX" "$RELEASE_FEED" "$SITE_URL" "$PROFILE_ID" "$FEED_PUBLIC_KEY"', '-',
-                 str(root / 'out/install.sh')], capture_output=True, text=True)
-            self.assertEqual(shell.stdout, "Acme's Caf\u00e9||Desktop-x7k2q|cloud|https://relay.acme.test|x7k2q|"
-                             + 'A' * 43 + '=|', shell.stderr)
+            for name in ('install.sh', 'install-macos.sh'):
+                shell = subprocess.run(
+                    ['bash', '-c', 'eval "$(grep -E \'^(PRODUCT_NAME|RELEASES_REPOSITORY|ASSET_PREFIX|RELEASE_FEED|SITE_URL'
+                     '|PROFILE_ID|FEED_PUBLIC_KEY)=\' "$1")"; printf "%s|" "$PRODUCT_NAME" "$RELEASES_REPOSITORY" '
+                     '"$ASSET_PREFIX" "$RELEASE_FEED" "$SITE_URL" "$PROFILE_ID" "$FEED_PUBLIC_KEY"', '-',
+                     str(root / 'out' / name)], capture_output=True, text=True)
+                self.assertEqual(shell.stdout, "Acme's Caf\u00e9||Desktop-x7k2q|cloud|https://relay.acme.test|x7k2q|"
+                                 + 'A' * 43 + '=|', name + shell.stderr)
             powershell = (root / 'out/install.ps1').read_text()
             self.assertTrue(powershell.isascii())
             for line in ("$ProductName = 'Acme''s Caf' + [string][char]0x00E9\n", "$ReleasesRepository = ''\n",

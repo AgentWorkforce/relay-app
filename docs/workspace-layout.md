@@ -1038,8 +1038,9 @@ and x64, the Linux `.tar.gz` and `.deb` and the Windows `-Setup.exe` and
 `.zip` for arm64 and x64, the four Linux and Windows probe bundles
 (`Linux-<arch>-probe.tar.gz`, `Windows-<arch>-probe.zip`, which
 `linux/install.sh` and `windows/install.ps1` select for headless install and
-update), `install.sh` and `install.ps1`. The macOS probe bundles and the
-unfloored image are not published (floor-aware updaters ignore the
+update), `install.sh` and `install.ps1`. The macOS probe bundles,
+`install-macos.sh` (which installs them) and the unfloored image are not
+published (floor-aware updaters ignore the
 unfloored image when floored ones exist). A candidate that does not yield
 exactly those 16 is refused, and the command logs every selected and
 omitted name. A `github:` release keeps its full asset set.
@@ -1258,8 +1259,9 @@ On Linux every profile's `.deb` is the `agent-relay` package with no `Conflicts`
 file name (by the profile's id) and the control file's `Homepage` and
 `Description` name the profile, and versions compare across profiles as
 within one (`build-linux.sh`). Every release publishes the headless
-`install.sh` and `install.ps1`: a profile's copies are `linux/install.sh`
-and `windows/install.ps1` with seven built-in values set to the profile's
+`install.sh`, `install-macos.sh` and `install.ps1`: a profile's copies are
+`linux/install.sh`, `macos/install.sh` and `windows/install.ps1` with seven
+built-in values set to the profile's
 (`PRODUCT_NAME`, `RELEASES_REPOSITORY`, `ASSET_PREFIX`, `RELEASE_FEED`,
 `SITE_URL`, `PROFILE_ID` and `FEED_PUBLIC_KEY`; `$ProductName` and so on in
 PowerShell), by Stage the release assets in `desktop-release.yml`. A
@@ -1267,7 +1269,8 @@ PowerShell), by Stage the release assets in `desktop-release.yml`. A
 site, feed key and an id of 1 to 32 lowercase letters or digits; staging
 fails otherwise, never printing a value. `install.sh` installs into the
 same `~/.local/lib/agent-relay` prefix and `agent-relay.service` unit,
-replacing whichever product's headless core is there.
+replacing whichever product's headless core is there. A `cloud` profile's
+`install-macos.sh` refuses to install: it has no feed path yet.
 
 A `cloud` profile's installers read the site's signed release feed instead
 of a releases repository, through Cloud's proposed routes (not a stable

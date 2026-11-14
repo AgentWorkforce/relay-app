@@ -330,7 +330,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --output pull-receipt
 
       # The verified candidate's versioned packages, install.sh and
-      # install.ps1 go to the cloud feed through the publisher bridge (proposed Cloud contract,
+      # install.ps1 (not install-macos.sh) go to the cloud feed through the publisher bridge (proposed Cloud contract,
       # relay-control docs/desktop-feed.md): declared, uploaded,
       # then published, as latest for a stable and not for a beta. A failed
       # upload leaves the draft unpublished and this job red; a rerun

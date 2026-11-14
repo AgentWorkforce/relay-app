@@ -47,7 +47,7 @@ class CandidateTests(unittest.TestCase):
         if (directory / "assets").exists():
             shutil.rmtree(directory / "assets")
         (directory / "assets").mkdir()
-        for name in candidate.required_assets(self.args.version, self.args.profile):
+        for name in sorted(candidate.required_assets(self.args.version, self.args.profile)) + list(candidate.OPTIONAL_INSTALL_SCRIPTS):
             (directory / "assets" / name).write_bytes(b"signed package bytes")
         (directory / "assets" / f"{prefix}-macOS-arm64.dmg").write_bytes(b"signed package bytes")
         (directory / "assets" / f"{prefix}-2026.11.1-macOS15-arm64.dmg").write_bytes(b"signed package bytes")
@@ -74,7 +74,7 @@ class CandidateTests(unittest.TestCase):
         self.args.profile = "acme-7"
         self.write_assets("Desktop-acme-7")
         names = {path.name for path in (self.args.directory / "assets").iterdir()}
-        self.assertTrue(all(name.startswith(("Desktop-acme-7-", "install.sh", "install.ps1")) for name in names), names)
+        self.assertTrue(all(name.startswith(("Desktop-acme-7-", "install.sh", "install-macos.sh", "install.ps1")) for name in names), names)
         candidate.create(self.args)
         manifest = json.loads((self.args.directory / candidate.MANIFEST).read_text())
         self.assertEqual(manifest["profile"], "acme-7")
@@ -427,8 +427,11 @@ class CandidateTests(unittest.TestCase):
         names = output.read_text().splitlines()
         self.assertEqual(names, sorted(names))
         # Every cloud profile publishes the fixed 16-asset cloud set.
-        self.assertIn("Cloud assets of profile x7k2q: the fixed cloud set selects 16 of 20.", log.getvalue())
+        self.assertIn("Cloud assets of profile x7k2q: the fixed cloud set selects 16 of 21.", log.getvalue())
         self.assertIn("  selected: install.ps1\n", log.getvalue())
+        # The feed carries no macOS probe for install-macos.sh to install.
+        self.assertIn("  omitted: install-macos.sh\n", log.getvalue())
+        self.assertNotIn("install-macos.sh", names)
         self.assertIn("  omitted: Desktop-x7k2q-2026.11.1-macOS-arm64.dmg\n", log.getvalue())
         self.assertIn("install.sh", names)
         self.assertIn("install.ps1", names)
@@ -464,7 +467,7 @@ class CandidateTests(unittest.TestCase):
         for profile in ("m5lxqm2osk", "x7k2q"):
             with self.subTest(profile=profile):
                 files = []
-                for name in sorted(candidate.required_assets(version, profile)) + [
+                for name in sorted(candidate.required_assets(version, profile)) + ["install-macos.sh",
                         f"Desktop-{profile}-{version}-macOS15-arm64.dmg",
                         f"Desktop-{profile}-{version}-macOS15-x64.dmg"]:
                     files += [f"assets/{name}", f"assets/{name}.sha256"]
@@ -476,12 +479,13 @@ class CandidateTests(unittest.TestCase):
                         f"macOS15-{arch}.dmg", f"Linux-{arch}.tar.gz", f"Linux-{arch}.deb",
                         f"Windows-{arch}.zip", f"Windows-{arch}-Setup.exe", f"Linux-{arch}-probe.tar.gz",
                         f"Windows-{arch}-probe.zip")]))
-                self.assertEqual(lines[0], f"Cloud assets of profile {profile}: the fixed cloud set selects 16 of 20.")
+                self.assertEqual(lines[0], f"Cloud assets of profile {profile}: the fixed cloud set selects 16 of 21.")
                 self.assertEqual([line for line in lines if line.startswith("  selected: ")],
                                  [f"  selected: {name}" for name in names])
                 omitted = [line.removeprefix("  omitted: ") for line in lines if line.startswith("  omitted: ")]
-                self.assertEqual(sorted(omitted), sorted(prefix + name for arch in ("arm64", "x64") for name in (
-                    f"macOS-{arch}.dmg", f"macOS-{arch}-probe.tar.gz")))
+                self.assertEqual(sorted(omitted), sorted(["install-macos.sh"] + [
+                    prefix + name for arch in ("arm64", "x64") for name in (
+                        f"macOS-{arch}.dmg", f"macOS-{arch}-probe.tar.gz")]))
                 # A candidate missing one of the 16 lists nothing.
                 short = [f for f in files if not f.startswith(f"assets/{prefix}Windows-x64-Setup.exe")]
                 with self.assertRaisesRegex(ValueError, "exactly 16 assets.*found 15"):
@@ -490,9 +494,34 @@ class CandidateTests(unittest.TestCase):
     def test_a_github_candidate_keeps_every_package(self):
         # The fixed cloud set changes nothing for a GitHub release.
         self.assertEqual(len(candidate.required_assets("2026.11.1", "x7k2q")), 34)
+        self.assertNotIn("install-macos.sh", candidate.required_assets("2026.11.1", "x7k2q"))
         self.assertIn("Desktop-x7k2q-2026.11.1-macOS-arm64-probe.tar.gz",
                       candidate.required_assets("2026.11.1", "x7k2q"))
         candidate.verify(self.args)
+
+    def test_install_macos_is_optional_but_checked_when_present(self):
+        assets = self.args.directory / "assets"
+        script, checksum = assets / "install-macos.sh", assets / "install-macos.sh.sha256"
+        self.assertTrue(script.is_file())
+        candidate.verify(self.args)
+        # A candidate built before it, or a hotfix from an older base, has neither.
+        saved = script.read_bytes(), checksum.read_bytes()
+        script.unlink()
+        checksum.unlink()
+        candidate.verify(self.args)
+        # A checksum without its script is unexpected.
+        checksum.write_bytes(saved[1])
+        with self.assertRaisesRegex(ValueError, "unexpected=install-macos.sh.sha256"):
+            candidate.verify(self.args)
+        checksum.unlink()
+        # The script without its checksum is missing it.
+        script.write_bytes(saved[0])
+        with self.assertRaisesRegex(ValueError, "missing=install-macos.sh.sha256"):
+            candidate.verify(self.args)
+        # A wrong checksum is rejected.
+        checksum.write_text(f"{'0' * 64}  install-macos.sh\n")
+        with self.assertRaisesRegex(ValueError, "invalid package checksum: install-macos.sh"):
+            candidate.verify(self.args)
 
     def test_cloud_assets_command_writes_only_names(self):
         self.cloud_candidate()
