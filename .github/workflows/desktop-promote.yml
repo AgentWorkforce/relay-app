@@ -89,6 +89,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
 
       # A bridge publishes a cloud candidate to the GitHub releases
       # repository a profile's older apps update from, from the profile's

@@ -243,6 +243,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
 
       - name: Install the Rust toolchain for the crate overrides
         if: steps.crate-guard.outputs.overridden == 'true'
@@ -610,6 +611,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
 
       - name: Cache the Zig-built probe
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -734,6 +736,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
           branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
           branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
           branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
@@ -801,6 +804,13 @@ jobs:
             if [ -n "$RELEASES_REPOSITORY" ]; then args+=(--releases-repository "$RELEASES_REPOSITORY"); fi
             if [ -n "$FEED_PUBLIC_KEY" ]; then args+=(--feed-public-key "$FEED_PUBLIC_KEY"); fi
             if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+            # A co-branded build says "for <customer>" under the lockup: the
+            # customer's mark and DESKTOP_COBRAND_NAME, never printed.
+            if [ -n "$BRANDING_COBRAND_MARK" ]; then
+              args+=(--cobrand-mark "$BRANDING_COBRAND_MARK" --cobrand-name "$COBRAND_NAME")
+            elif [ -n "$COBRAND_NAME" ]; then
+              echo "::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL, an archive holding cobrand.svg or cobrand.png (docs/workspace-layout.md, Site profiles)."; exit 1
+            fi
             # DESKTOP_COEXIST: no product marker, so no takeover either way.
             if [ "${COEXIST:-}" = yes ]; then args+=(--coexist); fi
           fi
@@ -831,10 +841,14 @@ jobs:
           set -euo pipefail
           mkdir -p out
           args=()
-          # A profile's image names its product and draws its mark.
+          # A profile's image names its product and draws its mark, and a
+          # co-branded one says "for <customer>" under the lockup.
           if [ -n "$PROFILE" ]; then
             args+=(--volname "$PRODUCT_NAME" --product-name "$PRODUCT_NAME")
             if [ -n "$BRANDING_ICON" ]; then args+=(--icon "$BRANDING_ICON"); fi
+            if [ -n "$BRANDING_COBRAND_MARK" ]; then
+              args+=(--cobrand-mark "$BRANDING_COBRAND_MARK" --cobrand-name "$COBRAND_NAME")
+            fi
           fi
           scripts/package-dmg.sh \
             --app "$(find dist -maxdepth 1 -name '*.app' -print -quit)" \
@@ -937,6 +951,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
           branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
           branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
           branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
@@ -1081,6 +1096,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
           branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
           branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
           branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
@@ -1186,6 +1202,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
 
       - name: Download the compiled core
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1414,6 +1431,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
           branding-url: ${{ secrets.DESKTOP_BRANDING_URL }}
           branding-token: ${{ secrets.DESKTOP_BRANDING_TOKEN }}
           branding-app-id: ${{ secrets.GH_APP_PUSHER_ID }}
@@ -1519,6 +1537,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
 
       - name: Download the compiled core
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1743,6 +1762,7 @@ jobs:
           support-url: ${{ secrets.DESKTOP_SUPPORT_URL }}
           policy-defaults: ${{ secrets.DESKTOP_POLICY_DEFAULTS }}
           history-upload-storage-origins: ${{ secrets.DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS }}
+          cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}
 
       # Publishing prefers a short-lived GitHub App installation token,
       # minted here for the releases repository alone, over the long-lived

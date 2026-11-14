@@ -205,8 +205,13 @@ struct BrandWordmarkView: View {
     var productName: String = AppInfo.displayName
     var bundleIdentifier: String = AppInfo.markedBundleIdentifier
     var badge: String? = AppInfo.profileBadge
+    /// A co-branded build named Agent Relay draws the wordmark, with
+    /// `CoBrandLineView` under it.
+    var coBranded: Bool = AppInfo.coBrand != nil
 
-    var drawsArtwork: Bool { AppInfo.drawsWordmark(bundleIdentifier: bundleIdentifier, productName: productName) }
+    var drawsArtwork: Bool {
+        AppInfo.drawsWordmark(bundleIdentifier: bundleIdentifier, productName: productName, coBranded: coBranded)
+    }
 
     var body: some View {
         if drawsArtwork {
@@ -226,6 +231,40 @@ struct BrandWordmarkView: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(AppInfo.windowTitle(productName: productName, badge: badge))
+        }
+    }
+}
+
+/// The line a co-branded build (`AppInfo.coBrand`) draws under its Agent
+/// Relay lockup: "for", the customer's mark fitted into 16 points, and the
+/// customer's name, as in the installer image. Nothing for any other build.
+struct CoBrandLineView: View {
+    var coBrand: AppInfo.CoBrand? = AppInfo.coBrand
+    /// The colour of the name; "for" is drawn in `forColor`.
+    var nameColor: Color = .primary
+    var forColor: Color = CloudTheme.secondary
+
+    var body: some View {
+        if let coBrand {
+            HStack(alignment: .center, spacing: 6) {
+                Text("for")
+                    .zoomFont(size: 13, weight: .regular)
+                    .foregroundStyle(forColor)
+                if let mark = NSImage(contentsOf: coBrand.mark) {
+                    Image(nsImage: mark)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .zoomFrame(width: 16, height: 16)
+                        .accessibilityHidden(true)
+                }
+                Text(coBrand.name)
+                    .zoomFont(size: 13, weight: .medium)
+                    .foregroundStyle(nameColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("for \(coBrand.name)")
         }
     }
 }

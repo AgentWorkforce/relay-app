@@ -416,7 +416,7 @@ Each such job starts with the `site-profile` composite action
 environment's values, masks the values it derives from them, exports them as
 `PROFILE`, `ASSET_PREFIX`, `SITE_URL`, `URL_SCHEME`, `PRODUCT_NAME`,
 `BUNDLE_ID`, `RELEASES_REPOSITORY`, `RELEASE_FEED`, `FEED_PUBLIC_KEY`,
-`SUPPORT_URL` and `BRANDING_ICON` for
+`SUPPORT_URL`, `BRANDING_ICON`, `BRANDING_COBRAND_MARK` and `COBRAND_NAME` for
 the steps, and, when `DESKTOP_BRANDING_URL` is set, fetches the branding
 archive into `branding/`. A URL in the private `AgentWorkforce/desktop-branding`
 repository is fetched with a short-lived installation token the action mints

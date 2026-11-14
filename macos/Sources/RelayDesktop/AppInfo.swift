@@ -51,8 +51,10 @@ enum AppInfo {
     /// Agent Relay's wordmark: only production's does. Any other build
     /// (a site profile's, or Agent Relay Dev) is named in text, as on Linux
     /// and Windows, so it never looks like the production app beside it.
-    static func drawsWordmark(bundleIdentifier: String, productName: String) -> Bool {
-        bundleIdentifier == productionBundleIdentifier && productName == defaultDisplayName
+    /// A co-branded build (`coBrand`) named Agent Relay draws it too: the
+    /// "for <customer>" line under it tells it apart.
+    static func drawsWordmark(bundleIdentifier: String, productName: String, coBranded: Bool = false) -> Bool {
+        productName == defaultDisplayName && (bundleIdentifier == productionBundleIdentifier || coBranded)
     }
 
     /// The short marker a build named Agent Relay (or Agent Relay Dev) other
@@ -61,7 +63,8 @@ enum AppInfo {
     /// customer's branded build (`isBranded`), whose name already tells it
     /// apart and whose people never see the opaque profile id beside it.
     static var profileBadge: String? {
-        profileBadge(bundleIdentifier: markedBundleIdentifier, profileID: profileID, productName: displayName)
+        profileBadge(bundleIdentifier: markedBundleIdentifier, profileID: profileID, productName: displayName,
+                     coBranded: coBrand != nil)
     }
 
     /// Agent Relay Dev's product name, which is no customer's brand.
@@ -89,9 +92,11 @@ enum AppInfo {
     }
 
     /// `profileBadge` for the build with `bundleIdentifier`, `profileID` and
-    /// `productName`.
-    static func profileBadge(bundleIdentifier: String, profileID: String, productName: String = defaultDisplayName) -> String? {
-        guard !isBranded(productName: productName) else { return nil }
+    /// `productName`; nil when `coBranded`, whose "for <customer>" line
+    /// tells it apart.
+    static func profileBadge(bundleIdentifier: String, profileID: String, productName: String = defaultDisplayName,
+                             coBranded: Bool = false) -> String? {
+        guard !isBranded(productName: productName), !coBranded else { return nil }
         return profileIdentity(bundleIdentifier: bundleIdentifier, profileID: profileID)
     }
 
@@ -150,6 +155,42 @@ enum AppInfo {
     /// `marksWithAppIcon` from the record's text: only `AppIcon` says so.
     static func marksWithAppIcon(from text: String?) -> Bool {
         text?.trimmingCharacters(in: .whitespacesAndNewlines) == "AppIcon"
+    }
+
+    /// The customer a site profile's build is made for, which the sign-in
+    /// window and the signed-out menu name under the Agent Relay lockup
+    /// ("for <customer>"); the product stays Agent Relay.
+    struct CoBrand: Equatable {
+        /// The customer's name.
+        var name: String
+        /// The customer's mark, an SVG or a PNG.
+        var mark: URL
+    }
+
+    /// This build's co-brand, from Resources/cobrand-name.txt and
+    /// Resources/cobrand.svg or cobrand.png (`build-app.sh --cobrand-mark`
+    /// and `--cobrand-name`, a site profile's only); nil without both, as
+    /// for every build but a co-branded one.
+    static let coBrand: CoBrand? = readCoBrand(
+        name: resource("cobrand-name"),
+        mark: Bundle.main.url(forResource: "cobrand", withExtension: "svg")
+            ?? Bundle.main.url(forResource: "cobrand", withExtension: "png"))
+
+    /// `coBrand` from the name's record and the mark's file: nil unless
+    /// both are there and the name is usable (`coBrandName`).
+    static func readCoBrand(name text: String?, mark: URL?) -> CoBrand? {
+        guard let mark, let name = coBrandName(from: text) else { return nil }
+        return CoBrand(name: name, mark: mark)
+    }
+
+    /// The customer's name from the record's text, trimmed: nil when there
+    /// is none, or it is blank, more than one line, holds a control
+    /// character or is over 80 characters.
+    static func coBrandName(from text: String?) -> String? {
+        guard let name = text?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+              name.count <= 80,
+              name.unicodeScalars.allSatisfy({ $0.properties.generalCategory != .control }) else { return nil }
+        return name
     }
 
     /// The scheme of the links this build opens (`agentrelay://…`), from
