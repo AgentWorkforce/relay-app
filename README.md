@@ -472,7 +472,9 @@ The source stays in this repository. Each release contains these assets:
   license at `agent_relay/LICENSE`), with stable
   `AgentRelay-<os>-<arch>-probe.tar.gz` copies. The Linux probe runs on glibc
   2.34 and newer; the release fails if either architecture's probe needs a
-  newer glibc (`scripts/check-glibc-floor.sh`).
+  newer glibc (`scripts/check-glibc-floor.sh`). `linux/install.sh` and
+  `macos/install.sh` install it per user without the app, as a systemd user
+  service or a LaunchAgent.
 
 Installed builds check the public repository's latest stable release once per
 day by default. When an update is available, the app shows a blue update button

@@ -311,7 +311,7 @@ jobs:
 
       - name: Lint the packaging scripts
         run: |
-          shellcheck scripts/*.sh linux/agent-relay.postinst
+          shellcheck scripts/*.sh linux/agent-relay.postinst macos/install.sh
           shellcheck -x scripts/dev-reload.sh
 
       - name: Test probe bridge validation
@@ -339,6 +339,9 @@ jobs:
 
       - name: Test the Linux installer
         run: bash scripts/test-linux-install.sh
+
+      - name: Test the macOS installer
+        run: bash scripts/test-macos-install.sh
 
       - name: Test the pull-model operator script
         run: bash scripts/test-agent-relay-desktop-update.sh
