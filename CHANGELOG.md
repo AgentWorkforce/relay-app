@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **macOS: reinstalling right after `install.sh --uninstall` no longer fails.** On macOS, `macos/install.sh --uninstall` now waits (up to a minute) for the core and its session collector to exit before it finishes, so running the installer again straight away no longer stops at "could not verify local history compatibility". If a collector is still running after that, it says so.
 - **The first provider's checkbox is no longer cut off.** On macOS, in Choose your providers, the left edge of the first checkbox's focus ring was clipped by the edge of the list; the list now leaves room for it.
 - **A site profile can co-brand the app.** With a customer mark in its branding archive and a `DESKTOP_COBRAND_NAME`, the macOS sign-in window, the signed-out menu and the installer image say "for <customer>" under the Agent Relay lockup; the product stays Agent Relay. Linux and Windows follow.
 - **The Claude Code "check what teammates are working on" hook is removed.** On macOS, Linux and Windows, the provider chooser line and the Settings › Providers › Claude Code switch are gone, and Agent Relay removes the hook it installed from every Claude Code login at its next setup refresh, signed in or not. A session that still runs an old copy of the hook gets no instructions from it.
