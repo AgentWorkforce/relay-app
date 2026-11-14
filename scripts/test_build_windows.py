@@ -277,7 +277,29 @@ else:
             call = (root / 'compile.log').read_text().splitlines()[-1]
             self.assertNotIn('COBRAND', call)
             self.assertFalse((root / 'plain/built/agent-relay/agent-relay-cobrand-name.txt').exists())
-            for refused, why in [
+            # A PNG mark, and a name of exactly 80 characters: in ASCII, and
+            # in two-byte characters under LC_ALL=C, counted as characters
+            # as gtk/build.rs counts them.
+            png = root / 'branding/cobrand.png'
+            png.write_bytes(b'\x89PNG\r\n\x1a\n')
+            c_locale = {**env, 'LC_ALL': 'C'}
+            for out, mark_path, name, run_env in [
+                    ('png', 'branding/cobrand.png', 'Example Customer', env),
+                    ('ascii', str(mark), 'A' * 80, env),
+                    ('multibyte', str(mark), '\u00e9' * 80, c_locale)]:
+                with self.subTest(accepted=out):
+                    result = subprocess.run([*build, '--out', str(root / out), '--profile', 'example-7',
+                        '--cobrand-mark', mark_path, '--cobrand-name', name],
+                        cwd=root, env=run_env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    call = (root / 'compile.log').read_text(encoding='utf-8').splitlines()[-1]
+                    target = png if out == 'png' else mark
+                    self.assertTrue(call.endswith(f',DESKTOP_COBRAND_MARK={target.resolve()},DESKTOP_COBRAND_NAME={name}'), call)
+                    self.assertEqual((root / out / 'built/agent-relay/agent-relay-cobrand-name.txt').read_text(encoding='utf-8'),
+                        name + '\n')
+            for refused, why, run_env in [
+                    (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', '\u00e9' * 81],
+                     'at most 80 characters; it has 81', c_locale)] + [(*case, env) for case in [
                     (['--profile', 'example-7', '--cobrand-name', 'Example Customer'], '--cobrand-name needs --cobrand-mark'),
                     (['--profile', 'example-7', '--cobrand-mark', str(mark)], '--cobrand-mark needs --cobrand-name'),
                     (['--cobrand-mark', str(mark), '--cobrand-name', 'Example Customer'], 'need --profile'),
@@ -288,15 +310,15 @@ else:
                     (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', 'Example\tCustomer'],
                      '--cobrand-name must be one line'),
                     (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', 'Example Customer ' + 'x' * 64],
-                     'at most 80 characters; it has 81')]:
-                with self.subTest(refused=why):
+                     'at most 80 characters; it has 81')]]:
+                with self.subTest(refused=why, locale=run_env.get('LC_ALL')):
                     result = subprocess.run([*build, '--runtime-out', str(root / 'refused'), *refused],
-                        cwd=root, env=env, text=True, capture_output=True)
+                        cwd=root, env=run_env, text=True, capture_output=True)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(why, result.stderr)
                     self.assertNotIn('Example Customer', result.stdout + result.stderr)
                     self.assertFalse((root / 'refused').exists())
-            self.assertEqual(len((root / 'compile.log').read_text().splitlines()), 2)
+            self.assertEqual(len((root / 'compile.log').read_text(encoding='utf-8').splitlines()), 5)
 
     def test_a_profile_build_records_its_profile_and_names_its_packages(self):
         with tempfile.TemporaryDirectory(prefix='relay-stage-windows-') as temporary:

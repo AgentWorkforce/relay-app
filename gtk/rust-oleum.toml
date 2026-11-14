@@ -28,7 +28,7 @@ rust_roots = ["src"]
 
 [baseline.file_loc]
 "src/bridge.rs" = 505
-"src/ui/app.rs" = 978
+"src/ui/app.rs" = 974
 "src/ui/messages.rs" = 760
 "src/ui/session_controls.rs" = 655
 "src/ui/sessions_page.rs" = 1775

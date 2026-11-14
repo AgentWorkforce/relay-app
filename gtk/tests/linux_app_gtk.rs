@@ -44,6 +44,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
+#[path = "linux_app_gtk/cobrand.rs"]
+mod cobrand;
 #[cfg(unix)]
 #[path = "linux_app_gtk/native_visibility.rs"]
 mod native_visibility;
@@ -6020,6 +6022,7 @@ fn main() -> ExitCode {
     let selected: Vec<&(&str, Test)> = TESTS
         .iter()
         .chain(pages::TESTS)
+        .chain(cobrand::TESTS)
         .chain(session_queries::TESTS)
         .chain(zoom::TESTS)
         .chain(native_tests)

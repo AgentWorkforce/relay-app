@@ -320,6 +320,9 @@ gtk DESKTOP_COBRAND_MARK="$work/cobrand.svg" DESKTOP_COBRAND_NAME="Example Custo
 [ "$(cobrand_log)" = "mark=unset name=unset" ] || fail "build-gtk.sh: exported co-brand variables reached cargo as: $(cobrand_log)"
 gtk -- --out "$work/c4" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name "$(printf 'A%.0s' {1..80})" >/dev/null \
   || fail "build-gtk.sh refused an 80-character co-brand name"
+# Characters, not bytes, in any locale: 80 two-byte characters pass under C.
+gtk LC_ALL=C -- --out "$work/c4" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name "$(printf '\303\251%.0s' {1..80})" >/dev/null \
+  || fail "build-gtk.sh refused an 80-character multibyte co-brand name under LC_ALL=C"
 calls="$(wc -l < "$CARGO_LOG")"
 refuse_cobrand() { # WHY ARGS...
   local why="$1" out; shift
@@ -339,6 +342,11 @@ refuse_cobrand "--cobrand-name must be one line" --profile example-7 --cobrand-m
 refuse_cobrand "--cobrand-name must be one line" --profile example-7 --cobrand-mark "$work/cobrand.svg" --cobrand-name $'Example\aCustomer'
 refuse_cobrand "--cobrand-name must be at most 80 characters; it has 81" --profile example-7 --cobrand-mark "$work/cobrand.svg" \
   --cobrand-name "Example Customer $(printf 'x%.0s' {1..64})"
+if out="$(gtk LC_ALL=C -- --out "$work/c5" --profile example-7 --cobrand-mark "$work/cobrand.svg" \
+  --cobrand-name "$(printf '\303\251%.0s' {1..81})" 2>&1)"; then
+  fail "build-gtk.sh accepted an 81-character multibyte co-brand name under LC_ALL=C"
+fi
+[[ "$out" == *"--cobrand-name must be at most 80 characters; it has 81"* ]] || fail "build-gtk.sh: an 81-character multibyte name: $out"
 [ "$(wc -l < "$CARGO_LOG")" = "$calls" ] || fail "cargo ran for a refused co-brand"
 [ ! -e "$work/c5" ] || fail "a refused co-brand build wrote outputs"
 
