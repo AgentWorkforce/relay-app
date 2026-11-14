@@ -2352,7 +2352,8 @@ start with `selected` uploads.
 The Linux install script installs the GTK-free private helper, runs it under
 `agent-relay.service`, and prints its full-path wizard command. It never starts
 terminal onboarding from the installer's piped standard input. `--start-service`
-starts an existing Linux user unit when requested; the installer remains
+starts the Linux user unit or, on macOS, the headless LaunchAgent
+(`com.agentrelay.desktop.core.headless`) when requested; the installer remains
 responsible for service installation and updates. The Windows bare-core
 installer owns its existing **Agent Relay (<account>)** logon task. Both use
 the same setup command, while retaining the lower-level agent-driven setup
