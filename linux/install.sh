@@ -25,7 +25,8 @@
 #   3. Unpacks into versions/<version>, checks the binary reports that
 #      version, records the product beside it (versions/<version>/product),
 #      and points `current` at it atomically. The previous version stays for
-#      rollback; older ones beyond KEEP are removed.
+#      rollback (--rollback goes to the newest installed version older than
+#      the current one); older ones beyond KEEP are removed.
 #   4. Writes the user unit (only when it is missing or names another
 #      binary), reloads systemd, and restarts the service (or enables and
 #      starts it on a first install). Agents the core spawned run in scopes of
@@ -80,7 +81,7 @@ usage() {
 Usage: install.sh [--version X.Y.Z] [--rollback] [--dry-run]
 
   --version X.Y.Z  Install this release instead of the latest.
-  --rollback       Switch back to the previously installed version.
+  --rollback       Switch to the newest installed version older than the current one.
   --dry-run        Say what would change and change nothing.
 EOF
   if [ "$RELEASE_FEED" = cloud ]; then
@@ -550,8 +551,14 @@ installed_versions() { # oldest first
 
 previous_version() {
   [ -d "$PREFIX/versions" ] || return 0
-  # Newest installed version other than the current one.
-  installed_versions | { grep -vxF "${current_version:-}" || true; } | tail -n 1
+  # Newest installed version older than the current one, so a second rollback
+  # keeps going back rather than returning to the version just left. Nothing
+  # when the current version is unknown or none is older.
+  [ -n "${current_version:-}" ] || return 0
+  local prev
+  prev="$({ installed_versions; printf '%s\n' "$current_version"; } | sort -Vu \
+    | { grep -xF -B1 -- "$current_version" || true; } | head -n 1)"
+  [ "$prev" = "$current_version" ] || printf '%s\n' "$prev"
 }
 
 # A version answering status.get says nothing about its ability to open local

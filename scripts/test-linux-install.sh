@@ -250,6 +250,24 @@ bash "$INSTALL" --rollback >/dev/null
 [ "$(current)" = 1.0.0 ] || fail "rollback picked $(current)"
 pass "--rollback switches to an earlier version ($(current))"
 
+# With 1.0.0, 1.1.0 and 1.2.0 installed, rollbacks only go back: 1.2.0 ->
+# 1.1.0 -> 1.0.0, then there is nothing earlier and nothing changes.
+(cd "$root/releases/v1.2.0" && sha256sum "AgentRelay-1.2.0-Linux-$arch-probe.tar.gz" > "AgentRelay-1.2.0-Linux-$arch-probe.tar.gz.sha256")
+bash "$INSTALL" --version 1.2.0 >/dev/null 2>&1 || fail "installing 1.2.0 failed"
+[ "$(current)" = 1.2.0 ] || fail "1.2.0 install points at $(current)"
+bash "$INSTALL" --rollback >/dev/null 2>&1 || fail "first of two rollbacks failed"
+[ "$(current)" = 1.1.0 ] || fail "first rollback picked $(current)"
+bash "$INSTALL" --rollback >/dev/null 2>&1 || fail "second of two rollbacks failed"
+[ "$(current)" = 1.0.0 ] || fail "second rollback picked $(current), not 1.0.0"
+before="$(restarts)"
+set +e; bash "$INSTALL" --rollback > "$root/state/out" 2>&1; status=$?; set -e
+[ "$status" != 0 ] || fail "a rollback with no earlier version succeeded"
+grep -q "no earlier version" "$root/state/out" || fail "no earlier version was not reported"
+[ "$(current)" = 1.0.0 ] || fail "a rollback with no earlier version moved current to $(current)"
+[ "$(cat "$root/state/running")" = 1.0.0 ] || fail "the running core changed on a rollback with no earlier version"
+[ "$(restarts)" = "$before" ] || fail "a rollback with no earlier version restarted the service"
+pass "--rollback only goes to older versions and stops at the oldest"
+
 bash "$INSTALL" --version 1.1.0 >/dev/null
 before="$(restarts)"
 bash "$INSTALL" --dry-run --version 1.0.0 >/dev/null
