@@ -88,7 +88,6 @@ methods! {
     ToolsCheck = "tools.check", NoParams => ToolsReport;
     ToolsSelect = "tools.select", ToolsSelectParams => ToolsReport;
     ToolsManage = "tools.manage", ToolsManageParams => ToolsReport;
-    ToolsTeammateContext = "tools.teammate_context", ToolsTeammateContextParams => ToolsReport;
     TelemetryRecord = "telemetry.record", crate::telemetry::TelemetryEvent => Done;
 
     // Cloud's provider routes and session summaries.

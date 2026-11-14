@@ -7,9 +7,10 @@
 //! and setting is kept; a file that is not a JSON object, or whose `hooks` or
 //! `PreToolUse` has another shape, is left unchanged.
 //!
-//! The same edits serve the teammate-context SessionStart hook
-//! ([`crate::teammate_context`]): each [`Kind`] has its own event, subcommand
-//! and group, so neither ever takes out or rewrites the other.
+//! The same edits recognize and remove the retired teammate-context
+//! SessionStart hook ([`crate::teammate_context`]): each [`Kind`] has its own
+//! event, subcommand and group, so neither ever takes out or rewrites the
+//! other.
 use super::*;
 #[cfg(test)]
 use crate::claude_attestation::MATCHER;
@@ -25,7 +26,8 @@ use serde_json::Map;
 pub(crate) enum Kind {
     /// The PreToolUse chat identity hook (`claude-attestation-hook`).
     Attestation,
-    /// The SessionStart teammate-context hook (`teammate-context-hook`).
+    /// The retired SessionStart teammate-context hook
+    /// (`teammate-context-hook`), only ever removed now.
     TeammateContext,
 }
 

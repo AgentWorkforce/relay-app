@@ -34,9 +34,6 @@ impl Installer {
             onboarding_complete: choices.as_ref().is_ok_and(Option::is_some),
             account_health: health,
             tools,
-            teammate_context: self
-                .teammate_context_available()
-                .then(|| self.teammate_context_enabled()),
         }
     }
 

@@ -32,8 +32,6 @@ fn chooser_name(ui: &ToolsUi) -> String {
         &ui.error,
         &ui.setup_started,
         ui.report.is_some(),
-        ui.offers_teammate_context(),
-        ui.teammate_choice(),
     )
         .hash(&mut digest);
     format!("tools-chooser-{:x}", digest.finish())
@@ -81,9 +79,6 @@ impl App {
             scrolling.set_vexpand(true);
             scrolling.set_min_content_height(100);
             column.append(&scrolling);
-            if ui.offers_teammate_context() {
-                column.append(&self.teammate_context_choice(&ui));
-            }
             let supported = report.tools.iter().any(chooser_eligible);
             let footer = if supported {
                 "You can change this later in Settings › Providers."
@@ -119,31 +114,6 @@ impl App {
         root.append(&holder);
         self.replace(&root);
         true
-    }
-
-    /// The chooser's pre-checked teammate-context line, as on the Mac.
-    fn teammate_context_choice(&self, ui: &ToolsUi) -> gtk::Box {
-        use crate::models::{TEAMMATE_CONTEXT_DETAIL, TEAMMATE_CONTEXT_TITLE};
-        let row = hbox(12, &[]);
-        let check = gtk::CheckButton::new();
-        check.set_valign(gtk::Align::Start);
-        check.set_widget_name(TEAMMATE_CONTEXT_TITLE);
-        widgets::name(&check, TEAMMATE_CONTEXT_TITLE);
-        check.set_active(ui.teammate_choice());
-        check.set_sensitive(!ui.busy && !ui.loading);
-        let weak = self.downgrade();
-        check.connect_toggled(move |check| {
-            if let Some(app) = weak.upgrade() {
-                app.update_state(|state| state.tools.teammate_draft = Some(check.is_active()));
-            }
-        });
-        row.append(&check);
-        let words = vbox(4, &[]);
-        words.set_hexpand(true);
-        words.append(&text(TEAMMATE_CONTEXT_TITLE, &["settings-row-title"]).wrapped());
-        words.append(&text(TEAMMATE_CONTEXT_DETAIL, &["settings-row-detail"]).wrapped());
-        row.append(&words);
-        row
     }
 
     /// One provider in the chooser, as on the Mac: its checkbox, its mark,
