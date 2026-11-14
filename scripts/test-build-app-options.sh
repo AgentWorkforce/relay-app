@@ -126,7 +126,7 @@ record_cobrand() { # BUNDLE MARK NAME
   mkdir -p "$bundle/Contents/Resources"
   # shellcheck disable=SC2034 # read by the step evaluated below
   ( APP_BUNDLE="$bundle" COBRAND_MARK="${2:+$COBRAND_DIR/$2}" COBRAND_NAME="$3"
-    # shellcheck disable=SC2317 # called by the step evaluated below
+    # shellcheck disable=SC2317,SC2329 # called by the step evaluated below
     note() { printf '%s\n' "$*"; }
     eval "$step" )
 }
