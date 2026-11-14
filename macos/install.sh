@@ -29,10 +29,13 @@
 #      the release's .sha256, and checks the core's Developer ID signature
 #      (Apple's anchor, team QUJ7SA6X8X) before running it.
 #   3. Unpacks into versions/<version>, checks the binary reports that
-#      version, and points `current` at it atomically. The previous version
-#      stays for rollback; older ones beyond KEEP are removed.
-#   4. Writes the LaunchAgent (only when it is missing or differs) and loads
-#      it into gui/<uid>, or restarts the loaded job with kickstart -k.
+#      version, records the product beside it (versions/<version>/product),
+#      and points `current` at it atomically. The previous version stays for
+#      rollback; older ones beyond KEEP are removed.
+#   4. Writes the LaunchAgent (only when it is missing or differs; before
+#      anything is replaced, so a failure there leaves the installation as it
+#      was) and loads it into gui/<uid>, or restarts the loaded job with
+#      kickstart -k.
 #   5. Waits for the new core to answer with the new version; if it does not,
 #      points `current` back at the previous version and restarts again.
 #
@@ -40,6 +43,12 @@
 # core's data directory (~/Library/Application Support/com.agentrelay.desktop),
 # not here, and are kept by --uninstall too. Never done: anything needing
 # root, or changing credentials; it says what to run instead.
+#
+# Every product installs into the same prefix and LaunchAgent, as in
+# linux/install.sh: a site profile's copy of this script replaces whichever
+# product's headless core is installed, as an update would, even at the same
+# version: a release counts as installed only when the recorded product is
+# this one (an install without a record is Agent Relay's).
 #
 # Written for the bash 3.2 and BSD tools macOS ships: no `sort -V`,
 # `find -printf`, `mv -T`, flock(1), associative arrays or {fd} redirections.
@@ -65,6 +74,9 @@ SITE_URL=''
 PROFILE_ID=''
 # shellcheck disable=SC2034
 FEED_PUBLIC_KEY=''
+# The product an install without a product record belongs to: every earlier
+# release of this script was Agent Relay's.
+DEFAULT_ASSET_PREFIX='AgentRelay'
 
 SCRIPT_NAME="agent-relay install"
 RELEASES_API="${AGENT_RELAY_RELEASES_API:-https://api.github.com/repos/$RELEASES_REPOSITORY/releases}"
@@ -96,7 +108,8 @@ Usage: install-macos.sh [--version X.Y.Z] [--update] [--rollback] [--dry-run]
 
   --version X.Y.Z  Install this release instead of the latest.
   --update         Update an existing install (fails when there is none).
-  --rollback       Switch back to the previously installed version.
+  --rollback       Switch back to the newest installed version older than
+                   the current one.
   --status         Say what is installed and whether the core answers.
   --uninstall      Stop the core and remove it and its LaunchAgent; settings,
                    sign-in and agents stay in the core's data directory.
@@ -193,6 +206,41 @@ installed_versions() { # oldest first
   done | sort -t. -k1,1n -k2,2n -k3,3n
 }
 
+version_older() { # a b -> whether release a is older than release b
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, /[-+]/); nb = split(b, y, /[-+]/)
+    split(x[1], p, "."); split(y[1], q, ".")
+    for (i = 1; i <= 3; i++) {
+      if (p[i] + 0 < q[i] + 0) exit 0
+      if (p[i] + 0 > q[i] + 0) exit 1
+    }
+    # The same release: a pre-release (1.2.0-beta.1) is older than 1.2.0.
+    exit !(index(a, "-") == length(x[1]) + 1 && index(b, "-") != length(y[1]) + 1)
+  }'
+}
+
+# The newest installed version older than the current one: --rollback never
+# goes forward, even to a version it rolled back from. Like the rest of the
+# installed versions, it may be another product's.
+rollback_target() {
+  local candidate target=""
+  [ -n "$current_version" ] || return 0
+  for candidate in $(installed_versions); do
+    version_older "$candidate" "$current_version" || continue
+    if [ -z "$target" ] || version_older "$target" "$candidate"; then target="$candidate"; fi
+  done
+  printf '%s' "$target"
+}
+
+# The product of the installed version: its record, written on install, or
+# Agent Relay's for an install made before there was one.
+read_current_product() {
+  current_product=""
+  [ -n "$current_version" ] || return 0
+  current_product="$(head -n 1 "$PREFIX/current/product" 2>/dev/null || true)"
+  current_product="${current_product:-$DEFAULT_ASSET_PREFIX}"
+}
+
 loaded() { launchctl print "$DOMAIN/$LABEL" < /dev/null >/dev/null 2>&1; }
 
 # One installer at a time per prefix: install, update, rollback and uninstall
@@ -202,30 +250,55 @@ loaded() { launchctl print "$DOMAIN/$LABEL" < /dev/null >/dev/null 2>&1; }
 # locks below), until this script exits: through replacement, switching, the
 # health check, any rollback and pruning. launchd starts the core itself, so
 # the core never inherits it. A dry run changes nothing and takes no lock.
+#
+# --uninstall unlinks the lock file while holding it. An installer that had
+# opened the file but not yet locked it would then lock a file no other
+# installer can open, beside one that locks a new file at the same path; so
+# the lock counts only while the path still names the file locked (same
+# device and inode), and otherwise is opened and taken again.
 INSTALL_LOCK_FD=19
 lock_installer() {
   [ "$DRY_RUN" = 0 ] || return 0
-  local lock="$PREFIX/.install-lock" old_umask
-  mkdir -p "$PREFIX" || die "could not create $PREFIX"
-  [ ! -L "$lock" ] || die "$lock is a link; remove it, then run this again"
-  old_umask="$(umask)"
-  umask 077
-  eval "exec $INSTALL_LOCK_FD>>\"\$lock\"" || die "could not open $lock"
-  umask "$old_umask"
-  perl -MFcntl=:flock -e 'open(my $lock, ">>&=", $ARGV[0]) or exit 2; flock($lock, LOCK_EX | LOCK_NB) or exit 1' "$INSTALL_LOCK_FD" \
-    || die "another install, update, rollback or uninstall is running in $PREFIX; wait for it to finish, then run this again"
+  local lock="$PREFIX/.install-lock" old_umask attempt=1 status
+  while :; do
+    mkdir -p "$PREFIX" || die "could not create $PREFIX"
+    [ ! -L "$lock" ] || die "$lock is a link; remove it, then run this again"
+    old_umask="$(umask)"
+    umask 077
+    eval "exec $INSTALL_LOCK_FD>>\"\$lock\"" || die "could not open $lock"
+    umask "$old_umask"
+    status=0
+    perl -MFcntl=:flock -e '
+        open(my $lock, ">>&=", $ARGV[0]) or exit 2;
+        flock($lock, LOCK_EX | LOCK_NB) or exit 1;
+        my @held = stat($lock);
+        my @named = lstat($ARGV[1]);
+        exit 3 unless @held && @named && $held[0] == $named[0] && $held[1] == $named[1];
+        exit 0' "$INSTALL_LOCK_FD" "$lock" < /dev/null || status=$?
+    case "$status" in
+      0) return 0 ;;
+      1) die "another install, update, rollback or uninstall is running in $PREFIX; wait for it to finish, then run this again" ;;
+      3) eval "exec $INSTALL_LOCK_FD>&-"
+         [ "$attempt" -lt 5 ] || die "$lock kept being removed or replaced while it was being locked; run this again"
+         attempt=$((attempt + 1))
+         sleep 1 ;;
+      *) die "could not lock $lock" ;;
+    esac
+  done
 }
 
 current_version=""
 if [ -x "$PROBE" ]; then
   current_version="$(probe_version "$PROBE" || true)"
 fi
+read_current_product
 
 # --- status ---------------------------------------------------------------------
 
 if [ "$ACTION" = status ]; then
   if [ -n "$current_version" ]; then
     note "installed: $current_version ($PROBE)"
+    note "product: $current_product"
   else
     note "not installed (no $PROBE)"
   fi
@@ -324,6 +397,7 @@ current_version=""
 if [ -x "$PROBE" ]; then
   current_version="$(probe_version "$PROBE" || true)"
 fi
+read_current_product
 [ "$UPDATE" = 0 ] || [ -n "$current_version" ] || die "--update: nothing is installed in $PREFIX; run without --update to install"
 
 if [ -n "$current_version" ]; then
@@ -603,17 +677,43 @@ next_steps() {
   note "before installing the $PRODUCT_NAME app on this Mac, run this installer with --uninstall."
 }
 
+# Puts back the copy of $VERSION this install set aside (another product's,
+# or one left over), if there was one.
+destination=""
+restore_replaced() {
+  [ -n "$destination" ] && [ -d "$destination.replaced" ] || return 0
+  run rm -rf "$destination"
+  run mv "$destination.replaced" "$destination"
+}
+
+# Between switching `current` and handing the result to the restart and its
+# health check, an exit for any reason puts the previous installation back:
+# launchd must never start a release nothing checked.
+undo_to=""
+undo_switch() {
+  [ -n "$undo_to" ] || return 0
+  printf '%s: %s\n' "$SCRIPT_NAME" "putting the previous installation ($undo_to) back" >&2
+  [ "$undo_to" = "$VERSION" ] || switch_to "$undo_to" || true
+  restore_replaced || true
+  undo_to=""
+}
+work=""
+trap 'status=$?; [ "$status" = 0 ] || undo_switch; [ -z "$work" ] || rm -rf "$work"' EXIT
+
 # --- rollback -------------------------------------------------------------------
 
 if [ "$ROLLBACK" = 1 ]; then
-  target="$(installed_versions | { grep -vxF "${current_version:-}" || true; } | tail -n 1)"
+  target="$(rollback_target)"
   [ -n "$target" ] || die "no earlier version to roll back to"
   lock_storage_migrations
   storage_compatible "$PREFIX/versions/$target/agent-relay-probe" || die "rollback refused before changing the installation"
-  note "rolling back ${current_version:-?} -> $target"
-  switch_to "$target"
+  # The LaunchAgent first: if it cannot be written, `current` is unchanged.
   ensure_plist
+  note "rolling back ${current_version:-?} -> $target"
+  undo_to="$current_version"
+  switch_to "$target"
   unlock_storage_migrations
+  undo_to=""
   restart_core || true
   healthy "$target" || die "the core did not come back on $target; see: $LOG_DIR"
   note "now running $target"
@@ -624,7 +724,6 @@ fi
 # --- 2. which release -----------------------------------------------------------
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
 if [ -z "$VERSION" ]; then
   fetch "$RELEASES_API/latest" "$work/latest.json" || die "could not read the latest release"
   VERSION="$(grep -o '"tag_name": *"[^"]*"' "$work/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
@@ -633,7 +732,10 @@ if [ -z "$VERSION" ]; then
 fi
 note "release: $VERSION ($ARCH)"
 
-if [ "$current_version" = "$VERSION" ]; then
+if [ "$current_version" = "$VERSION" ] && [ "$current_product" != "$ASSET_PREFIX" ]; then
+  note "the installed $VERSION is another product's; replacing it with $PRODUCT_NAME's"
+fi
+if [ "$current_version" = "$VERSION" ] && [ "$current_product" = "$ASSET_PREFIX" ]; then
   lock_storage_migrations
   storage_compatible "$PROBE" || die "the installed core needs a compatible update"
   ensure_plist
@@ -692,7 +794,12 @@ reported="$(probe_version "$candidate" || true)"
 lock_storage_migrations
 storage_compatible "$candidate" || die "installation refused before replacing the core"
 
+# The LaunchAgent names `current`, not a version, so it is written before
+# anything is replaced: if it cannot be, the installation stays as it was.
+ensure_plist
+
 destination="$PREFIX/versions/$VERSION"
+was="${current_version:-}"
 if [ "$DRY_RUN" = 1 ]; then
   note "would install $destination"
 else
@@ -703,17 +810,22 @@ else
   if [ "$has_license" = 1 ]; then
     install -m 0644 "$work/agent_relay/LICENSE" "$destination.partial/LICENSE"
   fi
-  # A copy of this version left by an earlier, failed install is replaced.
-  rm -rf "$destination"
+  printf '%s\n' "$ASSET_PREFIX" > "$destination.partial/product"
+  # An existing copy of this version (another product's, or one left over)
+  # is set aside until the new core answers, and comes back if it does not.
+  rm -rf "$destination.replaced"
+  # Replacing the version `current` names changes the installation now.
+  [ "$was" != "$VERSION" ] || undo_to="$was"
+  if [ -d "$destination" ]; then mv "$destination" "$destination.replaced"; fi
   mv "$destination.partial" "$destination"
 fi
 
 # --- 4. switch and restart ------------------------------------------------------
 
-was="${current_version:-}"
+[ -z "$was" ] || undo_to="$was"
 switch_to "$VERSION"
-ensure_plist
 unlock_storage_migrations
+undo_to=""
 # A job launchd refuses to load rolls back like a core that never answers.
 restarted=1
 restart_core || { restarted=0; note "launchctl could not start $LABEL"; }
@@ -721,21 +833,34 @@ restart_core || { restarted=0; note "launchctl could not start $LABEL"; }
 # --- 5. health, or roll back ----------------------------------------------------
 
 if [ "$restarted" = 0 ] || ! healthy "$VERSION"; then
-  if [ -n "$was" ] && [ -d "$PREFIX/versions/$was" ]; then
+  if [ -n "$was" ] && [ "$was" != "$VERSION" ] && [ -d "$PREFIX/versions/$was" ]; then
     lock_storage_migrations --wait
     storage_compatible "$PREFIX/versions/$was/agent-relay-probe" || die "the new core did not answer; unsafe rollback refused. Keep both releases and install a newer compatible release"
     note "the new core did not answer; rolling back to $was"
     switch_to "$was"
     # A version that failed is never a rollback target.
     run rm -rf "${PREFIX:?}/versions/$VERSION"
+    restore_replaced
     unlock_storage_migrations
     restart_core || true
     healthy "$was" || die "rollback to $was did not answer either; see: $LOG_DIR"
     die "update to $VERSION failed and was rolled back to $was; see: $LOG_DIR"
   fi
+  # The same version of another product: put its copy back and restart it.
+  if [ -n "$was" ] && [ "$was" = "$VERSION" ] && [ -d "$destination.replaced" ]; then
+    lock_storage_migrations --wait
+    storage_compatible "$destination.replaced/agent-relay-probe" || die "the new core did not answer; unsafe same-version rollback refused. Keep both releases and install a newer compatible release"
+    note "the new core did not answer; going back to the installed $was"
+    restore_replaced
+    unlock_storage_migrations
+    restart_core || true
+    healthy "$was" || die "going back to $was did not answer either; see: $LOG_DIR"
+    die "replacing the installed $was failed and it is running again; see: $LOG_DIR"
+  fi
   die "the core did not start; see: $LOG_DIR (remove it with --uninstall)"
 fi
 note "running $VERSION"
+[ "$DRY_RUN" = 1 ] || rm -rf "$destination.replaced"
 
 # Keep the newest KEEP versions (always the current one).
 if [ "$DRY_RUN" = 0 ]; then
