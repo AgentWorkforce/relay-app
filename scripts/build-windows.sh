@@ -495,15 +495,25 @@ fi
 notices="$root/NOTICES.txt"
 {
   printf '%s %s for Windows (%s)\n\n' "$product" "$version" "$arch"
-  printf 'agent-relay.exe and agent-relay-probe.exe are %s. The other\n' "$product"
-  printf 'files in this folder are unmodified builds from the MSYS2 project\n'
-  printf '(https://www.msys2.org), redistributed under their own licenses below.\n'
-  printf 'GTK, GLib and the other LGPL libraries are linked dynamically; you may\n'
-  printf 'replace any DLL in bin with your own build of the same library.\n'
-  printf 'Sources: https://packages.msys2.org and https://github.com/msys2/MINGW-packages\n\n'
+  printf 'agent-relay.exe and agent-relay-probe.exe are %s.' "$product"
 } > "$notices"
 bundled="$(cd "$root" && find bin lib share -type f ! -name 'agent-relay*' ! -name 'gschemas.compiled' ! -name 'loaders.cache' | sort)"
-if command -v pacman >/dev/null 2>&1; then
+if [ -n "$bundled" ]; then
+  {
+    printf ' The other\n'
+    printf 'files in this folder are unmodified builds from the MSYS2 project\n'
+    printf '(https://www.msys2.org), redistributed under their own licenses below.\n'
+    printf 'GTK, GLib and the other LGPL libraries are linked dynamically; you may\n'
+    printf 'replace any DLL in bin with your own build of the same library.\n'
+    printf 'Sources: https://packages.msys2.org and https://github.com/msys2/MINGW-packages\n\n'
+  } >> "$notices"
+fi
+if [ -z "$bundled" ]; then
+  # The gnullvm targets link libunwind statically (Rust 1.100), so a core
+  # without GTK can need no MSYS2 file at all.
+  note "no MSYS2 files are bundled with this component"
+  printf '\n\nNo MSYS2 files are bundled with this component.\n' >> "$notices"
+elif command -v pacman >/dev/null 2>&1; then
   # pacman is slow to start under MSYS2: one call for every file, then one for
   # every package. -Qo prints "<path> is owned by <package> <version>".
   owners="$(cd "$prefix" || exit 1; printf '%s\n' "$bundled" | xargs pacman -Qo 2>/dev/null || true)"
