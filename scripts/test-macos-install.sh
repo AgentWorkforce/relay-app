@@ -105,12 +105,18 @@ cat > "$root/bin/shasum" <<EOF
 [ "\$1 \$2" = "-a 256" ] || exit 2
 exec "$real_sha256" "\$3"
 EOF
+# The designated requirement, written out here rather than read from the
+# installer: dropping any constraint (the Apple anchor, the Developer ID
+# intermediate, the Developer ID Application leaf or the team) fails the suite.
+requirement='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"'
+printf '%s\n' "-R=$requirement" > "$root/state/requirement"
 cat > "$root/bin/codesign" <<EOF
 #!/usr/bin/env bash
-# Passes a core unless it is the unsigned kind; the requirement must name the team.
+# Passes a core unless it is the unsigned kind; the requirement must be the
+# full Developer ID requirement, exactly.
 echo "\$*" >> "$root/state/codesign.log"
 [ "\$1 \$2" = "--verify --strict" ] || exit 2
-case "\$3" in -R=*'leaf[subject.OU] = "QUJ7SA6X8X"'*) ;; *) exit 3 ;; esac
+[ "\$3" = "\$(cat "$root/state/requirement")" ] || { echo "codesign: unexpected requirement: \$3" >&2; exit 3; }
 grep -q '^# kind: unsigned' "\$4" && { echo "\$4: invalid signature" >&2; exit 1; }
 exit 0
 EOF
@@ -134,6 +140,9 @@ cat > "$root/bin/launchctl" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$root/state/launchctl.log"
 state="$root/state"
+if [ -n "\${CURRENT_GUARD:-}" ] && [ ! -L "\$CURRENT_GUARD" ]; then
+  echo "current absent at: launchctl \$*" >> "\$state/current-violations"
+fi
 start() {
   local args=()
   while IFS= read -r line; do args+=("\$line"); done < "\$state/job-args"
@@ -161,6 +170,7 @@ print(p["Label"]); print("\n".join(p["ProgramArguments"]))' "\$3")" || exit 5
     start ;;
   bootout)
     [ -f "\$state/loaded-\${2##*/}" ] || exit 3
+    [ ! -f "\$state/bootout-fails" ] || exit 5
     rm -f "\$state/loaded-\${2##*/}" "\$state/running" ;;
   kickstart)
     [ "\$2" = -k ] || exit 2
@@ -189,6 +199,22 @@ connection = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
 for row in connection.execute(sql):
     print("|".join("" if value is None else str(value) for value in row))
 EOF
+# While CURRENT_GUARD names the \`current\` link, rm, ln, mv and unlink record
+# any call that names it, and any call made while it is absent: the installer
+# may change \`current\` only by rename(2) of current.new over it, so the link
+# exists at every step of an update. Unlinking it and linking it again fails.
+for tool in rm ln mv unlink; do
+  cat > "$root/bin/$tool" <<EOF
+#!/usr/bin/env bash
+if [ -n "\${CURRENT_GUARD:-}" ]; then
+  for arg in "\$@"; do
+    case "\$arg" in "\$CURRENT_GUARD"|"\$CURRENT_GUARD/") echo "$tool names current: $tool \$*" >> "$root/state/current-violations" ;; esac
+  done
+  [ -L "\$CURRENT_GUARD" ] || echo "current absent at: $tool \$*" >> "$root/state/current-violations"
+fi
+exec "$(command -v "$tool")" "\$@"
+EOF
+done
 chmod 0755 "$root/bin/"*
 export PATH="$root/bin:$PATH"
 export AGENT_RELAY_RELEASES_API=https://api.test/releases
@@ -196,6 +222,9 @@ export AGENT_RELAY_DOWNLOAD_BASE=https://releases.test
 export AGENT_RELAY_HEALTH_TIMEOUT=4
 
 current() { basename "$(readlink "$prefix/current")"; }
+no_current_gap() { # what was checked
+  [ ! -s "$root/state/current-violations" ] || { cat "$root/state/current-violations" >&2; fail "$1 removed or replaced current other than by rename"; }
+}
 starts() { grep -cE '^(bootstrap|kickstart)' "$root/state/launchctl.log" 2>/dev/null || true; }
 kept() { (find "$prefix/versions" -mindepth 1 -maxdepth 1 -printf "%f\n" | sort -t. -k1,1n -k2,2n -k3,3n | tr '\n' ' '); }
 no_secret() { ! grep -q secret-token "$root/state/out" || fail "$1 printed the account secret"; }
@@ -287,7 +316,8 @@ pass "rerun leaves a healthy install alone"
 
 echo 1.1.0 > "$root/state/latest"
 : > "$root/state/launchctl.log"
-bash "$INSTALL" --update > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "update failed"; }
+CURRENT_GUARD="$prefix/current" bash "$INSTALL" --update > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "update failed"; }
+no_current_gap "the update"
 [ "$(current)" = 1.1.0 ] || fail "update points at $(current)"
 [ -d "$prefix/versions/1.0.0" ] || fail "previous version removed"
 grep -qx "kickstart -k gui/$uid/$label" "$root/state/launchctl.log" || fail "update did not kickstart the core"
@@ -295,7 +325,7 @@ grep -qx "kickstart -k gui/$uid/$label" "$root/state/launchctl.log" || fail "upd
 [ "$(cat "$root/state/running")" = 1.1.0 ] || fail "1.1.0 is not running"
 [ ! -e "$prefix/versions/1.1.0/LICENSE" ] || fail "an archive without a license grew one"
 [ "$(cat "$prefix/versions/1.0.0/LICENSE")" = License ] || fail "the LICENSE was not installed beside the core"
-pass "--update to 1.1.0 restarts with kickstart -k and keeps 1.0.0"
+pass "--update to 1.1.0 restarts with kickstart -k and keeps 1.0.0, never without current"
 
 # A LaunchAgent that differs (an older script's) is unloaded and loaded again.
 echo '<plist version="1.0"><dict/></plist>' > "$plist"
@@ -343,7 +373,8 @@ if bash "$INSTALL" --version 1.4.0 >/dev/null 2>&1; then fail "a refused restart
 [ "$(cat "$root/state/running")" = 1.1.0 ] || fail "1.1.0 is not running after a refused restart"
 pass "a restart launchd refuses is rolled back"
 
-bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback failed"; }
+CURRENT_GUARD="$prefix/current" bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback failed"; }
+no_current_gap "--rollback"
 [ "$(current)" = 1.0.0 ] || fail "rollback picked $(current)"
 [ "$(cat "$root/state/running")" = 1.0.0 ] || fail "1.0.0 is not running after --rollback"
 pass "--rollback switches to the earlier version"
@@ -353,6 +384,23 @@ bash "$INSTALL" --dry-run --version 1.1.0 > "$root/state/out" 2>&1 || { cat "$ro
 if [ "$(current)" != 1.0.0 ] || [ "$(starts)" != "$before" ]; then fail "--dry-run changed something"; fi
 grep -q "would run: launchctl kickstart -k gui/$uid/$label" "$root/state/out" || fail "--dry-run does not say it would restart"
 pass "--dry-run changes nothing"
+
+# --- one installer at a time ----------------------------------------------------
+
+perl -MFcntl=:flock -e 'open(my $h, ">>", $ARGV[0]) or die; flock($h, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close($r); sleep 60' \
+  "$prefix/.install-lock" "$root/state/held" &
+holder=$!
+for _ in $(seq 50); do [ -e "$root/state/held" ] && break; sleep 0.1; done
+before="$(starts)"
+for args in "--version 1.1.0" "--rollback" "--uninstall"; do
+  # shellcheck disable=SC2086
+  if bash "$INSTALL" $args > "$root/state/out" 2>&1; then fail "$args ran beside another installer"; fi
+  grep -q "another install, update, rollback or uninstall is running" "$root/state/out" || { cat "$root/state/out"; fail "$args does not say another installer is running"; }
+done
+kill "$holder"; wait "$holder" 2>/dev/null || true; holder=""; rm -f "$root/state/held"
+{ [ "$(current)" = 1.0.0 ] && [ "$(starts)" = "$before" ] && [ -f "$plist" ] && [ -d "$prefix/versions/1.1.0" ]; } \
+  || fail "a refused concurrent installer changed something"
+pass "install, rollback and uninstall refuse while another installer holds the lock"
 
 # --- status ---------------------------------------------------------------------
 
@@ -415,6 +463,13 @@ pass "a compatible core is installed, and an unsafe rollback refused"
 
 bash "$INSTALL" --uninstall --dry-run > "$root/state/out" 2>&1 || fail "--uninstall --dry-run failed"
 { [ -f "$plist" ] && [ -e "$prefix/current" ] && [ -f "$root/state/loaded-$label" ]; } || fail "--uninstall --dry-run changed something"
+touch "$root/state/bootout-fails"
+if bash "$INSTALL" --uninstall > "$root/state/out" 2>&1; then fail "--uninstall succeeded with the job still loaded"; fi
+grep -q "could not unload $label; nothing was removed. Run: launchctl bootout gui/$uid/$label" "$root/state/out" \
+  || { cat "$root/state/out"; fail "the failed unload does not say what to run"; }
+{ [ -f "$plist" ] && [ -x "$prefix/current/agent-relay-probe" ] && [ -f "$root/state/loaded-$label" ]; } \
+  || fail "--uninstall removed files while the job was still loaded"
+rm "$root/state/bootout-fails"
 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall failed"; }
 grep -qx "bootout gui/$uid/$label" "$root/state/launchctl.log" || fail "--uninstall did not unload the job"
 [ ! -e "$root/state/loaded-$label" ] || fail "the job is still loaded"
@@ -424,5 +479,5 @@ grep -Fq "kept settings, sign-in and agent registrations in: $data" "$root/state
 [ "$(sha256sum "$data/injectable-agents.json")" = "$data_sum" ] || fail "the core's data changed"
 if bash "$INSTALL" --status > "$root/state/out" 2>&1; then fail "--status after --uninstall reported success"; fi
 grep -q "not installed" "$root/state/out" || fail "--status after --uninstall does not say it is not installed"
-pass "--uninstall unloads and removes the core and keeps its data"
+pass "--uninstall keeps everything while the job will not unload, then removes the core and keeps its data"
 echo "all macOS install tests passed"
