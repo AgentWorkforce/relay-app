@@ -86,6 +86,67 @@ accept --product-name "Agent Relay Coexist" --bundle-id com.agentrelay.desktop.c
 accept "${STAGING[@]}" --releases-repository Example/releases --coexist
 expect "--coexist needs its own --bundle-id" --coexist
 expect "--coexist needs its own --bundle-id" --bundle-id Com.AgentRelay.Desktop --coexist
+# A co-branded build (--cobrand-mark, --cobrand-name) takes the customer's
+# mark, an SVG or a PNG, and name together.
+COBRAND_DIR="$(mktemp -d)"
+trap 'rm -rf "$COBRAND_DIR"' EXIT
+printf '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"/>\n' > "$COBRAND_DIR/cobrand.svg"
+printf '\x89PNG\r\n\x1a\n' > "$COBRAND_DIR/cobrand.png"
+printf 'not an image\n' > "$COBRAND_DIR/cobrand.txt"
+printf 'not an image\n' > "$COBRAND_DIR/fake.png"
+accept --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "Acme Corp"
+accept --cobrand-mark "$COBRAND_DIR/cobrand.png" --cobrand-name "Acme Corp"
+expect "--cobrand-mark: no file at" --cobrand-mark /nonexistent/cobrand.svg --cobrand-name "Acme Corp"
+expect "--cobrand-mark must be an SVG or a PNG" --cobrand-mark "$COBRAND_DIR/cobrand.txt" --cobrand-name "Acme Corp"
+expect "--cobrand-mark must be an SVG or a PNG" --cobrand-mark "$COBRAND_DIR/fake.png" --cobrand-name "Acme Corp"
+expect "--cobrand-name needs --cobrand-mark" --cobrand-name "Acme Corp"
+expect "--cobrand-mark needs --cobrand-name" --cobrand-mark "$COBRAND_DIR/cobrand.svg"
+expect "--cobrand-name must not be empty" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name ""
+expect "--cobrand-name must be one line" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name $'Acme\nCorp'
+# The name is trimmed and checked as the app (AppInfo.coBrandName) and the
+# site-profile action check it, so a build never records a name the app
+# drops; the refusal gives the length, never the name.
+accept --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "  Acme Corp  "
+accept --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "$(printf 'A%.0s' {1..80})"
+expect "--cobrand-name must not be empty or blank" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name $' \t '
+expect "--cobrand-name must be one line" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name $'Acme\aCorp'
+expect "--cobrand-name must be at most 80 characters; it has 81" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "$(printf 'A%.0s' {1..81})"
+got="$(bash "$SCRIPTS/build-app.sh" --arch arm64 --version 1.2.3 --probe /nonexistent --out /nonexistent \
+  --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "Acme Corp $(printf 'x%.0s' {1..80})" 2>&1 || true)"
+if [[ "$got" == *"Acme Corp"* ]]; then
+  echo "FAIL: build-app.sh printed a refused co-brand name" >&2
+  failures=$((failures + 1))
+fi
+# The step that records the co-brand in the bundle, run on its own: a build
+# without a co-brand writes no co-brand resource, so it looks as it did
+# before; a co-branded one writes the mark and the name, and prints neither.
+step="$(sed -n '/^# A co-branded build says/,/^fi$/p' "$SCRIPTS/build-app.sh")"
+record_cobrand() { # BUNDLE MARK NAME
+  local bundle="$COBRAND_DIR/$1.app"
+  mkdir -p "$bundle/Contents/Resources"
+  # shellcheck disable=SC2034 # read by the step evaluated below
+  ( APP_BUNDLE="$bundle" COBRAND_MARK="${2:+$COBRAND_DIR/$2}" COBRAND_NAME="$3"
+    # shellcheck disable=SC2317,SC2329 # called by the step evaluated below
+    note() { printf '%s\n' "$*"; }
+    eval "$step" )
+}
+if [ -z "$step" ]; then
+  echo "FAIL: build-app.sh has no co-brand recording step" >&2
+  failures=$((failures + 1))
+fi
+out="$(record_cobrand plain "" "" 2>&1)"
+if [ -n "$(find "$COBRAND_DIR/plain.app" -name 'cobrand*')" ] || [ -n "$out" ]; then
+  echo "FAIL: a build without a co-brand wrote a co-brand resource or said so: $out" >&2
+  failures=$((failures + 1))
+fi
+out="$(record_cobrand cobranded cobrand.png "Acme Corp" 2>&1)"
+resources="$COBRAND_DIR/cobranded.app/Contents/Resources"
+if ! cmp -s "$resources/cobrand.png" "$COBRAND_DIR/cobrand.png" \
+  || [ "$(cat "$resources/cobrand-name.txt" 2>/dev/null)" != "Acme Corp" ] \
+  || [ -e "$resources/cobrand.svg" ] || [[ "$out" == *"Acme Corp"* ]]; then
+  echo "FAIL: a co-branded build did not record its mark and name, or printed the name: $out" >&2
+  failures=$((failures + 1))
+fi
 if [ "$failures" -ne 0 ]; then
   printf 'build-app.sh options: %d failure(s)\n' "$failures" >&2
   exit 1

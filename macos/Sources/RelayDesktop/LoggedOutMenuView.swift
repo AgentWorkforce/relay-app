@@ -15,11 +15,16 @@ struct LoggedOutMenuView: View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 BrandMarkView(width: 34)
-                BrandWordmarkView(height: 31)
+                BrandWordmarkView(height: 31, coBranded: AppInfo.coBrand != nil)
             }
             .foregroundStyle(palette.ink)
             .zoomPadding(.top, 25)
-            .zoomPadding(.bottom, 21)
+            .zoomPadding(.bottom, AppInfo.coBrand == nil ? 21 : 8)
+            // A co-branded build's "for <customer>" line.
+            if AppInfo.coBrand != nil {
+                CoBrandLineView(nameColor: palette.ink, forColor: palette.muted)
+                    .zoomPadding(.bottom, 21)
+            }
 
             AgentTerminalMarquee(paused: signingIn, palette: palette)
 

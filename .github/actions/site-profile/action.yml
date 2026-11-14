@@ -36,6 +36,10 @@ description: >-
   With no profile, the default profile's values are exported and nothing is
   masked or fetched; it never reads policy-defaults or
   history-upload-storage-origins. Run after the checkout: it sources scripts/site-origin.sh.
+  DESKTOP_COBRAND_NAME (optional) is the customer's name a co-branded build
+  shows after "for" under the Agent Relay lockup, beside the branding
+  archive's cobrand.svg or cobrand.png; one needs the other. Checked, masked,
+  exported as COBRAND_NAME, never printed.
 inputs:
   profile:
     description: The profile's opaque id; empty for the default profile.
@@ -105,6 +109,10 @@ inputs:
     description: The environment's DESKTOP_BRANDING_URL secret (optional).
     required: false
     default: ''
+  cobrand-name:
+    description: The environment's DESKTOP_COBRAND_NAME secret.
+    required: false
+    default: ''
   branding-token:
     description: >-
       The environment's DESKTOP_BRANDING_TOKEN secret (optional): an override.
@@ -157,6 +165,7 @@ runs:
         IN_FEED_PUBLISHER_TOKEN_SET: ${{ inputs.feed-publisher-token-set }}
         IN_SUPPORT_URL: ${{ inputs.support-url }}
         IN_BRANDING_URL: ${{ inputs.branding-url }}
+        IN_COBRAND_NAME: ${{ inputs.cobrand-name }}
         IN_POLICY_DEFAULTS: ${{ inputs.policy-defaults }}
         IN_HISTORY_UPLOAD_STORAGE_ORIGINS: ${{ inputs.history-upload-storage-origins }}
       run: |
@@ -174,6 +183,12 @@ runs:
         if [ -z "$PROFILE" ]; then
           [ -z "$coexist" ] || { echo "::error::DESKTOP_COEXIST is a site profile's setting; the default profile always replaces other Agent Relay apps."; exit 1; }
           [ -z "$IN_PULL_RELEASES_REPOSITORY" ] || { echo "::error::PULL_RELEASES_REPOSITORY is a site profile's setting; the default profile publishes only to its own releases repository."; exit 1; }
+          [ -z "$IN_COBRAND_NAME" ] || { echo "::error::DESKTOP_COBRAND_NAME is a site profile's setting; the default profile is Agent Relay's own."; exit 1; }
+          # Fetch branding never runs for the default profile, so an archive
+          # given to it (and a co-brand mark in it) would be ignored without
+          # a word; it is refused here instead, where the default profile is
+          # resolved.
+          [ -z "$IN_BRANDING_URL" ] || { echo "::error::DESKTOP_BRANDING_URL is a site profile's setting; the default profile uses the repository's own branding and is never co-branded."; exit 1; }
           # The default profile: what every release before profiles was built
           # for. The repository's own branding applies; the values are public.
           {
@@ -187,6 +202,8 @@ runs:
             echo "PULL_RELEASES_REPOSITORY="
             echo "SUPPORT_URL="
             echo "BRANDING_ICON="
+            echo "BRANDING_COBRAND_MARK="
+            echo "COBRAND_NAME="
             echo "BRANDING_WANTED="
             echo "RELEASE_FEED=$DEFAULT_RELEASE_FEED"
             echo "FEED_PUBLIC_KEY="
@@ -261,6 +278,21 @@ runs:
         # (docs/workspace-layout.md, Site profiles): the checks build.rs makes
         # again. The message names the secret, never its value.
         storage="$(upload_storage_origins "$IN_HISTORY_UPLOAD_STORAGE_ORIGINS")" || { echo "::error::DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS must be a JSON array of https origins on DNS names, such as https://store.example:9000, with no user info, path, query or fragment (docs/workspace-layout.md, Site profiles)."; exit 1; }
+        # The customer's name a co-branded build shows after "for": trimmed,
+        # one line, no control characters, at most 80 characters. It needs
+        # the customer's mark from the branding archive: the Fetch branding
+        # step checks that where branding is fetched, and the macOS build
+        # step refuses a name without a mark (only the jobs that build pass
+        # branding-url). The messages never include it.
+        cobrand=""
+        if [ -n "$IN_COBRAND_NAME" ]; then
+          cobrand="$IN_COBRAND_NAME"
+          cobrand="${cobrand#"${cobrand%%[![:space:]]*}"}"
+          cobrand="${cobrand%"${cobrand##*[![:space:]]}"}"
+          if [ -z "$cobrand" ] || [[ "$cobrand" == *[[:cntrl:]]* ]] || [ "${#cobrand}" -gt 80 ]; then
+            echo "::error::DESKTOP_COBRAND_NAME must be one line of at most 80 characters with no control characters."; exit 1
+          fi
+        fi
         [[ "$site" == https://* ]] || { echo "::error::AGENT_RELAY_SITE_URL must be an https origin; a profile is never a local site."; exit 1; }
         # A profile is never the default product: with the default's releases
         # repository it would publish Desktop-<id> assets into the public
@@ -285,12 +317,12 @@ runs:
         # The id is the one value that may appear in logs and job outputs, so
         # it must not contain any value masked below: a job output holding a
         # masked value is dropped by the runner.
-        for value in "$site" "$scheme" "$product" "$repository" "$pull" "$bundle" "$support" "$key"; do
+        for value in "$site" "$scheme" "$product" "$repository" "$pull" "$bundle" "$support" "$key" "$cobrand"; do
           [ -z "$value" ] || case "$profile" in *"$value"*) echo "::error::The profile id must not contain one of the profile's own values (its link scheme or product name, for example)."; exit 1 ;; esac
         done
         # The feed is masked through its repository (github:) or is the
         # word cloud, which is no secret; the key is the profile's own.
-        for value in "$site" "$scheme" "$product" "$repository" "$pull" "$bundle" "$support" "$key" "$policy" "$storage"; do
+        for value in "$site" "$scheme" "$product" "$repository" "$pull" "$bundle" "$support" "$key" "$policy" "$storage" "$cobrand"; do
           [ -z "$value" ] || echo "::add-mask::$value"
         done
         # A cloud feed's key fingerprint, never the key: the SHA-256 of its
@@ -311,6 +343,8 @@ runs:
           echo "PULL_RELEASES_REPOSITORY=$pull"
           echo "SUPPORT_URL=$support"
           echo "BRANDING_ICON="
+          echo "BRANDING_COBRAND_MARK="
+          echo "COBRAND_NAME=$cobrand"
           echo "BRANDING_WANTED=${IN_BRANDING_URL:+yes}"
           echo "RELEASE_FEED=$feed"
           echo "FEED_PUBLIC_KEY=$key"
@@ -346,14 +380,17 @@ runs:
       if: ${{ inputs.profile != '' && inputs.branding-url != '' }}
       shell: bash
       env:
+        PROFILE: ${{ inputs.profile }}
         BRANDING_URL: ${{ inputs.branding-url }}
         BRANDING_TOKEN: ${{ inputs.branding-token || steps.branding-app-token.outputs.token }}
       run: |
         set -euo pipefail
         # A tar.gz at a private location, fetched with a bearer token: icon.svg
         # (the app's mark, square), optionally icon.png (1024x1024) and
-        # colours.json. Unpacked into branding/ in the workspace, which the
-        # build steps pass as --icon; members with a path are refused.
+        # colours.json, and for a co-branded build the customer's mark,
+        # cobrand.svg or cobrand.png (then icon.svg is optional). Unpacked
+        # into branding/ in the workspace, which the build steps pass as
+        # --icon and --cobrand-mark; members with a path are refused.
         [[ "$BRANDING_URL" =~ ^https:// ]] || { echo "::error::DESKTOP_BRANDING_URL must be an https URL."; exit 1; }
         # The archive stays inside the workspace: on the Windows runners
         # RUNNER_TEMP is a drive-letter path, which GNU tar reads as a
@@ -389,8 +426,8 @@ runs:
             [ -n "$member" ] || continue
             case "$member" in
               .|./) ;;
-              icon.svg|icon.png|colours.json|./icon.svg|./icon.png|./colours.json) allowed+=("$member") ;;
-              *) echo "::error::The branding archive may hold only icon.svg, icon.png and colours.json at its root; it holds another member."; return 1 ;;
+              icon.svg|icon.png|colours.json|cobrand.svg|cobrand.png|./icon.svg|./icon.png|./colours.json|./cobrand.svg|./cobrand.png) allowed+=("$member") ;;
+              *) echo "::error::The branding archive may hold only icon.svg, icon.png, colours.json, cobrand.svg and cobrand.png at its root; it holds another member."; return 1 ;;
             esac
           done <<< "$members"
           for member in ${allowed[@]+"${allowed[@]}"}; do
@@ -401,12 +438,38 @@ runs:
         branding_members_ok "$archive" || exit 1
         tar -xzf "$archive" -C branding -- ${allowed[@]+"${allowed[@]}"}
         rm -f "$archive"
-        for name in icon.svg icon.png colours.json; do
+        for name in icon.svg icon.png colours.json cobrand.svg cobrand.png; do
           if [ -L "branding/$name" ] || { [ -e "branding/$name" ] && [ ! -f "branding/$name" ]; }; then
             echo "::error::branding/$name is not a regular file."; exit 1
           fi
         done
-        [ -f branding/icon.svg ] || { echo "::error::The branding archive has no icon.svg."; exit 1; }
-        grep -q '<svg' branding/icon.svg || { echo "::error::branding/icon.svg is not an SVG."; exit 1; }
-        echo "BRANDING_ICON=branding/icon.svg" >> "$GITHUB_ENV"
+        # The customer's mark and DESKTOP_COBRAND_NAME (COBRAND_NAME, from
+        # the Resolve step) come together; the name is never printed.
+        # A co-brand is a site profile's alone, never the default profile's.
+        # The step's condition skips the default profile, whose branding URL
+        # the Resolve step already refuses; this check holds if that changes.
+        if [ -z "${PROFILE:-}" ] && { [ -e branding/cobrand.svg ] || [ -e branding/cobrand.png ]; }; then
+          echo "::error::cobrand.svg and cobrand.png are a site profile's branding; the default profile is Agent Relay's own."; exit 1
+        fi
+        cobrand_mark=""
+        if [ -f branding/cobrand.svg ] && [ -f branding/cobrand.png ]; then
+          echo "::error::The branding archive may hold cobrand.svg or cobrand.png, not both."; exit 1
+        elif [ -f branding/cobrand.svg ]; then
+          grep -q '<svg' branding/cobrand.svg || { echo "::error::branding/cobrand.svg is not an SVG."; exit 1; }
+          cobrand_mark=branding/cobrand.svg
+        elif [ -f branding/cobrand.png ]; then
+          [ "$(head -c 4 branding/cobrand.png | od -An -tx1 | tr -d ' \n')" = 89504e47 ] || { echo "::error::branding/cobrand.png is not a PNG."; exit 1; }
+          cobrand_mark=branding/cobrand.png
+        fi
+        if [ -n "$cobrand_mark" ]; then
+          [ -n "${COBRAND_NAME:-}" ] || { echo "::error::The branding archive holds a co-brand mark, but the profile's environment does not set the secret DESKTOP_COBRAND_NAME (docs/workspace-layout.md, Site profiles)."; exit 1; }
+        else
+          [ -z "${COBRAND_NAME:-}" ] || { echo "::error::DESKTOP_COBRAND_NAME needs cobrand.svg or cobrand.png in the branding archive."; exit 1; }
+          [ -f branding/icon.svg ] || { echo "::error::The branding archive has no icon.svg."; exit 1; }
+        fi
+        if [ -f branding/icon.svg ]; then
+          grep -q '<svg' branding/icon.svg || { echo "::error::branding/icon.svg is not an SVG."; exit 1; }
+          echo "BRANDING_ICON=branding/icon.svg" >> "$GITHUB_ENV"
+        fi
+        echo "BRANDING_COBRAND_MARK=$cobrand_mark" >> "$GITHUB_ENV"
         echo "Branding fetched: $(ls branding | tr '\n' ' ')"

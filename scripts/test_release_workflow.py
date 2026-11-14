@@ -27,7 +27,7 @@ SIGNING_VARIABLES = ('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_I
 # A site profile's values, each an environment secret of desktop-<id>.
 PROFILE_SECRETS = ('AGENT_RELAY_SITE_URL', 'AGENT_RELAY_URL_SCHEME', 'DESKTOP_PRODUCT_NAME',
                    'DESKTOP_BUNDLE_ID', 'RELEASES_REPOSITORY', 'DESKTOP_SUPPORT_URL',
-                   'DESKTOP_POLICY_DEFAULTS', 'DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS')
+                   'DESKTOP_POLICY_DEFAULTS', 'DESKTOP_HISTORY_UPLOAD_STORAGE_ORIGINS', 'DESKTOP_COBRAND_NAME')
 STATES = ('success', 'failure', 'skipped', 'cancelled')
 
 
@@ -664,7 +664,7 @@ esac
             'PROFILE=', 'ASSET_PREFIX=AgentRelay', 'SITE_URL=https://agentrelay.com', 'URL_SCHEME=agentrelay',
             'PRODUCT_NAME=Agent Relay', 'BUNDLE_ID=com.agentrelay.desktop',
             'RELEASES_REPOSITORY=AgentWorkforce/relay-desktop-releases', 'PULL_RELEASES_REPOSITORY=', 'SUPPORT_URL=',
-            'BRANDING_ICON=',
+            'BRANDING_ICON=', 'BRANDING_COBRAND_MARK=', 'COBRAND_NAME=',
             'BRANDING_WANTED=', 'RELEASE_FEED=github:AgentWorkforce/relay-desktop-releases', 'FEED_PUBLIC_KEY=',
             'DESKTOP_POLICY_DEFAULTS=', 'AGENT_RELAY_HISTORY_UPLOAD_STORAGE_ORIGINS=', 'COEXIST='])
         self.assertEqual(masks, [])
@@ -676,7 +676,8 @@ esac
         self.assertEqual(exported, [
             'PROFILE=acme-7', 'ASSET_PREFIX=Desktop-acme-7', 'SITE_URL=https://relay.example', 'URL_SCHEME=acme-relay',
             'PRODUCT_NAME=Acme Desktop', 'BUNDLE_ID=com.acme.desktop', 'RELEASES_REPOSITORY=acme/desktop-releases',
-            'PULL_RELEASES_REPOSITORY=', 'SUPPORT_URL=https://acme.example/support', 'BRANDING_ICON=', 'BRANDING_WANTED=yes',
+            'PULL_RELEASES_REPOSITORY=', 'SUPPORT_URL=https://acme.example/support', 'BRANDING_ICON=',
+            'BRANDING_COBRAND_MARK=', 'COBRAND_NAME=', 'BRANDING_WANTED=yes',
             'RELEASE_FEED=github:acme/desktop-releases', 'FEED_PUBLIC_KEY=', 'DESKTOP_POLICY_DEFAULTS=',
             'AGENT_RELAY_HISTORY_UPLOAD_STORAGE_ORIGINS=', 'COEXIST='])
         # One mask per non-empty derived value, before any line names them;
@@ -968,6 +969,272 @@ esac
                 self.assertNotIn(inputs['coexist'], result.stdout.replace(error, ''))
                 self.assertEqual(exported, [])
                 self.assertEqual(masks, [])
+
+    def test_site_profile_action_exports_a_cobrand_name_trimmed_and_masked(self):
+        # DESKTOP_COBRAND_NAME is a secret: trimmed, exported for the macOS
+        # build, masked before anything names it, and never printed.
+        result, exported, masks = self.resolve_site_profile(
+            'acme-7', **dict(self.PROFILE_INPUTS, cobrand_name='  Acme Corp\t'))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('COBRAND_NAME=Acme Corp', exported)
+        self.assertIn('BRANDING_COBRAND_MARK=', exported)
+        self.assertIn('Acme Corp', masks)
+        self.assertNotIn('Acme Corp', result.stdout.replace('::add-mask::Acme Corp\n', '') + result.stderr)
+        # Unset, nothing is exported or masked for it.
+        result, exported, masks = self.resolve_site_profile('acme-7', **self.PROFILE_INPUTS)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('COBRAND_NAME=', exported)
+        self.assertEqual(len(masks), 6)
+
+    def test_site_profile_action_refuses_a_bad_cobrand_name_or_one_for_the_default_profile(self):
+        # The "for" line is a self-hosted site profile's only; the default
+        # profile is the hosted app and never takes one.
+        bad = '::error::DESKTOP_COBRAND_NAME must be one line of at most 80 characters with no control characters.'
+        for name, profile, inputs, error in [
+                ('the default profile', '', dict(cobrand_name='Acme Corp'),
+                 "::error::DESKTOP_COBRAND_NAME is a site profile's setting; the default profile is Agent Relay's own."),
+                ('two lines', 'acme-7', dict(self.PROFILE_INPUTS, cobrand_name='Acme\nCorp'), bad),
+                ('a control character', 'acme-7', dict(self.PROFILE_INPUTS, cobrand_name='Acme\x07Corp'), bad),
+                ('blank', 'acme-7', dict(self.PROFILE_INPUTS, cobrand_name='   '), bad),
+                ('over 80', 'acme-7', dict(self.PROFILE_INPUTS, cobrand_name='Acme' + 'x' * 77), bad)]:
+            with self.subTest(name):
+                result, exported, masks = self.resolve_site_profile(profile, **inputs)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(error, result.stdout.splitlines())
+                # The error names the secret only, never its value.
+                self.assertNotIn('Acme', result.stdout.replace(error, '') + result.stderr)
+                self.assertEqual(exported, [])
+                self.assertEqual(masks, [])
+        # 80 characters is the limit, not over it.
+        result, exported, _ = self.resolve_site_profile('acme-7', **dict(self.PROFILE_INPUTS, cobrand_name='A' * 80))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('COBRAND_NAME=' + 'A' * 80, exported)
+
+    def fetch_branding(self, members, profile='acme-7', cobrand_name=''):
+        """Run the Fetch branding step on an archive of MEMBERS (name to
+        bytes) with the Resolve step's COBRAND_NAME export. Returns the
+        result and the exported lines."""
+        action = yaml.safe_load(SITE_PROFILE.read_text())
+        [fetch] = [step for step in action['runs']['steps'] if step['name'] == 'Fetch branding']
+        self.assertEqual(fetch['env']['PROFILE'], '${{ inputs.profile }}')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, bin_dir, work = root / 'source', root / 'bin', root / 'work'
+            for directory in (source, bin_dir, work):
+                directory.mkdir()
+            for name, content in members.items():
+                (source / name).write_bytes(content)
+            archive = root / 'branding.tar.gz'
+            subprocess.run(['tar', '-czf', str(archive), '-C', str(source)] + sorted(members), check=True)
+            curl = bin_dir / 'curl'
+            curl.write_text('#!/usr/bin/env bash\n'
+                            'while [ $# -gt 0 ]; do if [ "$1" = -o ]; then cp "$ARCHIVE" "$2"; fi; shift; done\n')
+            curl.chmod(0o755)
+            (root / 'env').write_text('')
+            env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', PROFILE=profile,
+                       BRANDING_URL='https://branding.example/p1.tar.gz', BRANDING_TOKEN='',
+                       COBRAND_NAME=cobrand_name, GITHUB_ENV=str(root / 'env'), ARCHIVE=str(archive))
+            result = subprocess.run(['bash', '-c', fetch['run']], cwd=work, env=env, capture_output=True, text=True)
+            return result, (root / 'env').read_text().splitlines()
+
+    SVG = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+    PNG = b'\x89PNG\r\n\x1a\n' + b'\0' * 8
+
+    def test_branding_fetch_exports_a_cobrand_mark_with_or_without_an_icon(self):
+        for members, icon, mark in [
+                ({'cobrand.png': self.PNG, 'colours.json': b'{}'}, None, 'branding/cobrand.png'),
+                ({'cobrand.svg': self.SVG, 'icon.svg': self.SVG}, 'branding/icon.svg', 'branding/cobrand.svg')]:
+            with self.subTest(mark):
+                result, exported = self.fetch_branding(members, cobrand_name='Acme Corp')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('BRANDING_COBRAND_MARK=' + mark, exported)
+                self.assertEqual(icon is not None, 'BRANDING_ICON=' + str(icon) in exported)
+                self.assertNotIn('Acme Corp', result.stdout + result.stderr)
+        # Without a co-brand the archive is read as before: no mark exported.
+        result, exported = self.fetch_branding({'icon.svg': self.SVG})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(exported, ['BRANDING_ICON=branding/icon.svg', 'BRANDING_COBRAND_MARK='])
+
+    def test_branding_fetch_refuses_each_bad_cobrand_archive(self):
+        for name, members, profile, cobrand_name, error in [
+                ('the default profile', {'icon.svg': self.SVG, 'cobrand.svg': self.SVG}, '', '',
+                 "::error::cobrand.svg and cobrand.png are a site profile's branding; the default profile is Agent Relay's own."),
+                ('a mark without the name', {'cobrand.svg': self.SVG}, 'acme-7', '',
+                 '::error::The branding archive holds a co-brand mark, but the profile\'s environment does not set the secret DESKTOP_COBRAND_NAME (docs/workspace-layout.md, Site profiles).'),
+                ('the name without a mark', {'icon.svg': self.SVG}, 'acme-7', 'Acme Corp',
+                 '::error::DESKTOP_COBRAND_NAME needs cobrand.svg or cobrand.png in the branding archive.'),
+                ('both marks', {'cobrand.svg': self.SVG, 'cobrand.png': self.PNG}, 'acme-7', 'Acme Corp',
+                 '::error::The branding archive may hold cobrand.svg or cobrand.png, not both.'),
+                ('an SVG that is not', {'cobrand.svg': b'Acme'}, 'acme-7', 'Acme Corp',
+                 '::error::branding/cobrand.svg is not an SVG.'),
+                ('a PNG that is not', {'cobrand.png': self.SVG}, 'acme-7', 'Acme Corp',
+                 '::error::branding/cobrand.png is not a PNG.'),
+                ('no icon and no mark', {'colours.json': b'{}'}, 'acme-7', '', 'has no icon.svg'),
+                ('another member', {'icon.svg': self.SVG, 'cobrand.jpg': b'Acme'}, 'acme-7', '',
+                 'may hold only icon.svg, icon.png, colours.json, cobrand.svg and cobrand.png at its root')]:
+            with self.subTest(name):
+                result, exported = self.fetch_branding(members, profile=profile, cobrand_name=cobrand_name)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(any(line.startswith('::error::') and error in line
+                                    for line in result.stdout.splitlines()), result.stdout + result.stderr)
+                self.assertNotIn('Acme Corp', result.stdout + result.stderr)
+                self.assertFalse(any(line.startswith('BRANDING_COBRAND_MARK=branding') for line in exported))
+
+    def run_site_profile_action(self, members, **inputs):
+        """Run the whole site-profile action as the runner would: each step
+        in order, skipped when its if: is false for INPUTS (the rest at the
+        action's defaults), its env: evaluated, what earlier steps wrote to
+        GITHUB_ENV in its environment, and the first failing step ending
+        the run. The Mint step is a stand-in that outputs a token; curl
+        serves an archive of MEMBERS (name to bytes). Returns the names of
+        the steps that ran, the last result and the exported lines."""
+        action = yaml.safe_load(SITE_PROFILE.read_text())
+        values = {'inputs.' + name: spec.get('default', '') for name, spec in action['inputs'].items()}
+        values.update({'inputs.' + name.replace('_', '-'): value for name, value in inputs.items()})
+
+        def evaluate(expression):
+            # GitHub's && and || return an operand, as Python's and/or do;
+            # an unset input or step output is ''.
+            names = {}
+            def reference(match):
+                names[f'value_{len(names)}'] = values.get(match[0], '')
+                return f'value_{len(names) - 1}'
+            source = ' '.join(expression.split()).removeprefix('${{').removesuffix('}}')
+            source = re.sub(r'(?:inputs|steps\.[\w-]+\.outputs)\.[\w-]+', reference, source)
+            source = source.replace('&&', ' and ').replace('||', ' or ').replace('startsWith(', 'starts_with(')
+            tree = ast.parse(source.strip(), mode='eval')
+            for node in ast.walk(tree):
+                self.assertIsInstance(node, (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Call,
+                                             ast.Eq, ast.NotEq, ast.Constant, ast.Name, ast.Load))
+                if isinstance(node, ast.Call):
+                    self.assertEqual(node.func.id, 'starts_with')
+            starts_with = lambda text, prefix: text.casefold().startswith(prefix.casefold())
+            return eval(compile(tree, 'expression', 'eval'), {'__builtins__': {}}, dict(names, starts_with=starts_with))
+
+        checkout = SITE_PROFILE.parents[3]
+        ran, result, exported = [], None, []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, bin_dir, work = root / 'source', root / 'bin', root / 'work'
+            for directory in (source, bin_dir, work):
+                directory.mkdir()
+            for name, content in members.items():
+                (source / name).write_bytes(content)
+            archive = root / 'branding.tar.gz'
+            subprocess.run(['tar', '-czf', str(archive), '-C', str(source)] + sorted(members), check=True)
+            curl = bin_dir / 'curl'
+            curl.write_text('#!/usr/bin/env bash\n'
+                            'while [ $# -gt 0 ]; do if [ "$1" = -o ]; then cp "$ARCHIVE" "$2"; fi; shift; done\n')
+            curl.chmod(0o755)
+            # The Resolve step sources scripts/site-origin.sh from the
+            # workspace, which the later steps unpack branding/ into.
+            (work / 'scripts').mkdir()
+            shutil.copy(checkout / 'scripts' / 'site-origin.sh', work / 'scripts')
+            (root / 'env').write_text('')
+            for step in action['runs']['steps']:
+                if 'if' in step and not evaluate(step['if']):
+                    continue
+                ran.append(step['name'])
+                if 'uses' in step:
+                    values[f'steps.{step["id"]}.outputs.token'] = 'minted'
+                    continue
+                env = {name: value for name, value in os.environ.items() if not name.startswith(('GITHUB_', 'IN_'))}
+                env.update(dict(line.split('=', 1) for line in (root / 'env').read_text().splitlines()))
+                env.update({name: str(evaluate(value) or '') for name, value in step.get('env', {}).items()})
+                env.update(PATH=f'{bin_dir}:{os.environ["PATH"]}', GITHUB_WORKSPACE=str(work),
+                           GITHUB_ENV=str(root / 'env'), GITHUB_OUTPUT=str(root / 'output'), ARCHIVE=str(archive))
+                result = subprocess.run(['bash', '-c', step['run']], cwd=work, env=env, capture_output=True, text=True)
+                if result.returncode != 0:
+                    break
+            exported = (root / 'env').read_text().splitlines()
+        return ran, result, exported
+
+    def test_the_default_profile_refuses_a_branding_archive_where_its_steps_run(self):
+        # The default profile (no profile, no co-brand name) given a branding
+        # URL to an archive holding a co-brand mark: the Fetch branding step
+        # is skipped for it, so the action must refuse in a step that runs
+        # rather than ignore the archive.
+        archive = {'icon.svg': self.SVG, 'cobrand.svg': self.SVG}
+        for url in ('https://branding.example/p1.tar.gz',
+                    'https://raw.githubusercontent.com/AgentWorkforce/desktop-branding/main/p1.tar.gz'):
+            with self.subTest(url):
+                ran, result, exported = self.run_site_profile_action(
+                    archive, profile='', branding_url=url, branding_app_id='1', branding_app_private_key='key')
+                self.assertEqual(ran, ['Resolve the site profile'])
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("::error::DESKTOP_BRANDING_URL is a site profile's setting; the default profile uses "
+                              "the repository's own branding and is never co-branded.", result.stdout.splitlines())
+                self.assertNotIn(url, result.stdout + result.stderr)
+                self.assertEqual(exported, [])
+        # Without a branding URL the default profile resolves as before and
+        # nothing is fetched.
+        ran, result, exported = self.run_site_profile_action(archive, profile='')
+        self.assertEqual(ran, ['Resolve the site profile'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('BRANDING_COBRAND_MARK=', exported)
+        self.assertIn('COBRAND_NAME=', exported)
+        # A co-branded site profile runs every step and exports the mark.
+        ran, result, exported = self.run_site_profile_action(
+            archive, profile='acme-7', **dict(self.PROFILE_INPUTS, cobrand_name='Acme Corp',
+                                              branding_url='https://raw.githubusercontent.com/AgentWorkforce/desktop-branding/main/p1.tar.gz',
+                                              branding_app_id='1', branding_app_private_key='key'))
+        self.assertEqual(ran, ['Resolve the site profile', 'Mint a branding token', 'Fetch branding'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(exported[-2:], ['BRANDING_ICON=branding/icon.svg', 'BRANDING_COBRAND_MARK=branding/cobrand.svg'])
+
+    def test_cobrand_reaches_only_the_macos_build_and_image(self):
+        for text in (self.workflow, self.promote):
+            uses = text.count('uses: ./.github/actions/site-profile')
+            self.assertEqual(text.count('cobrand-name: ${{ secrets.DESKTOP_COBRAND_NAME }}'), uses)
+            self.assertNotRegex(text, r'echo[^\n]*(COBRAND_NAME|secrets\.DESKTOP_COBRAND_NAME)\b(?!\s+needs)')
+        steps = re.split(r'\n      - name: ', self.workflow)
+        cobranded = [step.split('\n', 1)[0] for step in steps if '--cobrand-mark' in step]
+        self.assertEqual(cobranded, ['Assemble and sign the app bundle', 'Package the disk image'])
+        for step in steps:
+            for script in ('build-gtk.sh', 'build-linux.sh', 'build-windows.sh'):
+                if f'scripts/{script}' in step:
+                    self.assertNotIn('cobrand', step.lower(), script)
+        # Run as the runner would: the options only with a mark, never for
+        # the default profile, and a name without a mark is refused.
+        for title, script in (('Assemble and sign the app bundle', 'scripts/build-app.sh'),
+                              ('Package the disk image', 'scripts/package-dmg.sh')):
+            [step] = [step for step in steps if step.startswith(title + '\n')]
+            run = step[step.index('run: |') + len('run: |'):]
+            run = textwrap.dedent(run).replace(script, 'printf "%s\\n"').replace('${{ matrix.arch }}', 'arm64')
+            base = dict(os.environ, PROFILE='acme-7', SITE_URL='https://relay.example', URL_SCHEME='acme-relay',
+                        PRODUCT_NAME='Acme Desktop', BUNDLE_ID='com.acme.desktop', ASSET_PREFIX='Desktop-acme-7',
+                        RELEASE_FEED='github:acme/desktop-releases', RELEASES_REPOSITORY='acme/desktop-releases',
+                        FEED_PUBLIC_KEY='', BRANDING_ICON='', COEXIST='', VERSION='1.2.3', GITHUB_RUN_NUMBER='1')
+            for name, change, want in [
+                    ('no co-brand', dict(BRANDING_COBRAND_MARK='', COBRAND_NAME=''), None),
+                    ('the default profile', dict(PROFILE='', BRANDING_COBRAND_MARK='', COBRAND_NAME=''), None),
+                    ('a co-brand', dict(BRANDING_COBRAND_MARK='branding/cobrand.svg', COBRAND_NAME='Acme Corp'),
+                     ['--cobrand-mark', 'branding/cobrand.svg', '--cobrand-name', 'Acme Corp'])]:
+                with self.subTest(title=title, case=name):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        # The bundle and probe the steps around them expect.
+                        (Path(temporary) / 'dist' / 'Acme Desktop.app').mkdir(parents=True)
+                        (Path(temporary) / 'probe-build').mkdir()
+                        (Path(temporary) / 'probe-build' / 'probe-version.txt').write_text('1.2.3\n')
+                        result = subprocess.run(['bash', '-c', run], cwd=temporary, env=dict(base, **change),
+                                                capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    args = result.stdout.splitlines()
+                    if want is None:
+                        self.assertFalse(any('cobrand' in arg for arg in args), args)
+                    else:
+                        start = args.index('--cobrand-mark')
+                        self.assertEqual(args[start:start + 4], want)
+        [step] = [step for step in steps if step.startswith('Assemble and sign the app bundle\n')]
+        run = textwrap.dedent(step[step.index('run: |') + len('run: |'):]).replace('scripts/build-app.sh', 'printf "%s\\n"')
+        result = subprocess.run(['bash', '-c', run], env=dict(
+            os.environ, PROFILE='acme-7', SITE_URL='', URL_SCHEME='', PRODUCT_NAME='', BUNDLE_ID='', ASSET_PREFIX='',
+            RELEASE_FEED='', RELEASES_REPOSITORY='', FEED_PUBLIC_KEY='', BRANDING_ICON='', COEXIST='',
+            BRANDING_COBRAND_MARK='', COBRAND_NAME='Acme Corp', VERSION='1.2.3', GITHUB_RUN_NUMBER='1'),
+            capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('::error::DESKTOP_COBRAND_NAME needs DESKTOP_BRANDING_URL', result.stdout)
+        self.assertNotIn('Acme Corp', result.stdout + result.stderr)
 
     def test_site_profile_feed_inputs_reach_every_use_and_the_token_only_as_presence(self):
         for text in (self.workflow, self.promote):

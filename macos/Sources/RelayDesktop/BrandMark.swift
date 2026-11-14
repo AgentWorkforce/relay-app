@@ -205,8 +205,18 @@ struct BrandWordmarkView: View {
     var productName: String = AppInfo.displayName
     var bundleIdentifier: String = AppInfo.markedBundleIdentifier
     var badge: String? = AppInfo.profileBadge
+    /// Set only by a lockup that draws `CoBrandLineView` under it (sign-in,
+    /// signed-out menu): there a co-branded build named Agent Relay draws
+    /// the wordmark without its badge, since the line tells it apart.
+    /// Everywhere else (the workspace header) it keeps its badge.
+    var coBranded: Bool = false
 
-    var drawsArtwork: Bool { AppInfo.drawsWordmark(bundleIdentifier: bundleIdentifier, productName: productName) }
+    var drawsArtwork: Bool {
+        AppInfo.drawsWordmark(bundleIdentifier: bundleIdentifier, productName: productName, coBranded: coBranded)
+    }
+
+    /// The badge written after the product name: none beside the wordmark.
+    var shownBadge: String? { drawsArtwork ? nil : badge }
 
     var body: some View {
         if drawsArtwork {
@@ -218,14 +228,48 @@ struct BrandWordmarkView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(productName)
                     .zoomFont(.headline)
-                if let badge {
+                if let badge = shownBadge {
                     Text(badge)
                         .zoomFont(.caption, weight: .semibold)
                         .foregroundStyle(CloudTheme.secondary)
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(AppInfo.windowTitle(productName: productName, badge: badge))
+            .accessibilityLabel(AppInfo.windowTitle(productName: productName, badge: shownBadge))
+        }
+    }
+}
+
+/// The line a co-branded build (`AppInfo.coBrand`) draws under its Agent
+/// Relay lockup: "for", the customer's mark fitted into 16 points, and the
+/// customer's name, as in the installer image. Nothing for any other build.
+struct CoBrandLineView: View {
+    var coBrand: AppInfo.CoBrand? = AppInfo.coBrand
+    /// The colour of the name; "for" is drawn in `forColor`.
+    var nameColor: Color = .primary
+    var forColor: Color = CloudTheme.secondary
+
+    var body: some View {
+        if let coBrand {
+            HStack(alignment: .center, spacing: 6) {
+                Text("for")
+                    .zoomFont(size: 13, weight: .regular)
+                    .foregroundStyle(forColor)
+                if let mark = NSImage(contentsOf: coBrand.mark) {
+                    Image(nsImage: mark)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .zoomFrame(width: 16, height: 16)
+                        .accessibilityHidden(true)
+                }
+                Text(coBrand.name)
+                    .zoomFont(size: 13, weight: .medium)
+                    .foregroundStyle(nameColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("for \(coBrand.name)")
         }
     }
 }

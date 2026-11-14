@@ -7,6 +7,9 @@
 # image's own file name, so `shasum -a 256 -c FILE.dmg.sha256` works from the
 # directory the download landed in).
 #
+# A co-branded image (--cobrand-mark and --cobrand-name, a site profile's)
+# says "for <customer>" under the lockup; the name is never printed.
+#
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
@@ -18,6 +21,7 @@ usage() {
 Usage:
   ${SCRIPT_NAME} --app "path/to/Agent Relay.app" --out path/to/FILE.dmg [--volname NAME]
                  [--product-name NAME] [--icon FILE]
+                 [--cobrand-mark FILE --cobrand-name NAME]
 
 Options:
   --app PATH       The .app bundle to package. Required.
@@ -31,6 +35,13 @@ Options:
                    when it is "${DEFAULT_VOLUME_NAME}" or not given.
   --icon FILE      An SVG mark drawn on the background instead of Agent
                    Relay's (a site profile's).
+  --cobrand-mark FILE
+                   A customer's mark, an SVG or a PNG, drawn after "for" under
+                   the lockup (a co-branded site profile's). Given with
+                   --cobrand-name or not at all.
+  --cobrand-name NAME
+                   The customer's name drawn beside that mark: one line, no
+                   control characters. Never printed.
   -h, --help       Show this help.
 
 Requires dmgbuild (see scripts/dmg-requirements.txt), Swift and macOS tools.
@@ -62,6 +73,9 @@ OUT_PATH=""
 VOLUME_NAME="$DEFAULT_VOLUME_NAME"
 PRODUCT_NAME=""
 ICON_FILE=""
+COBRAND_MARK=""
+COBRAND_NAME=""
+COBRAND_NAME_SET=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -90,6 +104,17 @@ while [ $# -gt 0 ]; do
       ICON_FILE="$2"
       shift 2
       ;;
+    --cobrand-mark)
+      [ $# -ge 2 ] || die "--cobrand-mark needs a file"
+      COBRAND_MARK="$2"
+      shift 2
+      ;;
+    --cobrand-name)
+      [ $# -ge 2 ] || die "--cobrand-name needs a name"
+      COBRAND_NAME="$2"
+      COBRAND_NAME_SET=1
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -107,6 +132,28 @@ if [ -n "$ICON_FILE" ]; then
   [ -f "$ICON_FILE" ] || die "--icon: no file at $ICON_FILE"
   grep -q '<svg' "$ICON_FILE" || die "--icon must be an SVG: $ICON_FILE"
   ICON_FILE="$(cd "$(dirname "$ICON_FILE")" && pwd)/$(basename "$ICON_FILE")"
+fi
+# The customer's mark and name come together; the messages never include
+# the name.
+if [ -n "$COBRAND_MARK" ] || [ -n "$COBRAND_NAME_SET" ]; then
+  [ -n "$COBRAND_MARK" ] || die "--cobrand-name needs --cobrand-mark"
+  [ -n "$COBRAND_NAME_SET" ] || die "--cobrand-mark needs --cobrand-name"
+  [ -f "$COBRAND_MARK" ] || die "--cobrand-mark: no file at $COBRAND_MARK"
+  case "$COBRAND_MARK" in
+    *.svg|*.SVG) grep -q '<svg' "$COBRAND_MARK" || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not an SVG" ;;
+    *.png|*.PNG)
+      [ "$(head -c 4 "$COBRAND_MARK" | od -An -tx1 | tr -d ' \n')" = 89504e47 ] || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not a PNG" ;;
+    *) die "--cobrand-mark must be an SVG or a PNG, got: $COBRAND_MARK" ;;
+  esac
+  # Trimmed and checked as AppInfo.coBrandName(from:) and the site-profile
+  # action do, so no name gets past this that the app would drop. The
+  # errors give its length, never the name.
+  COBRAND_NAME="${COBRAND_NAME#"${COBRAND_NAME%%[![:space:]]*}"}"
+  COBRAND_NAME="${COBRAND_NAME%"${COBRAND_NAME##*[![:space:]]}"}"
+  [ -n "$COBRAND_NAME" ] || die "--cobrand-name must not be empty or blank"
+  [[ "$COBRAND_NAME" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
+  [ "${#COBRAND_NAME}" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has ${#COBRAND_NAME}"
+  COBRAND_MARK="$(cd "$(dirname "$COBRAND_MARK")" && pwd)/$(basename "$COBRAND_MARK")"
 fi
 
 [ "$(uname -s)" = "Darwin" ] || die "this script only runs on macOS (hdiutil, ditto)"
@@ -148,7 +195,11 @@ note "staging $APP_BASENAME"
 ditto "$APP_PATH" "$STAGING_DIR/$APP_BASENAME"
 
 note "rendering the Retina installer background"
-swift "$SCRIPT_DIR/render-dmg-background.swift" "$TMP_DIR" "$PRODUCT_NAME" "$ICON_FILE"
+RENDER_BACKGROUND=("$SCRIPT_DIR/render-dmg-background.swift" "$TMP_DIR" "$PRODUCT_NAME" "$ICON_FILE")
+if [ -n "$COBRAND_MARK" ]; then
+  RENDER_BACKGROUND+=(--cobrand-mark "$COBRAND_MARK" --cobrand-name "$COBRAND_NAME")
+fi
+swift "${RENDER_BACKGROUND[@]}"
 tiffutil -cathidpicheck "$TMP_DIR/background.png" "$TMP_DIR/background@2x.png" \
   -out "$TMP_DIR/background.tiff"
 

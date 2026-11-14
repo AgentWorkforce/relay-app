@@ -4,8 +4,8 @@
 #
 # A build's Agent Relay site, link scheme and branding are fixed here, by the
 # options (--site-url, --url-scheme, --product-name, --bundle-id,
-# --releases-repository, --release-feed, --feed-public-key, --icon;
-# production's when none is given), and
+# --releases-repository, --release-feed, --feed-public-key, --icon,
+# --cobrand-mark and --cobrand-name; production's when none is given), and
 # nothing at run time changes them. The core in --probe must be built for the
 # same site and scheme (scripts/build-probe.sh records both beside it). Only
 # a loopback site (--dev-site-url, the shorthand for Agent Relay Dev) makes a
@@ -41,6 +41,9 @@
 #                                       github:OWNER/NAME, or cloud (its own site)
 #     Resources/feed-public-key.txt     the key a cloud feed's records are signed with
 #     Resources/mark.txt                "AppIcon" with --icon: the app icon is the mark the app draws
+#     Resources/cobrand.svg|.png        the customer's mark, with --cobrand-mark
+#     Resources/cobrand-name.txt        the customer's name, with --cobrand-name: the
+#                                       app says "for <name>" under its lockup
 #
 # Signing is picked from the environment, never from flags:
 #   Developer ID  CSC_LINK (base64 .p12) + CSC_KEY_PASSWORD
@@ -124,6 +127,15 @@ Options:
                      --release-feed cloud, refused otherwise.
   --icon FILE        An SVG, or a 1024x1024 PNG, rendered into AppIcon.icns
                      in place of the repository's own mark.
+  --cobrand-mark FILE
+                     A customer's mark, an SVG or a PNG of any size, that a
+                     co-branded build draws after "for" under the Agent Relay
+                     lockup (a site profile's cobrand.svg or cobrand.png).
+                     Given with --cobrand-name or not at all.
+  --cobrand-name NAME
+                     The customer's name the co-branded build shows beside
+                     that mark: one line, no control characters. Never
+                     printed.
   --dev-site-url URL Build Agent Relay Dev: --site-url URL, where URL is an
                      HTTP localhost/127.0.0.1 origin with a port, with the Dev
                      scheme, name and bundle id unless an option names another.
@@ -181,6 +193,9 @@ ASSET_PREFIX=""
 RELEASE_FEED=""
 FEED_PUBLIC_KEY=""
 ICON_FILE=""
+COBRAND_MARK=""
+COBRAND_NAME=""
+COBRAND_NAME_SET=""
 COEXIST=""
 CONFIGURATION="release"
 
@@ -249,6 +264,17 @@ while [ $# -gt 0 ]; do
     --icon)
       [ $# -ge 2 ] || die "--icon needs a file"
       ICON_FILE="$2"
+      shift 2
+      ;;
+    --cobrand-mark)
+      [ $# -ge 2 ] || die "--cobrand-mark needs a file"
+      COBRAND_MARK="$2"
+      shift 2
+      ;;
+    --cobrand-name)
+      [ $# -ge 2 ] || die "--cobrand-name needs a name"
+      COBRAND_NAME="$2"
+      COBRAND_NAME_SET=1
       shift 2
       ;;
     --dev-site-url)
@@ -382,6 +408,28 @@ if [ -n "$ICON_FILE" ]; then
     *) die "--icon must be an SVG or a 1024x1024 PNG, got: $ICON_FILE" ;;
   esac
   ICON_FILE="$(cd "$(dirname "$ICON_FILE")" && pwd)/$(basename "$ICON_FILE")"
+fi
+# A co-branded build: the customer's mark and name come together. The
+# messages never include the name.
+if [ -n "$COBRAND_MARK" ] || [ -n "$COBRAND_NAME_SET" ]; then
+  [ -n "$COBRAND_MARK" ] || die "--cobrand-name needs --cobrand-mark"
+  [ -n "$COBRAND_NAME_SET" ] || die "--cobrand-mark needs --cobrand-name"
+  [ -f "$COBRAND_MARK" ] || die "--cobrand-mark: no file at $COBRAND_MARK"
+  case "$COBRAND_MARK" in
+    *.svg|*.SVG) grep -q '<svg' "$COBRAND_MARK" || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not an SVG" ;;
+    *.png|*.PNG)
+      [ "$(head -c 4 "$COBRAND_MARK" | od -An -tx1 | tr -d ' \n')" = 89504e47 ] || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not a PNG" ;;
+    *) die "--cobrand-mark must be an SVG or a PNG, got: $COBRAND_MARK" ;;
+  esac
+  # Trimmed and checked as AppInfo.coBrandName(from:) and the site-profile
+  # action do, so no name gets past this that the app would drop. The
+  # errors give its length, never the name.
+  COBRAND_NAME="${COBRAND_NAME#"${COBRAND_NAME%%[![:space:]]*}"}"
+  COBRAND_NAME="${COBRAND_NAME%"${COBRAND_NAME##*[![:space:]]}"}"
+  [ -n "$COBRAND_NAME" ] || die "--cobrand-name must not be empty or blank"
+  [[ "$COBRAND_NAME" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
+  [ "${#COBRAND_NAME}" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has ${#COBRAND_NAME}"
+  COBRAND_MARK="$(cd "$(dirname "$COBRAND_MARK")" && pwd)/$(basename "$COBRAND_MARK")"
 fi
 # The bundled core's file name, which Activity Monitor shows for it and the
 # uploader it starts. Its code signature keeps the identifier $PROBE_NAME, the
@@ -621,6 +669,18 @@ iconutil -c icns "$ICON_WORK_DIR/AppIcon.iconset" -o "$APP_BUNDLE/Contents/Resou
 # draw Agent Relay's (AppInfo.marksWithAppIcon), as Linux and Windows draw it.
 if [ -n "$ICON_FILE" ]; then
   printf 'AppIcon\n' > "$APP_BUNDLE/Contents/Resources/mark.txt"
+fi
+# A co-branded build says "for <customer>" under its lockup
+# (AppInfo.coBrand): the customer's mark keeps its extension, and the name
+# is written, never printed.
+if [ -n "$COBRAND_MARK" ]; then
+  note "recording the co-brand"
+  case "$COBRAND_MARK" in
+    *.svg|*.SVG) COBRAND_EXTENSION=svg ;;
+    *) COBRAND_EXTENSION=png ;;
+  esac
+  cp "$COBRAND_MARK" "$APP_BUNDLE/Contents/Resources/cobrand.$COBRAND_EXTENSION"
+  printf '%s\n' "$COBRAND_NAME" > "$APP_BUNDLE/Contents/Resources/cobrand-name.txt"
 fi
 
 # --- 6. signing --------------------------------------------------------------

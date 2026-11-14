@@ -8,9 +8,17 @@ filesystem = "HFS+"
 files = [application]
 symlinks = {"Applications": "/Applications"}
 background = defines["background"]
-# Finder includes its 32-point title bar in these bounds.
+# The window's bounds as Finder records them, title bar included; the
+# background is 768x576.
 window_rect = ((160, 160), (768, 608))
+# The volume's dot files stay out of the window: marked invisible (dmgbuild
+# runs SetFile -a V on each that exists, before it writes .DS_Store, so that
+# one is never marked), and placed below the visible area for a Finder that
+# shows hidden files.
+hidden = [".background.tiff", ".DS_Store", ".fseventsd", ".Trashes", ".VolumeIcon.icns"]
+hide = hidden
 icon_locations = {app_name: (220, 252), "Applications": (548, 252)}
+icon_locations.update({name: (100 + 140 * index, 900) for index, name in enumerate(hidden)})
 icon_size = 160
 text_size = 13
 label_pos = "bottom"
