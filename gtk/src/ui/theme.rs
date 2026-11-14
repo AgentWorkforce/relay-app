@@ -188,6 +188,9 @@ entry.search { border-radius: 7px; min-height: 26px; }
 .overview { background-color: $accent_soft; border-radius: 7px; padding: 9px; }
 .tool-heading { font-size: 11px; font-weight: 600; color: $secondary; }
 .caption { font-size: 11px; color: $secondary; }
+/* A co-branded build's "for <customer>" line, as macOS's CoBrandLineView: 13pt, the name medium. */
+.cobrand-for { font-size: 13px; }
+.cobrand-name { font-size: 13px; font-weight: 500; }
 
 .banner { border-radius: 8px; padding: 8px; }
 .banner label { font-size: 11px; }

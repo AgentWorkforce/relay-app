@@ -57,7 +57,8 @@ class WindowsRuntimeStagingTests(unittest.TestCase):
             'rustc': "print('host: x86_64-pc-windows-gnullvm')",
             'git': "print(os.environ.get('MOCK_GIT_REVISION', 'a' * 40))\nraise SystemExit(int(os.environ.get('MOCK_GIT_STATUS', '0')))",
             'cargo': """site = [name + '=' + os.environ[name] for name in ('AGENT_RELAY_SITE_URL', 'AGENT_RELAY_URL_SCHEME',
-    'DESKTOP_PRODUCT_NAME', 'RELEASES_REPOSITORY', 'DESKTOP_ASSET_PREFIX', 'DESKTOP_ICON') if name in os.environ]
+    'DESKTOP_PRODUCT_NAME', 'RELEASES_REPOSITORY', 'DESKTOP_ASSET_PREFIX', 'DESKTOP_ICON',
+    'DESKTOP_COBRAND_MARK', 'DESKTOP_COBRAND_NAME') if name in os.environ]
 with open(os.environ['COMPILE_LOG'], 'a') as log: log.write(' '.join(args) + ' env=' + ','.join(site) + '\\n')
 target = pathlib.Path(args[args.index('--target-dir') + 1]) / 'release'
 target.mkdir(parents=True, exist_ok=True)
@@ -247,6 +248,77 @@ else:
             self.assertEqual(len(calls), 1)
             self.assertIn(f'DESKTOP_ICON={icon.resolve()}', calls[0])
             self.assertNotIn('DESKTOP_ICON=branding/', calls[0])
+
+    def test_a_cobranded_app_reaches_cargo_and_its_record_and_a_refused_one_stops_first(self):
+        # The co-brand reaches the app's cargo build with an absolute mark
+        # and the trimmed name, beside the app as a record, never in the
+        # output; the shell's own co-brand variables never reach cargo.
+        with tempfile.TemporaryDirectory(prefix='relay-stage-windows-') as temporary:
+            root = Path(temporary)
+            env = self.fixture(root)
+            env.update(DESKTOP_COBRAND_MARK=str(root / 'stale.svg'), DESKTOP_COBRAND_NAME='Stale')
+            (root / 'branding').mkdir()
+            mark = root / 'branding/cobrand.svg'
+            mark.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8"/></svg>')
+            (root / 'branding/fake.png').write_text('not an image')
+            build = ['bash', str(root / 'scripts/build-windows.sh'), '--version', '2026.11.1', '--build-only', 'app']
+            result = subprocess.run([*build, '--out', str(root / 'dist'), '--profile', 'example-7',
+                '--cobrand-mark', 'branding/cobrand.svg', '--cobrand-name', '  Example Customer  '],
+                cwd=root, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn('Example Customer', result.stdout + result.stderr)
+            [call] = (root / 'compile.log').read_text().splitlines()
+            self.assertTrue(call.endswith(f',DESKTOP_COBRAND_MARK={mark.resolve()},DESKTOP_COBRAND_NAME=Example Customer'), call)
+            self.assertEqual((root / 'dist/built/agent-relay/agent-relay-cobrand-name.txt').read_text(), 'Example Customer\n')
+            # Without the options: no co-brand, and no record.
+            result = subprocess.run([*build, '--out', str(root / 'plain'), '--profile', 'example-7'],
+                cwd=root, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            call = (root / 'compile.log').read_text().splitlines()[-1]
+            self.assertNotIn('COBRAND', call)
+            self.assertFalse((root / 'plain/built/agent-relay/agent-relay-cobrand-name.txt').exists())
+            # A PNG mark, and a name of exactly 80 characters: in ASCII, and
+            # in two-byte characters under LC_ALL=C, counted as characters
+            # as gtk/build.rs counts them.
+            png = root / 'branding/cobrand.png'
+            png.write_bytes(b'\x89PNG\r\n\x1a\n')
+            c_locale = {**env, 'LC_ALL': 'C'}
+            for out, mark_path, name, run_env in [
+                    ('png', 'branding/cobrand.png', 'Example Customer', env),
+                    ('ascii', str(mark), 'A' * 80, env),
+                    ('multibyte', str(mark), '\u00e9' * 80, c_locale)]:
+                with self.subTest(accepted=out):
+                    result = subprocess.run([*build, '--out', str(root / out), '--profile', 'example-7',
+                        '--cobrand-mark', mark_path, '--cobrand-name', name],
+                        cwd=root, env=run_env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    call = (root / 'compile.log').read_text(encoding='utf-8').splitlines()[-1]
+                    target = png if out == 'png' else mark
+                    self.assertTrue(call.endswith(f',DESKTOP_COBRAND_MARK={target.resolve()},DESKTOP_COBRAND_NAME={name}'), call)
+                    self.assertEqual((root / out / 'built/agent-relay/agent-relay-cobrand-name.txt').read_text(encoding='utf-8'),
+                        name + '\n')
+            for refused, why, run_env in [
+                    (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', '\u00e9' * 81],
+                     'at most 80 characters; it has 81', c_locale)] + [(*case, env) for case in [
+                    (['--profile', 'example-7', '--cobrand-name', 'Example Customer'], '--cobrand-name needs --cobrand-mark'),
+                    (['--profile', 'example-7', '--cobrand-mark', str(mark)], '--cobrand-mark needs --cobrand-name'),
+                    (['--cobrand-mark', str(mark), '--cobrand-name', 'Example Customer'], 'need --profile'),
+                    (['--profile', 'example-7', '--cobrand-mark', 'branding/fake.png', '--cobrand-name', 'Example Customer'],
+                     '--cobrand-mark must be an SVG or a PNG'),
+                    (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', ' '],
+                     '--cobrand-name must not be empty or blank'),
+                    (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', 'Example\tCustomer'],
+                     '--cobrand-name must be one line'),
+                    (['--profile', 'example-7', '--cobrand-mark', str(mark), '--cobrand-name', 'Example Customer ' + 'x' * 64],
+                     'at most 80 characters; it has 81')]]:
+                with self.subTest(refused=why, locale=run_env.get('LC_ALL')):
+                    result = subprocess.run([*build, '--runtime-out', str(root / 'refused'), *refused],
+                        cwd=root, env=run_env, text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(why, result.stderr)
+                    self.assertNotIn('Example Customer', result.stdout + result.stderr)
+                    self.assertFalse((root / 'refused').exists())
+            self.assertEqual(len((root / 'compile.log').read_text(encoding='utf-8').splitlines()), 5)
 
     def test_a_profile_build_records_its_profile_and_names_its_packages(self):
         with tempfile.TemporaryDirectory(prefix='relay-stage-windows-') as temporary:

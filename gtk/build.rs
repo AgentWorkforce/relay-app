@@ -1,9 +1,14 @@
 #[path = "../desktop-core/build_version.rs"]
 mod build_version;
+mod cobrand_mark;
 #[path = "../desktop-core/windows_resources.rs"]
 mod windows_resources;
 
-use std::{env, fs, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn git(arguments: &[&str]) -> Option<String> {
     let output = Command::new("git").args(arguments).output().ok()?;
@@ -140,7 +145,57 @@ fn profile() -> String {
         mark.display()
     );
     fs::write(out.join("mark.svg"), data).expect("write the mark");
+    cobrand(&out, &profile_id);
     product
+}
+
+/// A co-branded build's customer (docs/workspace-layout.md, "Site
+/// profiles"): the name it says it is "for" under the lockup
+/// (`DESKTOP_COBRAND_NAME`, reaching the crate as that compile-time
+/// variable, empty for none) and the customer's mark (`DESKTOP_COBRAND_MARK`,
+/// an SVG or a PNG, as `$OUT_DIR/cobrand.mark` with its kind in
+/// `DESKTOP_COBRAND_MARK_KIND`, `svg` or `png`, both empty for none). The
+/// two come together, only for a site profile, and the name is checked as
+/// `scripts/build-gtk.sh` checks it; a refusal never prints the name.
+fn cobrand(out: &Path, profile_id: &str) {
+    println!("cargo:rerun-if-env-changed=DESKTOP_COBRAND_NAME");
+    println!("cargo:rerun-if-env-changed=DESKTOP_COBRAND_MARK");
+    let name = env::var("DESKTOP_COBRAND_NAME")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let mark = env::var_os("DESKTOP_COBRAND_MARK")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let (name, data, kind) = match (name, mark) {
+        (None, None) => (String::new(), Vec::new(), ""),
+        (Some(_), None) => panic!("DESKTOP_COBRAND_NAME needs DESKTOP_COBRAND_MARK"),
+        (None, Some(_)) => panic!("DESKTOP_COBRAND_MARK needs DESKTOP_COBRAND_NAME"),
+        (Some(name), Some(mark)) => {
+            assert!(
+                !profile_id.is_empty(),
+                "DESKTOP_COBRAND_NAME and DESKTOP_COBRAND_MARK need a site profile (DESKTOP_ASSET_PREFIX Desktop-<id>)"
+            );
+            assert!(
+                name.chars().count() <= 80 && !name.chars().any(char::is_control),
+                "DESKTOP_COBRAND_NAME must be one line of at most 80 characters with no control characters; it has {}",
+                name.chars().count()
+            );
+            println!("cargo:rerun-if-changed={}", mark.display());
+            let data = fs::read(&mark)
+                .unwrap_or_else(|error| panic!("DESKTOP_COBRAND_MARK {}: {error}", mark.display()));
+            let kind = cobrand_mark::mark_kind(&data).unwrap_or_else(|| {
+                panic!(
+                    "DESKTOP_COBRAND_MARK must be an SVG or a PNG: {}",
+                    mark.display()
+                )
+            });
+            (name, data, kind)
+        }
+    };
+    fs::write(out.join("cobrand.mark"), data).expect("write the co-brand mark");
+    println!("cargo:rustc-env=DESKTOP_COBRAND_NAME={name}");
+    println!("cargo:rustc-env=DESKTOP_COBRAND_MARK_KIND={kind}");
 }
 
 /// Whether `key` is a 32-byte key in standard, padded base64: 43 characters

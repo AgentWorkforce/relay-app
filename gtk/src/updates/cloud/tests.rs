@@ -38,6 +38,7 @@ const PROFILE: Profile = Profile {
     releases_repository: "",
     asset_prefix: "Desktop-x7k2q",
     release_feed: CLOUD_RELEASE_FEED,
+    cobrand: None,
 };
 
 type Respond<'a> = dyn Fn(&FeedRequest) -> Result<FeedResponse, FetchError> + 'a;

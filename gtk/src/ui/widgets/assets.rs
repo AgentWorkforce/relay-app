@@ -285,9 +285,18 @@ pub(super) fn mark_label(mark: &str) -> &'static str {
 
 // The brand widgets built from these assets; the product name comes from
 // the build's profile.
-use crate::build_profile::{Profile, PRODUCT_NAME};
-use gtk::prelude::*;
+use crate::build_profile::{CoBrand, Profile, PRODUCT_NAME};
+use gtk::{gdk, gdk_pixbuf, prelude::*};
 use gtk4 as gtk;
+use std::{cell::RefCell, collections::HashMap};
+
+/// Each co-brand mark fitted into its square, by the mark's file and the
+/// side in pixels; none for a mark the image loaders cannot read.
+type FittedMarks = HashMap<(&'static [u8], i32), Option<gdk::Texture>>;
+
+thread_local! {
+    static COBRAND_MARKS: RefCell<FittedMarks> = RefCell::default();
+}
 
 /// The app's mark, `size` points square.
 pub fn brand(size: i32) -> gtk::Widget {
@@ -300,11 +309,14 @@ pub fn brand(size: i32) -> gtk::Widget {
     }
 }
 
-/// The agentrelay wordmark, `height` points tall; the name in text when the
-/// SVG loader is missing, or when the build's profile names another product
-/// (the wordmark is Agent Relay's).
+/// The agentrelay wordmark of the sign-in lockup, `height` points tall; the
+/// name in text when the SVG loader is missing, or when the build's profile
+/// names another product (the wordmark is Agent Relay's). The lockup draws
+/// the co-brand line ([`cobrand_line`]) under it, so a co-branded build
+/// named Agent Relay draws the wordmark, without its badge, as macOS's
+/// `BrandWordmarkView` with `coBranded`.
 pub fn wordmark(height: i32) -> gtk::Widget {
-    if Profile::BUILT.names_in_text() {
+    if !Profile::BUILT.draws_wordmark_over_cobrand_line() {
         return profile_name(Profile::BUILT).upcast();
     }
     match super::svg_picture("agent-relay-wordmark", WORDMARK, height, PRODUCT_NAME) {
@@ -329,6 +341,97 @@ fn profile_name(profile: Profile) -> gtk::Box {
     name
 }
 
+/// The sign-in window's lockup: the app's mark and the wordmark, read out
+/// as "Sign in to Agent Relay", and under it a co-branded build's "for
+/// <customer>" line ([`cobrand_line`]).
+pub fn signin_lockup() -> gtk::Box {
+    let lockup = super::vbox(0, &[]);
+    let row = super::hbox(12, &[]);
+    row.append(&brand(42));
+    row.append(&wordmark(28));
+    super::name(&row, "Sign in to Agent Relay");
+    lockup.append(&row);
+    if let Some(line) = cobrand_line() {
+        crate::ui::zoom::margins(&line, 12, 0, 0, 0);
+        lockup.append(&line);
+    }
+    lockup
+}
+
+/// The line a co-branded build draws under its Agent Relay lockup: "for",
+/// the customer's mark fitted into 16 points, and the customer's name, read
+/// out as "for <name>", as macOS's `CoBrandLineView`. None for a build
+/// without a co-brand.
+pub fn cobrand_line() -> Option<gtk::Box> {
+    Profile::BUILT
+        .cobrand
+        .map(|cobrand| cobrand_line_for(&cobrand))
+}
+
+/// [`cobrand_line`] for `cobrand`.
+pub fn cobrand_line_for(cobrand: &CoBrand) -> gtk::Box {
+    let line = super::hbox(6, &["cobrand-line"]);
+    line.set_halign(gtk::Align::Start);
+    let word = super::text("for", &["secondary", "cobrand-for"]);
+    word.set_valign(gtk::Align::Center);
+    line.append(&word);
+    // A mark the image loaders cannot read is left out, as on macOS.
+    if let Some(mark) = cobrand_mark(cobrand, 16) {
+        line.append(&mark);
+    }
+    let name = super::text(cobrand.name, &["cobrand-name"]);
+    name.set_valign(gtk::Align::Center);
+    name.set_single_line_mode(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    line.append(&name);
+    super::name(&line, &cobrand.accessible_label());
+    line
+}
+
+/// The customer's mark, an SVG or a PNG, fitted into `size` points square
+/// at its own aspect and sharp at the display's scale.
+fn cobrand_mark(cobrand: &CoBrand, size: i32) -> Option<super::Sized> {
+    let texture = fitted_mark(cobrand.mark, size * super::display_scale())?;
+    let picture = gtk::Picture::for_paintable(&texture);
+    picture.set_can_shrink(true);
+    picture.set_keep_aspect_ratio(true);
+    let sized = super::Sized::new(size, size, &picture);
+    sized.set_valign(gtk::Align::Center);
+    Some(sized)
+}
+
+/// `data` decoded once, fitted into a `side` pixels square at its own
+/// aspect: the loader learns the mark's size before it decodes and is told
+/// the fitted one then. Kept by `data` and `side` for the next lockup.
+fn fitted_mark(data: &'static [u8], side: i32) -> Option<gdk::Texture> {
+    if let Some(found) = COBRAND_MARKS.with(|marks| marks.borrow().get(&(data, side)).cloned()) {
+        return found;
+    }
+    let loader = gdk_pixbuf::PixbufLoader::new();
+    loader.connect_size_prepared(move |loader, width, height| {
+        let (width, height) = fitted(width, height, side);
+        loader.set_size(width, height);
+    });
+    let texture = loader
+        .write(data)
+        .and_then(|_| loader.close())
+        .ok()
+        .and_then(|_| loader.pixbuf())
+        .map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf));
+    COBRAND_MARKS.with(|marks| marks.borrow_mut().insert((data, side), texture.clone()));
+    texture
+}
+
+/// `width` by `height` fitted into a `side` square, keeping its aspect.
+fn fitted(width: i32, height: i32, side: i32) -> (i32, i32) {
+    let (width, height) = (width.max(1) as f64, height.max(1) as f64);
+    let scale = side as f64 / width.max(height);
+    (
+        ((width * scale).round() as i32).max(1),
+        ((height * scale).round() as i32).max(1),
+    )
+}
+
 /// Canonical mark and wordmark lockup for the shared application header.
 pub fn header_brand() -> gtk::Box {
     let lockup = super::hbox(10, &[]);
@@ -351,4 +454,18 @@ pub fn header_brand() -> gtk::Box {
         child = widget.next_sibling();
     }
     lockup
+}
+
+#[cfg(test)]
+mod cobrand_tests {
+    use super::fitted;
+
+    #[test]
+    fn a_mark_is_fitted_into_its_square_at_its_own_aspect() {
+        assert_eq!(fitted(64, 64, 32), (32, 32));
+        assert_eq!(fitted(200, 100, 16), (16, 8));
+        assert_eq!(fitted(10, 40, 16), (4, 16));
+        assert_eq!(fitted(1, 1000, 16), (1, 16));
+        assert_eq!(fitted(0, 0, 16), (16, 16));
+    }
 }

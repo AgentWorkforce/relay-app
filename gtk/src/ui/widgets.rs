@@ -564,7 +564,7 @@ pub fn login_agent_strip() -> gtk::Widget {
         .map(|picture| picture.upcast()).unwrap_or_else(|| gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast())
 }
 
-pub use art::{brand, header_brand, wordmark};
+pub use art::{brand, header_brand, signin_lockup, wordmark};
 
 pub use art::{mark_brand, mark_file, BrandShape, MarkBrand};
 use art::mark_label;

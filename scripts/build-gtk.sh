@@ -17,6 +17,9 @@
 #                                       it is not the default's
 #   agent-relay-feed-public-key.txt     a cloud feed's public key
 #                                       (--feed-public-key), likewise
+#   agent-relay-cobrand-name.txt        the customer a co-branded build says
+#                                       it is "for" (--cobrand-name),
+#                                       written only for a co-branded build
 #
 # The app links the same core crate as the probe, whose build bakes the site
 # (AGENT_RELAY_SITE_URL) and link scheme (AGENT_RELAY_URL_SCHEME) in and
@@ -27,7 +30,9 @@
 # (RELEASE_FEED: github:<owner>/<name> or cloud) with a cloud feed's public
 # key (DESKTOP_FEED_PUBLIC_KEY), what those releases' artifact names start
 # with (DESKTOP_ASSET_PREFIX and DESKTOP_PROFILE_ID, from --profile) and the
-# mark it draws (DESKTOP_ICON, an SVG), each read by gtk/build.rs.
+# mark it draws (DESKTOP_ICON, an SVG) and, for a co-branded build, the
+# customer it says it is "for" under the lockup (DESKTOP_COBRAND_MARK, an
+# SVG or a PNG, and DESKTOP_COBRAND_NAME), each read by gtk/build.rs.
 # The app prints none of them, so they are recorded beside it, and
 # build-linux.sh packages an app only with the core's site and scheme.
 #
@@ -48,6 +53,7 @@ Usage:
                  [--site-url URL] [--url-scheme NAME] [--profile ID]
                  [--product-name NAME] [--releases-repository OWNER/NAME]
                  [--release-feed FEED] [--feed-public-key KEY] [--icon FILE]
+                 [--cobrand-mark FILE --cobrand-name NAME]
 
 Options:
   --version VERSION  The desktop release version the app reports. Required.
@@ -88,6 +94,14 @@ Options:
   --icon FILE        The app's mark, an SVG, drawn in the window and shipped
                      as its launcher icon; assets/agent-relay-mark.svg when
                      omitted.
+  --cobrand-mark FILE
+                     A co-branded build's customer mark, an SVG or a PNG,
+                     drawn in the "for <customer>" line under the lockup of
+                     the sign-in window. Needs --cobrand-name and --profile.
+  --cobrand-name NAME
+                     The customer a co-branded build says it is "for": one
+                     line of at most 80 characters, trimmed. Needs
+                     --cobrand-mark and --profile; never printed.
 EOF
 }
 
@@ -105,6 +119,9 @@ RELEASES_REPO=""
 FEED=""
 FEED_KEY=""
 ICON=""
+COBRAND_MARK=""
+COBRAND_NAME=""
+COBRAND_NAME_SET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) TARGET="${2:-}"; shift 2 ;;
@@ -118,6 +135,8 @@ while [ $# -gt 0 ]; do
     --release-feed) FEED="${2:-}"; shift 2 ;;
     --feed-public-key) FEED_KEY="${2:-}"; shift 2 ;;
     --icon) ICON="${2:-}"; shift 2 ;;
+    --cobrand-mark) COBRAND_MARK="${2:-}"; shift 2 ;;
+    --cobrand-name) COBRAND_NAME="${2:-}"; COBRAND_NAME_SET=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
@@ -168,6 +187,32 @@ if [ -n "$ICON" ]; then
   grep -q '<svg' "$ICON" || die "--icon must be an SVG: $ICON"
   ICON="$(cd "$(dirname "$ICON")" && pwd)/$(basename "$ICON")"
 fi
+# A co-branded build takes the customer's mark and name together, only for a
+# site profile, and checks the name as the app does (AppInfo.coBrandName and
+# build_profile.rs): trimmed, not blank, one line, at most 80 characters. A
+# refusal gives the name's length, never the name.
+if [ -n "$COBRAND_NAME_SET" ] && [ -z "$COBRAND_MARK" ]; then die "--cobrand-name needs --cobrand-mark"; fi
+if [ -n "$COBRAND_MARK" ]; then
+  [ -n "$COBRAND_NAME_SET" ] || die "--cobrand-mark needs --cobrand-name"
+  [ -n "$PROFILE" ] || die "--cobrand-mark and --cobrand-name need --profile; the default profile is Agent Relay's own"
+  [ -f "$COBRAND_MARK" ] || die "--cobrand-mark: no file at $COBRAND_MARK"
+  case "$COBRAND_MARK" in
+    *.svg|*.SVG) grep -q '<svg' "$COBRAND_MARK" || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not an SVG" ;;
+    *.png|*.PNG) [ "$(head -c 4 "$COBRAND_MARK" | od -An -tx1 | tr -d ' \n')" = 89504e47 ] \
+                   || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not a PNG" ;;
+    *) die "--cobrand-mark must be an SVG or a PNG, got: $COBRAND_MARK" ;;
+  esac
+  COBRAND_NAME="${COBRAND_NAME#"${COBRAND_NAME%%[![:space:]]*}"}"
+  COBRAND_NAME="${COBRAND_NAME%"${COBRAND_NAME##*[![:space:]]}"}"
+  [ -n "$COBRAND_NAME" ] || die "--cobrand-name must not be empty or blank"
+  [[ "$COBRAND_NAME" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
+  # Its length in characters, as gtk/build.rs counts them, whatever the
+  # locale: its bytes but UTF-8's continuation bytes (bash's ${#} counts
+  # bytes under LC_ALL=C).
+  COBRAND_NAME_LENGTH="$(printf '%s' "$COBRAND_NAME" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')"
+  [ "$COBRAND_NAME_LENGTH" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has $COBRAND_NAME_LENGTH"
+  COBRAND_MARK="$(cd "$(dirname "$COBRAND_MARK")" && pwd)/$(basename "$COBRAND_MARK")"
+fi
 # What gtk/build.rs reads. The default of each is applied there, so an
 # unset variable and the default value build the same binary.
 if [ "$PRODUCT_NAME" != "$DEFAULT_PRODUCT_NAME" ]; then export DESKTOP_PRODUCT_NAME="$PRODUCT_NAME"; else unset DESKTOP_PRODUCT_NAME; fi
@@ -177,6 +222,11 @@ if [ -n "$FEED_KEY" ]; then export DESKTOP_FEED_PUBLIC_KEY="$FEED_KEY"; else uns
 if [ "$ASSET_PREFIX" != "$DEFAULT_ASSET_PREFIX" ]; then export DESKTOP_ASSET_PREFIX="$ASSET_PREFIX"; else unset DESKTOP_ASSET_PREFIX; fi
 if [ -n "$PROFILE" ]; then export DESKTOP_PROFILE_ID="$PROFILE"; else unset DESKTOP_PROFILE_ID; fi
 if [ -n "$ICON" ]; then export DESKTOP_ICON="$ICON"; else unset DESKTOP_ICON; fi
+if [ -n "$COBRAND_MARK" ]; then
+  export DESKTOP_COBRAND_MARK="$COBRAND_MARK" DESKTOP_COBRAND_NAME="$COBRAND_NAME"
+else
+  unset DESKTOP_COBRAND_MARK DESKTOP_COBRAND_NAME
+fi
 [ -z "$PROFILE" ] || note "building the site profile $PROFILE (artifacts named $ASSET_PREFIX-...)"
 
 BUILD=(build --manifest-path "$MANIFEST" --release --locked --features gtk --bin agent-relay)
@@ -209,5 +259,11 @@ if [ "$FEED" != "$DEFAULT_RELEASE_FEED" ]; then
 fi
 if [ -n "$FEED_KEY" ]; then
   printf '%s\n' "$FEED_KEY" > "$OUT_DIR/agent-relay-feed-public-key.txt"
+fi
+# The co-brand's record exists only for a co-branded build, so a build
+# without one has the records it had before.
+rm -f "$OUT_DIR/agent-relay-cobrand-name.txt"
+if [ -n "$COBRAND_MARK" ]; then
+  printf '%s\n' "$COBRAND_NAME" > "$OUT_DIR/agent-relay-cobrand-name.txt"
 fi
 note "agent-relay $VERSION ready in $OUT_DIR"

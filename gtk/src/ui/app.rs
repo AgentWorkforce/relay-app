@@ -648,11 +648,7 @@ impl App {
         form.set_valign(gtk::Align::Center);
         form.set_halign(gtk::Align::Center);
         form.set_vexpand(true);
-        let brand = hbox(12, &[]);
-        brand.append(&widgets::brand(42));
-        brand.append(&widgets::wordmark(28));
-        widgets::name(&brand, "Sign in to Agent Relay");
-        form.append(&brand);
+        form.append(&widgets::signin_lockup());
         if let Some(site) = self.site_brand() {
             super::zoom::margins(&site, 12, 0, 0, 0);
             form.append(&site);
