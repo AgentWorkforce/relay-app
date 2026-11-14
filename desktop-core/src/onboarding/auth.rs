@@ -65,6 +65,13 @@ pub(super) fn connect(
     );
     Ok(Connection::Ready(account))
 }
+// `Failure` holds a `&'static str`, so the label and unit are spelled out here;
+// they must match `LAUNCH_AGENT_LABEL` and `SYSTEMD_UNIT`.
+#[cfg(target_os = "macos")]
+const SERVICE_UNAVAILABLE: &str = "The user service did not become ready. Check launchctl print gui/$(id -u)/com.agentrelay.desktop.core.headless and the log files under ~/Library/Logs/Agent Relay/.";
+#[cfg(not(target_os = "macos"))]
+const SERVICE_UNAVAILABLE: &str =
+    "The user service did not become ready. Check journalctl --user -u agent-relay.service.";
 fn initial_account(
     core: &mut impl Backend,
     ui: &mut impl Interface,
@@ -74,11 +81,12 @@ fn initial_account(
         return Ok(Some(account));
     }
     if !options.start_service || !core.start_service() {
-        pending(
-            ui,
-            "core_not_running",
-            json!({"message":"The Agent Relay core is not running. Install the headless core and run systemctl --user start agent-relay.service, or rerun setup --start-service for an existing Linux service."}),
-        );
+        let message = if cfg!(target_os = "macos") {
+            format!("The Agent Relay core is not running. Install the headless core and run launchctl kickstart gui/$(id -u)/{LAUNCH_AGENT_LABEL}, or rerun setup --start-service for an existing macOS service.")
+        } else {
+            format!("The Agent Relay core is not running. Install the headless core and run systemctl --user start {SYSTEMD_UNIT}, or rerun setup --start-service for an existing Linux service.")
+        };
+        pending(ui, "core_not_running", json!({ "message": message }));
         return Ok(None);
     }
     for _ in 0..10 {
@@ -89,8 +97,7 @@ fn initial_account(
     }
     Err(Failure {
         code: "service_unavailable",
-        message:
-            "The user service did not become ready. Check journalctl --user -u agent-relay.service.",
+        message: SERVICE_UNAVAILABLE,
     })
 }
 fn advance(
