@@ -206,6 +206,29 @@ else:
                     self.assertFalse(failed_runtime.exists())
             self.assertEqual((root / 'compile.log').read_text().splitlines(), calls)
 
+    def test_a_core_that_needs_no_msys2_dll_states_it_in_the_notices(self):
+        # Rust 1.100 links libunwind statically on the windows-gnullvm
+        # targets: the core's closure can be empty, and so is the bundle.
+        with tempfile.TemporaryDirectory(prefix='relay-stage-windows-') as temporary:
+            root = Path(temporary)
+            env = self.fixture(root)
+            (root / 'tools/ntldd').write_text('#!' + sys.executable + "\nprint('kernel32.dll => C:/Windows/System32/kernel32.dll (0x1234)')\n")
+            script = root / 'scripts/build-windows.sh'
+            script.write_text(script.read_text().replace('prefix=/clangarm64;', f'prefix="{env["MOCK_PREFIX"]}";'))
+            for arch, msystem, triple in [('x64', 'CLANG64', 'x86_64-pc-windows-gnullvm'),
+                                          ('arm64', 'CLANGARM64', 'aarch64-pc-windows-gnullvm')]:
+                with self.subTest(arch=arch):
+                    (root / 'tools/rustc').write_text('#!' + sys.executable + f"\nprint('host: {triple}')\n")
+                    result = subprocess.run(['bash', str(script), '--version', '2026.11.1', '--arch', arch,
+                        '--build-only', 'core', '--runtime-out', str(root / arch)],
+                        env={**env, 'MSYSTEM': msystem}, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('no MSYS2 files are bundled', result.stdout)
+                    self.assertEqual([path.name for path in (root / arch / 'files/bin').iterdir()], ['agent-relay-probe.exe'])
+                    notices = (root / arch / 'files/NOTICES.txt').read_text()
+                    self.assertIn('No MSYS2 files are bundled with this component.', notices)
+                    self.assertNotIn('unmodified builds from the MSYS2 project', notices)
+
     def test_a_relative_icon_reaches_cargo_as_an_absolute_path(self):
         # gtk/build.rs runs with gtk/ as its working directory, so a
         # workspace-relative --icon (what the site-profile action passes)
