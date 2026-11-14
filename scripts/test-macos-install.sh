@@ -854,6 +854,13 @@ grep -Fq 'AGENT_RELAY_HEALTH_TIMEOUT must be a whole number of seconds, not "abc
   || { cat "$root/state/out"; fail "the AGENT_RELAY_HEALTH_TIMEOUT refusal does not name the variable and value"; }
 { [ -f "$plist" ] && [ -e "$prefix/current" ] && [ -f "$root/state/loaded-$label" ]; } || fail "AGENT_RELAY_HEALTH_TIMEOUT=abc changed the install"
 [ ! -s "$root/state/launchctl.log" ] || fail "AGENT_RELAY_HEALTH_TIMEOUT=abc ran launchctl"
+if AGENT_RELAY_STOP_TIMEOUT=1234567 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1; then fail "--uninstall accepted AGENT_RELAY_STOP_TIMEOUT=1234567"; fi
+grep -Fq 'AGENT_RELAY_STOP_TIMEOUT must be at most 999999 seconds, not "1234567"' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the too-long timeout refusal does not give the limit"; }
+AGENT_RELAY_STOP_TIMEOUT=08 bash "$INSTALL" --status > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "AGENT_RELAY_STOP_TIMEOUT=08 was refused"; }
+! grep -q 'seconds, not' "$root/state/out" || { cat "$root/state/out"; fail "AGENT_RELAY_STOP_TIMEOUT=08 printed a timeout error"; }
+AGENT_RELAY_HEALTH_TIMEOUT=abc bash "$INSTALL" --help > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--help failed with a bad timeout set"; }
+grep -q '^Usage: install-macos.sh' "$root/state/out" || fail "--help with a bad timeout did not print usage"
 pass "a timeout that is not a whole number of seconds is refused before anything changes"
 # launchd has unloaded the job while its core is still exiting, and the core's
 # detached session collector, outside the job, still holds its store's lock:
