@@ -268,6 +268,27 @@ grep -q "no earlier version" "$root/state/out" || fail "no earlier version was n
 [ "$(restarts)" = "$before" ] || fail "a rollback with no earlier version restarted the service"
 pass "--rollback only goes to older versions and stops at the oldest"
 
+# Prereleases go by SemVer precedence, which sort -V gets wrong: 1.2.0-rc.1 is
+# older than 1.2.0, so a rollback from 1.2.0-rc.1 skips the newer 1.2.0 for
+# 1.1.0 and one from 1.2.0 reaches 1.2.0-rc.1; 1.3.0-beta.2 is older than
+# 1.3.0-beta.11.
+release 1.2.0-rc.1; release 1.3.0-beta.2; release 1.3.0-beta.11
+bash "$INSTALL" --version 1.2.0-rc.1 >/dev/null 2>&1 || fail "installing 1.2.0-rc.1 failed"
+for kept in 1.1.0 1.2.0; do
+  [ -d "$HOME/.local/lib/agent-relay/versions/$kept" ] || fail "$kept is not installed beside 1.2.0-rc.1"
+done
+bash "$INSTALL" --rollback >/dev/null 2>&1 || fail "rollback from 1.2.0-rc.1 failed"
+[ "$(current)" = 1.1.0 ] || fail "rollback from 1.2.0-rc.1 picked $(current), not 1.1.0"
+bash "$INSTALL" --version 1.2.0 >/dev/null 2>&1 || fail "reinstalling 1.2.0 failed"
+bash "$INSTALL" --rollback >/dev/null 2>&1 || fail "rollback from 1.2.0 failed"
+[ "$(current)" = 1.2.0-rc.1 ] || fail "rollback from 1.2.0 picked $(current), not 1.2.0-rc.1"
+bash "$INSTALL" --version 1.3.0-beta.2 >/dev/null 2>&1 || fail "installing 1.3.0-beta.2 failed"
+bash "$INSTALL" --version 1.3.0-beta.11 >/dev/null 2>&1 || fail "installing 1.3.0-beta.11 failed"
+bash "$INSTALL" --rollback >/dev/null 2>&1 || fail "rollback from 1.3.0-beta.11 failed"
+[ "$(current)" = 1.3.0-beta.2 ] || fail "rollback from 1.3.0-beta.11 picked $(current), not 1.3.0-beta.2"
+[ "$(cat "$root/state/running")" = 1.3.0-beta.2 ] || fail "1.3.0-beta.2 is not running after rollback"
+pass "--rollback orders prereleases by SemVer precedence"
+
 bash "$INSTALL" --version 1.1.0 >/dev/null
 before="$(restarts)"
 bash "$INSTALL" --dry-run --version 1.0.0 >/dev/null

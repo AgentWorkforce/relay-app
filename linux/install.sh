@@ -549,16 +549,53 @@ installed_versions() { # oldest first
   find "$PREFIX/versions" -mindepth 1 -maxdepth 1 -type d ! -name '*.partial' ! -name '*.replaced' -printf '%f\n' | sort -V
 }
 
+# Whether release a is older than release b by SemVer precedence: the dotted
+# numeric core compares numerically (a missing component is 0), a prerelease
+# (1.2.0-rc.1) is older than its release (1.2.0), and prerelease identifiers
+# compare one by one, numbers numerically and before words, words in ASCII
+# order, with fewer identifiers older (beta.2 < beta.11, beta < beta.1).
+# Build metadata (+...) is ignored. sort -V puts 1.2.0-rc.1 after 1.2.0.
+version_older() { # a b
+  LC_ALL=C awk -v a="$1" -v b="$2" '
+    function cmp(x, y,   n, m, i, p, q, pa, pb, xp, yp, xn, yn) {
+      sub(/[+].*/, "", x); sub(/[+].*/, "", y)
+      pa = index(x, "-"); pb = index(y, "-")
+      xp = pa ? substr(x, pa + 1) : ""; if (pa) x = substr(x, 1, pa - 1)
+      yp = pb ? substr(y, pb + 1) : ""; if (pb) y = substr(y, 1, pb - 1)
+      n = split(x, p, "."); m = split(y, q, ".")
+      for (i = 1; i <= (n > m ? n : m); i++) {
+        if (p[i] + 0 < q[i] + 0) return -1
+        if (p[i] + 0 > q[i] + 0) return 1
+      }
+      if (!pa || !pb) return (pa ? -1 : 0) + (pb ? 1 : 0)
+      n = split(xp, p, "."); m = split(yp, q, ".")
+      for (i = 1; i <= n && i <= m; i++) {
+        xn = p[i] ~ /^[0-9]+$/; yn = q[i] ~ /^[0-9]+$/
+        if (xn && yn) {
+          if (p[i] + 0 != q[i] + 0) return p[i] + 0 < q[i] + 0 ? -1 : 1
+        } else if (xn != yn) {
+          return xn ? -1 : 1
+        } else if (p[i] "" != q[i] "") {
+          return p[i] "" < q[i] "" ? -1 : 1
+        }
+      }
+      return n < m ? -1 : n > m ? 1 : 0
+    }
+    BEGIN { exit !(cmp(a, b) < 0) }'
+}
+
 previous_version() {
   [ -d "$PREFIX/versions" ] || return 0
   # Newest installed version older than the current one, so a second rollback
   # keeps going back rather than returning to the version just left. Nothing
   # when the current version is unknown or none is older.
   [ -n "${current_version:-}" ] || return 0
-  local prev
-  prev="$({ installed_versions; printf '%s\n' "$current_version"; } | sort -Vu \
-    | { grep -xF -B1 -- "$current_version" || true; } | head -n 1)"
-  [ "$prev" = "$current_version" ] || printf '%s\n' "$prev"
+  local candidate prev=""
+  while read -r candidate; do
+    version_older "$candidate" "$current_version" || continue
+    if [ -z "$prev" ] || version_older "$prev" "$candidate"; then prev="$candidate"; fi
+  done < <(installed_versions)
+  [ -z "$prev" ] || printf '%s\n' "$prev"
 }
 
 # A version answering status.get says nothing about its ability to open local
