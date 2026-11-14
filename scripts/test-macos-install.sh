@@ -484,6 +484,57 @@ no_current_gap "a refused --rollback"
   || fail "a refused --rollback changed something"
 pass "--rollback goes from 1.2.0 to 1.1.0 to 1.0.0, then refuses rather than going forward"
 
+# Prereleases of one release go by SemVer precedence, not as equals: the
+# comparator itself (beta.2 is older than beta.11, not lexically; build
+# metadata is ignored), then --rollback from a later beta and from the release.
+eval "$(grep '^valid_version() ' "$INSTALL")"
+for fn in installed_versions version_older rollback_target; do
+  eval "$(sed -n "/^$fn() {/,/^}/p" "$INSTALL")"
+done
+# shellcheck disable=SC2034 # read by the functions above
+PREFIX="$prefix"
+older() { version_older "$1" "$2"; }
+older 4.0.0-beta.1 4.0.0-beta.2 || fail "4.0.0-beta.1 is not older than 4.0.0-beta.2"
+! older 4.0.0-beta.2 4.0.0-beta.1 || fail "4.0.0-beta.2 is older than 4.0.0-beta.1"
+older 4.0.0-beta.2 4.0.0-beta.11 || fail "4.0.0-beta.2 is not older than 4.0.0-beta.11"
+! older 4.0.0-beta.11 4.0.0-beta.2 || fail "4.0.0-beta.11 is older than 4.0.0-beta.2"
+older 4.0.0-beta.2 4.0.0 || fail "4.0.0-beta.2 is not older than 4.0.0"
+! older 4.0.0 4.0.0-beta.2 || fail "4.0.0 is older than 4.0.0-beta.2"
+! older 4.0.0-beta.1+build.5 4.0.0-beta.1+build.9 || fail "build metadata made a version older"
+! older 4.0.0+a 4.0.0+b || fail "build metadata made a release older"
+older 4.0.0-beta.1+z 4.0.0-beta.2+a || fail "build metadata changed the order of two betas"
+older 3.9.9 4.0.0-beta.1 || fail "3.9.9 is not older than 4.0.0-beta.1"
+pass "version_older orders prereleases of one release by SemVer precedence"
+
+release 4.0.0-beta.1; release 4.0.0-beta.2; release 4.0.0
+for version in 4.0.0-beta.1 4.0.0-beta.2; do
+  bash "$INSTALL" --version "$version" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "install of $version failed"; }
+done
+bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback from 4.0.0-beta.2 failed"; }
+{ [ "$(current)" = 4.0.0-beta.1 ] && [ "$(cat "$root/state/running")" = 4.0.0-beta.1 ]; } \
+  || { cat "$root/state/out"; fail "rollback from 4.0.0-beta.2 picked $(current), not 4.0.0-beta.1"; }
+bash "$INSTALL" --version 4.0.0 > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "install of 4.0.0 failed"; }
+for version in 4.0.0-beta.1 4.0.0-beta.2; do
+  [ -d "$prefix/versions/$version" ] || fail "$version is not installed beside 4.0.0"
+done
+# shellcheck disable=SC2034 # read by rollback_target
+current_version=4.0.0
+[ "$(rollback_target)" = 4.0.0-beta.2 ] || fail "rollback from 4.0.0 would pick $(rollback_target), not 4.0.0-beta.2"
+bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback from 4.0.0 failed"; }
+{ [ "$(current)" = 4.0.0-beta.2 ] && [ "$(cat "$root/state/running")" = 4.0.0-beta.2 ]; } \
+  || fail "rollback from 4.0.0 picked $(current), not 4.0.0-beta.2"
+pass "--rollback orders betas of one release: beta.2 to beta.1, and the release to beta.2"
+# Back to the state the tests below start from: 1.0.0 current, 1.1.0 and 1.2.0 kept.
+bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall after the beta tests failed"; }
+for version in 1.0.0 1.1.0 1.2.0; do
+  release "$version"
+  bash "$INSTALL" --version "$version" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "reinstall of $version failed"; }
+done
+for _ in 1 2; do
+  bash "$INSTALL" --rollback > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--rollback back to 1.0.0 failed"; }
+done
+[ "$(kept)" = "1.0.0 1.1.0 1.2.0 " ] || fail "kept $(kept) rather than 1.0.0 1.1.0 1.2.0"
+
 # A LaunchAgent that cannot be written: nothing is switched or restarted.
 echo '<plist version="1.0"><dict/></plist>' > "$plist"
 touch "$root/state/plutil-fails"
