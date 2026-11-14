@@ -145,8 +145,14 @@ if [ -n "$COBRAND_MARK" ] || [ -n "$COBRAND_NAME_SET" ]; then
       [ "$(head -c 4 "$COBRAND_MARK" | od -An -tx1 | tr -d ' \n')" = 89504e47 ] || die "--cobrand-mark must be an SVG or a PNG; $COBRAND_MARK is not a PNG" ;;
     *) die "--cobrand-mark must be an SVG or a PNG, got: $COBRAND_MARK" ;;
   esac
-  [ -n "$COBRAND_NAME" ] || die "--cobrand-name must not be empty"
+  # Trimmed and checked as AppInfo.coBrandName(from:) and the site-profile
+  # action do, so no name gets past this that the app would drop. The
+  # errors give its length, never the name.
+  COBRAND_NAME="${COBRAND_NAME#"${COBRAND_NAME%%[![:space:]]*}"}"
+  COBRAND_NAME="${COBRAND_NAME%"${COBRAND_NAME##*[![:space:]]}"}"
+  [ -n "$COBRAND_NAME" ] || die "--cobrand-name must not be empty or blank"
   [[ "$COBRAND_NAME" != *[[:cntrl:]]* ]] || die "--cobrand-name must be one line with no control characters"
+  [ "${#COBRAND_NAME}" -le 80 ] || die "--cobrand-name must be at most 80 characters; it has ${#COBRAND_NAME}"
   COBRAND_MARK="$(cd "$(dirname "$COBRAND_MARK")" && pwd)/$(basename "$COBRAND_MARK")"
 fi
 

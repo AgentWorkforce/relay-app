@@ -1080,6 +1080,108 @@ esac
                 self.assertNotIn('Acme Corp', result.stdout + result.stderr)
                 self.assertFalse(any(line.startswith('BRANDING_COBRAND_MARK=branding') for line in exported))
 
+    def run_site_profile_action(self, members, **inputs):
+        """Run the whole site-profile action as the runner would: each step
+        in order, skipped when its if: is false for INPUTS (the rest at the
+        action's defaults), its env: evaluated, what earlier steps wrote to
+        GITHUB_ENV in its environment, and the first failing step ending
+        the run. The Mint step is a stand-in that outputs a token; curl
+        serves an archive of MEMBERS (name to bytes). Returns the names of
+        the steps that ran, the last result and the exported lines."""
+        action = yaml.safe_load(SITE_PROFILE.read_text())
+        values = {'inputs.' + name: spec.get('default', '') for name, spec in action['inputs'].items()}
+        values.update({'inputs.' + name.replace('_', '-'): value for name, value in inputs.items()})
+
+        def evaluate(expression):
+            # GitHub's && and || return an operand, as Python's and/or do;
+            # an unset input or step output is ''.
+            names = {}
+            def reference(match):
+                names[f'value_{len(names)}'] = values.get(match[0], '')
+                return f'value_{len(names) - 1}'
+            source = ' '.join(expression.split()).removeprefix('${{').removesuffix('}}')
+            source = re.sub(r'(?:inputs|steps\.[\w-]+\.outputs)\.[\w-]+', reference, source)
+            source = source.replace('&&', ' and ').replace('||', ' or ').replace('startsWith(', 'starts_with(')
+            tree = ast.parse(source.strip(), mode='eval')
+            for node in ast.walk(tree):
+                self.assertIsInstance(node, (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Call,
+                                             ast.Eq, ast.NotEq, ast.Constant, ast.Name, ast.Load))
+                if isinstance(node, ast.Call):
+                    self.assertEqual(node.func.id, 'starts_with')
+            starts_with = lambda text, prefix: text.casefold().startswith(prefix.casefold())
+            return eval(compile(tree, 'expression', 'eval'), {'__builtins__': {}}, dict(names, starts_with=starts_with))
+
+        checkout = SITE_PROFILE.parents[3]
+        ran, result, exported = [], None, []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, bin_dir, work = root / 'source', root / 'bin', root / 'work'
+            for directory in (source, bin_dir, work):
+                directory.mkdir()
+            for name, content in members.items():
+                (source / name).write_bytes(content)
+            archive = root / 'branding.tar.gz'
+            subprocess.run(['tar', '-czf', str(archive), '-C', str(source)] + sorted(members), check=True)
+            curl = bin_dir / 'curl'
+            curl.write_text('#!/usr/bin/env bash\n'
+                            'while [ $# -gt 0 ]; do if [ "$1" = -o ]; then cp "$ARCHIVE" "$2"; fi; shift; done\n')
+            curl.chmod(0o755)
+            # The Resolve step sources scripts/site-origin.sh from the
+            # workspace, which the later steps unpack branding/ into.
+            (work / 'scripts').mkdir()
+            shutil.copy(checkout / 'scripts' / 'site-origin.sh', work / 'scripts')
+            (root / 'env').write_text('')
+            for step in action['runs']['steps']:
+                if 'if' in step and not evaluate(step['if']):
+                    continue
+                ran.append(step['name'])
+                if 'uses' in step:
+                    values[f'steps.{step["id"]}.outputs.token'] = 'minted'
+                    continue
+                env = {name: value for name, value in os.environ.items() if not name.startswith(('GITHUB_', 'IN_'))}
+                env.update(dict(line.split('=', 1) for line in (root / 'env').read_text().splitlines()))
+                env.update({name: str(evaluate(value) or '') for name, value in step.get('env', {}).items()})
+                env.update(PATH=f'{bin_dir}:{os.environ["PATH"]}', GITHUB_WORKSPACE=str(work),
+                           GITHUB_ENV=str(root / 'env'), GITHUB_OUTPUT=str(root / 'output'), ARCHIVE=str(archive))
+                result = subprocess.run(['bash', '-c', step['run']], cwd=work, env=env, capture_output=True, text=True)
+                if result.returncode != 0:
+                    break
+            exported = (root / 'env').read_text().splitlines()
+        return ran, result, exported
+
+    def test_the_default_profile_refuses_a_branding_archive_where_its_steps_run(self):
+        # The default profile (no profile, no co-brand name) given a branding
+        # URL to an archive holding a co-brand mark: the Fetch branding step
+        # is skipped for it, so the action must refuse in a step that runs
+        # rather than ignore the archive.
+        archive = {'icon.svg': self.SVG, 'cobrand.svg': self.SVG}
+        for url in ('https://branding.example/p1.tar.gz',
+                    'https://raw.githubusercontent.com/AgentWorkforce/desktop-branding/main/p1.tar.gz'):
+            with self.subTest(url):
+                ran, result, exported = self.run_site_profile_action(
+                    archive, profile='', branding_url=url, branding_app_id='1', branding_app_private_key='key')
+                self.assertEqual(ran, ['Resolve the site profile'])
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("::error::DESKTOP_BRANDING_URL is a site profile's setting; the default profile uses "
+                              "the repository's own branding and is never co-branded.", result.stdout.splitlines())
+                self.assertNotIn(url, result.stdout + result.stderr)
+                self.assertEqual(exported, [])
+        # Without a branding URL the default profile resolves as before and
+        # nothing is fetched.
+        ran, result, exported = self.run_site_profile_action(archive, profile='')
+        self.assertEqual(ran, ['Resolve the site profile'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('BRANDING_COBRAND_MARK=', exported)
+        self.assertIn('COBRAND_NAME=', exported)
+        # A co-branded site profile runs every step and exports the mark.
+        ran, result, exported = self.run_site_profile_action(
+            archive, profile='acme-7', **dict(self.PROFILE_INPUTS, cobrand_name='Acme Corp',
+                                              branding_url='https://raw.githubusercontent.com/AgentWorkforce/desktop-branding/main/p1.tar.gz',
+                                              branding_app_id='1', branding_app_private_key='key'))
+        self.assertEqual(ran, ['Resolve the site profile', 'Mint a branding token', 'Fetch branding'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(exported[-2:], ['BRANDING_ICON=branding/icon.svg', 'BRANDING_COBRAND_MARK=branding/cobrand.svg'])
+
     def test_cobrand_reaches_only_the_macos_build_and_image(self):
         for text in (self.workflow, self.promote):
             uses = text.count('uses: ./.github/actions/site-profile')

@@ -267,6 +267,22 @@ grep -q -- "--cobrand-mark needs --cobrand-name" <<< "$got" || fail "package-dmg
 got="$(package_dmg refused --cobrand-name "Acme Corp")" && fail "package-dmg.sh took a co-brand name without a mark"
 grep -q -- "--cobrand-name needs --cobrand-mark" <<< "$got" || fail "package-dmg.sh: name without a mark: $got"
 got="$(package_dmg refused --cobrand-mark Acme.app --cobrand-name "Acme Corp")" && fail "package-dmg.sh took a co-brand mark that is no image"
+# The name is trimmed and checked as the app checks it: a blank, control-
+# character or over-80-character name is refused before any output, and the
+# refusal gives its length, never the name.
+got="$(package_dmg trimmed --cobrand-mark cobrand.svg --cobrand-name "  Acme Corp  ")" \
+  || fail "package-dmg.sh with a padded co-brand name failed: $got"
+[ "$(tail -n 1 "$work/dmg/trimmed.swift")" = "Acme Corp" ] \
+  || fail "package-dmg.sh did not trim the co-brand name: $(tail -n 1 "$work/dmg/trimmed.swift")"
+got="$(package_dmg refused --cobrand-mark cobrand.svg --cobrand-name $' \t ')" && fail "package-dmg.sh took a blank co-brand name"
+grep -q -- "--cobrand-name must not be empty or blank" <<< "$got" || fail "package-dmg.sh: blank name: $got"
+got="$(package_dmg refused --cobrand-mark cobrand.svg --cobrand-name $'Acme\aCorp')" && fail "package-dmg.sh took a co-brand name with a control character"
+grep -q -- "--cobrand-name must be one line" <<< "$got" || fail "package-dmg.sh: control character: $got"
+long="Acme Corp $(printf 'x%.0s' {1..71})"
+got="$(package_dmg refused --cobrand-mark cobrand.svg --cobrand-name "$long")" && fail "package-dmg.sh took an 81-character co-brand name"
+grep -q -- "--cobrand-name must be at most 80 characters; it has 81" <<< "$got" || fail "package-dmg.sh: long name: $got"
+! grep -q "Acme Corp" <<< "$got" || fail "package-dmg.sh printed a refused co-brand name"
+[ ! -e "$work/dmg/refused.swift" ] || fail "package-dmg.sh rendered a background for a refused co-brand"
 [ ! -e "$work/dmg/out/refused.dmg" ] || fail "a refused disk image was written"
 
 # The dev-attest preview feature is enabled by no workflow, script, flow,

@@ -205,13 +205,18 @@ struct BrandWordmarkView: View {
     var productName: String = AppInfo.displayName
     var bundleIdentifier: String = AppInfo.markedBundleIdentifier
     var badge: String? = AppInfo.profileBadge
-    /// A co-branded build named Agent Relay draws the wordmark, with
-    /// `CoBrandLineView` under it.
-    var coBranded: Bool = AppInfo.coBrand != nil
+    /// Set only by a lockup that draws `CoBrandLineView` under it (sign-in,
+    /// signed-out menu): there a co-branded build named Agent Relay draws
+    /// the wordmark without its badge, since the line tells it apart.
+    /// Everywhere else (the workspace header) it keeps its badge.
+    var coBranded: Bool = false
 
     var drawsArtwork: Bool {
         AppInfo.drawsWordmark(bundleIdentifier: bundleIdentifier, productName: productName, coBranded: coBranded)
     }
+
+    /// The badge written after the product name: none beside the wordmark.
+    var shownBadge: String? { drawsArtwork ? nil : badge }
 
     var body: some View {
         if drawsArtwork {
@@ -223,14 +228,14 @@ struct BrandWordmarkView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(productName)
                     .zoomFont(.headline)
-                if let badge {
+                if let badge = shownBadge {
                     Text(badge)
                         .zoomFont(.caption, weight: .semibold)
                         .foregroundStyle(CloudTheme.secondary)
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(AppInfo.windowTitle(productName: productName, badge: badge))
+            .accessibilityLabel(AppInfo.windowTitle(productName: productName, badge: shownBadge))
         }
     }
 }

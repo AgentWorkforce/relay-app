@@ -15,7 +15,7 @@ struct LoggedOutMenuView: View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 BrandMarkView(width: 34)
-                BrandWordmarkView(height: 31)
+                BrandWordmarkView(height: 31, coBranded: AppInfo.coBrand != nil)
             }
             .foregroundStyle(palette.ink)
             .zoomPadding(.top, 25)

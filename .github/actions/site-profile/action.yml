@@ -184,6 +184,11 @@ runs:
           [ -z "$coexist" ] || { echo "::error::DESKTOP_COEXIST is a site profile's setting; the default profile always replaces other Agent Relay apps."; exit 1; }
           [ -z "$IN_PULL_RELEASES_REPOSITORY" ] || { echo "::error::PULL_RELEASES_REPOSITORY is a site profile's setting; the default profile publishes only to its own releases repository."; exit 1; }
           [ -z "$IN_COBRAND_NAME" ] || { echo "::error::DESKTOP_COBRAND_NAME is a site profile's setting; the default profile is Agent Relay's own."; exit 1; }
+          # Fetch branding never runs for the default profile, so an archive
+          # given to it (and a co-brand mark in it) would be ignored without
+          # a word; it is refused here instead, where the default profile is
+          # resolved.
+          [ -z "$IN_BRANDING_URL" ] || { echo "::error::DESKTOP_BRANDING_URL is a site profile's setting; the default profile uses the repository's own branding and is never co-branded."; exit 1; }
           # The default profile: what every release before profiles was built
           # for. The repository's own branding applies; the values are public.
           {
@@ -440,9 +445,9 @@ runs:
         done
         # The customer's mark and DESKTOP_COBRAND_NAME (COBRAND_NAME, from
         # the Resolve step) come together; the name is never printed.
-        # A co-brand is a site profile's alone, never the default profile's
-        # (the step's condition already skips the default profile; this is
-        # the same refusal as DESKTOP_COEXIST's, in case that ever changes).
+        # A co-brand is a site profile's alone, never the default profile's.
+        # The step's condition skips the default profile, whose branding URL
+        # the Resolve step already refuses; this check holds if that changes.
         if [ -z "${PROFILE:-}" ] && { [ -e branding/cobrand.svg ] || [ -e branding/cobrand.png ]; }; then
           echo "::error::cobrand.svg and cobrand.png are a site profile's branding; the default profile is Agent Relay's own."; exit 1
         fi
