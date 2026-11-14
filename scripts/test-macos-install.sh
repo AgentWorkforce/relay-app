@@ -14,8 +14,9 @@
 # at the same version (replaced, and put back when it never answers), pruning
 # to three versions in numeric order, the local history checks, --uninstall, which
 # keeps the core's data directory and waits for the core and its session
-# collector to exit (bounded, so a collector that never stops does not hold it
-# up), so an install right after it works, the script piped into bash as the release
+# collector to exit (bounded by one timeout in all, so a collector that never
+# stops does not hold it up, and never for another install's collector), so
+# an install right after it works, the script piped into bash as the release
 # asset's one-line install is (no command it runs may read the script from
 # standard input), --help and an unknown option, and a cloud profile's copy,
 # which refuses to install. Nothing here talks to a real launchd.
@@ -38,7 +39,8 @@ real_sha256="$(command -v sha256sum || true)"
 real_perl="$(command -v perl)"
 root="$(mktemp -d)"
 holder=""
-trap '[ -z "$holder" ] || kill "$holder" 2>/dev/null || true; rm -rf "$root"' EXIT
+# holder: the pids of background processes a test leaves running.
+trap 'for pid in $holder; do kill "$pid" 2>/dev/null || true; done; rm -rf "$root"' EXIT
 export HOME="$root/home" XDG_DATA_HOME="$root/home/.local/share" XDG_CONFIG_HOME="$root/home/.config"
 mkdir -p "$HOME"
 install_test_home_init
@@ -194,8 +196,8 @@ case "\$1" in
           [ "\$checks" -lt 2 ] || touch "\$state/loaded-$label"
         fi
         [ -f "\$state/loaded-$label" ] || exit 113
-        printf '\tstate = running\n\tpid = %s\n' "\$(cat "\$state/core-pid" 2>/dev/null || echo 4242)" ;;
-      gui/$uid/*) [ -f "\$state/loaded-\${2##*/}" ] || exit 113; printf '\tstate = running\n\tpid = %s\n' "\$(cat "\$state/core-pid" 2>/dev/null || echo 4242)" ;;
+        printf '\tstate = running\n'; [ ! -f "\$state/core-pid" ] || printf '\tpid = %s\n' "\$(cat "\$state/core-pid")" ;;
+      gui/$uid/*) [ -f "\$state/loaded-\${2##*/}" ] || exit 113; printf '\tstate = running\n'; [ ! -f "\$state/core-pid" ] || printf '\tpid = %s\n' "\$(cat "\$state/core-pid")" ;;
       *) exit 113 ;;
     esac ;;
   enable) [ "\$2" = "gui/$uid/$label" ] ;;
@@ -663,7 +665,9 @@ pass "a lock on a removed lock file does not count: the installer locks the new 
 
 # --- status ---------------------------------------------------------------------
 
+echo 4242 > "$root/state/core-pid"
 bash "$INSTALL" --status > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--status of a running core failed"; }
+rm "$root/state/core-pid"
 grep -q "installed: 1.0.0" "$root/state/out" || fail "--status does not name the version"
 grep -q "is loaded in gui/$uid, pid 4242" "$root/state/out" || fail "--status does not say the job is loaded"
 grep -q "core: answering, version 1.0.0" "$root/state/out" || fail "--status does not say the core answers"
@@ -839,24 +843,33 @@ rm "$root/state/bootout-fails"
 # detached session collector, outside the job, still holds its store's lock:
 # it stops a second after its executable is gone. Until both have, an install
 # can find the history mid-close, so --uninstall returns only after them.
+# A collector runs as the core that started it: the fake one runs perl under
+# the core's name.
+own_collector() { # store marker perl-code [args...]
+  local store="$1" marker="$2" code="$3"; shift 3
+  mkdir -p "$store"
+  # shellcheck disable=SC2016 # perl code
+  ( exec -a "$prefix/current/agent-relay-probe" "$real_perl" -MFcntl=:flock -e '
+      my ($lock_path, $held, $code, @rest) = @ARGV;
+      open(my $lock, ">>", $lock_path) or die; flock($lock, LOCK_EX) or die;
+      open(my $h, ">", $held); close($h);
+      eval $code; die $@ if $@;' "$store/collector.lock" "$marker" "$code" "$@" ) &
+  holder="$holder $!"
+  for _ in $(seq 50); do [ -e "$marker" ] && break; sleep 0.1; done
+}
 ( { sleep 3; touch "$root/state/core-exited"; } > /dev/null 2>&1 & echo $! > "$root/state/core-pid" )
 store="$HOME/.agentworkforce/probe/store"
-mkdir -p "$store"
-perl -MFcntl=:flock -e '
-  my ($lock_path, $held, $current, $stopped) = @ARGV;
-  open(my $lock, ">>", $lock_path) or die; flock($lock, LOCK_EX) or die;
-  open(my $h, ">", $held); close($h);
+# shellcheck disable=SC2016 # perl code
+own_collector "$store" "$root/state/held" '
+  my ($current, $stopped) = @rest;
   for (1 .. 300) { last unless -e $current; select(undef, undef, undef, 0.1) }
   sleep 1;
-  open(my $s, ">", $stopped); close($s);' \
-  "$store/collector.lock" "$root/state/held" "$prefix/current" "$root/state/collector-stopped" &
-holder=$!
-for _ in $(seq 50); do [ -e "$root/state/held" ] && break; sleep 0.1; done
+  open(my $s, ">", $stopped); close($s);' "$prefix/current" "$root/state/collector-stopped"
 AGENT_RELAY_STOP_TIMEOUT=10 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall failed"; }
 [ -e "$root/state/core-exited" ] || fail "--uninstall returned while the core was still exiting"
 [ -e "$root/state/collector-stopped" ] || fail "--uninstall returned while the session collector still held the history"
-! grep -q "still closing local session history" "$root/state/out" || fail "--uninstall timed out on a collector that stopped"
-wait "$holder" 2>/dev/null || true; holder=""
+! grep -q "still closing its local session history" "$root/state/out" || fail "--uninstall timed out on a collector that stopped"
+for pid in $holder; do wait "$pid" 2>/dev/null || true; done; holder=""
 rm -f "$root/state/core-pid" "$root/state/core-exited" "$root/state/collector-stopped" "$root/state/held"
 grep -qx "bootout gui/$uid/$label" "$root/state/launchctl.log" || fail "--uninstall did not unload the job"
 [ ! -e "$root/state/loaded-$label" ] || fail "the job is still loaded"
@@ -869,20 +882,44 @@ grep -q "not installed" "$root/state/out" || fail "--status after --uninstall do
 pass "--uninstall keeps everything while the job will not unload, then removes the core and keeps its data"
 pass "--uninstall waits for the core and its session collector to exit"
 
-# A collector that never stops (not this core's) holds --uninstall up only
-# for its timeout; it then says so and finishes.
+# A core and a collector of this install that never stop hold --uninstall up
+# only for AGENT_RELAY_STOP_TIMEOUT in all, not each; it then says so and
+# finishes.
 bash "$INSTALL" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "an install right after --uninstall failed"; }
-perl -MFcntl=:flock -e 'open(my $h, ">>", $ARGV[0]) or die; flock($h, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close($r); sleep 60' \
-  "$store/collector.lock" "$root/state/held" &
-holder=$!
-for _ in $(seq 50); do [ -e "$root/state/held" ] && break; sleep 0.1; done
-AGENT_RELAY_STOP_TIMEOUT=2 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall failed beside a collector that never stops"; }
-grep -q "still closing local session history" "$root/state/out" || { cat "$root/state/out"; fail "--uninstall does not say a collector is still running"; }
+sleep 300 & holder="$holder $!"; echo $! > "$root/state/core-pid"
+own_collector "$store" "$root/state/held" 'sleep 300'
+start=$SECONDS
+AGENT_RELAY_STOP_TIMEOUT=4 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall failed beside a collector that never stops"; }
+elapsed=$((SECONDS - start))
+[ "$elapsed" -lt 8 ] || { cat "$root/state/out"; fail "--uninstall took ${elapsed}s with AGENT_RELAY_STOP_TIMEOUT=4: the core and collector waits are not one timeout"; }
+grep -q "the core (pid [0-9]*) has not exited yet" "$root/state/out" || { cat "$root/state/out"; fail "--uninstall does not say the core is still running"; }
+grep -q "a session collector of this install (pid [0-9]*) is still closing its local session history" "$root/state/out" \
+  || { cat "$root/state/out"; fail "--uninstall does not say a collector is still running"; }
 { [ ! -e "$plist" ] && [ ! -e "$prefix" ]; } || fail "--uninstall beside a collector that never stops left the core behind"
-kill "$holder"; wait "$holder" 2>/dev/null || true; holder=""; rm -f "$root/state/held"
+for pid in $holder; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done; holder=""
+rm -f "$root/state/held" "$root/state/core-pid"
+pass "a core and a collector that never stop hold --uninstall up only for AGENT_RELAY_STOP_TIMEOUT in all"
+
+# The stores are keyed by workspace, not by install: the app's collector, or
+# another install's, holds one under the same root. --uninstall does not wait
+# for it, and says nothing about it.
+bash "$INSTALL" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "an install after --uninstall failed"; }
+mkdir -p "$HOME/.agentworkforce/probe/app-store"
+perl -MFcntl=:flock -e 'open(my $h, ">>", $ARGV[0]) or die; flock($h, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close($r); sleep 300' \
+  "$HOME/.agentworkforce/probe/app-store/collector.lock" "$root/state/held" &
+holder="$holder $!"
+for _ in $(seq 50); do [ -e "$root/state/held" ] && break; sleep 0.1; done
+start=$SECONDS
+AGENT_RELAY_STOP_TIMEOUT=20 bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall failed beside another install's collector"; }
+elapsed=$((SECONDS - start))
+[ "$elapsed" -lt 10 ] || fail "--uninstall waited ${elapsed}s for a collector that is not this install's"
+! grep -q "session collector" "$root/state/out" || { cat "$root/state/out"; fail "--uninstall reported a collector that is not this install's"; }
+{ [ ! -e "$plist" ] && [ ! -e "$prefix" ]; } || fail "--uninstall beside another install's collector left the core behind"
+for pid in $holder; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done; holder=""
+rm -f "$root/state/held"
 require_disposable_home
 rm -rf "$HOME/.agentworkforce"
-pass "a collector that never stops holds --uninstall up only for its timeout"
+pass "--uninstall does not wait for a collector that is not this install's"
 
 # The release asset's one-line install and uninstall: curl ... | bash, and
 # curl ... | bash -s -- --uninstall.
