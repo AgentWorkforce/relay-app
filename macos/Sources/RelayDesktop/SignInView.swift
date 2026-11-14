@@ -26,7 +26,12 @@ struct SignInView: View {
                             }
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Sign in to Agent Relay")
-                            .zoomPadding(.bottom, siteBrand == nil ? 32 : 12)
+                            .zoomPadding(.bottom, siteBrand == nil && AppInfo.coBrand == nil ? 32 : 12)
+                            // A co-branded build's "for <customer>" line.
+                            if AppInfo.coBrand != nil {
+                                CoBrandLineView(nameColor: foreground, forColor: muted)
+                                    .zoomPadding(.bottom, siteBrand == nil ? 32 : 12)
+                            }
                             // A self-host site's logo and organisation name.
                             if let config = siteBrand {
                                 HStack(spacing: 8) {

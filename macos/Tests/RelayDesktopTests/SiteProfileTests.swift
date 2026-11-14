@@ -127,6 +127,56 @@ final class SiteProfileTests: XCTestCase {
         XCTAssertEqual(rows.first?.value, "m5lxqm2osk")
     }
 
+    func testABuildWithoutACoBrandLooksAsItDidBefore() {
+        // The test host has no Resources/cobrand-name.txt, like every build
+        // but a co-branded site profile's: no "for" line, and the wordmark
+        // and badge are decided exactly as without the co-brand.
+        let coBrand: AppInfo.CoBrand? = AppInfo.coBrand
+        XCTAssertNil(coBrand)
+        XCTAssertNil(AppInfo.readCoBrand(name: nil, mark: nil))
+        XCTAssertNil(AppInfo.readCoBrand(name: nil, mark: URL(fileURLWithPath: "/tmp/cobrand.svg")))
+        XCTAssertNil(AppInfo.readCoBrand(name: "Acme Corp\n", mark: nil))
+        let production = AppInfo.productionBundleIdentifier
+        XCTAssertTrue(AppInfo.drawsWordmark(bundleIdentifier: production, productName: AppInfo.defaultDisplayName))
+        XCTAssertFalse(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: AppInfo.defaultDisplayName))
+        XCTAssertFalse(AppInfo.drawsWordmark(bundleIdentifier: production, productName: "Acme Desktop"))
+        XCTAssertFalse(AppInfo.drawsWordmark(bundleIdentifier: AppInfo.developmentBundleIdentifier,
+                                             productName: AppInfo.developmentDisplayName))
+        XCTAssertNil(AppInfo.profileBadge(bundleIdentifier: production, profileID: ""))
+        XCTAssertEqual(AppInfo.profileBadge(bundleIdentifier: "com.acme.desktop", profileID: "acme7"), "acme7")
+        XCTAssertNil(AppInfo.profileBadge(bundleIdentifier: "com.acme.desktop", profileID: "acme7", productName: "Acme Desktop"))
+        // And this build's own: the test host is production's.
+        let badge: String? = AppInfo.profileBadge
+        XCTAssertNil(badge)
+        let wordmark = BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: production)
+        XCTAssertFalse(wordmark.coBranded)
+        XCTAssertTrue(wordmark.drawsArtwork)
+        XCTAssertFalse(BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop").drawsArtwork)
+    }
+
+    func testACoBrandedBuildDrawsTheWordmarkWithoutABadge() {
+        // A site profile's build named Agent Relay, made for a customer: the
+        // wordmark, no opaque profile id beside it, and the "for" line.
+        XCTAssertTrue(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: AppInfo.defaultDisplayName,
+                                            coBranded: true))
+        XCTAssertNil(AppInfo.profileBadge(bundleIdentifier: "com.acme.desktop", profileID: "acme7", coBranded: true))
+        // A product named otherwise is still named in text.
+        XCTAssertFalse(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: "Acme Desktop", coBranded: true))
+        let mark = URL(fileURLWithPath: "/tmp/cobrand.png")
+        XCTAssertEqual(AppInfo.readCoBrand(name: "  Acme Corp\n", mark: mark), AppInfo.CoBrand(name: "Acme Corp", mark: mark))
+    }
+
+    func testTheCoBrandNameIsOneTrimmedLine() {
+        XCTAssertEqual(AppInfo.coBrandName(from: " Acme Corp \n"), "Acme Corp")
+        XCTAssertEqual(AppInfo.coBrandName(from: String(repeating: "A", count: 80)), String(repeating: "A", count: 80))
+        XCTAssertNil(AppInfo.coBrandName(from: nil))
+        XCTAssertNil(AppInfo.coBrandName(from: ""))
+        XCTAssertNil(AppInfo.coBrandName(from: " \n "))
+        XCTAssertNil(AppInfo.coBrandName(from: "Acme\nCorp"))
+        XCTAssertNil(AppInfo.coBrandName(from: "Acme\u{7}Corp"))
+        XCTAssertNil(AppInfo.coBrandName(from: String(repeating: "A", count: 81)))
+    }
+
     func testAboutShowsABuildsIdentityButNothingForProduction() {
         XCTAssertTrue(AppInfo.identityRows(bundleIdentifier: AppInfo.productionBundleIdentifier, profileID: "",
                                            site: AppInfo.productionSiteURL).isEmpty)

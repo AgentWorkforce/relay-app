@@ -220,6 +220,55 @@ control="$(deb_control "$work/l2/out/AgentRelay-0.0.0-Linux-x64.deb")"
 ( cd "$work" && bash "$SCRIPTS/build-linux.sh" --version 0.0.0 --app l2/agent-relay --probe l2/agent-relay-probe --out l3/out --site-url https://relay.example --url-scheme acme-relay >/dev/null 2>&1 ) && fail "build-linux.sh packaged a default build as a profile's"
 [ ! -e "$work/l3" ] || fail "a refused Linux package wrote outputs"
 
+# package-dmg.sh with stand-in macOS tools: the background renderer gets the
+# co-brand options only when a co-brand is given, so an image without one is
+# rendered exactly as before, and the customer's name is never printed.
+dmg_tools="$work/dmg-tools"
+mkdir -p "$dmg_tools" "$work/dmg/Acme.app/Contents"
+printf '#!/bin/sh\necho Darwin\n' > "$dmg_tools/uname"
+printf '#!/bin/sh\nexit 0\n' > "$dmg_tools/hdiutil"
+cat > "$dmg_tools/ditto" <<'DITTO'
+#!/bin/sh
+cp -R "$1" "$2"
+DITTO
+cat > "$dmg_tools/swift" <<'SWIFT'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$SWIFT_LOG"
+touch "$2/background.png" "$2/background@2x.png"
+SWIFT
+cat > "$dmg_tools/tiffutil" <<'TIFFUTIL'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do if [ "$1" = -out ]; then touch "$2"; fi; shift; done
+TIFFUTIL
+cat > "$dmg_tools/dmgbuild" <<'DMGBUILD'
+#!/usr/bin/env bash
+touch "${@: -1}"
+DMGBUILD
+chmod +x "$dmg_tools"/*
+printf '<svg xmlns="http://www.w3.org/2000/svg"/>\n' > "$work/dmg/cobrand.svg"
+package_dmg() { # OUT ARGS...
+  local out="$1"; shift
+  ( cd "$work/dmg" && PATH="$dmg_tools:/usr/bin:/bin" SWIFT_LOG="$work/dmg/$out.swift" \
+      bash "$SCRIPTS/package-dmg.sh" --app Acme.app --out "out/$out.dmg" "$@" 2>&1 )
+}
+got="$(package_dmg plain)" || fail "package-dmg.sh without a co-brand failed: $got"
+[ "$(wc -l < "$work/dmg/plain.swift")" = 4 ] \
+  || fail "package-dmg.sh without a co-brand: the renderer got $(tr '\n' ' ' < "$work/dmg/plain.swift")"
+[ "$(head -n 1 "$work/dmg/plain.swift")" = "$SCRIPTS/render-dmg-background.swift" ] \
+  || fail "package-dmg.sh without a co-brand: the renderer got $(tr '\n' ' ' < "$work/dmg/plain.swift")"
+! grep -q -- '--cobrand' "$work/dmg/plain.swift" || fail "package-dmg.sh without a co-brand passed co-brand options"
+got="$(package_dmg cobranded --product-name "Acme Desktop" --cobrand-mark cobrand.svg --cobrand-name "Acme Corp")" \
+  || fail "package-dmg.sh with a co-brand failed: $got"
+[ "$(tail -n 4 "$work/dmg/cobranded.swift")" = "--cobrand-mark"$'\n'"$work/dmg/cobrand.svg"$'\n'"--cobrand-name"$'\n'"Acme Corp" ] \
+  || fail "package-dmg.sh with a co-brand: the renderer got $(tr '\n' ' ' < "$work/dmg/cobranded.swift")"
+! grep -q "Acme Corp" <<< "$got" || fail "package-dmg.sh printed the co-brand name"
+got="$(package_dmg refused --cobrand-mark cobrand.svg)" && fail "package-dmg.sh took a co-brand mark without a name"
+grep -q -- "--cobrand-mark needs --cobrand-name" <<< "$got" || fail "package-dmg.sh: mark without a name: $got"
+got="$(package_dmg refused --cobrand-name "Acme Corp")" && fail "package-dmg.sh took a co-brand name without a mark"
+grep -q -- "--cobrand-name needs --cobrand-mark" <<< "$got" || fail "package-dmg.sh: name without a mark: $got"
+got="$(package_dmg refused --cobrand-mark Acme.app --cobrand-name "Acme Corp")" && fail "package-dmg.sh took a co-brand mark that is no image"
+[ ! -e "$work/dmg/out/refused.dmg" ] || fail "a refused disk image was written"
+
 # The dev-attest preview feature is enabled by no workflow, script, flow,
 # packaging or Cargo.toml, and the guard catches one that is. Its name is
 # read from the guard, so this script does not name it.
@@ -230,5 +279,5 @@ printf 'run: cargo build --features %s\n' "$feature" > "$work/guard/.github/work
 { [ -n "$feature" ] && ! bash "$SCRIPTS/test-dev-attest-guard.sh" "$work/guard" >/dev/null; } \
   || fail "test-dev-attest-guard.sh passed a workflow that enables the preview feature"
 
-[ "$failed" = 0 ] && echo "build-probe.sh, build-gtk.sh, build-linux.sh and the dev-attest guard: ok"
+[ "$failed" = 0 ] && echo "build-probe.sh, build-gtk.sh, build-linux.sh, package-dmg.sh and the dev-attest guard: ok"
 exit "$failed"

@@ -189,7 +189,11 @@ build is made for is fixed here and nothing at run time changes it:
 `agentrelay`), `--product-name` (default `Agent Relay`), `--bundle-id` (default
 `com.agentrelay.desktop`), `--releases-repository` (where the app checks for
 updates, default `AgentWorkforce/relay-desktop-releases`) and `--icon` (an SVG
-or 1024×1024 PNG in place of the repository's mark). `--dev-site-url URL` is
+or 1024×1024 PNG in place of the repository's mark). A self-hosted site
+profile's build may be co-branded: `--cobrand-mark` (the customer's mark, an
+SVG or a PNG) with `--cobrand-name` (the customer's name) makes the sign-in
+window and the signed-out menu say "for <name>" under the Agent Relay lockup;
+`package-dmg.sh` takes the same two options for the installer image. `--dev-site-url URL` is
 the shorthand for Agent Relay Dev: `--site-url URL` for a loopback site with
 the `agentrelay-dev` scheme, the name `Agent Relay Dev` and the bundle ID
 `com.agentrelay.desktop.dev`. The probe in `--probe` must be built for the
@@ -213,7 +217,8 @@ the refusal names the command.
    (identifier, name, link scheme) and records the site, scheme and update
    repository in `Contents/Resources/site-url.txt`, `url-scheme.txt` and
    `releases-repository.txt` (and, with `--icon`, `mark.txt`: the app icon is
-   the mark the app draws), which `AppInfo.swift` reads
+   the mark the app draws; with `--cobrand-mark`, `cobrand.svg` or
+   `cobrand.png` and `cobrand-name.txt`), which `AppInfo.swift` reads
 6. signs with the hardened runtime using `RelayDesktop.entitlements`, or ad-hoc
    when no signing identity is configured.
 
