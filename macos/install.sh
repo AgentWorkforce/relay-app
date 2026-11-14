@@ -83,8 +83,8 @@ RELEASES_API="${AGENT_RELAY_RELEASES_API:-https://api.github.com/repos/$RELEASES
 DOWNLOAD_BASE="${AGENT_RELAY_DOWNLOAD_BASE:-https://github.com/$RELEASES_REPOSITORY/releases/download}"
 KEEP=3
 HEALTH_TIMEOUT="${AGENT_RELAY_HEALTH_TIMEOUT:-60}"
-# How long --uninstall waits for the core, and the session collectors it
-# started, to exit.
+# How long --uninstall waits, in all, for the core and the session collectors
+# it started to exit.
 STOP_TIMEOUT="${AGENT_RELAY_STOP_TIMEOUT:-60}"
 # The label is the app's core label plus `.headless`: the app's own jobs
 # (com.agentrelay.desktop.core, .core.local, .core.session) never match it,
@@ -271,32 +271,44 @@ job_pid() { # -> the loaded job's pid, or nothing
   launchctl print "$DOMAIN/$LABEL" < /dev/null 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}'
 }
 
-# The core starts each install's session collector as a process of its own
-# (setsid), outside the LaunchAgent's job, so unloading the job does not stop
-# it: it stops by itself within seconds of its executable being removed,
-# closing the session history it holds open. Until it has, a new install's
-# history check can find that history mid-close and fail ("unable to open
-# database file"). This waits until no collector holds its store's lock
-# (collector.lock, flock(2) like the history locks), or STOP_TIMEOUT.
-wait_for_collectors() {
-  [ "$DRY_RUN" = 0 ] || return 0
-  [ -d "$HOME/.agentworkforce/probe" ] || return 0
-  perl -MFcntl=:flock -e '
-    my ($root, $timeout) = @ARGV;
-    my $deadline = time + $timeout;
-    opendir(my $dir, $root) or exit 0;
-    for my $entry (sort readdir($dir)) {
-        next if $entry eq "." || $entry eq "..";
-        my $path = "$root/$entry/collector.lock";
-        next if -l $path || !-f $path;
-        open(my $lock, "<", $path) or next;
-        until (flock($lock, LOCK_SH | LOCK_NB)) {
-            exit 1 if time >= $deadline;
-            select(undef, undef, undef, 0.2);
-        }
-        close($lock);
-    }
-    exit 0' "$HOME/.agentworkforce/probe" "$STOP_TIMEOUT" < /dev/null
+# The core starts each session collector as a process of its own (setsid),
+# outside the LaunchAgent's job, so unloading the job does not stop it: it
+# stops by itself within seconds of its executable being removed, closing the
+# session history it holds open. Until it has, a new install's history check
+# can find that history mid-close and fail ("unable to open database file").
+#
+# The stores under ~/.agentworkforce/probe are keyed by site, account and
+# workspace, not by install, so the desktop app's collectors, or another
+# install's, can hold a store's lock too: they are not this install's to wait
+# for. Its own are found by the executable they run, which is under $PREFIX
+# (the collector runs as the core that started it). Waiting on their pids
+# never touches a store's lock, so a collector starting meanwhile is not in
+# its way.
+install_pids() { # [pid to leave out] -> pids of this install's processes
+  local physical
+  physical="$(cd "$PREFIX" 2>/dev/null && pwd -P)" || physical=""
+  ps -A -ww -o pid= -o command= 2>/dev/null \
+    | INSTALL_PREFIX="$PREFIX/" INSTALL_PHYSICAL="${physical:+$physical/}" SKIP_PID="${1:-}" awk '
+        { pid = $1; sub(/^[ \t]*[0-9]+[ \t]+/, "") }
+        pid == ENVIRON["SKIP_PID"] { next }
+        index($0, ENVIRON["INSTALL_PREFIX"]) == 1 || (ENVIRON["INSTALL_PHYSICAL"] != "" && index($0, ENVIRON["INSTALL_PHYSICAL"]) == 1) { print pid }'
+}
+
+# Waits until none of the given pids is running, or until $SECONDS reaches
+# stop_deadline: one deadline for the whole uninstall. Leaves the ones still
+# running in still_running.
+still_running=""
+wait_for_exit() { # pid...
+  local pid
+  while :; do
+    still_running=""
+    for pid in "$@"; do
+      if kill -0 "$pid" 2>/dev/null; then still_running="$still_running $pid"; fi
+    done
+    still_running="${still_running# }"
+    if [ -z "$still_running" ] || [ "$SECONDS" -ge "$stop_deadline" ]; then return 0; fi
+    sleep 0.2
+  done
 }
 
 # One installer at a time per prefix: install, update, rollback and uninstall
@@ -387,6 +399,8 @@ if [ "$ACTION" = uninstall ]; then
   esac
   if [ -d "$PREFIX" ]; then lock_installer; fi
   core_pid=""
+  # The core and its collectors together get STOP_TIMEOUT, not each.
+  stop_deadline=$((SECONDS + STOP_TIMEOUT))
   if loaded; then
     note "stopping $LABEL"
     core_pid="$(job_pid || true)"
@@ -400,25 +414,29 @@ if [ "$ACTION" = uninstall ]; then
     fi
     # bootout can return, and the job be gone, while the core is still
     # exiting: wait for the process itself too.
-    waited=0
-    while [ "$DRY_RUN" = 0 ] && [ -n "$core_pid" ] && kill -0 "$core_pid" 2>/dev/null && [ "$waited" -lt "$STOP_TIMEOUT" ]; do
-      sleep 1; waited=$((waited + 1))
-    done
-    if [ "$DRY_RUN" = 0 ] && [ -n "$core_pid" ] && kill -0 "$core_pid" 2>/dev/null; then
-      note "the core (pid $core_pid) has not exited yet; it was unloaded and will not start again"
+    if [ "$DRY_RUN" = 0 ] && [ -n "$core_pid" ]; then
+      wait_for_exit "$core_pid"
+      if [ -n "$still_running" ]; then
+        note "the core (pid $core_pid) has not exited yet; it was unloaded and will not start again"
+      fi
     fi
   fi
+  # This install's collectors, found while their executable is still there.
+  collector_pids=""
+  if [ "$DRY_RUN" = 0 ]; then collector_pids="$(install_pids "$core_pid" | tr '\n' ' ')"; fi
   if [ -f "$PLIST" ] || [ -L "$PLIST" ]; then run rm -f "$PLIST"; fi
-  removed_core=0
   if [ -e "$PREFIX/current" ] || [ -L "$PREFIX/current" ] || [ -d "$PREFIX/versions" ]; then
     run rm -rf "${PREFIX:?}/versions" "${PREFIX:?}/current" "${PREFIX:?}/current.new"
-    removed_core=1
   fi
-  # After the removal, which is what tells a collector of this core to stop,
-  # and still under the installer lock, so no install starts meanwhile.
-  if [ "$removed_core" = 1 ] && ! wait_for_collectors; then
-    note "a session collector is still closing local session history in $HOME/.agentworkforce/probe;"
-    note "wait for it to stop before installing again, or the install's history check can fail"
+  # After the removal, which is what tells them to stop, and still under the
+  # installer lock, so no install starts meanwhile.
+  if [ -n "$collector_pids" ]; then
+    # shellcheck disable=SC2086 # one pid per word
+    wait_for_exit $collector_pids
+    if [ -n "$still_running" ]; then
+      note "a session collector of this install (pid $still_running) is still closing its local session history;"
+      note "wait for it to exit before installing again, or the install's history check can fail"
+    fi
   fi
   if [ "$DRY_RUN" = 0 ] && [ -d "$PREFIX" ]; then
     # Safe while held: every other installer takes the lock without waiting,
