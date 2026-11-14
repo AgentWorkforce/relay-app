@@ -172,6 +172,27 @@ installed_versions() { # oldest first
 
 loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
 
+# One installer at a time per prefix: install, update, rollback and uninstall
+# all change versions/ and `current`, and two at once can leave `current`
+# naming a version the other removed. The lock is held, on a descriptor bash
+# keeps open (macOS has no flock(1); perl flock(2)s it, as for the history
+# locks below), until this script exits: through replacement, switching, the
+# health check, any rollback and pruning. launchd starts the core itself, so
+# the core never inherits it. A dry run changes nothing and takes no lock.
+INSTALL_LOCK_FD=19
+lock_installer() {
+  [ "$DRY_RUN" = 0 ] || return 0
+  local lock="$PREFIX/.install-lock" old_umask
+  mkdir -p "$PREFIX" || die "could not create $PREFIX"
+  [ ! -L "$lock" ] || die "$lock is a link; remove it, then run this again"
+  old_umask="$(umask)"
+  umask 077
+  eval "exec $INSTALL_LOCK_FD>>\"\$lock\"" || die "could not open $lock"
+  umask "$old_umask"
+  perl -MFcntl=:flock -e 'open(my $lock, ">>&=", $ARGV[0]) or exit 2; flock($lock, LOCK_EX | LOCK_NB) or exit 1' "$INSTALL_LOCK_FD" \
+    || die "another install, update, rollback or uninstall is running in $PREFIX; wait for it to finish, then run this again"
+}
+
 current_version=""
 if [ -x "$PROBE" ]; then
   current_version="$(probe_version "$PROBE" || true)"
@@ -212,14 +233,27 @@ if [ "$ACTION" = uninstall ]; then
   case "$PREFIX" in
     ""|/|"$HOME"|"$HOME"/) die "refusing to remove the install prefix $PREFIX" ;;
   esac
+  if [ -d "$PREFIX" ]; then lock_installer; fi
   if loaded; then
     note "stopping $LABEL"
-    run launchctl bootout "$DOMAIN/$LABEL" || note "launchctl could not unload $LABEL; it will not start again once its plist is gone"
+    run launchctl bootout "$DOMAIN/$LABEL" || true
+    # Nothing is deleted while the job is still loaded: launchd would keep
+    # (or restart) a core whose executable is gone.
+    waited=0
+    while [ "$DRY_RUN" = 0 ] && loaded && [ "$waited" -lt 10 ]; do sleep 1; waited=$((waited + 1)); done
+    if [ "$DRY_RUN" = 0 ] && loaded; then
+      die "launchctl could not unload $LABEL; nothing was removed. Run: launchctl bootout $DOMAIN/$LABEL, then run this with --uninstall again"
+    fi
   fi
   if [ -f "$PLIST" ] || [ -L "$PLIST" ]; then run rm -f "$PLIST"; fi
   if [ -e "$PREFIX/current" ] || [ -L "$PREFIX/current" ] || [ -d "$PREFIX/versions" ]; then
     run rm -rf "${PREFIX:?}/versions" "${PREFIX:?}/current" "${PREFIX:?}/current.new"
-    [ "$DRY_RUN" = 1 ] || rmdir "$PREFIX" 2>/dev/null || true
+  fi
+  if [ "$DRY_RUN" = 0 ] && [ -d "$PREFIX" ]; then
+    # Safe while held: every other installer takes the lock without waiting,
+    # so none is queued on this file.
+    rm -f "${PREFIX:?}/.install-lock"
+    rmdir "$PREFIX" 2>/dev/null || true
   fi
   note "removed the headless core${current_version:+ ($current_version)} and its LaunchAgent"
   note "kept settings, sign-in and agent registrations in: $DATA_DIR"
@@ -252,6 +286,15 @@ fi
 # automatic login); an SSH session alone has no such domain.
 launchctl print "$DOMAIN" >/dev/null 2>&1 \
   || die "there is no login session ($DOMAIN) for $(id -un): log in at the Mac's screen once (or turn on automatic login), then run this again; SSH alone cannot start a LaunchAgent"
+
+# Read the installation again under the lock: another installer may have
+# changed it since the checks above.
+lock_installer
+current_version=""
+if [ -x "$PROBE" ]; then
+  current_version="$(probe_version "$PROBE" || true)"
+fi
+[ "$UPDATE" = 0 ] || [ -n "$current_version" ] || die "--update: nothing is installed in $PREFIX; run without --update to install"
 
 if [ -n "$current_version" ]; then
   note "installed: $current_version"
