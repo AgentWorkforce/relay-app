@@ -4,7 +4,7 @@ use super::*;
 use crate::host::{self, HOST_WAIT, SHUTDOWN_WAIT};
 use std::sync::PoisonError;
 
-mod stale_core;
+pub(super) mod stale_core;
 
 impl Bridge {
     /// Asks the hosted core to stop and waits for it to exit. One that has
@@ -100,7 +100,9 @@ impl Bridge {
 
     /// Whether the core that answered must not be used: one being stopped,
     /// whose greeting must not end [`Bridge::release_hosted`]'s hold on
-    /// hosting, or one left running on another version, asked to stop here.
+    /// hosting, one left running on another version, asked to stop here, or,
+    /// on Windows, one of an older release however it was started
+    /// ([`Bridge::replaced_older_core`]).
     pub(super) async fn unusable_core(&self) -> bool {
         if self.inner.retiring.load(Ordering::SeqCst) {
             return true;
@@ -109,7 +111,7 @@ impl Bridge {
             let _ = self.ask_core_to_stop().await;
             return true;
         }
-        false
+        self.replaced_older_core().await
     }
 
     /// The core an earlier run left running, from before an update.

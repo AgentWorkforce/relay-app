@@ -247,6 +247,7 @@ fn host(
             probe,
             app_data_dir: None,
             version: None,
+            replace_older_core: false,
         }),
         service,
     };
@@ -364,6 +365,7 @@ async fn a_core_left_running_on_another_version_is_replaced() {
             probe: Some(FAKE.into()),
             app_data_dir: None,
             version: Some("9.9.9".into()),
+            replace_older_core: false,
         }),
         service: None,
     };
@@ -380,6 +382,90 @@ async fn a_core_left_running_on_another_version_is_replaced() {
     );
     assert!(eventually(|| bridge.hosting()).await);
     bridge.stop().await;
+}
+
+fn replacing(socket: &Path, probe: Option<PathBuf>, version: &str) -> (Bridge, Events) {
+    let options = BridgeOptions {
+        socket: socket.to_path_buf(),
+        host: Some(HostOptions {
+            probe,
+            app_data_dir: None,
+            version: Some(version.into()),
+            replace_older_core: true,
+        }),
+        service: None,
+    };
+    let (bridge, events) = Bridge::start(options, &tokio::runtime::Handle::current());
+    (bridge, Events(events))
+}
+
+/// Windows, after an upgrade over a running app: a core of an older
+/// release that no earlier run recorded (the old app was ended, not quit)
+/// is stopped and this app's own is hosted, rather than used.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_releases_core_is_replaced_where_the_app_replaces_cores() {
+    let (_directory, socket) = directory();
+    // The fake reports 0.0.0-fake, older than 9.9.9.
+    let old = FakeCore::start(&socket).unwrap();
+    let (bridge, _events) = replacing(&socket, Some(FAKE.into()), "9.9.9");
+    tokio::time::timeout(Duration::from_secs(10), old.stopped())
+        .await
+        .expect("the older core was asked to stop");
+    // The hosted core is this app's own and is used, whatever it reports.
+    assert!(eventually(|| bridge.hosting()).await);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(bridge.hosting());
+    bridge.stop().await;
+}
+
+/// A release is replaced once per run: a core of it that answers again (a
+/// logon task still pointed at the old app) is used, never stopped in a
+/// loop. Here the helper exists but exits, so nothing takes the socket
+/// before the core of the replaced release answers again.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_release_is_replaced_once() {
+    let (directory, socket) = directory();
+    let broken = script(directory.path(), "broken", "exit 3", "exit /b 3");
+    let old = FakeCore::start(&socket).unwrap();
+    let (bridge, mut events) = replacing(&socket, Some(broken), "9.9.9");
+    tokio::time::timeout(Duration::from_secs(10), old.stopped())
+        .await
+        .expect("the older core was asked to stop");
+    assert!(eventually(|| !listening(&socket)).await);
+    let again = FakeCore::start(&socket).unwrap();
+    assert_eq!(events.status(30).await, "SignedOut");
+    assert!(!again.is_stopped());
+    bridge.stop().await;
+    again.stop().await;
+}
+
+/// An older core is kept, with the stale-core warning, while this app has
+/// no helper to replace it with (a missing helper, no logon task): stopping
+/// it would leave the app and agents offline. A core of a newer release is
+/// used from the start.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_core_without_a_helper_and_a_newer_one_are_used() {
+    let (directory, socket) = directory();
+    let old = FakeCore::start(&socket).unwrap();
+    let missing = directory.path().join("missing-probe");
+    let (bridge, mut events) = replacing(&socket, Some(missing), "9.9.9");
+    assert_eq!(events.status(10).await, "SignedOut");
+    assert!(!old.is_stopped());
+    assert!(bridge
+        .stale_core()
+        .unwrap()
+        .contains("0.0.0-fake, not 9.9.9"));
+    bridge.stop().await;
+    old.stop().await;
+
+    let (_directory, socket) = self::directory();
+    let newer = FakeCore::start(&socket).unwrap();
+    // 0.0.0-fake is newer than 0.0.0-alpha.
+    let (bridge, mut events) = replacing(&socket, None, "0.0.0-alpha");
+    assert_eq!(events.status(10).await, "SignedOut");
+    assert!(!newer.is_stopped());
+    bridge.stop().await;
+    newer.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

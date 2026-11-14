@@ -273,11 +273,7 @@ impl BridgeOptions {
     ) -> anyhow::Result<BridgeOptions> {
         Ok(BridgeOptions {
             socket: CorePaths::resolve(None, env, home)?.socket,
-            host: Some(HostOptions {
-                probe,
-                version: Some(agent_relay_node::VERSION.to_string()),
-                ..HostOptions::default()
-            }),
+            host: Some(HostOptions::bundled(probe)),
             service: Some(service),
         })
     }
@@ -300,8 +296,11 @@ struct Inner {
     /// Set by [`Bridge::release_hosted`]: no core is hosted until one answers
     /// or [`Bridge::restart`], so the systemd unit can take the socket.
     released: AtomicBool,
-    /// Set while a core an earlier run left running is stopped for the unit.
+    /// Set while a core an earlier run left running is stopped for the unit,
+    /// or a core of an older release is stopped to be replaced.
     retiring: AtomicBool,
+    /// The cores of older releases this run replaced, or tried to.
+    older_cores: lifecycle::stale_core::OlderCores,
     stopping: watch::Sender<bool>,
     restart: Notify,
     events: Mutex<Option<JoinHandle<()>>>,
@@ -328,6 +327,7 @@ impl Bridge {
                 hosted: Hosted::default(),
                 released: AtomicBool::new(false),
                 retiring: AtomicBool::new(false),
+                older_cores: Default::default(),
                 stopping: watch::channel(false).0,
                 restart: Notify::new(),
                 events: Mutex::new(None),

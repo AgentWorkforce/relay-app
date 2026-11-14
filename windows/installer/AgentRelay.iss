@@ -196,6 +196,9 @@ const
 var
   { The product this Setup replaces (InitializeSetup), or ''. }
   ReplacedProduct: String;
+  { Whether the logon task was running when Setup started (PrepareToInstall):
+    its core is ended for the upgrade, so its state no longer says. }
+  TaskWasRunning: Boolean;
 
 { %LOCALAPPDATA%\Programs\AgentRelay, lowercase, with a trailing backslash. }
 function InstallRoot: String;
@@ -236,20 +239,50 @@ begin
     Result := -1;
 end;
 
-{ Ends the Agent Relay programs running from the install root: the window
-  only (agent-relay.exe without --headless), or every program there. }
-procedure StopRunning(Everything: Boolean);
-var
-  Filter: String;
+{ Ends the programs running from the install root that Filter, a PowerShell
+  condition on $_ (a Win32_Process), holds for. Script runs first and may
+  set variables Filter uses. }
+procedure StopWhere(Script: String; Filter: String);
 begin
-  if Everything then
-    Filter := '$true'
-  else
-    Filter := '($_.Name -ieq ''agent-relay.exe'' -and $_.CommandLine -notmatch ''--headless'')';
-  PowerShell('$root = ' + PsQuote(InstallRoot) + '; ' +
+  PowerShell('$root = ' + PsQuote(InstallRoot) + '; ' + Script +
     'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ' +
     '$_.ExecutablePath.ToLower().StartsWith($root) -and ' + Filter + ' } | ' +
     'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }');
+end;
+
+{ Ends the Agent Relay programs running from the install root: the window
+  only (agent-relay.exe without --headless), or every program there. }
+procedure StopRunning(Everything: Boolean);
+begin
+  if Everything then
+    StopWhere('', '$true')
+  else
+    StopWhere('', '($_.Name -ieq ''agent-relay.exe'' -and $_.CommandLine -notmatch ''--headless'')');
+end;
+
+{ Whether the logon task is running now. }
+function TaskRunning: Boolean;
+begin
+  Result := PowerShell(
+    '$task = Get-ScheduledTask -TaskPath ''\'' -TaskName ' + PsQuote(TaskName) + ' -ErrorAction SilentlyContinue; ' +
+    'if ($task -and $task.State -eq ''Running'') { exit 10 }; exit 0') = 10;
+end;
+
+{ Ends what an upgrade replaces, from the install root: the window
+  (agent-relay.exe without --headless), every gdbus.exe, and the core
+  (agent-relay.exe --headless) and agent-relay-probe.exe of every version
+  but this Setup's own. A window ended by force records no core left
+  running, and nothing on Windows restarts a core that exits, so a core of
+  the old version left serving would be the one the new window attaches
+  to. }
+procedure StopForUpgrade;
+begin
+  StopWhere('$own = ' + PsQuote(Lowercase(AddBackslash(ExpandConstant('{app}')))) + '; ',
+    '(($_.Name -ieq ''agent-relay.exe'' -and $_.CommandLine -notmatch ''--headless'') -or ' +
+    '$_.Name -ieq ''gdbus.exe'' -or ' +
+    '(-not $_.ExecutablePath.ToLower().StartsWith($own) -and ' +
+    '($_.Name -ieq ''agent-relay-probe.exe'' -or ' +
+    '($_.Name -ieq ''agent-relay.exe'' -and $_.CommandLine -match ''--headless''))))');
 end;
 
 { The product a Setup install already here was made by, when it is not
@@ -273,39 +306,50 @@ begin
 end;
 
 { An open window of an older version would take the new one's launch (one
-  instance per account), so it is closed first. The background service
-  keeps running; it moves to the new version after the files are in place. }
+  instance per account), so it is closed first, and with it the gdbus.exe
+  it runs. The core and probe of an older version are ended too
+  (StopForUpgrade); whether the logon task was running is recorded first,
+  and RepointTask starts it on the new version after the files are in
+  place. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopRunning(False);
+  TaskWasRunning := TaskRunning;
+  StopForUpgrade;
   Result := '';
 end;
 
 { As an in-app update does (updates::windows::repoint_task): the logon task,
   if there is one, runs the new version, keeping whether it is on, and a
-  running task restarts on it. The action is replaced whole, program and
-  arguments: a task windows/install.ps1 registered runs the bare core with
-  `serve --headless`, which agent-relay.exe does not take, so its
-  arguments become `--headless` here. A task the person never created is
+  task that was running when Setup started (TaskWasRunning; its core was
+  ended in PrepareToInstall) is started on it. The action is replaced
+  whole, program and arguments: a task windows/install.ps1 registered runs
+  the bare core with `serve --headless`, which agent-relay.exe does not
+  take, so its arguments become `--headless` here. A task the person never created is
   left to the app, which registers it off on its first start. False when
   the task could not be moved or restarted. }
 function RepointTask: Boolean;
 var
   Exe: String;
   Bin: String;
+  WasRunning: String;
 begin
   Exe := ExpandConstant('{app}\bin\agent-relay.exe');
   Bin := ExpandConstant('{app}\bin');
+  if TaskWasRunning then
+    WasRunning := '$true'
+  else
+    WasRunning := '$false';
   Result := PowerShell('$ErrorActionPreference = ''Stop''; ' +
     '$task = Get-ScheduledTask -TaskPath ''\'' -TaskName ' + PsQuote(TaskName) + ' -ErrorAction SilentlyContinue; ' +
-    'if (-not $task -or ($task.Actions[0].Execute -ieq ' + PsQuote(Exe) + ' -and $task.Actions[0].Arguments -eq ''--headless'')) { exit 0 }; ' +
-    '$running = $task.State -eq ''Running''; ' +
-    'if ($running) { Stop-ScheduledTask -InputObject $task }; ' +
+    'if (-not $task) { exit 0 }; ' +
+    'if (-not ($task.Actions[0].Execute -ieq ' + PsQuote(Exe) + ' -and $task.Actions[0].Arguments -eq ''--headless'')) { ' +
+    'if ($task.State -eq ''Running'') { Stop-ScheduledTask -InputObject $task }; ' +
     '$task.Actions[0].Execute = ' + PsQuote(Exe) + '; ' +
     '$task.Actions[0].Arguments = ''--headless''; ' +
     '$task.Actions[0].WorkingDirectory = ' + PsQuote(Bin) + '; ' +
-    'Set-ScheduledTask -InputObject $task | Out-Null; ' +
-    'if ($running) { Start-ScheduledTask -TaskPath ''\'' -TaskName ' + PsQuote(TaskName) + ' }') = 0;
+    'Set-ScheduledTask -InputObject $task | Out-Null }; ' +
+    'if (' + WasRunning + ' -and (Get-ScheduledTask -TaskPath ''\'' -TaskName ' + PsQuote(TaskName) + ').State -ne ''Running'') { ' +
+    'Start-ScheduledTask -TaskPath ''\'' -TaskName ' + PsQuote(TaskName) + ' }') = 0;
 end;
 
 { Whether a registry command runs a program under the install root. }

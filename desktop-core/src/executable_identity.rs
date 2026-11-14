@@ -180,7 +180,9 @@ pub fn capture_at_start() {
 /// replaced exit so the new build takes over. The Linux app can host the
 /// core itself when the unit is off, and the Windows logon task does not
 /// restart a core that exits, so there a replaced core keeps running until
-/// the app's version check restarts it.
+/// the app's version check restarts it: the app asks a core of an older
+/// release than its own to stop and starts its own core
+/// ([`app_replaces_older_core`], [`core_replaced_by_app`]).
 pub fn restarted_by_service_manager() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -200,6 +202,40 @@ pub fn restarted_by_service_manager() -> bool {
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         false
+    }
+}
+
+/// Whether the app, on connecting to a core of an older release than the
+/// core it carries, asks that core to stop and starts its own rather than
+/// attach to it ([`core_replaced_by_app`]). Only on Windows: no service
+/// manager restarts a replaced core there (the logon task does not restart
+/// a core that exits, and a core the app started is no task's), so an
+/// upgrade over a running app leaves the old release's core serving. On
+/// macOS launchd and on Linux systemd restart the core on the new build
+/// ([`restarted_by_service_manager`]), and the app leaves the core alone.
+pub fn app_replaces_older_core() -> bool {
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Whether a running core reporting the version `running` is replaced by
+/// the app carrying the core of version `bundled`: when the running one is
+/// of an older release, as the command-line copy is
+/// ([`crate::probe_copy::should_replace`]). A development app never
+/// replaces a core that is not itself a development build; a newer core,
+/// the same release, and a version either side cannot read are kept, so an
+/// older app opened by hand never downgrades the core.
+pub fn core_replaced_by_app(running: &str, bundled: &str) -> bool {
+    use crate::probe_copy::{should_replace, Release};
+    match (Release::parse(running), Release::parse(bundled)) {
+        (Some(running), Some(bundled)) => should_replace(Some(&running), Some(&bundled)),
+        _ => false,
     }
 }
 
@@ -355,6 +391,43 @@ mod tests {
             bundle_identifier(&dir.path().join("agent-relay-probe")),
             None
         );
+    }
+
+    /// The upgrade over a running 2026.11.9: the 2026.11.12 app replaces
+    /// the older core rather than attach to it.
+    #[test]
+    fn a_core_of_an_older_release_is_replaced_by_the_app() {
+        assert!(core_replaced_by_app("2026.11.9", "2026.11.12"));
+        assert!(core_replaced_by_app("2026.11.12-beta.1", "2026.11.12"));
+        assert!(core_replaced_by_app("2026.11.9+abc123", "2026.11.12"));
+    }
+
+    /// A newer core (an older app opened by hand), the same release, and
+    /// versions that do not read as releases are kept.
+    #[test]
+    fn a_core_of_the_same_or_a_newer_release_is_kept() {
+        assert!(!core_replaced_by_app("2026.11.12", "2026.11.12"));
+        assert!(!core_replaced_by_app("2026.11.12", "2026.11.9"));
+        assert!(!core_replaced_by_app("2026.11.12", "2026.11.12-beta.1"));
+        assert!(!core_replaced_by_app("", "2026.11.12"));
+        assert!(!core_replaced_by_app("unknown", "2026.11.12"));
+        assert!(!core_replaced_by_app("2026.11.9", "unknown"));
+    }
+
+    /// A development app never replaces an installed release's core,
+    /// whatever its version orders as.
+    #[test]
+    fn a_development_app_keeps_a_release_core() {
+        assert!(!core_replaced_by_app("2026.11.9", "2026.11.12-dev+abc123"));
+        assert!(core_replaced_by_app(
+            "2026.11.9-dev+abc123",
+            "2026.11.12-dev+def456"
+        ));
+    }
+
+    #[test]
+    fn only_windows_has_the_app_replace_an_older_core() {
+        assert_eq!(app_replaces_older_core(), cfg!(windows));
     }
 
     #[test]
