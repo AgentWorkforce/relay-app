@@ -17,6 +17,51 @@ app bootstraps a session-only launchd job from a plist outside
 `~/Library/LaunchAgents`. Keeping agents connected after quitting controls the
 current session separately and does not schedule a session-only job at login.
 
+## Headless (no app)
+
+A Mac that runs agents but not the app (a Mac mini in a rack, a build Mac)
+can run the core alone. One command installs it for the current user and
+runs it as the LaunchAgent `com.agentrelay.desktop.core.headless`; run it
+again to update:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay-app/main/macos/install.sh | bash
+bash macos/install.sh --version 2026.10.34   # a given release
+bash macos/install.sh --update               # update an existing install only
+bash macos/install.sh --rollback             # back to the previous one
+bash macos/install.sh --status               # what is installed, and does it answer
+bash macos/install.sh --uninstall            # stop and remove it, keep the data
+bash macos/install.sh --dry-run              # say what would change
+```
+
+It downloads `AgentRelay-<version>-macOS-<arch>-probe.tar.gz` (arm64, also
+from a shell under Rosetta, or x64), checks it against the release's
+`.sha256` and checks the core's Developer ID signature (team `QUJ7SA6X8X`)
+before running it, then installs it under
+`~/.local/lib/agent-relay/versions/<version>` and switches `current` to it.
+The LaunchAgent in `~/Library/LaunchAgents` runs
+`current/agent-relay-probe relay serve --headless` in the user's login session
+(`gui/<uid>`), restarts it if it fails, and logs to
+`~/Library/Logs/Agent Relay`. After an update the installer waits for the
+core to answer with the new version, and switches back to the previous one
+if it does not. Three versions are kept. Settings, sign-in and agents live in
+`~/Library/Application Support/com.agentrelay.desktop` and are never touched,
+not even by `--uninstall`. Finish sign-in with the printed
+`agent-relay-probe setup` command; the device code can be approved in a
+browser on any computer.
+
+- **Login session.** A LaunchAgent in `gui/<uid>` runs only while the user is
+  logged in at the Mac; SSH alone has no such session, and the installer
+  refuses without one. For an unattended Mac, turn on automatic login
+  (System Settings › Users & Groups); FileVault rules it out.
+- **The app.** The app runs this same core on the same socket. The installer
+  refuses while the app is installed or its core is loaded, and a headless
+  core that sees the app's core job exits to hand over. Run
+  `install.sh --uninstall` before installing the app.
+
+`scripts/test-macos-install.sh` runs the installer against a fake release
+server and a fake `launchctl`, on Linux too.
+
 ## Layout
 
 ```
@@ -48,6 +93,7 @@ macos/
     *View.swift, SessionsTable.swift, MessageSheet.swift, BrandMark.swift, ...  the UI
   Tests/RelayDesktopTests/      bridge client and view models against FakeCore,
                                 an in-process fake of the core's socket
+  install.sh                    the core without the app (Headless, below)
 ```
 
 ## How the views stay idle

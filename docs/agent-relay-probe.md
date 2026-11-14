@@ -7,7 +7,8 @@ Node.js, npm, NAPI addon or separately installed Agent Relay CLI.
 
 ## Source ownership
 
-The probe lives in [`desktop-core/src/history`](../desktop-core/src/history) and ships only inside the desktop app.
+The probe lives in [`desktop-core/src/history`](../desktop-core/src/history). It ships inside the desktop app
+and as a standalone core archive for computers without the app (see Distribution).
 It reads local history through the published `ai-hist` crate and owns its upload
 queue, worker, sharing policy, sign-in and transport. Where sessions live and
 how they are parsed stay in `ai-hist`.
@@ -596,9 +597,14 @@ The probe depends on:
 ### Distribution
 
 The desktop release workflow builds the probe for macOS (arm64, x64) and Linux
-(x64, arm64 glibc) and bundles it into the app and Linux packages; there is no
-standalone probe download. `probe-version.txt` beside each build records the
-version it reports.
+(x64, arm64 glibc) and bundles it into the app and Linux packages. Each release
+also publishes it alone, with a `.sha256` beside each archive, as
+`AgentRelay-<version>-macOS-<arm64|x64>-probe.tar.gz` (Developer ID signed and
+notarized) and `AgentRelay-<version>-Linux-<x64|arm64>-probe.tar.gz`. The
+headless installers install those: `linux/install.sh` as a systemd user
+service, and `macos/install.sh` as a LaunchAgent
+([macos/README.md](../macos/README.md#headless-no-app)). `probe-version.txt`
+beside each build records the version it reports.
 
 ## Verification
 
