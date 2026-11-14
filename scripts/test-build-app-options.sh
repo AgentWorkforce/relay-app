@@ -103,6 +103,20 @@ expect "--cobrand-name needs --cobrand-mark" --cobrand-name "Acme Corp"
 expect "--cobrand-mark needs --cobrand-name" --cobrand-mark "$COBRAND_DIR/cobrand.svg"
 expect "--cobrand-name must not be empty" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name ""
 expect "--cobrand-name must be one line" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name $'Acme\nCorp'
+# The name is trimmed and checked as the app (AppInfo.coBrandName) and the
+# site-profile action check it, so a build never records a name the app
+# drops; the refusal gives the length, never the name.
+accept --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "  Acme Corp  "
+accept --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "$(printf 'A%.0s' {1..80})"
+expect "--cobrand-name must not be empty or blank" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name $' \t '
+expect "--cobrand-name must be one line" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name $'Acme\aCorp'
+expect "--cobrand-name must be at most 80 characters; it has 81" --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "$(printf 'A%.0s' {1..81})"
+got="$(bash "$SCRIPTS/build-app.sh" --arch arm64 --version 1.2.3 --probe /nonexistent --out /nonexistent \
+  --cobrand-mark "$COBRAND_DIR/cobrand.svg" --cobrand-name "Acme Corp $(printf 'x%.0s' {1..80})" 2>&1 || true)"
+if [[ "$got" == *"Acme Corp"* ]]; then
+  echo "FAIL: build-app.sh printed a refused co-brand name" >&2
+  failures=$((failures + 1))
+fi
 # The step that records the co-brand in the bundle, run on its own: a build
 # without a co-brand writes no co-brand resource, so it looks as it did
 # before; a co-branded one writes the mark and the name, and prints neither.

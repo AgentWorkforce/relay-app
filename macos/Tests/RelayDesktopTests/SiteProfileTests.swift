@@ -152,14 +152,31 @@ final class SiteProfileTests: XCTestCase {
         XCTAssertFalse(wordmark.coBranded)
         XCTAssertTrue(wordmark.drawsArtwork)
         XCTAssertFalse(BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop").drawsArtwork)
+        XCTAssertEqual(BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop",
+                                         badge: "acme7").shownBadge, "acme7")
     }
 
-    func testACoBrandedBuildDrawsTheWordmarkWithoutABadge() {
-        // A site profile's build named Agent Relay, made for a customer: the
-        // wordmark, no opaque profile id beside it, and the "for" line.
+    func testACoBrandedBuildDrawsTheWordmarkWithoutABadgeOnlyOnItsLockups() {
+        // A site profile's build named Agent Relay, made for a customer: on
+        // the lockups that draw the "for" line (sign-in, signed-out menu),
+        // the wordmark and no opaque profile id beside it.
         XCTAssertTrue(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: AppInfo.defaultDisplayName,
                                             coBranded: true))
-        XCTAssertNil(AppInfo.profileBadge(bundleIdentifier: "com.acme.desktop", profileID: "acme7", coBranded: true))
+        let lockup = BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop",
+                                       badge: "acme7", coBranded: true)
+        XCTAssertTrue(lockup.drawsArtwork)
+        XCTAssertNil(lockup.shownBadge)
+        // Every other surface (window title, menu bar icon, workspace header)
+        // has no "for" line, so it keeps the badge that tells two such
+        // builds apart.
+        let badge = AppInfo.profileBadge(bundleIdentifier: "com.acme.desktop", profileID: "acme7")
+        XCTAssertEqual(badge, "acme7")
+        XCTAssertEqual(AppInfo.windowTitle(productName: AppInfo.defaultDisplayName, badge: badge), "Agent Relay (acme7)")
+        let header = BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop",
+                                       badge: badge)
+        XCTAssertFalse(header.coBranded)
+        XCTAssertFalse(header.drawsArtwork)
+        XCTAssertEqual(header.shownBadge, "acme7")
         // A product named otherwise is still named in text.
         XCTAssertFalse(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: "Acme Desktop", coBranded: true))
         let mark = URL(fileURLWithPath: "/tmp/cobrand.png")

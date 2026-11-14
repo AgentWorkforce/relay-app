@@ -22,7 +22,7 @@ struct SignInView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             HStack(spacing: 12) {
                                 BrandMarkView(width: 42)
-                                BrandWordmarkView(height: 28)
+                                BrandWordmarkView(height: 28, coBranded: AppInfo.coBrand != nil)
                             }
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Sign in to Agent Relay")

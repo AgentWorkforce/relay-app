@@ -62,9 +62,11 @@ enum AppInfo {
     /// header): its `profileIdentity`. Nil for production and for a
     /// customer's branded build (`isBranded`), whose name already tells it
     /// apart and whose people never see the opaque profile id beside it.
+    /// A co-branded build keeps it: only the lockups that draw the
+    /// "for <customer>" line (`BrandWordmarkView` with `coBranded`) leave
+    /// it out.
     static var profileBadge: String? {
-        profileBadge(bundleIdentifier: markedBundleIdentifier, profileID: profileID, productName: displayName,
-                     coBranded: coBrand != nil)
+        profileBadge(bundleIdentifier: markedBundleIdentifier, profileID: profileID, productName: displayName)
     }
 
     /// Agent Relay Dev's product name, which is no customer's brand.
@@ -92,11 +94,9 @@ enum AppInfo {
     }
 
     /// `profileBadge` for the build with `bundleIdentifier`, `profileID` and
-    /// `productName`; nil when `coBranded`, whose "for <customer>" line
-    /// tells it apart.
-    static func profileBadge(bundleIdentifier: String, profileID: String, productName: String = defaultDisplayName,
-                             coBranded: Bool = false) -> String? {
-        guard !isBranded(productName: productName), !coBranded else { return nil }
+    /// `productName`.
+    static func profileBadge(bundleIdentifier: String, profileID: String, productName: String = defaultDisplayName) -> String? {
+        guard !isBranded(productName: productName) else { return nil }
         return profileIdentity(bundleIdentifier: bundleIdentifier, profileID: profileID)
     }
 
