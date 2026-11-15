@@ -58,6 +58,7 @@ impl App {
             acknowledge_uninspected_schedules: false,
             flow: Some(Flow::Browser),
             provider: None,
+            enrollment_key_file: None,
         };
         self.call::<agent_relay_desktop_core::contract::method::AccountSignIn>(params, |app, result| {
             match result {

@@ -1,10 +1,12 @@
 //! Opening the device or browser sign-in an attempt then waits on.
 
-use super::{failed, Account, Flow, Start};
+use super::{browser_link, enrollment_key, failed, validation, Account, Flow, Start};
 use crate::browser_login::BrowserLogin;
 use agent_relay_node::relay::cloud_login::DeviceLogin;
-use agent_relay_node::relay::protocol::RpcError;
-use crate::contract::account::SignInProvider;
+use agent_relay_node::relay::contract::account::SignInLink;
+use agent_relay_node::relay::protocol::{ErrorKind, RpcError};
+use crate::contract::account::{SignInProvider, SignInRequest};
+use std::path::Path;
 
 /// Keep the loopback receiver, state, workspace and PKCE challenge intact,
 /// choosing only which Cloud OAuth entry point opens in the browser.
@@ -26,14 +28,47 @@ pub(super) fn authorization_url(
     Some(url.into())
 }
 
+/// Refuses a request naming something that is not a workspace, or whose
+/// flow and enrollment key file disagree.
+pub(super) fn check_request(request: &SignInRequest) -> Result<(), RpcError> {
+    if let Some(workspace) = request.workspace.as_deref() {
+        if !validation::valid_id(workspace) {
+            return Err(RpcError::invalid_params(
+                "That is not an Agent Relay workspace.",
+            ));
+        }
+    }
+    enrollment_key::check_request(request)
+}
+
+/// The link a browser sign-in waits on, as [`authorization_url`] makes it;
+/// refused when the site is not an https origin.
+pub(super) fn browser_start_link(
+    login: &BrowserLogin,
+    site: &str,
+    reuse: bool,
+    workspace: Option<&str>,
+    provider: Option<SignInProvider>,
+) -> Result<SignInLink, RpcError> {
+    authorization_url(login, site, reuse, workspace, provider)
+        .map(browser_link)
+        .ok_or_else(|| {
+            RpcError::new(
+                ErrorKind::Refused,
+                "The Agent Relay site must be an https origin.",
+            )
+        })
+}
+
 impl Account {
     /// Opens `flow`'s sign-in for `attempt`; one that cannot open ends the
-    /// attempt with its reason.
+    /// attempt with its reason. An enrollment key is read from `key_file`.
     pub(super) async fn begin_login(
         &self,
         attempt: u64,
         site: &str,
         flow: Flow,
+        key_file: Option<&Path>,
     ) -> Result<Start, RpcError> {
         match flow {
             Flow::Device => match DeviceLogin::begin(site, Some(&self.desktop_host()?)).await {
@@ -52,6 +87,7 @@ impl Account {
                     Err(failed(error.message))
                 }
             },
+            Flow::EnrollmentKey => self.enrollment_key_start(attempt, key_file),
         }
     }
 

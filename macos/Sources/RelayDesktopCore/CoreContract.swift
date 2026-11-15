@@ -4299,6 +4299,9 @@ public enum Flow: String, Codable, CaseIterable, Hashable, Sendable {
     case browser
     /// A device approval; a kept session is reused first.
     case device
+    /// A single-use enrollment key an administrator minted, read from
+    /// `enrollment_key_file`; for headless installs that nobody approves.
+    case enrollmentKey = "enrollment_key"
 }
 
 /// A harness's full-access setting, shown as "<label>: full access".
@@ -10165,6 +10168,11 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
 /// built for (`AGENT_RELAY_SITE_URL`); nothing in the request chooses it.
 public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public let acknowledgeUninspectedSchedules: Bool
+    /// The absolute path of the file holding the enrollment key: required
+    /// with the `enrollment_key` flow and refused with any other. The core
+    /// reads the file itself, so the key never travels in a request, and
+    /// deletes it once Cloud accepts the key.
+    public let enrollmentKeyFile: String?
     public let flow: Flow?
     /// The browser identity provider; absent preserves the default login
     /// flow. Read by a core built with an account (the desktop's browser
@@ -10173,8 +10181,9 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public let sharing: SharingMode
     public let workspace: String?
 
-    public init(acknowledgeUninspectedSchedules: Bool = false, flow: Flow? = nil, provider: SignInProvider? = nil, sharing: SharingMode, workspace: String? = nil) {
+    public init(acknowledgeUninspectedSchedules: Bool = false, enrollmentKeyFile: String? = nil, flow: Flow? = nil, provider: SignInProvider? = nil, sharing: SharingMode, workspace: String? = nil) {
         self.acknowledgeUninspectedSchedules = acknowledgeUninspectedSchedules
+        self.enrollmentKeyFile = enrollmentKeyFile
         self.flow = flow
         self.provider = provider
         self.sharing = sharing
@@ -10183,6 +10192,7 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case acknowledgeUninspectedSchedules = "acknowledge_uninspected_schedules"
+        case enrollmentKeyFile = "enrollment_key_file"
         case flow
         case provider
         case sharing
@@ -10192,6 +10202,7 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.acknowledgeUninspectedSchedules = try c.decodeIfPresent(Bool.self, forKey: .acknowledgeUninspectedSchedules) ?? false
+        self.enrollmentKeyFile = try c.decodeIfPresent(String.self, forKey: .enrollmentKeyFile)
         self.flow = try c.decodeIfPresent(Flow.self, forKey: .flow)
         self.provider = try c.decodeIfPresent(SignInProvider.self, forKey: .provider)
         self.sharing = try c.decode(SharingMode.self, forKey: .sharing)
@@ -10201,6 +10212,7 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.acknowledgeUninspectedSchedules, forKey: .acknowledgeUninspectedSchedules)
+        try c.encodeIfPresent(self.enrollmentKeyFile, forKey: .enrollmentKeyFile)
         try c.encodeIfPresent(self.flow, forKey: .flow)
         try c.encodeIfPresent(self.provider, forKey: .provider)
         try c.encode(self.sharing, forKey: .sharing)

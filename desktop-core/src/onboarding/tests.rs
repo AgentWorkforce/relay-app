@@ -14,6 +14,8 @@ struct Fake {
     account: Value,
     statuses: VecDeque<Value>,
     sign_in: Value,
+    /// Answers to successive sign-ins before `sign_in` takes over.
+    sign_ins: VecDeque<Value>,
     tools: Value,
     uploader: Value,
     settings: Value,
@@ -28,6 +30,7 @@ impl Default for Fake {
             account: ready(),
             statuses: VecDeque::new(),
             sign_in: pending_account(),
+            sign_ins: VecDeque::new(),
             tools: json!({"onboarding_complete":true,"account_health":"ready","tools":[
                 {"id":"codex","detected":true,"supported":true,"selected":true,"state":"configured"},
                 {"id":"claude","detected":true,"supported":true,"selected":false,"state":"not_installed"},
@@ -57,7 +60,10 @@ impl Backend for Fake {
                 Ok(self.account.clone())
             }
             "account.sign_in" => {
-                self.account = self.sign_in.clone();
+                self.account = self
+                    .sign_ins
+                    .pop_front()
+                    .unwrap_or_else(|| self.sign_in.clone());
                 Ok(self.account.clone())
             }
             "tools.status" | "tools.check" => Ok(self.tools.clone()),
@@ -131,6 +137,7 @@ impl Console {
         for secret in [
             "SECRET_DEVICE_CODE",
             "SECRET_ACCESS_TOKEN",
+            "SECRET_ENROLLMENT_KEY",
             "PRIVATE_TRANSCRIPT_PATH",
             "SECRET_HISTORY",
             "RAW_BACKEND_FAILURE",
@@ -484,4 +491,125 @@ fn workspace_mismatch_and_missing_service_do_not_mutate_preferences() {
         2
     );
     assert_eq!(ui.result()["code"], "core_not_running");
+}
+
+fn signed_out() -> Value {
+    json!({"state":"signed_out"})
+}
+fn exchanging() -> Value {
+    json!({"state":"preparing", "phase":"exchanging_enrollment_key", "site_url":"https://agentrelay.com"})
+}
+fn key_ended(phase: &str) -> Value {
+    json!({"state":"error", "phase":phase, "site_url":"https://agentrelay.com", "error":"RAW_BACKEND_FAILURE"})
+}
+fn sign_in_requests(core: &Fake) -> Vec<&Value> {
+    core.calls
+        .iter()
+        .filter(|(method, _)| *method == "account.sign_in")
+        .map(|(_, params)| params)
+        .collect()
+}
+const KEY_FILE: &str = "/run/keys/SECRET_ENROLLMENT_KEY_FILE";
+#[test]
+fn an_enrollment_key_signs_in_without_waiting_for_approval() {
+    let mut core = Fake {
+        account: json!({"state":"signed_out"}),
+        sign_in: exchanging(),
+        statuses: VecDeque::from([signed_out(), exchanging(), ready()]),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    let options = options(&["--json", "--enrollment-key-file", KEY_FILE]);
+    assert_eq!(setup(&mut core, &mut ui, &options).unwrap(), 0);
+    let requests = sign_in_requests(&core);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["flow"], "enrollment_key");
+    assert_eq!(requests[0]["enrollment_key_file"], KEY_FILE);
+    assert_eq!(requests[0]["sharing"], "selected");
+    assert!(ui.events.iter().any(|e| e["event"] == "authenticated"));
+    assert!(!ui.events.iter().any(|e| e["event"] == "approval_required"));
+    ui.assert_private();
+}
+#[test]
+fn a_site_without_enrollment_keys_falls_back_to_device_approval() {
+    let mut core = Fake {
+        account: json!({"state":"signed_out"}),
+        sign_ins: VecDeque::from([exchanging()]),
+        statuses: VecDeque::from([signed_out(), key_ended("enrollment_key_unsupported")]),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    let options = options(&["--json", "--enrollment-key-file", KEY_FILE]);
+    assert_eq!(setup(&mut core, &mut ui, &options).unwrap(), 2);
+    let requests = sign_in_requests(&core);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["flow"], "enrollment_key");
+    assert_eq!(requests[1]["flow"], "device");
+    assert!(requests[1].get("enrollment_key_file").is_none());
+    assert!(ui
+        .events
+        .iter()
+        .any(|e| e["event"] == "enrollment_key_unsupported"));
+    assert_eq!(ui.result()["code"], "device_approval_required");
+    assert_eq!(ui.result()["user_code"], "ABCD-EFGH");
+    ui.assert_private();
+}
+#[test]
+fn a_rejected_or_busy_enrollment_key_fails_in_the_same_words_every_time() {
+    for (phase, code) in [
+        ("enrollment_key_rejected", "enrollment_key_rejected"),
+        ("enrollment_key_busy", "enrollment_key_busy"),
+    ] {
+        let mut core = Fake {
+            account: json!({"state":"signed_out"}),
+            sign_in: exchanging(),
+            statuses: VecDeque::from([signed_out(), key_ended(phase)]),
+            ..Fake::default()
+        };
+        let mut ui = Console::default();
+        let options = options(&["--json", "--enrollment-key-file", KEY_FILE]);
+        let failure = setup(&mut core, &mut ui, &options).unwrap_err();
+        assert_eq!(failure.code, code);
+        assert!(!failure.message.contains("RAW_BACKEND_FAILURE"));
+        assert_eq!(sign_in_requests(&core).len(), 1);
+        ui.assert_private();
+    }
+}
+#[test]
+fn a_signed_in_computer_leaves_the_enrollment_key_unused() {
+    let mut core = Fake::default();
+    let mut ui = Console::default();
+    let options = options(&["--json", "--enrollment-key-file", KEY_FILE]);
+    assert_eq!(setup(&mut core, &mut ui, &options).unwrap(), 0);
+    assert!(sign_in_requests(&core).is_empty());
+    assert!(ui
+        .events
+        .iter()
+        .any(|e| e["event"] == "enrollment_key_unused"));
+
+    // Re-approval of a signed-in computer is device approval.
+    let mut core = Fake {
+        account: json!({"state":"signed_in", "needs_sign_in":true}),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    assert_eq!(setup(&mut core, &mut ui, &options).unwrap(), 2);
+    assert_eq!(sign_in_requests(&core)[0]["flow"], "device");
+    assert!(ui
+        .events
+        .iter()
+        .any(|e| e["event"] == "enrollment_key_unused"));
+}
+#[test]
+fn the_enrollment_key_option_is_documented_and_takes_a_path() {
+    let help = <Options as clap::CommandFactory>::command()
+        .render_long_help()
+        .to_string();
+    assert!(help.contains("--enrollment-key-file <PATH|->"));
+    assert!(help.contains("device approval"));
+    let options = options(&["--enrollment-key-file", "-"]);
+    assert_eq!(
+        options.enrollment_key_file.as_deref(),
+        Some(std::path::Path::new("-"))
+    );
 }

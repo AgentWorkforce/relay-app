@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Headless installs can sign in with an enrollment key.** On macOS and Linux, `agent-relay-probe setup --enrollment-key-file <path|->` signs a headless install in with a per-employee key your administrator minted, with no device approval. The key file is deleted once Agent Relay accepts it. The device code remains the default, and setup falls back to it on a site that does not offer enrollment keys.
 - **Bundled core updated to Agent Relay 18.7.3.** The desktop core now ships relay 18.7.3, whose Muse courier answers terminal queries, waits for Muse to start, and logs why a delivery failed. Factory Droid sessions the core runs are now named "Factory Droid" in session lists on macOS and on Linux and Windows.
 
 ## v2026.11.8

@@ -47,7 +47,7 @@ impl Account {
         self.set_link(attempt, None);
         self.set(attempt, |account| {
             account.state = state;
-            account.phase = None;
+            account.phase = super::enrollment_key::ended_phase(error.state);
             account.progress = None;
             account.error = (state != SignInState::SignedOut).then(|| error.message.clone());
             account.action =

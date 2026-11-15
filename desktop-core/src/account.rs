@@ -94,8 +94,10 @@ enum Start {
     Reused(CloudSession),
     Device(DeviceLogin),
     Browser(BrowserLogin),
+    EnrollmentKey(enrollment_key::EnrollmentKeyLogin),
 }
 
+mod enrollment_key;
 mod login_failure;
 mod login_start;
 mod session_refresh;
@@ -648,13 +650,7 @@ impl Account {
     ) -> Result<SignInReport, RpcError> {
         // The site is the build's own; nothing in the request chooses it.
         let site = self.site_url.clone();
-        if let Some(workspace) = request.workspace.as_deref() {
-            if !validation::valid_id(workspace) {
-                return Err(RpcError::invalid_params(
-                    "That is not an Agent Relay workspace.",
-                ));
-            }
-        }
+        login_start::check_request(&request)?;
         if let Some(install) = self.uploader.install() {
             if !self.busy() && self.needs_auth_renewal(&install).await {
                 let flow = request.flow.unwrap_or_else(Flow::platform);
@@ -722,7 +718,8 @@ impl Account {
         } else if let Some(session) = reusable {
             Start::Reused(session)
         } else {
-            self.begin_login(attempt, &site, flow).await?
+            let file = request.enrollment_key_file.as_deref();
+            self.begin_login(attempt, &site, flow, file).await?
         };
         let (phase, link, reused) = match &start {
             Start::Continue => ("checking_existing_login", None, None),
@@ -733,21 +730,17 @@ impl Account {
                 Some(false),
             ),
             Start::Browser(login) => {
-                let url = login_start::authorization_url(
+                let workspace = request.workspace.as_deref();
+                let link = login_start::browser_start_link(
                     login,
                     &site,
                     request.flow.is_none(),
-                    request.workspace.as_deref(),
+                    workspace,
                     request.provider,
-                )
-                    .ok_or_else(|| {
-                        RpcError::new(
-                            ErrorKind::Refused,
-                            "The Agent Relay site must be an https origin.",
-                        )
-                    })?;
-                ("waiting_for_browser", Some(browser_link(url)), None)
+                )?;
+                ("waiting_for_browser", Some(link), None)
             }
+            Start::EnrollmentKey(..) => (enrollment_key::EXCHANGING, None, Some(false)),
         };
         let pending = matches!(start, Start::Device(..) | Start::Browser(..));
         self.set_link(attempt, link);
@@ -811,25 +804,12 @@ impl Account {
             }
             Flow::Browser => {
                 let login = self.desktop_browser_login().await?;
-                let url = login_start::authorization_url(
-                    &login,
-                    &site,
-                    true,
-                    install.target.workspace_id.as_deref(),
-                    provider,
-                )
-                    .ok_or_else(|| {
-                        RpcError::new(
-                            ErrorKind::Refused,
-                            "The Agent Relay site must be an https origin.",
-                        )
-                    })?;
-                (
-                    Start::Browser(login),
-                    "waiting_for_browser",
-                    browser_link(url),
-                )
+                let workspace = install.target.workspace_id.as_deref();
+                let link =
+                    login_start::browser_start_link(&login, &site, true, workspace, provider)?;
+                (Start::Browser(login), "waiting_for_browser", link)
             }
+            Flow::EnrollmentKey => return Err(enrollment_key::renewal_refused()),
         };
         self.set_link(attempt, Some(link));
         self.set(attempt, |account| {
@@ -870,6 +850,7 @@ impl Account {
             Start::Device(login) => login.poll().await.map_err(login_failure::device_ended),
             Start::Browser(login) => self.browser_session(&login, &site).await,
             Start::Reused(session) => Ok(session),
+            Start::EnrollmentKey(login) => self.enrollment_key_session(login, &site).await,
         };
         let kept = match session {
             Ok(session) => {
@@ -1102,6 +1083,7 @@ impl Account {
             Start::Reused(session) => Ok(session),
             Start::Device(login) => login.poll().await.map_err(login_failure::device_ended),
             Start::Browser(login) => self.browser_session(&login, &site).await,
+            Start::EnrollmentKey(login) => self.enrollment_key_session(login, &site).await,
         };
         let session = match session {
             Ok(session) => session,

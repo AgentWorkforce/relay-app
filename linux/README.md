@@ -690,6 +690,27 @@ passing a service token is not a replacement for the account consent needed
 by provider MCP setup. Run `agent-relay-probe setup --help` for the
 complete options.
 
+For an unattended install, an administrator can mint a per-employee
+enrollment key in Agent Relay instead. Put only the key in a file and pass
+its path, or `-` to read it from standard input:
+
+```sh
+agent-relay-probe setup --non-interactive --json --enrollment-key-file /path/to/key --providers detected --sharing selected
+printf '%s' "$KEY" | agent-relay-probe setup --non-interactive --json --enrollment-key-file - --sharing selected
+```
+
+The core reads the file itself and deletes it once Agent Relay accepts the
+key, because a key signs in only once. The key never appears on a command
+line, in output or in logs. With `-`, setup copies standard input to a private
+temporary file (mode 0600) and removes it when it exits. A key that was not
+accepted fails with `enrollment_key_rejected`, whether it was wrong, expired,
+revoked or already used; ask the administrator for a new one. If Agent Relay
+stays busy after a few retries, setup fails with `enrollment_key_busy`; rerun it
+with the same key. A site that does not offer enrollment keys falls back to
+the device code (`enrollment_key_unsupported`, then `action_required`). The key
+is ignored on a computer that is already signed in (`enrollment_key_unused`).
+Device approval remains the default.
+
 | Option | Effect |
 | --- | --- |
 | `--workspace UUID` | Select the Agent Relay workspace explicitly. |
@@ -698,6 +719,7 @@ complete options.
 | `--providers none` | Clear the local provider selection explicitly. |
 | `--sharing selected\|new\|all` | Set the upload policy explicitly; omitted keeps the saved policy. |
 | `--json --non-interactive` | Produce machine-readable progress without terminal questions. |
+| `--enrollment-key-file PATH\|-` | Sign in with an administrator's enrollment key instead of device approval; `-` reads it from standard input. |
 | `--wait` | Wait for approval and connection progress. |
 | `--timeout SECONDS` | Limit waiting to 600 seconds by default, at most 3600. |
 | `--socket PATH` | Use an existing core socket. The Agent Relay site is the one the core was built for (`AGENT_RELAY_SITE_URL` when it was built); nothing at run time changes it. |

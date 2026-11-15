@@ -2351,7 +2351,11 @@ newline-delimited progress events and a final result. Pending consent reports
 `--wait` waits for approval or resumes an existing pending approval. An initial
 interactive account authorization is still required for hosted MCP provider
 setup. Omitted preference flags preserve existing choices; new connections
-start with `selected` uploads.
+start with `selected` uploads. `--enrollment-key-file <path|->` signs an
+unattended install in with an administrator's enrollment key instead
+(`account.sign_in` with `flow:"enrollment_key"`; the core reads and then
+deletes the file), falling back to device approval on a site without
+enrollment keys.
 
 The Linux install script installs the GTK-free private helper, runs it under
 `agent-relay.service`, and prints its full-path wizard command. It never starts

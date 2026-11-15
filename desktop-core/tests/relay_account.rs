@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use support::bridge::{eventually, Client};
-use support::fake_cloud::{FakeCloud, ACCOUNT_KEY, USER, WORKSPACE};
+use support::fake_cloud::{FakeCloud, ACCOUNT_KEY, ENROLLMENT_KEY, USER, WORKSPACE};
 use tokio::sync::mpsc;
 
 // Setup preferences stay in this test's temporary core; no user settings change.
@@ -4275,4 +4275,262 @@ async fn a_failed_read_with_a_cached_policy_does_not_withhold_uploads() {
     assert!(args.contains(&"--include-existing".to_string()), "{args:?}");
     assert_eq!(harness.cached_policy()["withheld"], Value::Null);
     harness.stop().await;
+}
+
+/// Writes the enrollment key to a file in the test's home, as an install
+/// script would, and returns its absolute path.
+fn enrollment_key_file(harness: &Harness, key: &str) -> PathBuf {
+    let path = harness.home.join("enrollment.key");
+    std::fs::write(&path, format!("{key}\n")).unwrap();
+    path
+}
+
+fn enrollment_sign_in(file: &std::path::Path) -> Value {
+    json!({"sharing": "new", "flow": "enrollment_key", "enrollment_key_file": file})
+}
+
+fn enrollment_requests(harness: &Harness) -> Vec<Value> {
+    let state = harness.cloud.state.lock().unwrap();
+    state
+        .requests
+        .iter()
+        .filter(|request| request.path == "/cloud/api/v1/auth/enrollment/token")
+        .map(|request| request.body.clone())
+        .collect()
+}
+
+/// The key shows up nowhere the person or a log can see it: not in status,
+/// published events, the request log or any file under the core's home
+/// other than the key file a refused key leaves in place.
+fn assert_key_private(harness: &Harness, client: &Client, key: &str) {
+    let status = serde_json::to_string(&harness.core.status()).unwrap();
+    assert!(!status.contains(key), "key in status");
+    let events = serde_json::to_string(&client.events).unwrap();
+    assert!(!events.contains(key), "key in events");
+    let log = serde_json::to_string(&agent_relay_node::relay::request_log::snapshot()).unwrap();
+    assert!(!log.contains(key), "key in the request log");
+    let mut pending = vec![harness.home.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path == harness.home.join("enrollment.key") {
+                continue;
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(!text.contains(key), "key in {}", path.display());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_enrollment_key_signs_in_once_without_approval_and_its_file_is_deleted() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+    client
+        .ok("subscribe", json!({"topics": ["sign_in", "status"]}))
+        .await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    let started = client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    assert!(started["user_code"].is_null());
+    assert!(started["verification_url"].is_null());
+    assert_eq!(started["reused_login"], false);
+
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    assert!(!file.exists(), "the spent key file is deleted");
+
+    // One exchange naming this computer, as the device sign-in names it.
+    let requests = enrollment_requests(&harness);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["enrollment_key"], ENROLLMENT_KEY);
+    assert_eq!(requests[0]["client_name"], "agent-relay-desktop");
+    assert_eq!(requests[0]["desktop_host_name"], "Test Desk.local");
+
+    // The rest is the device sign-in's: one install with the session, the
+    // session kept renewable in the store, the workspace resolved.
+    let installs = harness.probe.calls("cloud");
+    assert_eq!(installs.len(), 1);
+    assert_eq!(installs[0].1.as_deref(), Some("access-1"));
+    let store = harness.store();
+    assert_eq!(store["cloudSession"]["accessToken"], "access-1");
+    assert_eq!(store["cloudSession"]["refreshToken"], "refresh-1");
+    assert_eq!(store["cloud"]["accountWorkspaceID"], WORKSPACE);
+    let status = client.ok("status.get", json!({})).await;
+    assert_eq!(status["account"]["workspace_id"], WORKSPACE);
+    assert_key_private(&harness, &client, ENROLLMENT_KEY);
+    harness.stop().await;
+}
+
+/// Wrong, revoked and already exchanged keys all read the same: the person
+/// learns only to ask for a new key. The file is kept for the admin to see.
+#[tokio::test]
+async fn a_refused_enrollment_key_fails_in_the_same_words_whatever_the_reason() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+    let mut seen = Vec::new();
+    for (key, spent) in [("ek_live_WrongKey0002", false), (ENROLLMENT_KEY, true)] {
+        harness.cloud.state.lock().unwrap().enrollment_key =
+            (!spent).then(|| ENROLLMENT_KEY.to_string());
+        let file = enrollment_key_file(&harness, key);
+        client
+            .ok("account.sign_in", enrollment_sign_in(&file))
+            .await;
+        eventually("refused", || harness.account_state() == "error").await;
+        let account = client.ok("account.status", json!({})).await;
+        assert_eq!(account["phase"], "enrollment_key_rejected");
+        assert!(!account.to_string().contains("revoked"));
+        seen.push(account["error"].clone());
+        assert!(file.exists(), "a refused key's file is kept");
+        assert_key_private(&harness, &client, key);
+    }
+    assert_eq!(
+        seen[0],
+        "This enrollment key was not accepted. Ask your administrator for a new key."
+    );
+    assert_eq!(seen[0], seen[1]);
+    assert!(harness.probe.calls("cloud").is_empty());
+    assert!(harness.store()["cloudSession"].is_null());
+    harness.stop().await;
+}
+
+/// Cloud asking to slow down is waited out a few times, then the attempt
+/// ends as busy with the key unspent.
+#[tokio::test]
+async fn an_enrollment_key_waits_out_slow_down_a_few_times() {
+    let harness = Harness::start_with(|cloud, _| {
+        cloud.state.lock().unwrap().enrollment_slow_downs = 2;
+    })
+    .await;
+    let mut client = harness.client().await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    assert_eq!(enrollment_requests(&harness).len(), 3);
+    assert!(!file.exists());
+    harness.stop().await;
+
+    let harness = Harness::start_with(|cloud, _| {
+        cloud.state.lock().unwrap().enrollment_slow_downs = 10;
+    })
+    .await;
+    let mut client = harness.client().await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    eventually("busy", || harness.account_state() == "error").await;
+    let account = client.ok("account.status", json!({})).await;
+    assert_eq!(account["phase"], "enrollment_key_busy");
+    assert_eq!(enrollment_requests(&harness).len(), 4);
+    assert!(file.exists());
+    assert_key_private(&harness, &client, ENROLLMENT_KEY);
+    harness.stop().await;
+}
+
+/// A site from before enrollment keys answers 404: the attempt says so, the
+/// key stays unspent, and device approval still signs in.
+#[tokio::test]
+async fn a_site_without_enrollment_keys_leaves_device_approval_to_sign_in() {
+    let harness = Harness::start_with(|cloud, _| {
+        cloud.state.lock().unwrap().response_overrides.insert(
+            (
+                "/cloud/api/v1/auth/enrollment/token".into(),
+                String::new(),
+                "POST".into(),
+            ),
+            (404, json!({"error": "not_found"})),
+        );
+    })
+    .await;
+    let mut client = harness.client().await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    eventually("unsupported", || harness.account_state() == "error").await;
+    let account = client.ok("account.status", json!({})).await;
+    assert_eq!(account["phase"], "enrollment_key_unsupported");
+    assert_eq!(
+        account["error"],
+        "This Agent Relay site does not accept enrollment keys. Sign in with device approval instead."
+    );
+    assert!(file.exists());
+
+    let started = client
+        .ok(
+            "account.sign_in",
+            json!({"sharing": "new", "flow": "device"}),
+        )
+        .await;
+    assert_eq!(started["user_code"], "ABCD-EFGH");
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    assert_key_private(&harness, &client, ENROLLMENT_KEY);
+    harness.stop().await;
+}
+
+/// The key file goes with the enrollment-key flow and no other, and a file
+/// that does not hold a key is refused without quoting it.
+#[tokio::test]
+async fn an_enrollment_key_sign_in_needs_its_file_and_nothing_else_takes_one() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+    let (kind, _) = client
+        .error(
+            "account.sign_in",
+            json!({"sharing": "new", "flow": "enrollment_key"}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    let (kind, _) = client
+        .error(
+            "account.sign_in",
+            json!({"sharing": "new", "flow": "device", "enrollment_key_file": file}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
+    let (kind, _) = client
+        .error(
+            "account.sign_in",
+            json!({"sharing": "new", "flow": "enrollment_key", "enrollment_key_file": "enrollment.key"}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
+    std::fs::write(&file, "two words SECRET_NOT_A_KEY\n").unwrap();
+    let (kind, message) = client
+        .error("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    assert_eq!(kind, "invalid_params");
+    assert!(!message.contains("SECRET_NOT_A_KEY"));
+    assert!(enrollment_requests(&harness).is_empty());
+    assert!(file.exists());
+    // A refused request leaves the computer free to sign in another way.
+    client
+        .ok(
+            "account.sign_in",
+            json!({"sharing": "new", "flow": "device"}),
+        )
+        .await;
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    assert_key_private(&harness, &client, ENROLLMENT_KEY);
+    harness.stop().await;
+}
+
+/// The enrollment-key flow is spelled as the RPC takes it.
+#[test]
+fn the_enrollment_key_flow_is_named_on_the_wire() {
+    assert_eq!(
+        serde_json::to_value(Flow::EnrollmentKey).unwrap(),
+        "enrollment_key"
+    );
 }

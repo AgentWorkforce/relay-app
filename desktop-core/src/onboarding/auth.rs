@@ -1,6 +1,9 @@
 //! Device approval stays in the daemon, including when this client exits.
 use super::*;
 
+mod enrollment_key;
+pub(super) use enrollment_key::prepare as prepare_enrollment_key;
+
 pub(super) enum Connection {
     Ready(Value),
     Pending(i32),
@@ -30,7 +33,9 @@ pub(super) fn connect(
             Some("pending_approval" | "preparing")
         )
     {
-        account = sign_in(core, options, options.acknowledge_uninspected_schedules)?;
+        account = enrollment_key::sign_in_first(core, ui, options, &account)?;
+    } else {
+        enrollment_key::unused(ui, options);
     }
     let mut wait = Wait {
         enabled: options.wait || ui.interactive(),
@@ -116,6 +121,10 @@ fn advance(
             "create_workspace",
             json!({"message":"Create a workspace in your Agent Relay account, then rerun setup."}),
         )));
+    }
+    if let Some(progress) = enrollment_key::advance(core, ui, options, account, wait.acknowledged)?
+    {
+        return Ok(progress);
     }
     if let Some(failure) = terminal_auth_failure(account) {
         return Err(failure);

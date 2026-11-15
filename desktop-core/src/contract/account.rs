@@ -505,6 +505,10 @@ pub enum Flow {
     Browser,
     /// A device approval; a kept session is reused first.
     Device,
+    /// A single-use enrollment key an administrator minted, read from
+    /// `enrollment_key_file`; for headless installs that nobody approves.
+    #[serde(rename = "enrollment_key")]
+    EnrollmentKey,
 }
 
 /// `account.sign_in`'s parameters. The sign-in is to the site the core was
@@ -521,6 +525,12 @@ pub struct SignInRequest {
     /// sign-in); this core's own device sign-in ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<SignInProvider>,
+    /// The absolute path of the file holding the enrollment key: required
+    /// with the `enrollment_key` flow and refused with any other. The core
+    /// reads the file itself, so the key never travels in a request, and
+    /// deletes it once Cloud accepts the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_key_file: Option<std::path::PathBuf>,
 }
 
 /// `account.login_config`'s result: what a self-host site's sign-in page
