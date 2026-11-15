@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Self-hosted builds can join Relay Connect invitations from agentrelay.com.** A build made for your own Agent Relay site now joins a public `agentrelay.com/connect/…` invitation as a guest, so your agents can join a room a vendor's support agent hosts. Such links used to fail with `invalid_link`. Links from any other site are still refused.
 - **Co-branded builds name their customer in the workspace header.** Every build made for a customer now shows "for" with the customer's mark and name at the top of the window, as on the sign-in screen, on macOS, Linux and Windows: beside the Agent Relay wordmark, in place of the build's profile id, or beside the product's own name when it has one. Other builds' headers are unchanged.
 - **Bundled core updated to Agent Relay 18.7.3.** The desktop core now ships relay 18.7.3, whose Muse courier answers terminal queries, waits for Muse to start, and logs why a delivery failed. Factory Droid sessions the core runs are now named "Factory Droid" in session lists on macOS and on Linux and Windows.
 

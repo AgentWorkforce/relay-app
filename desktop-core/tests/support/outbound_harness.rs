@@ -181,12 +181,12 @@ impl ConnectJoinClient for FakeJoin {
         self.response.lock().unwrap().clone()
     }
 
-    fn availability(&self, _: &str) -> Result<ConnectAvailability, OutboundError> {
+    fn availability(&self, _site: &str, _: &str) -> Result<ConnectAvailability, OutboundError> {
         self.availability.lock().unwrap().clone()
     }
 
     /// Like Cloud, a roster read of an ended Connect answers its gone code.
-    fn roster(&self, _: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError> {
+    fn roster(&self, _site: &str, _: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError> {
         self.roster_tokens
             .lock()
             .unwrap()
