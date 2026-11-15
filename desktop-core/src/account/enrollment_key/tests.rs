@@ -55,12 +55,22 @@ fn the_flow_is_spelled_enrollment_key_on_the_wire() {
     assert!(device.get("enrollment_key_file").is_none());
 }
 
+/// Writes `text` to a new file at `path` only its owner can read.
+fn private_file(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 #[test]
 fn a_key_is_read_from_an_absolute_file_and_never_echoed() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("key");
-    std::fs::write(&file, format!("  {KEY}\n")).unwrap();
-    assert_eq!(read_key(&file).unwrap().expose(), KEY);
+    private_file(&file, &format!("  {KEY}\n"));
+    assert_eq!(read_key(&file).unwrap().0.expose(), KEY);
     assert!(read_key(Path::new("key")).is_err());
     assert!(read_key(&dir.path().join("missing")).is_err());
     assert!(read_key(dir.path()).is_err());
@@ -81,6 +91,84 @@ fn a_key_is_read_from_an_absolute_file_and_never_echoed() {
         panic!("refused")
     };
     assert!(!error.message.contains(KEY));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_key_is_read_only_from_a_private_file_owned_by_this_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("key");
+    private_file(&file, KEY);
+    assert_eq!(read_key(&file).unwrap().0.expose(), KEY);
+    for mode in [0o640, 0o604, 0o644] {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        let Err(error) = read_key(&file) else {
+            panic!("a key readable by others is refused")
+        };
+        assert_eq!(
+            error.message,
+            "The enrollment key file must be owned by you and readable by nobody else (mode 0600)."
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_key_is_not_read_through_a_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("key");
+    private_file(&target, KEY);
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let Err(error) = read_key(&link) else {
+        panic!("a link is refused")
+    };
+    assert!(!error.message.contains(KEY));
+}
+
+#[test]
+fn a_spent_key_file_is_deleted_when_it_is_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("key");
+    private_file(&file, KEY);
+    let (_, read) = read_key(&file).unwrap();
+    assert_eq!(delete_spent(&file, &read), Ok(()));
+    assert!(!file.exists());
+    assert_eq!(delete_spent(&file, &read), Ok(()), "a file already gone");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_spent_key_file_replaced_after_the_read_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("key");
+    private_file(&file, KEY);
+    let (_, read) = read_key(&file).unwrap();
+    let other = dir.path().join("other");
+    private_file(&other, "someone else's file");
+    std::fs::rename(&other, &file).unwrap();
+    let warning = delete_spent(&file, &read).unwrap_err();
+    assert_eq!(
+        warning,
+        format!(
+            "The enrollment key was used, but its file changed since it was read and was left alone. Delete {}.",
+            file.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "someone else's file"
+    );
+
+    // Nor is a link put in its place, even to the file that was read.
+    let kept = dir.path().join("kept");
+    private_file(&kept, KEY);
+    let (_, read) = read_key(&kept).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(&kept, &file).unwrap();
+    assert!(delete_spent(&file, &read).is_err());
+    assert!(file.symlink_metadata().is_ok() && kept.exists());
 }
 
 #[test]

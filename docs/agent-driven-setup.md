@@ -460,15 +460,17 @@ Enrollment keys are a third flow, carried by the bridge's `account.sign_in`
 `POST /setup/sign-in`. The request is
 `{"flow":"enrollment_key","enrollment_key_file":"/absolute/path"}`: the key
 travels by file path, never in the request, and the core reads the file
-itself (a regular file of at most 4 KiB holding only the key). It exchanges the
+itself (a regular file of at most 4 KiB holding only the key, not a symbolic
+link, and on Unix owned by the core's user with mode 0600). It exchanges the
 key once with Agent Relay, with phase `exchanging_enrollment_key`, and deletes
-the file after the key is accepted. No approval link or code is issued. A
+the file after Agent Relay answers 200, unless the path no longer holds the
+file that was read. No approval link or code is issued. A
 failure ends in state `error` with a phase: `enrollment_key_rejected`, with the
 same message whether the key was wrong, expired, revoked or already used;
 `enrollment_key_busy` once Cloud keeps asking it to slow down after three
 retries; or `enrollment_key_unsupported` from a site that does not offer
 enrollment keys, where the caller starts device approval instead. The file is
-kept after any failure. A computer whose sign-in needs renewing renews it with
+kept after any failure that is not a 200. A computer whose sign-in needs renewing renews it with
 device approval.
 
 While sign-in is `preparing`, the sign-in response includes `phase`, `message`,

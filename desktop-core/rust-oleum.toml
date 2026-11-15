@@ -117,6 +117,9 @@ rust_roots = ["src"]
 "src/history/probe/priority.rs::lower" = 1
 "src/history/probe/priority.rs::lower_process" = 1
 "src/history/probe/remote_sources/pacing.rs::volume_free_bytes" = 1
+# Windows identifies the enrollment key file by volume serial number and
+# file index, which std reads only on nightly (windows_by_handle).
+"src/account/enrollment_key.rs::identity" = 1
 "src/history/uploader.rs::signal" = 1
 "src/install/windows.rs::registry::key_exists" = 2
 "src/install/windows.rs::registry::read_dword" = 1

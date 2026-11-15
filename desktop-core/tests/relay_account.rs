@@ -4278,10 +4278,15 @@ async fn a_failed_read_with_a_cached_policy_does_not_withhold_uploads() {
 }
 
 /// Writes the enrollment key to a file in the test's home, as an install
-/// script would, and returns its absolute path.
+/// script would, private to this user, and returns its absolute path.
 fn enrollment_key_file(harness: &Harness, key: &str) -> PathBuf {
     let path = harness.home.join("enrollment.key");
     std::fs::write(&path, format!("{key}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     path
 }
 
@@ -4433,6 +4438,38 @@ async fn an_enrollment_key_waits_out_slow_down_a_few_times() {
     assert_eq!(account["phase"], "enrollment_key_busy");
     assert_eq!(enrollment_requests(&harness).len(), 4);
     assert!(file.exists());
+    assert_key_private(&harness, &client, ENROLLMENT_KEY);
+    harness.stop().await;
+}
+
+/// A 200 spends the key even when it carries no session: the attempt fails,
+/// and the key file is deleted all the same.
+#[tokio::test]
+async fn a_200_without_a_session_still_deletes_the_spent_key_file() {
+    let harness = Harness::start_with(|cloud, _| {
+        cloud.state.lock().unwrap().response_overrides.insert(
+            (
+                "/cloud/api/v1/auth/enrollment/token".into(),
+                String::new(),
+                "POST".into(),
+            ),
+            (200, json!({})),
+        );
+    })
+    .await;
+    let mut client = harness.client().await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    eventually("failed", || harness.account_state() == "error").await;
+    let account = client.ok("account.status", json!({})).await;
+    assert_eq!(
+        account["error"],
+        "Agent Relay Cloud did not return a sign-in session."
+    );
+    assert_eq!(enrollment_requests(&harness).len(), 1);
+    assert!(!file.exists(), "the spent key file is deleted");
     assert_key_private(&harness, &client, ENROLLMENT_KEY);
     harness.stop().await;
 }

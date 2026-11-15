@@ -699,8 +699,10 @@ agent-relay-probe setup --non-interactive --json --enrollment-key-file /path/to/
 printf '%s' "$KEY" | agent-relay-probe setup --non-interactive --json --enrollment-key-file - --sharing selected
 ```
 
+The file must be yours with mode 0600 (`chmod 600`) and not a symbolic link.
 The core reads the file itself and deletes it once Agent Relay accepts the
-key, because a key signs in only once. The key never appears on a command
+key, because a key signs in only once; a file replaced since it was read is
+left alone. The key never appears on a command
 line, in output or in logs. With `-`, setup copies standard input to a private
 temporary file (mode 0600) and removes it when it exits. A key that was not
 accepted fails with `enrollment_key_rejected`, whether it was wrong, expired,
