@@ -709,7 +709,10 @@ accepted fails with `enrollment_key_rejected`, whether it was wrong, expired,
 revoked or already used; ask the administrator for a new one. If Agent Relay
 stays busy after a few retries, setup fails with `enrollment_key_busy`; rerun it
 with the same key. A site that does not offer enrollment keys falls back to
-the device code (`enrollment_key_unsupported`, then `action_required`). The key
+the device code (`enrollment_key_unsupported`, then `action_required`): setup
+prints the device instructions and exits 2 without waiting, even with `--wait`,
+so an installer is not held up; rerun setup with `--wait` to wait for the
+approval. The key
 is ignored on a computer that is already signed in (`enrollment_key_unused`).
 Device approval remains the default.
 

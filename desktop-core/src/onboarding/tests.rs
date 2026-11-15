@@ -555,6 +555,45 @@ fn a_site_without_enrollment_keys_falls_back_to_device_approval() {
     ui.assert_private();
 }
 #[test]
+fn the_device_fallback_after_an_enrollment_key_does_not_wait_for_approval() {
+    for (interactive, args) in [
+        (
+            false,
+            &["--json", "--wait", "--enrollment-key-file", KEY_FILE][..],
+        ),
+        (true, &["--enrollment-key-file", KEY_FILE][..]),
+    ] {
+        let mut core = Fake {
+            account: json!({"state":"signed_out"}),
+            sign_ins: VecDeque::from([exchanging()]),
+            statuses: VecDeque::from([signed_out(), key_ended("enrollment_key_unsupported")]),
+            ..Fake::default()
+        };
+        let mut ui = Console {
+            interactive,
+            ..Console::default()
+        };
+        assert_eq!(setup(&mut core, &mut ui, &options(args)).unwrap(), 2);
+        let requests = sign_in_requests(&core);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["flow"], "device");
+        // Nothing waits after the device sign-in starts: no pause, no poll.
+        let restarted = core
+            .calls
+            .iter()
+            .rposition(|(method, _)| *method == "account.sign_in")
+            .unwrap();
+        assert!(core.calls[restarted..]
+            .iter()
+            .all(|(method, _)| *method != "account.status"));
+        assert_eq!(core.elapsed, Duration::from_secs(1), "only the exchange");
+        assert!(ui.events.iter().any(|e| e["event"] == "approval_required"));
+        assert_eq!(ui.result()["code"], "device_approval_required");
+        assert_eq!(ui.result()["user_code"], "ABCD-EFGH");
+        ui.assert_private();
+    }
+}
+#[test]
 fn a_rejected_or_busy_enrollment_key_fails_in_the_same_words_every_time() {
     for (phase, code) in [
         ("enrollment_key_rejected", "enrollment_key_rejected"),

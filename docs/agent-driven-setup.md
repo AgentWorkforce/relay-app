@@ -469,7 +469,9 @@ failure ends in state `error` with a phase: `enrollment_key_rejected`, with the
 same message whether the key was wrong, expired, revoked or already used;
 `enrollment_key_busy` once Cloud keeps asking it to slow down after three
 retries; or `enrollment_key_unsupported` from a site that does not offer
-enrollment keys, where the caller starts device approval instead. The file is
+enrollment keys, where the caller starts device approval instead; `setup`
+then prints the device instructions and exits 2 without waiting for approval,
+even with `--wait`, for the caller to rerun it with `--wait`. The file is
 kept after any failure that is not a 200. A computer whose sign-in needs renewing renews it with
 device approval.
 

@@ -122,8 +122,7 @@ fn advance(
             json!({"message":"Create a workspace in your Agent Relay account, then rerun setup."}),
         )));
     }
-    if let Some(progress) = enrollment_key::advance(core, ui, options, account, wait.acknowledged)?
-    {
+    if let Some(progress) = enrollment_key::advance(core, ui, options, account, wait)? {
         return Ok(progress);
     }
     if let Some(failure) = terminal_auth_failure(account) {

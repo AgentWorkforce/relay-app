@@ -113,14 +113,16 @@ pub(super) fn unused(ui: &mut impl Interface, options: &Options) {
 }
 
 /// How an enrollment-key sign-in moves setup on, or `None` when the account
-/// is not in one. The exchange is waited for even without `--wait`, so that
-/// a site without enrollment keys still gets device approval in this run.
+/// is not in one. The exchange is waited for even without `--wait`. A site
+/// without enrollment keys gets a device sign-in instead, which this run does
+/// not wait for even with `--wait`: setup prints the device instructions and
+/// exits 2, so an installer is not held up for a person's approval.
 pub(super) fn advance(
     core: &mut impl Backend,
     ui: &mut impl Interface,
     options: &Options,
     account: &mut Value,
-    acknowledged: bool,
+    wait: &mut Wait,
 ) -> Result<Option<Progress>, Failure> {
     let phase = account["phase"].as_str().unwrap_or_default();
     if phase == EXCHANGING {
@@ -136,7 +138,8 @@ pub(super) fn advance(
                 "enrollment_key_unsupported",
                 json!({"message":"This Agent Relay site does not accept enrollment keys. Approve this server with a device code instead."}),
             );
-            *account = sign_in(core, options, acknowledged)?;
+            *account = sign_in(core, options, wait.acknowledged)?;
+            wait.enabled = false;
             Ok(Some(Progress::Restarted))
         }
         REJECTED => Err(Failure {
