@@ -80,6 +80,12 @@ struct Options {
     /// Explicitly allow setup past older upload schedules that could not be inspected.
     #[arg(long)]
     acknowledge_uninspected_schedules: bool,
+    /// Sign in with an enrollment key from your administrator instead of device approval.
+    /// The file holds only the key; "-" reads it from stdin. Used only when this computer is
+    /// not signed in. The core deletes the file once Agent Relay accepts the key; a site
+    /// without enrollment keys falls back to device approval.
+    #[arg(long, value_name = "PATH|-")]
+    enrollment_key_file: Option<PathBuf>,
 }
 
 trait Backend {
@@ -329,7 +335,7 @@ fn setup(
 
 /// Private binary dispatch; help and argument errors never contact the core.
 pub fn run(arguments: &[String]) -> i32 {
-    let options = match Options::try_parse_from(
+    let mut options = match Options::try_parse_from(
         std::iter::once("agent-relay-probe setup".to_string())
             .chain(arguments.iter().cloned()),
     ) {
@@ -338,6 +344,22 @@ pub fn run(arguments: &[String]) -> i32 {
             let exit = error.exit_code();
             let _ = error.print();
             return exit;
+        }
+    };
+    // Held until setup returns: a key read from stdin is deleted on drop.
+    let _stdin_key = match auth::prepare_enrollment_key(&mut options) {
+        Ok(file) => file,
+        Err(failure) => {
+            let json = options.json;
+            Terminal {
+                json,
+                interactive: false,
+            }
+            .event(
+                "result",
+                json!({"status":"error", "code":failure.code, "message":failure.message}),
+            );
+            return 1;
         }
     };
     let mut core = LocalCore {

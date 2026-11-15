@@ -1,6 +1,9 @@
 //! Device approval stays in the daemon, including when this client exits.
 use super::*;
 
+mod enrollment_key;
+pub(super) use enrollment_key::prepare as prepare_enrollment_key;
+
 pub(super) enum Connection {
     Ready(Value),
     Pending(i32),
@@ -14,6 +17,9 @@ struct Wait {
     enabled: bool,
     announced: bool,
     acknowledged: bool,
+    /// An enrollment-key sign-in is under way: it is waited for until it
+    /// ends, `--wait` or not, since no one approves it.
+    keyed: bool,
 }
 
 pub(super) fn connect(
@@ -24,18 +30,22 @@ pub(super) fn connect(
     let Some(mut account) = initial_account(core, ui, options)? else {
         return Ok(Connection::Pending(2));
     };
+    let mut keyed = false;
     if !auth_ready(&account)
         && !matches!(
             account["state"].as_str(),
             Some("pending_approval" | "preparing")
         )
     {
-        account = sign_in(core, options, options.acknowledge_uninspected_schedules)?;
+        (account, keyed) = enrollment_key::sign_in_first(core, ui, options, &account)?;
+    } else {
+        enrollment_key::unused(ui, options);
     }
     let mut wait = Wait {
         enabled: options.wait || ui.interactive(),
         announced: false,
         acknowledged: options.acknowledge_uninspected_schedules,
+        keyed,
     };
     while !auth_ready(&account) {
         match advance(core, ui, options, &mut account, &mut wait)? {
@@ -116,6 +126,9 @@ fn advance(
             "create_workspace",
             json!({"message":"Create a workspace in your Agent Relay account, then rerun setup."}),
         )));
+    }
+    if let Some(progress) = enrollment_key::advance(core, ui, options, account, wait)? {
+        return Ok(progress);
     }
     if let Some(failure) = terminal_auth_failure(account) {
         return Err(failure);

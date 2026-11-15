@@ -165,6 +165,7 @@ impl App {
             acknowledge_uninspected_schedules,
             flow: Some(Flow::Browser),
             provider: self.sign_in_provider_for(chosen, self.inner.sign_in_provider.get()),
+            enrollment_key_file: None,
         };
         let request = self.update_state(|state| {
             state.sign_in_error = None;

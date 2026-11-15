@@ -14,6 +14,8 @@ use tokio::task::JoinHandle;
 pub const USER: &str = "user-1";
 pub const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 pub const ACCOUNT_KEY: &str = "rk_live_account00001";
+/// The enrollment key an administrator minted; not shaped like any other token.
+pub const ENROLLMENT_KEY: &str = "ek_live_SyntheticEnrollmentKey0001";
 
 #[derive(Clone, Debug)]
 pub struct Recorded {
@@ -67,6 +69,26 @@ pub struct State {
     /// The relay key rotation answers this status; 200 hands out the next
     /// generation.
     pub rotate_status: u16,
+    /// The enrollment key Cloud exchanges once for a session; `None` once spent.
+    pub enrollment_key: Option<String>,
+    /// Enrollment exchanges answered 429 `slow_down` before the real answer.
+    pub enrollment_slow_downs: u32,
+    /// How the enrollment exchange's answer is cut short once its request
+    /// is recorded and answered.
+    pub enrollment_cut_short: CutShort,
+    /// Sent as `Location` with any 3xx answer.
+    pub redirect_location: Option<String>,
+}
+
+/// An answer that does not arrive whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CutShort {
+    #[default]
+    No,
+    /// The connection closes without an answer.
+    HangUp,
+    /// The status and headers arrive, and the body stops short.
+    Truncated,
 }
 
 impl Default for State {
@@ -102,6 +124,10 @@ impl Default for State {
             resolve_gate: None,
             whoami_user: USER.into(),
             rotate_status: 200,
+            enrollment_key: Some(ENROLLMENT_KEY.into()),
+            enrollment_slow_downs: 0,
+            enrollment_cut_short: CutShort::No,
+            redirect_location: None,
         }
     }
 }
@@ -289,10 +315,39 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
     if let Some(gate) = gate {
         gate.notified().await;
     }
+    let (cut_short, location) = {
+        let state = state.lock().unwrap();
+        let cut_short = if path == "/cloud/api/v1/auth/enrollment/token" {
+            state.enrollment_cut_short
+        } else {
+            CutShort::No
+        };
+        (cut_short, state.redirect_location.clone())
+    };
+    if cut_short == CutShort::HangUp {
+        let _ = write.shutdown().await;
+        return;
+    }
     let text = answer.to_string();
+    // A 429 asks for no wait, so tests that slow down stay fast.
+    let retry = if status == 429 {
+        "Retry-After: 0\r\n".to_string()
+    } else {
+        String::new()
+    };
+    let location = match location {
+        Some(location) if (300..400).contains(&status) => format!("Location: {location}\r\n"),
+        _ => String::new(),
+    };
+    // A truncated answer promises more body than it sends.
+    let length = text.len()
+        + if cut_short == CutShort::Truncated {
+            64
+        } else {
+            0
+        };
     let response = format!(
-        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-        text.len()
+        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{retry}{location}Content-Length: {length}\r\nConnection: close\r\n\r\n{text}"
     );
     let _ = write.write_all(response.as_bytes()).await;
     let _ = write.shutdown().await;
@@ -329,6 +384,27 @@ fn route(
             if let Some(error) = state.device_error {
                 return (400, json!({"error": error}));
             }
+            let (access, refresh) = mint(state);
+            (
+                200,
+                json!({"access_token": access, "refresh_token": refresh,
+                       "access_token_expires_at": "2099-01-01T00:00:00Z",
+                       "api_url": format!("{site}/cloud")}),
+            )
+        }
+        ("POST", "/auth/enrollment/token") => {
+            if state.enrollment_slow_downs > 0 {
+                state.enrollment_slow_downs -= 1;
+                return (429, json!({"error": "slow_down"}));
+            }
+            let key = body["enrollment_key"].as_str();
+            if key.is_none() || key != state.enrollment_key.as_deref() {
+                return (
+                    400,
+                    json!({"error": "invalid_grant", "error_description": "key revoked"}),
+                );
+            }
+            state.enrollment_key = None;
             let (access, refresh) = mint(state);
             (
                 200,
