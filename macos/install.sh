@@ -122,6 +122,16 @@ EOF
 
 note() { printf '%s: %s\n' "$SCRIPT_NAME" "$*"; }
 die() { printf '%s: error: %s\n' "$SCRIPT_NAME" "$*" >&2; exit 1; }
+# A timeout is read as arithmetic later: refuse anything but a whole number
+# (and one too long to add) here, before a lock or a file changes. 10# keeps a
+# leading zero from reading as octal.
+whole_seconds() { # variable-name value
+  case "$2" in
+    ""|*[!0-9]*) die "$1 must be a whole number of seconds, not \"$2\"" ;;
+  esac
+  [ "${#2}" -le 6 ] || die "$1 must be at most 999999 seconds, not \"$2\""
+  printf '%s\n' "$((10#$2))"
+}
 run() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '%s: would run: %s\n' "$SCRIPT_NAME" "$*"
@@ -142,6 +152,10 @@ while [ $# -gt 0 ]; do
     *) usage >&2; exit 2 ;;
   esac
 done
+
+# Read after the options, so --help still prints usage with a bad timeout set.
+HEALTH_TIMEOUT="$(whole_seconds AGENT_RELAY_HEALTH_TIMEOUT "$HEALTH_TIMEOUT")"
+STOP_TIMEOUT="$(whole_seconds AGENT_RELAY_STOP_TIMEOUT "$STOP_TIMEOUT")"
 
 [ "$(uname -s)" = Darwin ] || die "this installs the macOS core; on Linux use linux/install.sh"
 [ -n "${HOME:-}" ] || die "HOME is not set"
