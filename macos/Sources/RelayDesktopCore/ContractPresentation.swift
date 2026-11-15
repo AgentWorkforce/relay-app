@@ -131,6 +131,7 @@ extension SessionKind {
         case .copilot: return "Copilot"
         case .openclaw: return "OpenClaw"
         case .hermes: return "Hermes"
+        case .droid: return "Factory Droid"
         case .pi: return "Pi"
         case .omp: return "Oh My Pi"
         case .unknown(let kind): return kind
@@ -150,6 +151,7 @@ extension SessionKind {
         case .copilot: return "copilot"
         case .openclaw: return "openclaw"
         case .hermes: return "hermes"
+        case .droid: return "droid"
         case .pi: return "pi"
         case .omp: return "omp"
         case .unknown(let kind): return kind
@@ -200,7 +202,7 @@ extension Target {
         case .codex, .claudeTerminal, .grok, .grokOpen, .opencode, .opencodeOpen, .museOpen, .devin, .copilot:
             return "\(kind.source):\(id)"
         // Cursor CLI transcripts are not collected yet.
-        case .claudeCloud, .openclaw, .hermes, .pi, .omp, .cursorCli, .unknown: return nil
+        case .claudeCloud, .openclaw, .hermes, .droid, .pi, .omp, .cursorCli, .unknown: return nil
         }
     }
 }

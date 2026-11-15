@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Bundled core updated to Agent Relay 18.7.3.** The desktop core now ships relay 18.7.3, whose Muse courier answers terminal queries, waits for Muse to start, and logs why a delivery failed. Factory Droid sessions the core runs are now named "Factory Droid" in session lists on macOS and on Linux and Windows.
 - **Co-branding reaches Linux and Windows.** With a customer mark in its branding archive and a `DESKTOP_COBRAND_NAME`, the Linux and Windows sign-in window says "for <customer>" under the Agent Relay lockup, as macOS does since v2026.11.7; their signed-out menu is text only and the Windows installer has no artwork.
 - **macOS: reinstalling right after `install.sh --uninstall` no longer fails.** On macOS, `macos/install.sh --uninstall` now waits, up to a minute in all, for the core and the session collector it started to exit before it finishes, so running the installer again straight away no longer stops at "could not verify local history compatibility". If either is still running after that, it says so. It does not wait for the app's or another install's collectors.
 - **macOS: the headless installer rejects a malformed timeout.** On macOS, `macos/install.sh` now refuses an `AGENT_RELAY_STOP_TIMEOUT` or `AGENT_RELAY_HEALTH_TIMEOUT` that is not a whole number of seconds with a clear error before it changes anything, instead of failing part-way through.

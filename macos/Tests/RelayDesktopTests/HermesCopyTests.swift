@@ -16,4 +16,11 @@ final class HermesCopyTests: XCTestCase {
         XCTAssertEqual(SessionKind.hermes.source, "hermes")
         XCTAssertNil(Target(id: "relay", kind: .hermes).uploadKey)
     }
+
+    func testSessionKindNamesFactoryDroid() {
+        XCTAssertEqual(SessionKind(rawValue: "droid"), .droid)
+        XCTAssertEqual(SessionKind.droid.label, "Factory Droid")
+        XCTAssertEqual(SessionKind.droid.source, "droid")
+        XCTAssertNil(Target(id: "relay", kind: .droid).uploadKey)
+    }
 }
