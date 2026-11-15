@@ -99,10 +99,15 @@ fn spawn_harnesses_are_listed_by_name() {
     assert_eq!(list(&[]), "agents");
     assert_eq!(list(&["codex"]), "Codex");
     assert_eq!(list(&["codex", "claude"]), "Codex and Claude");
-    // One the core does not describe is capitalized.
+    // One the core describes uses the core's label.
     assert_eq!(
         list(&["codex", "claude", "droid"]),
-        "Codex, Claude and Droid"
+        "Codex, Claude and Factory Droid"
+    );
+    // One the core does not describe is capitalized.
+    assert_eq!(
+        list(&["codex", "claude", "cursor"]),
+        "Codex, Claude and Cursor"
     );
     assert_eq!(spawn_harness_label("droid", &[]), "Droid");
     assert_eq!(spawn_harness_label("codex", &[]), "Codex");
