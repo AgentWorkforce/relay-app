@@ -14,6 +14,10 @@ inputs:
   discard-profile:
     description: Unused Cargo profile to drop from restored seeds (debug, release or none)
     required: true
+  save:
+    description: Save the cache after the job ('false' restores only, for runs that build unreviewed code)
+    required: false
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -28,6 +32,7 @@ runs:
         # partial lockfile match, from a complete miss. cache-hit alone only
         # reports exact matches and cannot safely guard the legacy restore.
         cache-directories: ${{ runner.temp }}/relay-rust-cache/${{ inputs.legacy-key }}-${{ inputs.lane }}
+        save-if: ${{ inputs.save }}
     - name: Check whether the lane needs its legacy seed
       id: seed
       shell: bash

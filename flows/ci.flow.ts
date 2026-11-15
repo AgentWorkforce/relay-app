@@ -56,6 +56,7 @@ function jobs(dir: string, lanes: Lanes, linux: boolean, xcode: boolean, flows: 
       steps: [
         { name: "open source", command: "bash scripts/check-open-source.sh" },
         { name: "release notes tooling", command: "python3 scripts/test_release_notes.py && python3 scripts/test_release_version.py" },
+        { name: "fast path safety", command: "python3 scripts/test_fast_path.py" },
       ],
     },
     { name: "rust", steps: rustSteps(lanes, linux, dir) },

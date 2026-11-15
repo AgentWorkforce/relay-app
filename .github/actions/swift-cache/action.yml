@@ -7,6 +7,14 @@ inputs:
   lane:
     description: Isolated package or tests build lane
     required: true
+  source-sha:
+    description: Commit the build is from (defaults to the workflow commit)
+    required: false
+    default: ${{ github.sha }}
+  save:
+    description: Save the cache after the job ('false' restores only, for runs that build unreviewed code)
+    required: false
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -16,10 +24,19 @@ runs:
       run: |
         identity=$( { swift --version; xcodebuild -version; xcrun --show-sdk-version; } | shasum -a 256 | cut -d ' ' -f 1)
         echo "identity=$identity" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: macos/.build
-        key: swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}-${{ github.sha }}
+        key: swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}-${{ inputs.source-sha }}
+        restore-keys: |
+          swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}-
+          swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-
+    - if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: macos/.build
+        key: swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}-${{ inputs.source-sha }}
         restore-keys: |
           swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}-
           swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-

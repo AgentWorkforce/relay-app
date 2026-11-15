@@ -1,0 +1,620 @@
+# Fast path: run Desktop CI's checks on Blacksmith runners, outside the shared
+# GitHub-hosted queue, when an urgent fix cannot wait. Anyone with write
+# access (people or agents) may start it; nothing runs until Khaliq approves
+# the fast-path environment.
+#
+# What it covers, for the commit `ref` resolves to:
+#   - Linux (x64): the public source check, the shell/script/tooling tests,
+#     the probe lane (desktop-core and GTK tests without a window, the
+#     code-quality ratchet, the generated contract), the Zig-built core checked
+#     against glibc 2.34, the GTK suite on Ubuntu 22.04 (GTK 4.6) including the
+#     real-core end-to-end and startup smoke tests, and an unsigned Linux
+#     package build.
+#   - macOS arm64: the Swift tests, native visibility and the desktop core
+#     tests.
+#   - Windows x64: the GTK app and desktop core tests under MSYS2.
+# What it does not cover, and why:
+#   - Linux arm64, macOS x64 (Intel) and Windows arm64. Blacksmith has no
+#     Intel macOS or Windows arm64 runners; the arm64 Linux lanes are left to
+#     main's full matrix like a pull request's run.
+#   - The unsigned macOS and Windows packages, and every signed or published
+#     artifact. A release needs every architecture and signing, so there is no
+#     fast-path release: Desktop Release stays the only way to publish.
+# It publishes nothing and moves no tag or channel, and every cache it uses is
+# restore-only, so an unreviewed ref never seeds a cache CI or Release reads.
+# Desktop CI is unchanged.
+name: fast-path
+run-name: fast-path ${{ inputs.ref }} (${{ inputs.reason }})
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to check (a review branch is fine)
+        required: true
+        default: main
+      reason:
+        description: Why this needs the fast path
+        required: true
+permissions:
+  contents: read
+# Keyed by run too: a run waiting for approval must not be replaced by a
+# later dispatch of the same ref.
+concurrency:
+  group: fast-path-${{ inputs.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+env:
+  CI_PROBE_VERSION: '0.0.0'
+  # Same loopback site as Desktop CI's Linux end-to-end test.
+  E2E_SITE_URL: http://127.0.0.1:29147
+jobs:
+  # Approval gate: resolves the ref once and runs the public source check.
+  source:
+    name: Public source check
+    environment: fast-path
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Resolve the commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check nothing internal is in the public source
+        run: bash scripts/check-open-source.sh
+
+  shellcheck:
+    name: Shell scripts
+    needs: source
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck
+
+      - name: Lint the packaging scripts
+        run: |
+          shellcheck scripts/*.sh linux/agent-relay.postinst macos/install.sh
+          shellcheck -x scripts/dev-reload.sh
+
+      - name: Test probe bridge validation
+        run: bash scripts/test-probe-bridge.sh
+
+      - name: Test CI change detection and snapshot reuse
+        run: |
+          python3 scripts/test_ci_changes.py
+          python3 scripts/test_ci_reuse.py
+
+      - name: Test the release notes tooling
+        run: |
+          python3 scripts/test_release_notes.py
+          python3 scripts/test_release_version.py
+          python3 scripts/test_release_workflow.py
+          python3 scripts/test_release_candidate.py
+          python3 scripts/test_release_workflow_cloud.py
+          python3 scripts/test_desktop_feed_publish.py
+          python3 scripts/test_desktop_feed_checks.py
+          python3 scripts/test_package_windows.py
+          python3 scripts/test_build_windows.py
+
+      - name: Test the Linux probe glibc floor check
+        run: bash scripts/test-glibc-floor.sh
+
+      - name: Test the Linux installer
+        run: bash scripts/test-linux-install.sh
+
+      - name: Test the macOS installer
+        run: bash scripts/test-macos-install.sh
+
+      - name: Test the pull-model operator script
+        run: bash scripts/test-agent-relay-desktop-update.sh
+
+      - name: Lint the agent lane scripts
+        run: shellcheck agent/*.sh
+
+      - name: Set up Node.js for the agent flows
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Check the agent flows
+        run: |
+          npm --prefix flows ci --no-audit --no-fund --ignore-scripts
+          npm --prefix flows run -s check
+
+  probe:
+    name: Probe
+    needs: source
+    # The heaviest Rust lane (two crates' tests plus rust-oleum).
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Test Cargo binary target selection
+        run: python3 scripts/test_cargo_target_selection.py
+
+      - name: Test the platform-only Cargo test boundary
+        run: python3 scripts/test_platform_cargo.py
+
+      - name: Cache the desktop core build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: desktop-core -> ../target
+          # Restore only: this run builds unreviewed code.
+          save-if: 'false'
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Test dependency cache pruning
+        run: node --test .github/actions/windows-build-cache-prune/main.test.cjs
+
+      - name: Test the mobile build inventory
+        run: node --test scripts/mobile-build-inventory.test.mjs
+
+      - name: Test the site normalization the build scripts share
+        run: |
+          bash scripts/test-site-origin.sh
+          bash scripts/test-build-scripts.sh
+          bash scripts/test-crate-overrides.sh
+          bash scripts/test-build-app-options.sh
+          python3 scripts/test_dev_reload.py
+
+      - name: Test the app without its window
+        run: bash scripts/test-platform-cargo.sh --manifest-path gtk/Cargo.toml --locked
+
+      - name: Test the desktop core
+        run: bash scripts/test-platform-cargo.sh --manifest-path desktop-core/Cargo.toml --locked
+
+      - name: Check the core and app lockfiles agree
+        run: |
+          python3 scripts/test_lock_parity.py
+          python3 scripts/check-lock-parity.py
+
+      - name: Install rust-oleum
+        run: cargo install rust-oleum --version 0.4.0 --locked
+
+      - name: Check the app's code-quality ratchet
+        working-directory: gtk
+        run: rust-oleum --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the desktop core's code-quality ratchet
+        working-directory: desktop-core
+        run: rust-oleum --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the generated contract
+        run: |
+          scripts/generate-contract.sh
+          git diff --exit-code
+
+  linux-core:
+    name: Linux core (x64)
+    needs: source
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      GLIBC_FLOOR: "2.34"
+      ZIG_VERSION: "0.13.0"
+      ZIG_SHA256: d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
+      CARGO_ZIGBUILD_VERSION: "0.23.4"
+      SHA: ${{ needs.source.outputs.sha }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache the Zig-built probe
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-linux-probe-zig-v1-x64-linux-probe-glibc
+          workspaces: desktop-core -> ../target
+          # Restore only: this run builds unreviewed code.
+          save-if: 'false'
+
+      - name: Install zig and cargo-zigbuild
+        run: |
+          set -euo pipefail
+          archive="zig-linux-x86_64-$ZIG_VERSION.tar.xz"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/$archive" -o "$RUNNER_TEMP/$archive"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${archive%.tar.xz}" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION"
+
+      # No analytics configuration: this is never a release build.
+      - name: Build the probe against glibc 2.34
+        run: |
+          scripts/build-probe.sh \
+            --target x86_64-unknown-linux-gnu \
+            --version "$CI_PROBE_VERSION" \
+            --glibc "$GLIBC_FLOOR" \
+            --out probe-build
+
+      - name: Check the probe's glibc floor
+        run: scripts/check-glibc-floor.sh probe-build/agent-relay-probe --max "$GLIBC_FLOOR"
+
+      - name: Record the checked core identity
+        run: |
+          printf '%s\n' "$SHA" > probe-build/source-revision.txt
+          printf '%s\n' x86_64-unknown-linux-gnu > probe-build/rust-target.txt
+
+      - name: Upload the checked Linux core
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-linux-core-x64-${{ needs.source.outputs.sha }}
+          path: probe-build/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  linux-tests:
+    name: Linux tests (x64)
+    needs: [source, linux-core]
+    # Ubuntu 22.04 ships GTK 4.6, the oldest the app runs on (Desktop CI uses
+    # this runner for the same lane).
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    env:
+      GLIBC_FLOOR: "2.34"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install GTK 4 and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev librsvg2-common pkg-config xvfb
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache the probe build
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: linux-gtk4-x64-linux
+          workspace: gtk
+          lane: tests
+          discard-profile: release
+          save: 'false'
+
+      - name: Download the checked Linux core
+        uses: ./.github/actions/linux-core-artifact
+        with:
+          arch: x64
+          rust-target: x86_64-unknown-linux-gnu
+          probe-version: ${{ env.CI_PROBE_VERSION }}
+          source-sha: ${{ needs.source.outputs.sha }}
+
+      - name: Build and test the native visibility host
+        run: |
+          cargo build --manifest-path desktop-core/Cargo.toml --locked --example native_visibility_host
+          bash scripts/test-platform-cargo.sh --manifest-path desktop-core/Cargo.toml --locked --example native_visibility_host
+
+      - name: Test the app's wording and state
+        run: bash scripts/test-platform-cargo.sh --manifest-path gtk/Cargo.toml --locked --features gtk --lib
+
+      - name: Check the app's glibc floor in its tests
+        run: |
+          set -euo pipefail
+          test_binary="$(cargo test --manifest-path gtk/Cargo.toml --locked --features gtk --lib --no-run --message-format=json |
+            python3 -c 'import json, sys
+          found = [m["executable"] for m in map(json.loads, sys.stdin)
+                   if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "agent_relay_app"
+                   and m["profile"]["test"] and m.get("executable")]
+          sys.exit(f"expected one agent_relay_app test binary, got {found}") if len(found) != 1 else print(found[0])')"
+          scripts/check-glibc-floor.sh "$test_binary" --max "$GLIBC_FLOOR"
+
+      - name: Test the app's window
+        env:
+          RELAY_NATIVE_VISIBILITY_ARTIFACTS: ${{ runner.temp }}/native-visibility
+        run: |
+          export RELAY_NATIVE_VISIBILITY_HOST="$GITHUB_WORKSPACE/target/debug/examples/native_visibility_host"
+          export RELAY_NATIVE_VISIBILITY_PROBE="$GITHUB_WORKSPACE/probe-build/agent-relay-probe"
+          xvfb-run -a bash scripts/test-platform-cargo.sh --manifest-path gtk/Cargo.toml --locked --features gtk --test linux_app_gtk
+
+      - name: Upload native visibility evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fast-path-native-visibility-linux-x64-${{ needs.source.outputs.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-visibility
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Build a core for the fake Cloud
+        env:
+          AGENT_RELAY_SITE_URL: ${{ env.E2E_SITE_URL }}
+        run: cargo build --manifest-path desktop-core/Cargo.toml --locked --bin agent-relay-desktop-probe
+
+      - name: Test the app against the real core
+        env:
+          RELAY_E2E_PROBE: ${{ github.workspace }}/target/debug/agent-relay-desktop-probe
+          RELAY_E2E_SITE_URL: ${{ env.E2E_SITE_URL }}
+          RELAY_E2E_CHECKED_PROBE: ${{ github.workspace }}/probe-build/agent-relay-probe
+        run: bash scripts/test-platform-cargo.sh --manifest-path gtk/Cargo.toml --locked --features gtk --test linux_app_core_e2e -- --nocapture
+
+      - name: Smoke test the app's startup
+        env:
+          RELAY_DESKTOP_PROBE: ${{ github.workspace }}/target/debug/agent-relay-fake-core
+          AGENT_RELAY_CORE_SOCKET: ${{ runner.temp }}/gtk-core/core.sock
+          FAKE_CORE_LOG: ${{ runner.temp }}/gtk-fake-core-calls.txt
+        run: |
+          setsid xvfb-run --auto-servernum ./target/debug/agent-relay --background &
+          app=$!
+          for _ in $(seq 240); do
+            grep -qx subscribe "$FAKE_CORE_LOG" 2>/dev/null && grep -qx telemetry.record "$FAKE_CORE_LOG" && break
+            kill -0 "$app" || break
+            sleep 0.25
+          done
+          cat "$FAKE_CORE_LOG" || true
+          grep -qx subscribe "$FAKE_CORE_LOG"
+          grep -qx telemetry.record "$FAKE_CORE_LOG"
+          sleep 2
+          kill -0 "$app"
+          kill -- -"$app"
+          wait "$app" || true
+          for _ in $(seq 40); do
+            pgrep -x agent-relay >/dev/null || break
+            sleep 0.25
+          done
+          ! pgrep -x agent-relay
+
+  # Unsigned build check only: the packages are not uploaded.
+  linux-package:
+    name: Linux package (x64)
+    needs: [source, linux-core]
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    env:
+      GLIBC_FLOOR: "2.34"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install GTK 4 and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev librsvg2-common pkg-config xvfb
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache the probe build
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: linux-gtk4-x64-linux
+          workspace: gtk
+          lane: package
+          discard-profile: debug
+          save: 'false'
+
+      - name: Download the checked Linux core
+        uses: ./.github/actions/linux-core-artifact
+        with:
+          arch: x64
+          rust-target: x86_64-unknown-linux-gnu
+          probe-version: ${{ env.CI_PROBE_VERSION }}
+          source-sha: ${{ needs.source.outputs.sha }}
+
+      - name: Build the app
+        run: scripts/build-gtk.sh --version "$CI_PROBE_VERSION" --out app-build
+
+      - name: Check the app's glibc floor
+        run: scripts/check-glibc-floor.sh app-build/agent-relay --max "$GLIBC_FLOOR"
+
+      - name: Build Linux packages
+        run: |
+          scripts/build-linux.sh --version "$CI_PROBE_VERSION" --arch x64 \
+            --app app-build/agent-relay --probe probe-build/agent-relay-probe --out out
+
+  macos-swift-tests:
+    name: macOS Swift tests (arm64)
+    needs: source
+    runs-on: blacksmith-6vcpu-macos-15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Cache the Swift test build
+        uses: ./.github/actions/swift-cache
+        with:
+          arch: arm64
+          lane: tests
+          source-sha: ${{ needs.source.outputs.sha }}
+          save: 'false'
+
+      - name: Test the Swift package
+        env:
+          REQUEST_RENDER_DIR: ${{ runner.temp }}/desktop-ui-fixtures
+          SESSION_COLUMNS_PREVIEW: ${{ runner.temp }}/desktop-ui-fixtures
+        run: |
+          mkdir -p "$SESSION_COLUMNS_PREVIEW"
+          swift test --package-path macos
+
+      - name: Test the shared session overview package
+        run: swift test --package-path shared/RelaySessionOverview
+
+      - name: Install the Rust toolchain for native visibility
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache native visibility builds
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: probe-arm64-macos
+          workspace: desktop-core
+          lane: native-visibility
+          discard-profile: none
+          save: 'false'
+
+      - name: Build the collector for native visibility
+        run: scripts/build-probe.sh --target aarch64-apple-darwin --version 0.0.0 --out probe-build
+
+      - name: Test newly started threads in the native app
+        env:
+          RELAY_NATIVE_VISIBILITY_HOST: ${{ github.workspace }}/target/debug/examples/native_visibility_host
+          RELAY_NATIVE_VISIBILITY_PROBE: ${{ github.workspace }}/probe-build/agent-relay-probe
+          RELAY_NATIVE_VISIBILITY_ARTIFACTS: ${{ runner.temp }}/native-visibility
+        run: |
+          cargo build --manifest-path desktop-core/Cargo.toml --locked --example native_visibility_host
+          cargo test --manifest-path desktop-core/Cargo.toml --locked --example native_visibility_host
+          swift test --package-path macos --filter NativeVisibilityTests
+
+  macos-core-tests:
+    name: macOS core tests (arm64)
+    needs: source
+    runs-on: blacksmith-6vcpu-macos-15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache the probe build
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: probe-arm64-macos
+          lane: tests
+          discard-profile: release
+          save: 'false'
+
+      - name: Test the desktop core
+        run: bash scripts/test-platform-cargo.sh --manifest-path desktop-core/Cargo.toml --locked --lib
+
+  windows-tests:
+    name: Windows tests (x64)
+    needs: source
+    # Blacksmith Windows is a public beta with x64 only.
+    runs-on: blacksmith-4vcpu-windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CARGO_HOME: C:\ch
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_DEV_OVERFLOW_CHECKS: 'true'
+      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: 'true'
+    steps:
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install the Windows toolchain
+        id: toolchain
+        uses: ./.github/actions/windows-toolchain
+        with:
+          msystem: CLANG64
+          save: 'false'
+
+      - name: Cache the Cargo test dependencies
+        id: build-cache
+        uses: ./.github/actions/windows-build-cache
+        with:
+          arch: x64
+          profile: debug
+          toolchain: ${{ steps.toolchain.outputs.identity }}
+          save: 'false'
+
+      - name: Test the desktop core's platform paths and session discovery
+        run: 'cargo test --manifest-path desktop-core/Cargo.toml --locked --lib -- mcp_settings:: install:: login_item:: history::probe::inventory:: history::probe::history::wsl:: history::probe::history::wsl_capture:: history::probe::history::extra_claude::'
+
+      - name: Test the app's wording and state
+        run: cargo test --manifest-path gtk/Cargo.toml --locked --no-default-features --features gtk --lib
+
+      - name: Test the app's window
+        run: cargo test --manifest-path gtk/Cargo.toml --locked --no-default-features --features gtk --test linux_app_gtk
+
+      - name: Test the app's hosting of the core
+        run: cargo test --manifest-path gtk/Cargo.toml --locked --no-default-features --features gtk --test linux_app_hosting
+
+      - name: Check the Windows entrypoints
+        run: |
+          cargo check --manifest-path gtk/Cargo.toml --locked --features gtk --bins
+          cargo check --manifest-path desktop-core/Cargo.toml --locked --bins
+
+  summary:
+    name: Summary
+    needs: [source, shellcheck, probe, linux-core, linux-tests, linux-package, macos-swift-tests, macos-core-tests, windows-tests]
+    if: always() && needs.source.result == 'success'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Summarize the checks
+        env:
+          REF: ${{ inputs.ref }}
+          SHA: ${{ needs.source.outputs.sha }}
+          REASON: ${{ inputs.reason }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo "### relay-app fast path"
+            echo "- ref: \`$REF\` at \`$SHA\`"
+            echo "- reason: $REASON"
+            echo "- published: nothing (checks only; Desktop Release is the only way to publish)"
+            echo "- not covered: Linux arm64, macOS x64, Windows arm64, macOS/Windows packages, signing"
+            echo
+            echo "| job | result |"
+            echo "| --- | --- |"
+            printf '%s' "$RESULTS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s' "$RESULTS" | jq -e 'all(.[]; .result == "success")' >/dev/null

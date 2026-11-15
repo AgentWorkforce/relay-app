@@ -4,6 +4,10 @@ inputs:
   msystem:
     description: MSYS2 environment matching the runner architecture
     required: true
+  save:
+    description: Save the cache after the job ('false' restores only, for runs that build unreviewed code)
+    required: false
+    default: 'true'
 outputs:
   identity:
     description: Fingerprint of the installed compiler and native dependencies
@@ -88,7 +92,18 @@ runs:
         identity=$( { rustc -vV; clang --version; pacman -Q; } | sha256sum | cut -d ' ' -f 1)
         echo "value=$identity" >> "$(cygpath -u "$GITHUB_OUTPUT")"
     - name: Cache downloaded Cargo sources
+      if: inputs.save == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          C:\ch\registry\index
+          C:\ch\registry\cache
+          C:\ch\git\db
+        key: windows-cargo-sources-v2-${{ hashFiles('gtk/Cargo.lock', 'desktop-core/Cargo.lock') }}
+        restore-keys: windows-cargo-sources-v2-
+    - name: Restore downloaded Cargo sources without saving
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           C:\ch\registry\index
