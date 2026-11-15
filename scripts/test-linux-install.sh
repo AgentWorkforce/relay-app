@@ -94,8 +94,27 @@ PY
 fi
 if [ "\$1" = "setup" ]; then
   printf '%s\n' "\$*" >> "$root/state/setup-calls"
-  [ "\$2" = --help ] || { echo "installer must not start onboarding" >&2; exit 99; }
-  echo 'Usage: agent-relay-probe setup [OPTIONS]'
+  if [ "\$2" = --help ]; then
+    if [ "\${FAKE_SETUP_NO_ENROLLMENT:-0}" = 1 ]; then
+      echo 'Usage: agent-relay-probe setup [OPTIONS]'
+    else
+      echo 'Usage: agent-relay-probe setup [--enrollment-key-file PATH|-]'
+    fi
+    exit 0
+  fi
+  [ "\$#" = 4 ] && [ "\$2" = --enrollment-key-file ] && [ "\$4" = --non-interactive ] \
+    || { echo "unexpected setup arguments" >&2; exit 99; }
+  if [ "\$3" = - ]; then enrollment_key="\$(cat)"; touch "$root/state/setup-read-stdin"
+  else enrollment_key="\$(cat "\$3")"
+  fi
+  case "\$enrollment_key" in sh_ek_*) ;; *) echo 'invalid enrollment fixture' >&2; exit 98 ;; esac
+  case "\${FAKE_SETUP_STATUS:-0}" in
+    2) echo 'Approve this server with the displayed device code.'; exit 2 ;;
+    1) echo 'The enrollment key was not accepted.'; exit 1 ;;
+  esac
+  [ "\$3" = - ] || [ "\${FAKE_SETUP_LEAVE_KEY:-0}" = 1 ] || rm -f "\$3"
+  touch "$root/state/setup-complete"
+  echo 'Agent Relay setup is complete.'
   exit 0
 fi
 if [ "\$1 \$2" = "call status.get" ]; then
@@ -195,6 +214,25 @@ data="$XDG_DATA_HOME/com.agentrelay.desktop"
 mkdir -p "$data" && echo '{"cloudSession":"kept"}' > "$data/injectable-agents.json"
 data_sum="$(sha256sum "$data/injectable-agents.json")"
 
+if bash "$INSTALL" --enrollment-key-file '' > "$root/state/out" 2>&1; then
+  fail "an empty enrollment-key path was accepted"
+fi
+grep -q 'needs a non-empty path' "$root/state/out" || fail "the empty enrollment-key path was not explained"
+if bash "$INSTALL" --rollback --enrollment-key-file "$root/state/unused-key" > "$root/state/out" 2>&1; then
+  fail "--rollback accepted an explicit enrollment-key path"
+fi
+grep -q -- '--rollback takes no --enrollment-key-file' "$root/state/out" \
+  || fail "the explicit enrollment-key refusal on --rollback was not explained"
+
+if bash -s -- --enrollment-key-file - < "$INSTALL" > "$root/state/out" 2>&1; then
+  fail "a piped installer accepted the script itself as an enrollment key"
+fi
+grep -q 'cannot share stdin with curl | bash' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the piped stdin-key refusal was not explained"; }
+[ ! -e "$HOME/.local/lib/agent-relay" ] \
+  || fail "the refused piped stdin-key install changed the installation"
+pass "argument errors and curl-piped stdin enrollment are refused before changing anything"
+
 ARCHIVE_EXTRA=none release 1.0.0; release 1.1.0; release 1.2.0; release 1.3.0 broken; release 0.9.0 broken; release 1.4.0
 echo 1.0.0 > "$root/state/latest"
 bash "$INSTALL" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "install failed"; }
@@ -206,6 +244,89 @@ grep -Fq "$HOME/.local/lib/agent-relay/current/agent-relay-probe setup" "$root/s
 grep -q 'browser on any computer' "$root/state/out" || fail "remote approval instructions missing"
 [ "$(cat "$root/state/setup-calls")" = "setup --help" ] || fail "installer ran onboarding instead of only showing instructions"
 pass "first install enables and starts 1.0.0"
+
+enrollment_key='sh_ek_installer-fixture-that-must-never-print'
+key_file="$root/state/enrollment-key-old-core"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+if FAKE_SETUP_NO_ENROLLMENT=1 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1; then
+  fail "a core without enrollment-key setup support was accepted"
+fi
+grep -q 'the installed core does not support enrollment keys' "$root/state/out" \
+  || fail "the old core's missing enrollment support was not explained"
+[ -e "$key_file" ] || fail "the old core refusal removed the enrollment key"
+rm -f "$key_file"
+pass "a core without enrollment-key setup support is refused without using the key"
+
+key_file="$root/state/enrollment-key"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+: > "$root/state/setup-calls"
+before="$(restarts)"
+bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "file enrollment failed"; }
+[ ! -e "$key_file" ] || fail "setup did not delete the exchanged key file"
+[ "$(restarts)" = "$before" ] || fail "enrollment restarted an up-to-date core"
+grep -Fxq "setup --enrollment-key-file $key_file --non-interactive" "$root/state/setup-calls" \
+  || fail "the installer did not pass the key file only to setup"
+grep -q 'enrollment setup complete' "$root/state/out" || fail "successful enrollment was not reported"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "file enrollment printed the key"
+pass "--enrollment-key-file enrolls through setup without putting the key on argv or output"
+
+key_file="$root/state/enrollment-key-fallback"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+fallback_status=0
+FAKE_SETUP_STATUS=2 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1 \
+  || fallback_status=$?
+[ "$fallback_status" = 2 ] \
+  || { cat "$root/state/out"; fail "device fallback exited $fallback_status, not action-required status 2"; }
+[ -e "$key_file" ] || fail "device fallback deleted an unexchanged key file"
+grep -q 'setup still needs the action shown above' "$root/state/out" \
+  || fail "device fallback did not preserve the action-required result"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "device fallback printed the key"
+rm -f "$key_file"
+pass "an older site's device fallback exits 2, keeps the key file and leaves the install usable"
+
+key_file="$root/state/enrollment-key-rejected"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+if FAKE_SETUP_STATUS=1 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1; then
+  fail "a rejected enrollment key reported success"
+fi
+[ -e "$key_file" ] || fail "a rejected exchange deleted the key file"
+[ "$(cat "$root/state/running")" = 1.0.0 ] || fail "an enrollment refusal stopped the installed core"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "enrollment refusal printed the key"
+rm -f "$key_file"
+pass "a rejected enrollment fails safely after installation without deleting the key"
+
+key_file="$root/state/enrollment-key-unused"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+FAKE_SETUP_LEAVE_KEY=1 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "unused enrollment handling failed"; }
+[ -e "$key_file" ] || fail "setup removed the unused enrollment key"
+grep -q 'key file remains because it was unused, changed, or could not be removed' "$root/state/out" \
+  || fail "the installer claimed an unused key was exchanged"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "unused enrollment printed the key"
+rm -f "$key_file"
+pass "an already-signed-in install reports that its enrollment key remains unused"
+
+key_file="$root/state/enrollment-key-env"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+AGENT_RELAY_ENROLLMENT_KEY_FILE="$key_file" bash "$INSTALL" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "environment enrollment failed"; }
+[ ! -e "$key_file" ] || fail "the environment-selected key file was not deleted"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "environment enrollment printed the key"
+pass "AGENT_RELAY_ENROLLMENT_KEY_FILE selects the same one-time setup path"
+
+rm -f "$root/state/setup-read-stdin"
+printf '%s\n' "$enrollment_key" | bash "$INSTALL" --enrollment-key-file - > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "stdin enrollment failed"; }
+[ -f "$root/state/setup-read-stdin" ] || fail "setup did not receive the key on stdin"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "stdin enrollment printed the key"
+pass "a file-invoked installer can pass an enrollment key from stdin"
 
 before="$(restarts)"
 bash "$INSTALL" > "$root/state/out" 2>&1 || fail "rerun failed"
@@ -253,9 +374,14 @@ if bash "$INSTALL" --version 1.4.0 >/dev/null 2>&1; then fail "a refused restart
 [ "$(cat "$root/state/running")" = 1.1.0 ] || fail "1.1.0 is not running after a refused restart"
 pass "a restart systemd refuses is rolled back"
 
-bash "$INSTALL" --rollback >/dev/null
+ambient_key="$root/state/enrollment-key-ambient-rollback"
+printf '%s\n' "$enrollment_key" > "$ambient_key"
+chmod 0600 "$ambient_key"
+AGENT_RELAY_ENROLLMENT_KEY_FILE="$ambient_key" bash "$INSTALL" --rollback >/dev/null
 [ "$(current)" = 1.0.0 ] || fail "rollback picked $(current)"
-pass "--rollback switches to an earlier version ($(current))"
+[ -e "$ambient_key" ] || fail "--rollback used an ambient enrollment-key setting"
+rm -f "$ambient_key"
+pass "--rollback switches to an earlier version and ignores an ambient enrollment-key setting"
 
 # With 1.0.0, 1.1.0 and 1.2.0 installed, rollbacks only go back: 1.2.0 ->
 # 1.1.0 -> 1.0.0, then there is nothing earlier and nothing changes.

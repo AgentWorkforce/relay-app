@@ -114,6 +114,7 @@ publishes it as `install-macos.sh`:
 
 ```sh
 curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash -s -- --enrollment-key-file /private/path/to/key
 ~/.local/lib/agent-relay/current/agent-relay-probe setup
 ```
 
@@ -129,11 +130,17 @@ refuses while the app is installed. Run it with `--uninstall` before
 installing the app; settings and sign-in are kept. See
 [macos/README.md](../macos/README.md#headless-no-app).
 
-For unattended installs on macOS and Linux, `setup --enrollment-key-file
-<path|->` signs in with a per-employee enrollment key an administrator minted,
-instead of device approval; see
+For unattended installs on macOS and Linux, the installers accept
+`--enrollment-key-file PATH` (or the path-only
+`AGENT_RELAY_ENROLLMENT_KEY_FILE` environment variable) and finish setup with
+the per-employee enrollment key an administrator minted. The equivalent
+standalone command is `setup --enrollment-key-file <path|->`; see
 [linux/README.md](../linux/README.md) for the full behaviour. Device approval
-stays the default and the fallback for a site without enrollment keys.
+stays the default and the fallback for a site without enrollment keys. The
+enrollment key removes browser approval; on macOS it does not remove the
+LaunchAgent's login-session requirement. When fallback needs device approval,
+the install stays usable and the installer exits 2 to report the required
+action.
 
 ## Scriptable Windows installation
 
@@ -462,19 +469,21 @@ Enrollment keys are a third flow, carried by the bridge's `account.sign_in`
 travels by file path, never in the request, and the core reads the file
 itself (a regular file of at most 4 KiB holding only the key, not a symbolic
 link, and on Unix owned by the core's user with mode 0600). It exchanges the
-key once with Agent Relay, with phase `exchanging_enrollment_key`, and deletes
-the file after Agent Relay answers 200, unless the path no longer holds the
-file that was read, also when the sign-in was cancelled while the exchange was
-under way. No approval link or code is issued. `setup` waits for the sign-in,
-through the workspace connection that follows the exchange, until it is
-signed in or fails, within `--timeout` and with or without `--wait`. A
+key once with Agent Relay, with phase `exchanging_enrollment_key`, and after
+Agent Relay answers 200 deletes the file if the path still holds the file that
+was read, also when the sign-in was cancelled while the exchange was under
+way. A changed path is left alone, and a removal failure is reported. No
+approval link or code is issued. `setup` waits for the sign-in, through the
+workspace connection that follows the exchange, until it is signed in or
+fails, within `--timeout` and with or without `--wait`. A
 failure ends in state `error` with a phase: `enrollment_key_rejected`, with the
 same message whether the key was wrong, expired, revoked or already used;
 `enrollment_key_busy` once Cloud keeps asking it to slow down after three
 retries; or `enrollment_key_unsupported` from a site that does not offer
 enrollment keys, where the caller starts device approval instead; `setup`
 then prints the device instructions and exits 2 without waiting for approval,
-even with `--wait`, for the caller to rerun it with `--wait`. The file is
+even with `--wait`, for the caller to rerun it with `--wait`; an installer
+invoking setup propagates that status after completing the install. The file is
 kept after any failure that is not a 200; when Agent Relay did not answer
 after the key was sent, the message says the key may have been used. A computer whose sign-in needs renewing renews it with
 device approval.
