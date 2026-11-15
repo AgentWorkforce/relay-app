@@ -185,8 +185,8 @@ impl Grant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Declined {
     /// 404 `history_upload_direct_off`: direct upload is off for this user
-    /// or workspace.
-    Off,
+    /// or workspace, until the time its `Retry-After` names, if any.
+    Off(Option<i64>),
     /// 429 or 503, with the time `Retry-After` asked to wait until.
     Busy(Option<i64>),
     /// 501 `unsupported_by_backend`: the store has no STS, so the same ask
@@ -198,7 +198,7 @@ pub(super) enum Declined {
 impl std::fmt::Display for Declined {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Off => formatter.write_str("direct upload is off"),
+            Self::Off(_) => formatter.write_str("direct upload is off"),
             Self::Busy(_) => formatter.write_str("upload credentials are busy"),
             Self::PresignedOnly => formatter.write_str("only presigned uploads are offered"),
             Self::Unusable(cause) => write!(formatter, "upload credentials unusable: {cause}"),

@@ -19,7 +19,7 @@ use super::super::{
 };
 use super::{
     credentials::{self, Declined, GrantRequest, KeyRequest, Kind},
-    http_agent, sigv4, Call, Kept, PresignedOnly, Upload, CONTROL_TIMEOUT, OFF,
+    http_agent, off_jitter_ms, sigv4, Call, Kept, Off, PresignedOnly, Upload, CONTROL_TIMEOUT, OFF,
 };
 use chrono::Utc;
 use std::sync::Mutex;
@@ -180,10 +180,10 @@ impl Call<'_> {
         }
     }
     /// What a refused ask means: "off" is remembered for the token that
-    /// asked, a busy Control's wait is kept, a store without STS is
-    /// remembered for the session that asked, a refused session or a
-    /// missing workspace route fails the send as a batch POST would, and
-    /// anything else posts this batch.
+    /// asked until it lapses (see [`Off`]), a busy Control's wait is kept,
+    /// a store without STS is remembered for the session that asked, a
+    /// refused session or a missing workspace route fails the send as a
+    /// batch POST would, and anything else posts this batch.
     fn declined(
         &self,
         error: anyhow::Error,
@@ -192,10 +192,18 @@ impl Call<'_> {
         current: bool,
     ) -> Result<Asked> {
         match error.downcast_ref::<Declined>() {
-            Some(Declined::Off) => self.remember(|entry| {
-                entry.off = Some(token);
-                entry.grant = None;
-            }),
+            Some(Declined::Off(asked)) => {
+                let off = Off::heard(
+                    token,
+                    *asked,
+                    Utc::now().timestamp_millis(),
+                    off_jitter_ms(),
+                );
+                self.remember(|entry| {
+                    entry.off = Some(off);
+                    entry.grant = None;
+                });
+            }
             Some(Declined::Busy(at)) => self.remember(|entry| entry.not_before_ms = *at),
             Some(Declined::PresignedOnly) if kind == Kind::Sts && current => {
                 self.remember(|entry| {
@@ -264,6 +272,11 @@ fn control_allowed(url: &str) -> bool {
 fn declined(error: ureq::Error) -> anyhow::Error {
     match error {
         ureq::Error::Status(404, response) => {
+            // An "off" may say when to ask again; any other 404 ignores it.
+            let asked = retry_after::at(
+                response.header("Retry-After"),
+                Utc::now().timestamp_millis(),
+            );
             let body = error_body_bytes(response)
                 .as_deref()
                 .and_then(parse_error_body);
@@ -272,7 +285,7 @@ fn declined(error: ureq::Error) -> anyhow::Error {
                 .as_ref()
                 .and_then(|body| error_field(body).or_else(|| safe_error_code(body)));
             if matches!(code.as_deref(), None | Some(OFF | NO_ROUTE)) {
-                return Declined::Off.into();
+                return Declined::Off(asked).into();
             }
             ReceiverRejection {
                 failure: DeliveryFailure::UnsupportedEvidence,

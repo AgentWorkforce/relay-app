@@ -15,7 +15,8 @@
 //! answers with the kind asked for or an error, so an answer of another
 //! kind is unusable and the batch is posted. A 404
 //! `history_upload_direct_off` keeps the POST path and is remembered for
-//! the session token that asked, as is a 404 showing the API root has no
+//! the session token that asked, for twelve to fifteen minutes or the time
+//! its `Retry-After` names (see `Off`), as is a 404 showing the API root has no
 //! such route (not JSON, no code, or a router's `not_found`: a site whose
 //! Control predates direct uploads); a 404 naming any other code is the
 //! workspace route's own and fails the send as the sync path fails a 404. A 503 or 429 posts
@@ -70,6 +71,15 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RELATIVE_KEY: usize = 512;
 /// The only 404 code that means direct upload is off.
 const OFF: &str = "history_upload_direct_off";
+/// How long Control's "off" is believed when it names no time. A workspace
+/// switched to direct upload server-side is then asked again within this,
+/// rather than when the session token is next replaced (about a day).
+const OFF_FOR_MS: i64 = 12 * 60 * 1_000;
+/// Up to this much is added to [`OFF_FOR_MS`] at random, so desktops told
+/// "off" together do not all ask again at the same moment.
+const OFF_JITTER_MS: u32 = 3 * 60 * 1_000;
+/// The shortest an "off" answer's `Retry-After` may hold off asking again.
+const OFF_AT_LEAST_MS: i64 = 60 * 1_000;
 
 /// Where a receiver asks for upload credentials: Control's API root and the
 /// workspace, and where admission is asked after (the receiver's own base
@@ -106,9 +116,10 @@ impl std::fmt::Debug for Memory {
 }
 #[derive(Default)]
 struct Entry {
-    /// The digest of the session token Control said "off" to: another token
-    /// (a refreshed or new sign-in) asks again.
-    off: Option<String>,
+    /// Control's "off", for the session token it was said to: another
+    /// token (a refreshed or new sign-in) asks again at once, and so does
+    /// the same token once it lapses.
+    off: Option<Off>,
     /// The epoch-ms time a busy Control asked the next request to wait for.
     not_before_ms: Option<i64>,
     /// The last credentials and the session they were asked with: another
@@ -119,6 +130,38 @@ struct Entry {
     presigned: Option<PresignedOnly>,
     /// Whether the one log line for an unusable source was written.
     warned: bool,
+}
+
+/// Control's "off": the digest of the session token that heard it and the
+/// epoch-ms time it lapses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Off {
+    token: String,
+    until_ms: i64,
+}
+impl Off {
+    /// "Off" heard by `token` at `now_ms`: until the time Control's
+    /// `Retry-After` named (`asked`, held to at least [`OFF_AT_LEAST_MS`]),
+    /// else for [`OFF_FOR_MS`] plus `jitter_ms`.
+    fn heard(token: String, asked: Option<i64>, now_ms: i64, jitter_ms: i64) -> Self {
+        let until_ms = match asked {
+            Some(at) => at.max(now_ms.saturating_add(OFF_AT_LEAST_MS)),
+            None => now_ms.saturating_add(OFF_FOR_MS).saturating_add(jitter_ms),
+        };
+        Self { token, until_ms }
+    }
+    /// Whether this "off" still stands for `token` at `now_ms`.
+    fn stands(&self, token: &str, now_ms: i64) -> bool {
+        self.token == token && now_ms < self.until_ms
+    }
+}
+/// A random share of [`OFF_JITTER_MS`]; none when no randomness is at hand.
+fn off_jitter_ms() -> i64 {
+    let mut bytes = [0u8; 4];
+    match getrandom::getrandom(&mut bytes) {
+        Ok(()) => i64::from(u32::from_le_bytes(bytes) % (OFF_JITTER_MS + 1)),
+        Err(_) => 0,
+    }
 }
 
 /// Credentials and the session that obtained them: the digest of its
@@ -416,12 +459,17 @@ impl Call<'_> {
         }
     }
     /// Whether to ask at all: not while Control's "off" stands for this
-    /// session token, nor while it asked to wait. Another token, or a
-    /// session the host replaced, drops what was kept for the last one.
+    /// session token (it lapses after a while, see [`Off`]), nor while it
+    /// asked to wait. Another token, or a session the host replaced, drops
+    /// what was kept for the last one.
     fn usable(&self) -> bool {
         let now = Utc::now().timestamp_millis();
         self.remember(|entry| {
-            if entry.off.as_ref().is_some_and(|off| *off != self.token) {
+            if entry
+                .off
+                .as_ref()
+                .is_some_and(|off| !off.stands(&self.token, now))
+            {
                 entry.off = None;
             }
             if entry
@@ -492,6 +540,48 @@ impl Call<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOW: i64 = 1_793_000_000_000;
+
+    #[test]
+    fn off_lapses_after_its_time_and_never_stands_for_another_token() {
+        let off = Off::heard("t1".into(), None, NOW, 0);
+        assert!(off.stands("t1", NOW));
+        assert!(
+            off.stands("t1", NOW + OFF_FOR_MS - 1),
+            "not asked again before it lapses"
+        );
+        assert!(
+            !off.stands("t1", NOW + OFF_FOR_MS),
+            "asked again once it lapses"
+        );
+        assert!(
+            !off.stands("t2", NOW),
+            "a replaced token asks again at once"
+        );
+    }
+
+    #[test]
+    fn off_without_a_time_lasts_twelve_to_fifteen_minutes() {
+        for _ in 0..64 {
+            let until = Off::heard("t".into(), None, NOW, off_jitter_ms()).until_ms;
+            assert!(
+                (NOW + OFF_FOR_MS..=NOW + OFF_FOR_MS + i64::from(OFF_JITTER_MS)).contains(&until)
+            );
+        }
+    }
+
+    #[test]
+    fn off_keeps_the_time_retry_after_names_but_at_least_a_minute() {
+        assert_eq!(
+            Off::heard("t".into(), Some(NOW + 300_000), NOW, 99).until_ms,
+            NOW + 300_000
+        );
+        assert_eq!(
+            Off::heard("t".into(), Some(NOW + 5_000), NOW, 99).until_ms,
+            NOW + OFF_AT_LEAST_MS
+        );
+    }
 
     #[test]
     fn an_object_over_the_receiver_ceiling_is_never_coded_for_upload() {
