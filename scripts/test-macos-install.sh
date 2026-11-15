@@ -87,8 +87,24 @@ fi
 # Like the real core, it drops the \`relay\` word earlier releases needed.
 [ "\$1" = relay ] && shift
 if [ "\$1" = setup ]; then
-  [ "\$2" = --help ] || { echo "installer must not start onboarding" >&2; exit 99; }
-  echo 'Usage: agent-relay-probe setup [OPTIONS]'
+  printf '%s\n' "\$*" >> "$root/state/setup-calls"
+  if [ "\$2" = --help ]; then
+    echo 'Usage: agent-relay-probe setup [--enrollment-key-file PATH|-]'
+    exit 0
+  fi
+  [ "\$2" = --enrollment-key-file ] && [ "\$4" = --non-interactive ] && [ "\$5" = --wait ] \
+    || { echo "unexpected setup arguments" >&2; exit 99; }
+  if [ "\$3" = - ]; then enrollment_key="\$(cat)"; touch "$root/state/setup-read-stdin"
+  else enrollment_key="\$(cat "\$3")"
+  fi
+  case "\$enrollment_key" in sh_ek_*) ;; *) echo 'invalid enrollment fixture' >&2; exit 98 ;; esac
+  case "\${FAKE_SETUP_STATUS:-0}" in
+    2) echo 'Approve this server with the displayed device code.'; exit 2 ;;
+    1) echo 'The enrollment key was not accepted.'; exit 1 ;;
+  esac
+  [ "\$3" = - ] || [ "\${FAKE_SETUP_LEAVE_KEY:-0}" = 1 ] || rm -f "\$3"
+  touch "$root/state/setup-complete"
+  echo 'Agent Relay setup is complete.'
   exit 0
 fi
 if [ "\$1 \$2" = "call status.get" ]; then
@@ -342,8 +358,12 @@ grep -q "^Usage: install-macos.sh" "$root/state/out" || fail "-h through a pipe 
 rc=0; bash "$INSTALL" --frobnicate > "$root/state/out" 2> "$root/state/err" || rc=$?
 [ "$rc" = 2 ] || fail "an unknown option exited $rc, not 2"
 grep -q "^Usage: install-macos.sh" "$root/state/err" || fail "an unknown option prints no usage on stderr"
+if bash "$INSTALL" --enrollment-key-file '' > "$root/state/out" 2>&1; then
+  fail "an empty enrollment-key path was accepted"
+fi
+grep -q 'needs a non-empty path' "$root/state/out" || fail "the empty enrollment-key path was not explained"
 { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "--help or an unknown option left files behind"
-pass "--help and -h print usage and exit 0; an unknown option exits 2 with usage"
+pass "help and argument errors finish before changing anything"
 
 # A cloud profile's copy: the Stage step sets the seven assignments.
 cloud_copy="$root/install-cloud.sh"
@@ -392,6 +412,15 @@ grep -q "would run: launchctl bootstrap gui/$uid $plist" "$root/state/out" || { 
 { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a piped --dry-run left files behind"
 pass "bash -s -- --dry-run through a pipe runs to the end and changes nothing"
 
+if piped "$INSTALL" | bash -s -- --enrollment-key-file - > "$root/state/out" 2>&1; then
+  fail "a piped installer accepted the script itself as an enrollment key"
+fi
+grep -q 'cannot share stdin with curl | bash' "$root/state/out" \
+  || { cat "$root/state/out"; fail "the piped stdin-key refusal was not explained"; }
+{ [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } \
+  || fail "the refused piped stdin-key install changed the machine"
+pass "curl-piped installs refuse --enrollment-key-file - before changing anything"
+
 # --- install, rerun, update ----------------------------------------------------------
 
 bash "$INSTALL" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "install failed"; }
@@ -426,6 +455,74 @@ grep -q "automatic login" "$root/state/out" || fail "the automatic login note is
 grep -q -- "--uninstall" "$root/state/out" || fail "the uninstall-before-the-app note is missing"
 no_secret "the first install"
 pass "first install loads com.agentrelay.desktop.core.headless running 1.0.0"
+
+enrollment_key='sh_ek_installer-fixture-that-must-never-print'
+key_file="$root/state/enrollment-key"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+: > "$root/state/setup-calls"
+before="$(starts)"
+bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "file enrollment failed"; }
+[ ! -e "$key_file" ] || fail "setup did not delete the exchanged key file"
+[ "$(starts)" = "$before" ] || fail "enrollment restarted an up-to-date core"
+grep -Fxq "setup --enrollment-key-file $key_file --non-interactive --wait" "$root/state/setup-calls" \
+  || fail "the installer did not pass the key file only to setup"
+grep -q 'enrollment setup complete' "$root/state/out" || fail "successful enrollment was not reported"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "file enrollment printed the key"
+pass "--enrollment-key-file enrolls through setup without putting the key on argv or output"
+
+key_file="$root/state/enrollment-key-fallback"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+FAKE_SETUP_STATUS=2 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "device fallback made the completed install fail"; }
+[ -e "$key_file" ] || fail "device fallback deleted an unexchanged key file"
+grep -q 'setup still needs the action shown above' "$root/state/out" \
+  || fail "device fallback did not preserve the action-required result"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "device fallback printed the key"
+rm -f "$key_file"
+pass "an older site's device fallback keeps the key file and leaves the install usable"
+
+key_file="$root/state/enrollment-key-rejected"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+if FAKE_SETUP_STATUS=1 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1; then
+  fail "a rejected enrollment key reported success"
+fi
+[ -e "$key_file" ] || fail "a rejected exchange deleted the key file"
+[ "$(cat "$root/state/running")" = 1.0.0 ] || fail "an enrollment refusal stopped the installed core"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "enrollment refusal printed the key"
+rm -f "$key_file"
+pass "a rejected enrollment fails safely after installation without deleting the key"
+
+key_file="$root/state/enrollment-key-unused"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+FAKE_SETUP_LEAVE_KEY=1 bash "$INSTALL" --enrollment-key-file "$key_file" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "unused enrollment handling failed"; }
+[ -e "$key_file" ] || fail "setup removed the unused enrollment key"
+grep -q 'key file remains because it was unused, changed, or could not be removed' "$root/state/out" \
+  || fail "the installer claimed an unused key was exchanged"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "unused enrollment printed the key"
+rm -f "$key_file"
+pass "an already-signed-in install reports that its enrollment key remains unused"
+
+key_file="$root/state/enrollment-key-env"
+printf '%s\n' "$enrollment_key" > "$key_file"
+chmod 0600 "$key_file"
+AGENT_RELAY_ENROLLMENT_KEY_FILE="$key_file" bash "$INSTALL" > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "environment enrollment failed"; }
+[ ! -e "$key_file" ] || fail "the environment-selected key file was not deleted"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "environment enrollment printed the key"
+pass "AGENT_RELAY_ENROLLMENT_KEY_FILE selects the same one-time setup path"
+
+rm -f "$root/state/setup-read-stdin"
+printf '%s\n' "$enrollment_key" | bash "$INSTALL" --enrollment-key-file - > "$root/state/out" 2>&1 \
+  || { cat "$root/state/out"; fail "stdin enrollment failed"; }
+[ -f "$root/state/setup-read-stdin" ] || fail "setup did not receive the key on stdin"
+! grep -Fq "$enrollment_key" "$root/state/out" || fail "stdin enrollment printed the key"
+pass "a file-invoked installer can pass an enrollment key from stdin"
 
 before="$(starts)"
 bash "$INSTALL" > "$root/state/out" 2>&1 || fail "rerun failed"

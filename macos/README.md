@@ -28,6 +28,7 @@ again to update. Every release publishes `macos/install.sh` as
 
 ```sh
 curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash -s -- --enrollment-key-file /private/path/to/key
 curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install-macos.sh | bash -s -- --uninstall
 bash macos/install.sh --version 2026.10.34   # a given release
 bash macos/install.sh --update               # update an existing install only
@@ -52,6 +53,19 @@ if it does not. Three versions are kept. Settings, sign-in and agents live in
 not even by `--uninstall`. Finish sign-in with the printed
 `agent-relay-probe setup` command; the device code can be approved in a
 browser on any computer.
+
+For an unattended first sign-in, pass a per-employee enrollment key file with
+`--enrollment-key-file PATH`, or set `AGENT_RELAY_ENROLLMENT_KEY_FILE` to that
+path. The file must be a regular file owned by this user and private to this
+user (`chmod 600`); symlinks are refused. The installer gives only the path to
+`agent-relay-probe setup`; the key itself is never an argument or installer
+output, and setup attempts to delete the unchanged file only after Agent Relay
+accepts it; if it remains, the installer tells you to inspect and remove it.
+A site without enrollment-key support falls
+back to the printed device approval. `--enrollment-key-file -` reads the key
+from standard input when running a saved copy of the installer; it is refused
+with `curl | bash`, whose standard input is the installer itself. Enrollment
+removes the browser approval step, not macOS's login-session requirement below.
 
 - **Login session.** A LaunchAgent in `gui/<uid>` runs only while the user is
   logged in at the Mac; SSH alone has no such session, and the installer

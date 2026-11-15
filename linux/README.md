@@ -615,6 +615,7 @@ it again to update:
 
 ```sh
 curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install.sh | bash -s -- --enrollment-key-file /private/path/to/key
 bash linux/install.sh --version 2026.10.34   # a given release
 bash linux/install.sh --rollback             # back to the previous one
 bash linux/install.sh --dry-run              # say what would change
@@ -636,6 +637,18 @@ not enable lingering: on a server it prints the `loginctl enable-linger`
 command to run once. Releases carry a checksum, not a signature, so the
 checksum proves the file is the published one, not who published it.
 `scripts/test-linux-install.sh` runs it against a fake release server.
+
+An unattended first install can finish sign-in in the same command with
+`--enrollment-key-file PATH`, or with `AGENT_RELAY_ENROLLMENT_KEY_FILE` set to
+that path. The file must be a regular file owned by this user and private to
+this user (`chmod 600`); symlinks are refused. The installer passes only the
+path to `agent-relay-probe setup`; the key itself is never an argument or
+installer output, and setup attempts to delete the unchanged file only after
+Agent Relay accepts it; if it remains, the installer tells you to inspect and
+remove it. A site without enrollment-key support falls
+back to device approval. `--enrollment-key-file -` reads the key from standard
+input when running a saved copy of the installer; it is refused with
+`curl | bash`, whose standard input is the installer itself.
 
 Windows has the same command as `windows/install.ps1`: it installs the bare
 core under `%LOCALAPPDATA%\Programs\AgentRelay\core` and runs it as the
@@ -700,9 +713,10 @@ printf '%s' "$KEY" | agent-relay-probe setup --non-interactive --json --enrollme
 ```
 
 The file must be yours with mode 0600 (`chmod 600`) and not a symbolic link.
-The core reads the file itself and deletes it once Agent Relay accepts the
-key, because a key signs in only once; a file replaced since it was read is
-left alone. The key never appears on a command
+The core reads the file itself and, once Agent Relay accepts the key, deletes
+it if it is still the same file and removal succeeds; otherwise it leaves the
+path alone and reports that it must be inspected and removed. A key signs in
+only once. The key never appears on a command
 line, in output or in logs. With `-`, setup copies standard input to a private
 temporary file (mode 0600) and removes it when it exits. A key that was not
 accepted fails with `enrollment_key_rejected`, whether it was wrong, expired,

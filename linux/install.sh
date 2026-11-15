@@ -10,6 +10,7 @@
 #
 #   curl -fsSL <this script> | bash
 #   bash install.sh [--version X.Y.Z] [--rollback] [--dry-run]
+#                   [--enrollment-key-file PATH|-]
 #
 # What it does:
 #   1. Finds what is installed: a per-user install from this script
@@ -75,14 +76,20 @@ HEALTH_TIMEOUT="${AGENT_RELAY_HEALTH_TIMEOUT:-60}"
 VERSION=""
 DRY_RUN=0
 ROLLBACK=0
+ENROLLMENT_KEY_FILE="${AGENT_RELAY_ENROLLMENT_KEY_FILE:-}"
 
 usage() {
   cat <<EOF
 Usage: install.sh [--version X.Y.Z] [--rollback] [--dry-run]
+                  [--enrollment-key-file PATH|-]
 
   --version X.Y.Z  Install this release instead of the latest.
   --rollback       Switch to the newest installed version older than the current one.
   --dry-run        Say what would change and change nothing.
+  --enrollment-key-file PATH|-
+                   Exchange a one-time desktop enrollment key after install.
+                   The setup command deletes a PATH only after exchange; -
+                   reads the key from stdin (not available with curl | bash).
 EOF
   if [ "$RELEASE_FEED" = cloud ]; then
     cat <<EOF
@@ -108,10 +115,19 @@ while [ $# -gt 0 ]; do
     --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION="${2#v}"; shift 2 ;;
     --rollback) ROLLBACK=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --enrollment-key-file)
+      [ $# -ge 2 ] || die "--enrollment-key-file needs a path or -"
+      [ -n "$2" ] || die "--enrollment-key-file needs a non-empty path or -"
+      ENROLLMENT_KEY_FILE="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+
+[ "$ROLLBACK" = 0 ] || [ -z "$ENROLLMENT_KEY_FILE" ] || die "--rollback takes no --enrollment-key-file"
+if [ "$ENROLLMENT_KEY_FILE" = - ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
+  die "--enrollment-key-file - cannot share stdin with curl | bash; save the key in a private file and pass its path"
+fi
 
 [ "$(uname -s)" = Linux ] || die "this installs the Linux core; on macOS use the $PRODUCT_NAME app"
 [ -n "${HOME:-}" ] || die "HOME is not set"
@@ -850,13 +866,34 @@ linger_note() {
   fi
 }
 
-# Finish setup as a separate command: curl | bash does not leave a terminal
-# on stdin, and installation must never silently change sign-in or preferences.
+# Finish setup as a separate command unless the person explicitly supplied a
+# one-time enrollment key. A path is never read by this script: setup validates
+# it and deletes that exact private file only after Cloud accepts the key.
 setup_note() {
   [ "$DRY_RUN" = 0 ] || return 0
   local binary="$PREFIX/current/agent-relay-probe"
   [ -x "$binary" ] || return 0
-  if "$binary" setup --help >/dev/null 2>&1; then
+  if [ -n "$ENROLLMENT_KEY_FILE" ]; then
+    "$binary" setup --help </dev/null 2>&1 | grep -q -- '--enrollment-key-file' \
+      || die "the installed core does not support enrollment keys; install a newer release"
+    note "finishing setup with the one-time enrollment key"
+    local setup_status=0
+    if [ "$ENROLLMENT_KEY_FILE" = - ]; then
+      "$binary" setup --enrollment-key-file - --non-interactive --wait || setup_status=$?
+    else
+      "$binary" setup --enrollment-key-file "$ENROLLMENT_KEY_FILE" --non-interactive --wait </dev/null || setup_status=$?
+    fi
+    case "$setup_status" in
+      0)
+        if [ "$ENROLLMENT_KEY_FILE" != - ] && [ -e "$ENROLLMENT_KEY_FILE" ]; then
+          note "setup complete; the key file remains because it was unused, changed, or could not be removed; delete it if Agent Relay accepted it"
+        else
+          note "enrollment setup complete"
+        fi ;;
+      2) note "setup still needs the action shown above; a key file is removed only after a successful exchange" ;;
+      *) die "the core is installed, but enrollment setup failed; correct the reported problem and rerun setup" ;;
+    esac
+  elif "$binary" setup --help >/dev/null 2>&1; then
     note "finish signing in and choosing providers with:"
     printf '  %q setup\n' "$binary"
     note "approve the displayed device code in a browser on any computer; this server needs no display."
