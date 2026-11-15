@@ -14,6 +14,7 @@ pub fn kind_label(kind: SessionKind) -> &'static str {
         SessionKind::Copilot => "Copilot",
         SessionKind::OpenClaw => "OpenClaw",
         SessionKind::Hermes => "Hermes",
+        SessionKind::Droid => "Factory Droid",
         SessionKind::Pi => "Pi",
         SessionKind::Omp => "Oh My Pi",
     }
@@ -85,5 +86,12 @@ mod kind_label_tests {
     #[test]
     fn kind_label_names_copilot() {
         assert_eq!(kind_label(SessionKind::Copilot), "Copilot");
+    }
+
+    #[test]
+    fn kind_label_names_factory_droid() {
+        assert_eq!(kind_label(SessionKind::Droid), "Factory Droid");
+        assert_eq!(kind_icon_source(SessionKind::Droid), "droid");
+        assert_eq!(source_name(kind_icon_source(SessionKind::Droid)), "Factory Droid");
     }
 }
