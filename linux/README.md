@@ -719,7 +719,10 @@ it if it is still the same file and removal succeeds; otherwise it leaves the
 path alone and reports that it must be inspected and removed. A key signs in
 only once. The key never appears on a command
 line, in output or in logs. With `-`, setup copies standard input to a private
-temporary file (mode 0600) and removes it when it exits. Setup waits, within
+temporary file (mode 0600) and deletes it as soon as the core has taken the
+key, and if setup is interrupted (Ctrl+C, SIGTERM, SIGHUP). A forced kill
+(SIGKILL, power loss) can leave an `agent-relay-enrollment-*` file in the
+temporary directory (`$TMPDIR`, usually `/tmp`); delete it by hand. Setup waits, within
 `--timeout` and without needing `--wait`, until the key has signed in and the
 workspace is connected, or the sign-in fails. A key that was not
 accepted fails with `enrollment_key_rejected`, whether it was wrong, expired,

@@ -3,6 +3,8 @@ use super::*;
 
 mod enrollment_key;
 pub(super) use enrollment_key::prepare as prepare_enrollment_key;
+#[cfg(test)]
+pub(super) use enrollment_key::prepare_from as prepare_enrollment_key_from;
 
 pub(super) enum Connection {
     Ready(Value),

@@ -120,6 +120,11 @@ rust_roots = ["src"]
 # Windows identifies the enrollment key file by volume serial number and
 # file index, which std reads only on nightly (windows_by_handle).
 "src/account/enrollment_key.rs::identity" = 1
+# Setup's stdin copy of an enrollment key is removed on interruption: Unix
+# reads whether a signal is ignored (left ignored), Windows registers a
+# console control handler.
+"src/onboarding/auth/enrollment_key/stdin_copy.rs::ignored" = 1
+"src/onboarding/auth/enrollment_key/stdin_copy.rs::watch" = 1
 "src/history/uploader.rs::signal" = 1
 "src/install/windows.rs::registry::key_exists" = 2
 "src/install/windows.rs::registry::read_dword" = 1

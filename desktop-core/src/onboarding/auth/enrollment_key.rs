@@ -6,6 +6,9 @@ use super::*;
 use std::io::Read;
 use std::path::Path;
 
+mod stdin_copy;
+pub(in crate::onboarding) use stdin_copy::StdinCopy;
+
 /// The core's phases for an enrollment-key sign-in (`account::enrollment_key`).
 const EXCHANGING: &str = "exchanging_enrollment_key";
 const REJECTED: &str = "enrollment_key_rejected";
@@ -16,19 +19,18 @@ const MAX_KEY_BYTES: u64 = 4096;
 
 /// Points `options` at a file holding the key. A path is made absolute for
 /// the core; `-` reads the key from stdin into a private temporary file that
-/// is deleted when the returned handle drops. Reading stdin also turns
-/// prompts off, since stdin is spent.
-pub(in crate::onboarding) fn prepare(
-    options: &mut Options,
-) -> Result<Option<tempfile::NamedTempFile>, Failure> {
+/// is deleted once the core has read it, when the returned handle drops, or
+/// when setup is interrupted. Reading stdin also turns prompts off, since
+/// stdin is spent.
+pub(in crate::onboarding) fn prepare(options: &mut Options) -> Result<Option<StdinCopy>, Failure> {
     prepare_from(options, || io::stdin().lock())
 }
 
 /// [`prepare`], reading `-` from what `stdin` opens.
-fn prepare_from<R: Read>(
+pub(in crate::onboarding) fn prepare_from<R: Read>(
     options: &mut Options,
     stdin: impl FnOnce() -> R,
-) -> Result<Option<tempfile::NamedTempFile>, Failure> {
+) -> Result<Option<StdinCopy>, Failure> {
     let Some(path) = options.enrollment_key_file.take() else {
         return Ok(None);
     };
@@ -38,14 +40,18 @@ fn prepare_from<R: Read>(
         return Ok(None);
     }
     options.non_interactive = true;
+    // Interruptions are watched before the copy exists, so none can leave it.
+    stdin_copy::watch();
     let file = stdin_file(stdin())?;
     options.enrollment_key_file = Some(file.path().to_path_buf());
     Ok(Some(file))
 }
 
 /// Copies the key from `input` into a new temporary file only this user can
-/// read (mode 0600 on Unix; on Windows, the user's own temp directory).
-fn stdin_file(input: impl Read) -> Result<tempfile::NamedTempFile, Failure> {
+/// read (mode 0600 on Unix; on Windows, the user's own temp directory). The
+/// file is kept as a copy, where an interruption removes it, before the key
+/// is written into it.
+fn stdin_file(input: impl Read) -> Result<StdinCopy, Failure> {
     let mut key = Vec::new();
     input
         .take(MAX_KEY_BYTES + 1)
@@ -54,13 +60,16 @@ fn stdin_file(input: impl Read) -> Result<tempfile::NamedTempFile, Failure> {
     if key.iter().all(u8::is_ascii_whitespace) || key.len() as u64 > MAX_KEY_BYTES {
         return Err(unreadable());
     }
-    let mut file = tempfile::Builder::new()
+    let file = tempfile::Builder::new()
         .prefix("agent-relay-enrollment-")
         .tempfile()
         .map_err(|_| unreadable())?;
-    file.write_all(&key).map_err(|_| unreadable())?;
-    file.flush().map_err(|_| unreadable())?;
-    Ok(file)
+    let mut writer = file.as_file().try_clone().map_err(|_| unreadable())?;
+    // Dropping the copy on a failed write removes the file.
+    let copy = StdinCopy::keep(file);
+    writer.write_all(&key).map_err(|_| unreadable())?;
+    writer.flush().map_err(|_| unreadable())?;
+    Ok(copy)
 }
 
 fn unreadable() -> Failure {
@@ -96,18 +105,23 @@ pub(super) fn sign_in_first(
     Ok((with_key(core, options, file, acknowledge)?, true))
 }
 
+/// Starts the sign-in with the key in `file`. The core reads the key before
+/// it answers and never reads the file again, so a copy of stdin is deleted
+/// as soon as the call returns, whatever it answered.
 fn with_key(
     core: &mut impl Backend,
     options: &Options,
     file: &Path,
     acknowledge: bool,
 ) -> Result<Value, Failure> {
-    call(
+    let started = call(
         core,
         "account.sign_in",
         json!({"flow":"enrollment_key", "enrollment_key_file":file, "workspace":options.workspace,
                "sharing":"selected", "acknowledge_uninspected_schedules":acknowledge}),
-    )
+    );
+    stdin_copy::remove(file);
+    started
 }
 
 /// Says so when setup leaves a given key alone because this computer is

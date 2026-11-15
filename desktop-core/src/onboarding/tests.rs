@@ -655,3 +655,77 @@ fn the_enrollment_key_option_is_documented_and_takes_a_path() {
         Some(std::path::Path::new("-"))
     );
 }
+/// Notes at each call whether the key file exists.
+struct Watching {
+    core: Fake,
+    file: std::path::PathBuf,
+    seen: Vec<(&'static str, bool)>,
+}
+impl Backend for Watching {
+    fn call(&mut self, method: &'static str, params: Value) -> Result<Value, ()> {
+        self.seen.push((method, self.file.exists()));
+        self.core.call(method, params)
+    }
+    fn pause(&mut self, duration: Duration) {
+        self.core.pause(duration);
+    }
+    fn elapsed(&self) -> Duration {
+        self.core.elapsed()
+    }
+    fn start_service(&mut self) -> bool {
+        self.core.start_service()
+    }
+}
+fn watching(file: &std::path::Path, failed: Option<&'static str>) -> Watching {
+    Watching {
+        core: Fake {
+            account: signed_out(),
+            sign_in: exchanging(),
+            statuses: VecDeque::from([signed_out(), exchanging(), connecting(), ready()]),
+            failed,
+            ..Fake::default()
+        },
+        file: file.to_path_buf(),
+        seen: Vec::new(),
+    }
+}
+#[test]
+fn the_stdin_copy_of_a_key_is_deleted_once_the_core_has_read_it() {
+    for failed in [None, Some("account.sign_in")] {
+        let mut options = options(&["--json", "--enrollment-key-file", "-"]);
+        let copy = auth::prepare_enrollment_key_from(&mut options, || &b"sh_ek_synthetic\n"[..])
+            .unwrap()
+            .expect("a temporary file");
+        let mut core = watching(copy.path(), failed);
+        let mut ui = Console::default();
+        let exit = setup(&mut core, &mut ui, &options);
+        assert_eq!(exit.is_ok(), failed.is_none());
+        let first = core
+            .seen
+            .iter()
+            .position(|(method, _)| *method == "account.sign_in")
+            .unwrap();
+        assert!(core.seen[first].1, "the core reads it during the call");
+        assert!(
+            core.seen[first + 1..].iter().all(|(_, exists)| !exists),
+            "gone once the call returns"
+        );
+        assert!(!copy.path().exists());
+        drop(copy);
+        ui.assert_private();
+    }
+}
+#[test]
+fn a_key_file_the_person_named_is_left_for_the_core() {
+    let named = tempfile::NamedTempFile::new().unwrap();
+    let path = named.path().to_str().unwrap();
+    let mut options = options(&["--json", "--enrollment-key-file", path]);
+    assert!(auth::prepare_enrollment_key(&mut options)
+        .unwrap()
+        .is_none());
+    let mut core = watching(named.path(), None);
+    let mut ui = Console::default();
+    assert_eq!(setup(&mut core, &mut ui, &options).unwrap(), 0);
+    assert!(core.seen.iter().all(|(_, exists)| *exists));
+    assert!(named.path().exists());
+}

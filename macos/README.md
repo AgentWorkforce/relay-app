@@ -52,7 +52,12 @@ if it does not. Three versions are kept. Settings, sign-in and agents live in
 `~/Library/Application Support/com.agentrelay.desktop` and are never touched,
 not even by `--uninstall`. Finish sign-in with the printed
 `agent-relay-probe setup` command; the device code can be approved in a
-browser on any computer.
+browser on any computer. An unattended Mac can sign in with an
+administrator's enrollment key instead (`setup --enrollment-key-file
+<path|->`, see [linux/README.md](../linux/README.md)). With `-`, setup deletes
+its private temporary copy of the key as soon as the core has taken it, and
+if setup is interrupted; a forced kill (SIGKILL, power loss) can leave an
+`agent-relay-enrollment-*` file in `$TMPDIR`; delete it by hand.
 
 For an unattended first sign-in, pass a per-employee enrollment key file with
 `--enrollment-key-file PATH`, or set `AGENT_RELAY_ENROLLMENT_KEY_FILE` to that

@@ -346,7 +346,8 @@ pub fn run(arguments: &[String]) -> i32 {
             return exit;
         }
     };
-    // Held until setup returns: a key read from stdin is deleted on drop.
+    // Held until setup returns: a key read from stdin is deleted once the
+    // core has read it, on drop, or when setup is interrupted.
     let _stdin_key = match auth::prepare_enrollment_key(&mut options) {
         Ok(file) => file,
         Err(failure) => {

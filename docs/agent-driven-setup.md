@@ -486,7 +486,12 @@ even with `--wait`, for the caller to rerun it with `--wait`; an installer
 invoking setup propagates that status after completing the install. The file is
 kept after any failure that is not a 200; when Agent Relay did not answer
 after the key was sent, the message says the key may have been used. A computer whose sign-in needs renewing renews it with
-device approval.
+device approval. `setup --enrollment-key-file -` copies standard input to a
+private temporary file and deletes it as soon as `account.sign_in` returns,
+since the core has read the key by then, and if setup is interrupted
+(SIGINT, SIGTERM, SIGHUP; Ctrl+C or closing the console on Windows). A forced
+kill (SIGKILL, power loss) can leave an `agent-relay-enrollment-*` file in the
+user's temporary directory, to be deleted by hand.
 
 While sign-in is `preparing`, the sign-in response includes `phase`, `message`,
 `poll_after_seconds`, and, once the local scan starts, `progress`. Status exposes
