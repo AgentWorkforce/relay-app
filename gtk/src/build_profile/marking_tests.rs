@@ -79,8 +79,9 @@ const EXAMPLE_CUSTOMER: CoBrand = CoBrand {
 };
 
 /// A co-branded build named Agent Relay draws the wordmark with no badge in
-/// the lockups that draw the "for" line under it, and keeps its badge
-/// everywhere else (the header, the window title), as on macOS.
+/// the lockups that draw the "for" line (sign-in, the workspace header), and
+/// keeps its badge everywhere else (the window title, the tray icon), as on
+/// macOS.
 #[test]
 fn a_cobranded_build_named_agent_relay_draws_the_wordmark_over_its_line() {
     let cobranded = Profile {
@@ -99,6 +100,44 @@ fn a_cobranded_build_named_agent_relay_draws_the_wordmark_over_its_line() {
     };
     assert!(!plain.draws_wordmark_over_cobrand_line());
     assert_eq!(plain.badge(), Some("example-7"));
+}
+
+/// The workspace header draws the "for" line for every co-branded build:
+/// beside the wordmark, with no badge, for one named Agent Relay, and beside
+/// its name in text for one with a name of its own, as on sign-in; a profile
+/// build without a co-brand (a site profile, Agent Relay Dev) keeps its
+/// badge there, and the default profile draws the wordmark alone, as on
+/// macOS.
+#[test]
+fn the_header_draws_a_cobranded_builds_line_in_place_of_its_badge() {
+    let cobranded = Profile {
+        product_name: DEFAULT_PRODUCT_NAME,
+        cobrand: Some(EXAMPLE_CUSTOMER),
+        ..OTHER
+    };
+    assert!(cobranded.draws_wordmark_over_cobrand_line());
+    assert_eq!(cobranded.cobrand, Some(EXAMPLE_CUSTOMER));
+    // A branded, co-branded build: its name in text, no badge, and the line.
+    let branded = Profile {
+        product_name: "Example Desktop",
+        cobrand: Some(EXAMPLE_CUSTOMER),
+        ..OTHER
+    };
+    assert!(!branded.draws_wordmark_over_cobrand_line());
+    assert_eq!(branded.badge(), None);
+    assert_eq!(branded.cobrand, Some(EXAMPLE_CUSTOMER));
+    for name in [DEFAULT_PRODUCT_NAME, DEVELOPMENT_PRODUCT_NAME] {
+        let plain = Profile {
+            product_name: name,
+            ..OTHER
+        };
+        assert!(!plain.draws_wordmark_over_cobrand_line(), "{name}");
+        assert_eq!(plain.cobrand, None);
+        assert_eq!(plain.badge(), Some("example-7"), "{name}");
+    }
+    assert!(Profile::DEFAULT.draws_wordmark_over_cobrand_line());
+    assert_eq!(Profile::DEFAULT.cobrand, None);
+    assert_eq!(Profile::DEFAULT.badge(), None);
 }
 
 /// A co-branded build with a name of its own is named in text in every

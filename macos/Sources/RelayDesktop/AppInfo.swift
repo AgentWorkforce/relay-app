@@ -51,8 +51,9 @@ enum AppInfo {
     /// Agent Relay's wordmark: only production's does. Any other build
     /// (a site profile's, or Agent Relay Dev) is named in text, as on Linux
     /// and Windows, so it never looks like the production app beside it.
-    /// A co-branded build (`coBrand`) named Agent Relay draws it too: the
-    /// "for <customer>" line under it tells it apart.
+    /// A co-branded build (`coBrand`) named Agent Relay draws it too where
+    /// the "for <customer>" line tells it apart: under it on sign-in and the
+    /// signed-out menu, beside it in the workspace header.
     static func drawsWordmark(bundleIdentifier: String, productName: String, coBranded: Bool = false) -> Bool {
         productName == defaultDisplayName && (bundleIdentifier == productionBundleIdentifier || coBranded)
     }
@@ -62,9 +63,10 @@ enum AppInfo {
     /// header): its `profileIdentity`. Nil for production and for a
     /// customer's branded build (`isBranded`), whose name already tells it
     /// apart and whose people never see the opaque profile id beside it.
-    /// A co-branded build keeps it: only the lockups that draw the
-    /// "for <customer>" line (`BrandWordmarkView` with `coBranded`) leave
-    /// it out.
+    /// A co-branded build keeps it in the menu bar and the window title:
+    /// only the lockups that draw the "for <customer>" line (sign-in, the
+    /// signed-out menu and the workspace header; `BrandWordmarkView` with
+    /// `coBranded`) leave it out.
     static var profileBadge: String? {
         profileBadge(bundleIdentifier: markedBundleIdentifier, profileID: profileID, productName: displayName)
     }
@@ -159,7 +161,8 @@ enum AppInfo {
 
     /// The customer a site profile's build is made for, which the sign-in
     /// window and the signed-out menu name under the Agent Relay lockup
-    /// ("for <customer>"); the product stays Agent Relay.
+    /// ("for <customer>"), and the workspace header beside it; the product
+    /// stays Agent Relay.
     struct CoBrand: Equatable {
         /// The customer's name.
         var name: String

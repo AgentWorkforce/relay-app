@@ -314,7 +314,8 @@ pub fn brand(size: i32) -> gtk::Widget {
 /// names another product (the wordmark is Agent Relay's). The lockup draws
 /// the co-brand line ([`cobrand_line`]) under it, so a co-branded build
 /// named Agent Relay draws the wordmark, without its badge, as macOS's
-/// `BrandWordmarkView` with `coBranded`.
+/// `BrandWordmarkView` with `coBranded`; the header ([`header_brand`])
+/// does the same with the line beside it.
 pub fn wordmark(height: i32) -> gtk::Widget {
     if !Profile::BUILT.draws_wordmark_over_cobrand_line() {
         return profile_name(Profile::BUILT).upcast();
@@ -358,10 +359,10 @@ pub fn signin_lockup() -> gtk::Box {
     lockup
 }
 
-/// The line a co-branded build draws under its Agent Relay lockup: "for",
-/// the customer's mark fitted into 16 points, and the customer's name, read
-/// out as "for <name>", as macOS's `CoBrandLineView`. None for a build
-/// without a co-brand.
+/// The line a co-branded build draws under its Agent Relay lockup (beside
+/// it in the header, [`header_brand`]): "for", the customer's mark fitted
+/// into 16 points, and the customer's name, read out as "for <name>", as
+/// macOS's `CoBrandLineView`. None for a build without a co-brand.
 pub fn cobrand_line() -> Option<gtk::Box> {
     Profile::BUILT
         .cobrand
@@ -434,18 +435,37 @@ fn fitted(width: i32, height: i32, side: i32) -> (i32, i32) {
 
 /// Canonical mark and wordmark lockup for the shared application header.
 pub fn header_brand() -> gtk::Box {
+    header_brand_for(Profile::BUILT)
+}
+
+/// [`header_brand`] for `profile`: the mark and the wordmark, tinted in the
+/// theme's text color, or the name in text with its badge; and beside them
+/// the "for <customer>" line ([`cobrand_line_for`]) of every co-branded
+/// build, as on sign-in and macOS's `HeaderBrandView`: beside the wordmark,
+/// in the badge's place, for one named Agent Relay (the name in text with
+/// no badge without the SVG loader, as [`wordmark`]), and beside the name
+/// in text for one with a name of its own.
+pub fn header_brand_for(profile: Profile) -> gtk::Box {
     let lockup = super::hbox(10, &[]);
     lockup.append(&brand(24));
     let tint = super::color("text");
     let data = String::from_utf8_lossy(WORDMARK).replace("#FFFFFF", tint);
     let key = format!("header-wordmark-{tint}");
-    let wordmark = (!Profile::BUILT.names_in_text())
-        .then(|| super::svg_picture(&key, data.as_bytes(), 19, PRODUCT_NAME))
-        .flatten();
-    if let Some(wordmark) = wordmark {
+    if !profile.draws_wordmark_over_cobrand_line() {
+        lockup.append(&profile_name(profile));
+    } else if let Some(wordmark) =
+        super::svg_picture(&key, data.as_bytes(), 19, profile.product_name)
+    {
         lockup.append(&wordmark);
     } else {
-        lockup.append(&profile_name(Profile::BUILT));
+        // The wordmark without the SVG loader: its name in text, and no
+        // badge beside it, as `wordmark`.
+        lockup.append(&super::text(profile.product_name, &["headline"]));
+    }
+    if let Some(cobrand) = profile.cobrand {
+        let line = cobrand_line_for(&cobrand);
+        line.set_valign(gtk::Align::Center);
+        lockup.append(&line);
     }
     // The Mac's logo has no tooltip; its button is named "Sessions".
     let mut child = lockup.first_child();

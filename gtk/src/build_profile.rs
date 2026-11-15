@@ -90,8 +90,8 @@ pub enum MarkKind {
 
 /// A co-branded build's customer (docs/workspace-layout.md, "Site
 /// profiles"): the line "for", the customer's mark and name drawn under the
-/// Agent Relay lockup, as on macOS (`AppInfo.coBrand`). The product stays
-/// the profile's own.
+/// Agent Relay lockup, and beside it in the workspace header, as on macOS
+/// (`AppInfo.coBrand`). The product stays the profile's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoBrand {
     /// The customer's name: trimmed, one line, at most 80 characters.
@@ -231,13 +231,14 @@ impl Profile {
         self.product_name != DEFAULT_PRODUCT_NAME || self.asset_prefix != Self::DEFAULT.asset_prefix
     }
 
-    /// Whether a lockup that draws the co-brand line under it (the sign-in
-    /// window's; [`crate::ui::widgets::cobrand_line`]) draws the wordmark:
-    /// as everywhere for the default profile, and for a co-branded build
-    /// named Agent Relay too, since the line tells it apart, as macOS's
-    /// `AppInfo.drawsWordmark` with `coBranded`; beside the wordmark there
-    /// is no badge. Everywhere else (the header, the window title) such a
-    /// build is named in text with its badge.
+    /// Whether a lockup that draws the co-brand line with it (the sign-in
+    /// window's, under it, [`crate::ui::widgets::cobrand_line`]; the
+    /// workspace header's, beside it, [`crate::ui::widgets::header_brand`])
+    /// draws the wordmark: as everywhere for the default profile, and for a
+    /// co-branded build named Agent Relay too, since the line tells it
+    /// apart, as macOS's `AppInfo.drawsWordmark` with `coBranded`; beside
+    /// the wordmark there is no badge. Everywhere else (the window title,
+    /// the tray icon) such a build is named in text with its badge.
     pub fn draws_wordmark_over_cobrand_line(&self) -> bool {
         !self.names_in_text()
             || (self.product_name == DEFAULT_PRODUCT_NAME && self.cobrand.is_some())

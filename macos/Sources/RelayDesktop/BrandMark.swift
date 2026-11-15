@@ -205,10 +205,10 @@ struct BrandWordmarkView: View {
     var productName: String = AppInfo.displayName
     var bundleIdentifier: String = AppInfo.markedBundleIdentifier
     var badge: String? = AppInfo.profileBadge
-    /// Set only by a lockup that draws `CoBrandLineView` under it (sign-in,
-    /// signed-out menu): there a co-branded build named Agent Relay draws
+    /// Set only by a lockup that draws `CoBrandLineView` with it (under it on
+    /// sign-in and the signed-out menu, beside it in the workspace header,
+    /// `HeaderBrandView`): there a co-branded build named Agent Relay draws
     /// the wordmark without its badge, since the line tells it apart.
-    /// Everywhere else (the workspace header) it keeps its badge.
     var coBranded: Bool = false
 
     var drawsArtwork: Bool {
@@ -240,9 +240,40 @@ struct BrandWordmarkView: View {
     }
 }
 
+/// The workspace header's lockup: the 24-point mark and the 19-point
+/// wordmark (or the name in text with its badge), and beside them the
+/// "for <customer>" line of every co-branded build, as on sign-in and on
+/// Linux and Windows: beside the wordmark, in the badge's place, for one
+/// named Agent Relay, and beside the name in text for one with a name of
+/// its own. The header's button names it "Sessions".
+struct HeaderBrandView: View {
+    var coBrand: AppInfo.CoBrand? = AppInfo.coBrand
+    var productName: String = AppInfo.displayName
+    var bundleIdentifier: String = AppInfo.markedBundleIdentifier
+    var badge: String? = AppInfo.profileBadge
+
+    var wordmark: BrandWordmarkView {
+        BrandWordmarkView(height: 19, productName: productName, bundleIdentifier: bundleIdentifier, badge: badge,
+                          coBranded: coBrand != nil)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            BrandMarkView(width: 24)
+            wordmark
+                .foregroundStyle(CloudTheme.foreground)
+            // A co-branded build's "for <customer>" line.
+            if coBrand != nil {
+                CoBrandLineView(coBrand: coBrand, nameColor: CloudTheme.foreground, forColor: CloudTheme.secondary)
+            }
+        }
+    }
+}
+
 /// The line a co-branded build (`AppInfo.coBrand`) draws under its Agent
-/// Relay lockup: "for", the customer's mark fitted into 16 points, and the
-/// customer's name, as in the installer image. Nothing for any other build.
+/// Relay lockup (beside it in the workspace header): "for", the customer's
+/// mark fitted into 16 points, and the customer's name, as in the installer
+/// image. Nothing for any other build.
 struct CoBrandLineView: View {
     var coBrand: AppInfo.CoBrand? = AppInfo.coBrand
     /// The colour of the name; "for" is drawn in `forColor`.
@@ -255,7 +286,7 @@ struct CoBrandLineView: View {
                 Text("for")
                     .zoomFont(size: 13, weight: .regular)
                     .foregroundStyle(forColor)
-                if let mark = NSImage(contentsOf: coBrand.mark) {
+                if let mark = Self.mark(at: coBrand.mark) {
                     Image(nsImage: mark)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -272,4 +303,20 @@ struct CoBrandLineView: View {
             .accessibilityLabel("for \(coBrand.name)")
         }
     }
+
+    /// The customer's mark at `url`, read and decoded once and shared by
+    /// every line (sign-in, the signed-out menu, the always-shown workspace
+    /// header), so a re-render never reads it from disk again; nil, also
+    /// kept, for a mark AppKit cannot read.
+    static func mark(at url: URL) -> NSImage? {
+        marksLock.lock()
+        defer { marksLock.unlock() }
+        if let cached = marks[url] { return cached }
+        let image = NSImage(contentsOf: url)
+        marks.updateValue(image, forKey: url)
+        return image
+    }
+
+    private static var marks: [URL: NSImage?] = [:]
+    private static let marksLock = NSLock()
 }

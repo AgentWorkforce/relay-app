@@ -101,11 +101,7 @@ struct WorkspaceShell<Content: View>: View {
         @Bindable var model = model
         return HStack(spacing: 20) {
             Button { model.showLocalSessions() } label: {
-                HStack(spacing: 10) {
-                    BrandMarkView(width: 24)
-                    BrandWordmarkView(height: 19)
-                        .foregroundStyle(CloudTheme.foreground)
-                }.zoomFrame(height: 44)
+                HeaderBrandView().zoomFrame(height: 44)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Sessions")

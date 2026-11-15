@@ -1,9 +1,11 @@
 //! The sign-in window's co-brand line: "for", the customer's mark fitted
-//! into 16 points and the customer's name, read out as "for <name>".
+//! into 16 points and the customer's name, read out as "for <name>"; and
+//! the workspace header, which draws it for every co-branded build, beside
+//! the wordmark in the badge's place or beside the name in text.
 
 use super::*;
-use agent_relay_app::build_profile::{CoBrand, MarkKind};
-use agent_relay_app::ui::widgets::art::cobrand_line_for;
+use agent_relay_app::build_profile::{CoBrand, MarkKind, Profile, DEFAULT_PRODUCT_NAME};
+use agent_relay_app::ui::widgets::art::{cobrand_line_for, header_brand_for};
 use gtk::{gdk, gdk_pixbuf};
 
 pub const TESTS: &[(&str, Test)] = &[
@@ -14,6 +16,10 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "the_cobrand_line_leaves_out_an_undecodable_mark",
         the_cobrand_line_leaves_out_an_undecodable_mark,
+    ),
+    (
+        "the_header_draws_the_cobrand_line_in_place_of_the_badge",
+        the_header_draws_the_cobrand_line_in_place_of_the_badge,
     ),
 ];
 
@@ -163,4 +169,60 @@ fn the_cobrand_line_leaves_out_an_undecodable_mark(_: &tokio::runtime::Runtime) 
         );
         assert_for_and_name(&parts[0], &parts[1]);
     }
+}
+
+fn the_header_draws_the_cobrand_line_in_place_of_the_badge(_: &tokio::runtime::Runtime) {
+    // A site profile's build named Agent Relay, badged "example-7".
+    let plain = Profile {
+        product_name: DEFAULT_PRODUCT_NAME,
+        releases_repository: "example-org/example-desktop-releases",
+        asset_prefix: "Desktop-example-7",
+        release_feed: "github:example-org/example-desktop-releases",
+        cobrand: None,
+    };
+    let header = header_brand_for(plain);
+    let parts = children(&header);
+    assert_eq!(parts.len(), 2, "the mark and the name, with no line");
+    assert_eq!(labels(&parts[1]), ["Agent Relay", "example-7"]);
+
+    let cobranded = Profile {
+        cobrand: Some(CoBrand {
+            name: "Example Customer",
+            mark_kind: MarkKind::Svg,
+            mark: SVG_MARK,
+        }),
+        ..plain
+    };
+    let header = header_brand_for(cobranded);
+    let parts = children(&header);
+    assert_eq!(parts.len(), 3, "the mark, the wordmark and the line");
+    assert_eq!(
+        labels(&parts[1]),
+        Vec::<String>::new(),
+        "the wordmark is drawn, not the name in text with its badge"
+    );
+    let line = parts[2]
+        .downcast_ref::<gtk::Box>()
+        .expect("the line is beside the wordmark");
+    assert_read_out_as(line, "for Example Customer");
+    let line_parts = children(line);
+    assert_for_and_name(&line_parts[0], &line_parts[2]);
+    // Like the mark and the wordmark, the line has no tooltip of its own:
+    // the header's button is named "Sessions".
+    assert!(parts.iter().all(|part| !part.has_tooltip()));
+
+    // A branded, co-branded build: its name in text, with no badge, and the
+    // line beside it, as on sign-in.
+    let branded = Profile {
+        product_name: "Example Desktop",
+        ..cobranded
+    };
+    let header = header_brand_for(branded);
+    let parts = children(&header);
+    assert_eq!(parts.len(), 3, "the mark, the name and the line");
+    assert_eq!(labels(&parts[1]), ["Example Desktop"]);
+    let line = parts[2]
+        .downcast_ref::<gtk::Box>()
+        .expect("the line is beside the name");
+    assert_read_out_as(line, "for Example Customer");
 }

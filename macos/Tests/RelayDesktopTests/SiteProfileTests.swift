@@ -158,29 +158,62 @@ final class SiteProfileTests: XCTestCase {
 
     func testACoBrandedBuildDrawsTheWordmarkWithoutABadgeOnlyOnItsLockups() {
         // A site profile's build named Agent Relay, made for a customer: on
-        // the lockups that draw the "for" line (sign-in, signed-out menu),
-        // the wordmark and no opaque profile id beside it.
+        // the lockups that draw the "for" line (sign-in, signed-out menu,
+        // workspace header), the wordmark and no opaque profile id beside it.
         XCTAssertTrue(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: AppInfo.defaultDisplayName,
                                             coBranded: true))
         let lockup = BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop",
                                        badge: "acme7", coBranded: true)
         XCTAssertTrue(lockup.drawsArtwork)
         XCTAssertNil(lockup.shownBadge)
-        // Every other surface (window title, menu bar icon, workspace header)
-        // has no "for" line, so it keeps the badge that tells two such
-        // builds apart.
+        // Every other surface (window title, menu bar icon) has no "for"
+        // line, so it keeps the badge that tells two such builds apart.
         let badge = AppInfo.profileBadge(bundleIdentifier: "com.acme.desktop", profileID: "acme7")
         XCTAssertEqual(badge, "acme7")
         XCTAssertEqual(AppInfo.windowTitle(productName: AppInfo.defaultDisplayName, badge: badge), "Agent Relay (acme7)")
-        let header = BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop",
-                                       badge: badge)
-        XCTAssertFalse(header.coBranded)
-        XCTAssertFalse(header.drawsArtwork)
-        XCTAssertEqual(header.shownBadge, "acme7")
+        let wordmark = BrandWordmarkView(productName: AppInfo.defaultDisplayName, bundleIdentifier: "com.acme.desktop",
+                                         badge: badge)
+        XCTAssertFalse(wordmark.coBranded)
+        XCTAssertFalse(wordmark.drawsArtwork)
+        XCTAssertEqual(wordmark.shownBadge, "acme7")
         // A product named otherwise is still named in text.
         XCTAssertFalse(AppInfo.drawsWordmark(bundleIdentifier: "com.acme.desktop", productName: "Acme Desktop", coBranded: true))
         let mark = URL(fileURLWithPath: "/tmp/cobrand.png")
         XCTAssertEqual(AppInfo.readCoBrand(name: "  Acme Corp\n", mark: mark), AppInfo.CoBrand(name: "Acme Corp", mark: mark))
+    }
+
+    func testTheWorkspaceHeaderDrawsTheCoBrandLineInPlaceOfTheBadge() {
+        // A co-branded build named Agent Relay: the wordmark without its
+        // badge, with the "for" line beside it.
+        let coBrand = AppInfo.CoBrand(name: "Example Customer", mark: URL(fileURLWithPath: "/tmp/cobrand.svg"))
+        let coBranded = HeaderBrandView(coBrand: coBrand, productName: AppInfo.defaultDisplayName,
+                                        bundleIdentifier: "com.acme.desktop", badge: "acme7")
+        XCTAssertTrue(coBranded.wordmark.coBranded)
+        XCTAssertTrue(coBranded.wordmark.drawsArtwork)
+        XCTAssertNil(coBranded.wordmark.shownBadge)
+        // A site profile's build or Agent Relay Dev without a co-brand keeps
+        // its name in text and its badge, as before.
+        for (bundleIdentifier, productName) in [("com.acme.desktop", AppInfo.defaultDisplayName),
+                                                (AppInfo.developmentBundleIdentifier, AppInfo.developmentDisplayName)] {
+            let header = HeaderBrandView(coBrand: nil, productName: productName, bundleIdentifier: bundleIdentifier,
+                                         badge: "acme7")
+            XCTAssertFalse(header.wordmark.coBranded)
+            XCTAssertFalse(header.wordmark.drawsArtwork)
+            XCTAssertEqual(header.wordmark.shownBadge, "acme7")
+        }
+        // Production draws the wordmark alone.
+        let production = HeaderBrandView(coBrand: nil, productName: AppInfo.defaultDisplayName,
+                                         bundleIdentifier: AppInfo.productionBundleIdentifier, badge: nil)
+        XCTAssertTrue(production.wordmark.drawsArtwork)
+        XCTAssertNil(production.wordmark.shownBadge)
+        // A customer's branded, co-branded build is named in text, with no
+        // badge, and draws the "for" line beside its name, as on sign-in.
+        let branded = HeaderBrandView(coBrand: coBrand, productName: "Acme Desktop", bundleIdentifier: "com.acme.desktop",
+                                      badge: nil)
+        XCTAssertFalse(branded.wordmark.drawsArtwork)
+        XCTAssertEqual(branded.wordmark.productName, "Acme Desktop")
+        XCTAssertNil(branded.wordmark.shownBadge)
+        XCTAssertEqual(branded.coBrand, coBrand)
     }
 
     func testTheCoBrandNameIsOneTrimmedLine() {
