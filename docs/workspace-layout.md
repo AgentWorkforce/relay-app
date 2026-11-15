@@ -1033,22 +1033,25 @@ cap as `limits.max_canonical_bytes`. The contract reads null as "the signer
 declares none", but `publish` does not treat null or absent as uncapped: it
 assumes the KMS default of 4096, and says so in its pre-flight line.
 
-Every cloud profile publishes the same fixed set of 16 assets, from
+Every cloud profile publishes the same fixed set of 19 assets, from
 `release-candidate.py cloud-assets`: the floored `macOS15` `.dmg` for arm64
 and x64, the Linux `.tar.gz` and `.deb` and the Windows `-Setup.exe` and
-`.zip` for arm64 and x64, the four Linux and Windows probe bundles
-(`Linux-<arch>-probe.tar.gz`, `Windows-<arch>-probe.zip`, which
-`linux/install.sh` and `windows/install.ps1` select for headless install and
-update), `install.sh` and `install.ps1`. The macOS probe bundles,
-`install-macos.sh` (which installs them) and the unfloored image are not
-published (floor-aware updaters ignore the
+`.zip` for arm64 and x64, the six probe bundles
+(`macOS-<arch>-probe.tar.gz`, `Linux-<arch>-probe.tar.gz`,
+`Windows-<arch>-probe.zip`, which `macos/install.sh`, `linux/install.sh` and
+`windows/install.ps1` select for headless install and update), `install.sh`,
+`install.ps1` and `install-macos.sh`. The unfloored image is not published
+(floor-aware updaters ignore the
 unfloored image when floored ones exist). A candidate that does not yield
-exactly those 16 is refused, and the command logs every selected and
-omitted name. A `github:` release keeps its full asset set.
+exactly those 19 is refused, and the command logs every selected and
+omitted name; a candidate with none of `install-macos.sh` and the two macOS
+probe bundles yields the other 16, which the publisher can publish on its own
+(below), and one with only some of them is refused. A `github:` release keeps
+its full asset set.
 
 The release notes are signed inside the manifest, so `desktop-feed-publish.py`
 cuts them on whole lines to up to 300 canonical bytes (`NOTES_MAX_BYTES`),
-less when the asset list leaves less room under 4096: the budget is the
+less when the asset list leaves less room under the limit: the budget is the
 limit less the manifest measured with empty notes, never more than 300. It
 keeps the leading lines and logs how many bytes it kept and whether the
 fixed cap or the budget cut them. Cut notes end with a blank line and
@@ -1064,11 +1067,22 @@ fields at their longest (a 10-character `id`, `a_` and 8 base62; a
 20-character `published_at`; one 100-character download host, since a
 profile has one storage host or none and an S3 virtual-host name fits in
 100) and prints the size and the limit. For a 10-character profile, with
-ten-digit sizes, the 16 assets with empty notes measure 3854 bytes at
-2026.11.1-beta.1 and 3884 at 2026.12.99-beta.99, which leaves the notes 242
-and 212 bytes; a 5-character profile at 2026.11.1-beta.1 leaves the full
-300. When even empty notes do not fit it exits 2 having created and uploaded
-nothing; a malformed limit exits 1. If the feed still answers 422
+ten-digit sizes, the 19 assets with empty notes measure 4512 bytes at
+2026.11.1-beta.1 and 4546 at 2026.12.99-beta.99, over the KMS default of
+4096. When the 19 do not fit but the 16 without the macOS headless assets
+(`install-macos.sh` and the `macOS-<arch>-probe.tar.gz` bundles; 3854 and
+3884 bytes) do, it publishes those 16 and reports the omission as a
+`::warning` on stdout and in `GITHUB_STEP_SUMMARY`, quoting the limit and the
+bytes the 19 need with empty notes. The choice depends only on the profile,
+version, channel, assets and limit, so a rerun resumes the same draft. When
+even the 16 do not fit it exits 2 having created and uploaded nothing, and
+names the size the feed must report (and what the 16 would need); a
+malformed limit exits 1. A cloud profile publishes all 19 once the feed
+reports a larger `limits.max_canonical_bytes`, for example 65536; at least
+4846 takes the longest version with the full 300 bytes of notes. The dry run
+reads no limit and plans every listed asset. A resumed Desktop Promote
+accepts a kept request that leaves out all three macOS headless assets
+(`pull-receipt.py check`). If the feed still answers 422
 `manifest_too_large`, `publish` exits 2 quoting the feed's `canonical_bytes`
 and `max_canonical_bytes`; it is never retried and never read as a replay.
 At create nothing was created. At publish the draft stays with every asset
@@ -1271,7 +1285,9 @@ site, feed key and an id of 1 to 32 lowercase letters or digits; staging
 fails otherwise, never printing a value. `install.sh` installs into the
 same `~/.local/lib/agent-relay` prefix and `agent-relay.service` unit,
 replacing whichever product's headless core is there. A `cloud` profile's
-`install-macos.sh` refuses to install: it has no feed path yet.
+`install-macos.sh` installs and updates from the feed as `install.sh` does;
+a first install verifies the manifest with OpenSSL 3, which on a Mac is
+Homebrew's `openssl@3` (the system `openssl` is LibreSSL).
 
 A `cloud` profile's installers read the site's signed release feed instead
 of a releases repository, through Cloud's proposed routes (not a stable

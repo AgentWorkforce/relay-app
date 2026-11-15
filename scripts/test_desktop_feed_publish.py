@@ -33,6 +33,11 @@ BASE = "/cloud/api/v1/desktop/feed"
 STABLE = "2026.11.5"
 BETA = "2026.11.6-beta.1"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+-]*(?:\.[A-Za-z0-9_+-]+)*\Z")
+# The signer cap the 19-asset cloud manifest needs to publish with the full
+# 300 bytes of notes: measured at the longest fields (a 10-character profile,
+# 2026.12.99-beta.99, ten-digit sizes) in ManifestCapTests. The KMS default
+# of 4096 does not hold it.
+REQUIRED = 4846
 
 
 def load(name, path):
@@ -47,23 +52,28 @@ feed = cli.feed
 
 
 def package_names(version, prefix=PREFIX):
-    """The fixed cloud set release-candidate.py cloud-assets lists: 16."""
-    names = ["install.sh", "install.ps1"]
+    """The fixed cloud set release-candidate.py cloud-assets lists: 19."""
+    names = ["install.sh", "install.ps1", "install-macos.sh"]
     for arch in ("arm64", "x64"):
         names += [f"{prefix}-{version}-{rest}" for rest in (
-            f"macOS15-{arch}.dmg", f"Linux-{arch}.tar.gz", f"Linux-{arch}.deb",
+            f"macOS15-{arch}.dmg", f"macOS-{arch}-probe.tar.gz", f"Linux-{arch}.tar.gz", f"Linux-{arch}.deb",
             f"Windows-{arch}.zip", f"Windows-{arch}-Setup.exe", f"Linux-{arch}-probe.tar.gz",
             f"Windows-{arch}-probe.zip")]
     return names
 
 
+def without_macos_headless(names):
+    """The 16 assets a feed whose signer cap holds only them publishes: the
+    cloud set without the macOS probe bundles and install-macos.sh."""
+    return [name for name in names if name != "install-macos.sh" and not re.search(r"-macOS-[a-z0-9]+-probe\.", name)]
+
+
 def every_package_name(version):
-    """Every package the publisher can describe (the macOS probes and unfloored
-    images too): 20, more than the signer's 4096 bytes hold."""
+    """Every package the publisher can describe (the unfloored images too):
+    21."""
     names = package_names(version)
     for arch in ("arm64", "x64"):
-        names += [f"{PREFIX}-{version}-{rest}" for rest in (
-            f"macOS-{arch}.dmg", f"macOS-{arch}-probe.tar.gz")]
+        names += [f"{PREFIX}-{version}-macOS-{arch}.dmg"]
     return names
 
 
@@ -73,8 +83,11 @@ class Feed:
     def __init__(self, token):
         self.token = token
         self.profile = PROFILE
-        # The listing's limits; max_canonical_bytes is the signer's cap.
-        self.limits = {}
+        # The listing's limits; max_canonical_bytes is the signer's cap. The
+        # 19-asset set needs more than the KMS default of 4096, so the fake
+        # feed reports the cap that set needs (REQUIRED) unless a test says
+        # otherwise.
+        self.limits = {"max_canonical_bytes": REQUIRED}
         self.entitled = True
         self.signer = True
         self.releases = {}
@@ -165,7 +178,7 @@ class Feed:
         for asset in assets:
             if "id" in asset or not NAME.match(asset["name"]):
                 return self.error(422, "invalid_asset")
-            if asset["name"] not in ("install.sh", "install.ps1") and not asset["name"].startswith(
+            if asset["name"] not in ("install.sh", "install.ps1", "install-macos.sh") and not asset["name"].startswith(
                     f"Desktop-{self.profile}-{body['version']}-"):
                 return self.error(422, "invalid_asset")
         existing = self.releases.get(body["version"])
@@ -288,22 +301,24 @@ class FeedHarness(unittest.TestCase):
         (self.temp / "notes.md").write_text("What's new\n")
         return directory
 
-    def run_cli(self, *argv, token=None):
+    def run_cli(self, *argv, token=None, summary=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         environ = {feed.TOKEN_ENV: self.token if token is None else token}
+        if summary is not None:
+            environ["GITHUB_STEP_SUMMARY"] = str(summary)
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             status = cli.main(list(argv), environ, self.open_url)
         output = stdout.getvalue() + stderr.getvalue()
         self.assertNotIn(self.token, output)
         return status, stdout.getvalue(), stderr.getvalue()
 
-    def publish(self, version, channel, *extra, token=None):
+    def publish(self, version, channel, *extra, token=None, summary=None):
         if not (self.temp / version).exists():
             self.stage(version)
         return self.run_cli("publish", "--site", SITE, "--profile", PROFILE, "--feed", "cloud",
                             "--asset-prefix", PREFIX, "--version", version, "--channel", channel,
                             "--notes", str(self.temp / "notes.md"), "--directory", str(self.temp / version),
-                            "--assets", str(self.temp / f"{version}.txt"), *extra, token=token)
+                            "--assets", str(self.temp / f"{version}.txt"), *extra, token=token, summary=summary)
 
 
 class FeedTest(FeedHarness):
@@ -319,15 +334,17 @@ class FeedTest(FeedHarness):
         self.assertIn('"latest": true', out)
         self.assertIn('"os_floor": 15', out)
         self.assertIn('"kind": "install-script"', out)
-        self.assertEqual(out.count("X-Content-SHA256: "), 16)
+        self.assertEqual(out.count("X-Content-SHA256: "), 19)
 
-    def test_both_installers_declare_their_platform_as_install_scripts(self):
-        # Neither carries a version; each declares x64, as install.sh did.
+    def test_the_installers_declare_their_platform_as_install_scripts(self):
+        # None carries a version; each declares x64, as install.sh did.
         self.assertEqual(feed.describe("install.sh", PREFIX, STABLE),
                          {"platform": "Linux", "arch": "x64", "kind": "install-script"})
         self.assertEqual(feed.describe("install.ps1", PREFIX, STABLE),
                          {"platform": "Windows", "arch": "x64", "kind": "install-script"})
-        for bad in ("Install.ps1", "install.ps1.sha256", "install.bat"):
+        self.assertEqual(feed.describe("install-macos.sh", PREFIX, STABLE),
+                         {"platform": "macOS", "arch": "x64", "kind": "install-script"})
+        for bad in ("Install.ps1", "install.ps1.sha256", "install.bat", "install-macos.sh.sha256", "install-mac.sh"):
             with self.subTest(bad=bad), self.assertRaises(feed.Refusal):
                 feed.describe(bad, PREFIX, STABLE)
 
@@ -747,7 +764,12 @@ class FeedTest(FeedHarness):
 
 FIXTURES = SCRIPTS.parent / "desktop-core" / "tests" / "fixtures" / "desktop-feed"
 HOSTED = "m5lxqm2osk"
-LIMIT = 4096
+# The KMS default the publisher assumes when the listing gives no limit;
+# the 19-asset set does not fit it.
+KMS = 4096
+# The raised cap the measurements run under: REQUIRED, the cap the 19-asset
+# set needs at its longest with the full 300 bytes of notes.
+LIMIT = REQUIRED
 # The rehearsal's version shape, and the longest one plausible this decade.
 REHEARSAL = "2026.11.1-beta.1"
 LONGEST = "2026.12.99-beta.99"
@@ -757,8 +779,9 @@ SIZE = 9_999_999_999
 
 def candidate_inventory(version, profile):
     """A complete candidate's file list, named as release-candidate.py
-    requires (with the floored macOS images), checksums included."""
-    names = set(release.required_assets(version, profile))
+    requires (with the floored macOS images and install-macos.sh), checksums
+    included."""
+    names = set(release.required_assets(version, profile)) | {"install-macos.sh"}
     names |= {f"Desktop-{profile}-{version}-macOS15-{arch}.dmg" for arch in ("arm64", "x64")}
     return sorted(f"assets/{name}" for name in names | {name + ".sha256" for name in names})
 
@@ -783,9 +806,9 @@ def unreleased_notes():
 
 
 def measure(version, profile=HOSTED, channel="beta", names=None):
-    """The pre-flight of profile's fixed 16-asset cloud manifest with
+    """The pre-flight of profile's fixed 19-asset cloud manifest with
     ten-digit sizes and real sha256 values: the bound with empty notes, the
-    notes budget derived from it under 4096 (and why), and the final bound
+    notes budget derived from it under LIMIT (and why), and the final bound
     with long notes cut to that budget; and, for comparison with the feed
     owner's 2713, the manifest without notes with 10-character ids and one
     46-character host."""
@@ -806,7 +829,8 @@ release = load("release_candidate", SCRIPTS / "release-candidate.py")
 class ManifestCapTests(FeedHarness):
     """The signer caps a manifest's RFC 8785 bytes (limits.max_canonical_bytes,
     4096 for an AWS KMS Ed25519 key, assumed when the listing gives none);
-    the publisher measures before it creates a draft."""
+    the publisher measures before it creates a draft. The 19-asset set does
+    not fit 4096, so the publish tests run under a raised cap (LIMIT)."""
 
     def publish_hosted(self, notes_text, version=REHEARSAL):
         self.feed.profile = HOSTED
@@ -872,23 +896,27 @@ class ManifestCapTests(FeedHarness):
         self.assertEqual((status, err), (0, ""))
         size = self.bound_of(STABLE, package_names(STABLE))
         self.assertLess(size, LIMIT)
-        self.assertIn(f"Manifest canonical size: at most {size} bytes for 16 assets; signer limit: {LIMIT}.", out)
+        self.assertIn(f"Manifest canonical size: at most {size} bytes for 19 assets; signer limit: {LIMIT}.", out)
         self.assertEqual(self.feed.releases[STABLE]["state"], "published")
         # Notes that fit whole are declared as written: no link is added.
         self.assertEqual(self.feed.releases[STABLE]["body"]["notes"], "What's new\n")
         self.assertNotIn("Full notes:", out)
 
     def test_a_bound_at_exactly_the_limit_passes_and_one_byte_over_refuses(self):
-        self.stage(STABLE)
-        empty = self.bound_of(STABLE, package_names(STABLE), notes="")
-        size = self.bound_of(STABLE, package_names(STABLE))
+        # The 16-asset set (no macOS headless assets, so nothing to omit).
+        names = without_macos_headless(package_names(STABLE))
+        self.stage(STABLE, names)
+        empty = self.bound_of(STABLE, names, notes="")
+        size = self.bound_of(STABLE, names)
         # Assets that do not fit even with empty notes are refused, with both numbers.
         self.feed.limits = {"max_canonical_bytes": empty - 1}
         status, out, err = self.publish(STABLE, "stable")
         self.assertEqual(status, 2, err)
-        self.assertIn(f"up to {empty} canonical bytes, over the signer's max_canonical_bytes of {empty - 1};"
-                      " nothing was created or uploaded. The 16 assets do not fit even with empty release notes",
-                      err)
+        self.assertIn(f"up to {empty} canonical bytes, over the signer's max_canonical_bytes of {empty - 1}"
+                      " (reported by the feed); nothing was created or uploaded. The 16 assets do not fit even"
+                      " with empty release notes, and none is dropped: the feed must report a"
+                      f" max_canonical_bytes of at least {empty} before this release can publish.", err)
+        self.assertNotIn("Even without the macOS headless assets", err)
         self.assertIn("Release notes: kept 0 of 12 canonical bytes (0 of 1 whole lines), capped at 0 (the room"
                       f" 16 assets leave under the signer limit of {empty - 1} ({empty} bytes with empty notes)).",
                       out)
@@ -911,38 +939,163 @@ class ManifestCapTests(FeedHarness):
         self.assertIn(f"at most {empty} bytes for 16 assets; signer limit: {size - 1}.", out)
         self.assertEqual(self.feed.releases[STABLE]["body"]["notes"], "")
 
+    def declared_names(self, version):
+        return sorted(a["name"] for a in self.feed.releases[version]["body"]["expected_assets"])
+
+    def test_a_cap_that_holds_the_19_assets_publishes_all_19(self):
+        names = package_names(BETA)
+        self.stage(BETA, names)
+        empty = self.bound_of(BETA, names, notes="")
+        summary = self.temp / "summary.md"
+        self.feed.limits = {"max_canonical_bytes": empty}
+        status, out, err = self.publish(BETA, "beta", summary=summary)
+        self.assertEqual((status, err), (0, ""))
+        self.assertIn(f"at most {empty} bytes for 19 assets; signer limit: {empty}.", out)
+        self.assertNotIn("omitted", out)
+        self.assertFalse(summary.exists())
+        self.assertEqual(self.declared_names(BETA), sorted(names))
+        self.assertEqual(self.feed.releases[BETA]["state"], "published")
+
+    def test_a_cap_that_holds_only_16_assets_publishes_16_and_reports_the_omission(self):
+        # One byte under what the 19 assets need with empty notes: the macOS
+        # probe bundles and install-macos.sh are left out, the other 16 are
+        # published, and the omission is reported on stdout and in the
+        # workflow summary with both numbers.
+        names = package_names(BETA)
+        sixteen = without_macos_headless(names)
+        self.assertEqual(len(sixteen), 16)
+        self.stage(BETA, names)
+        empty = self.bound_of(BETA, names, notes="")
+        reduced = self.bound_of(BETA, sixteen, notes="")
+        summary = self.temp / "summary.md"
+        self.feed.limits = {"max_canonical_bytes": empty - 1}
+        status, out, err = self.publish(BETA, "beta", summary=summary)
+        self.assertEqual((status, err), (0, ""))
+        # In the order the assets file lists them.
+        omitted = ", ".join(name for name in names if name not in sixteen)
+        self.assertEqual(omitted, f"install-macos.sh, {PREFIX}-{BETA}-macOS-arm64-probe.tar.gz,"
+                                  f" {PREFIX}-{BETA}-macOS-x64-probe.tar.gz")
+        message = (f"Profile {PROFILE} v{BETA}: the macOS assets ({omitted}) were omitted because the feed's"
+                   f" max_canonical_bytes of {empty - 1} (reported by the feed) is too small for the 19-asset"
+                   f" manifest, which needs at least {empty} canonical bytes with empty release notes. The other"
+                   f" 16 assets ({reduced} bytes with empty notes) are published without them; macOS headless"
+                   " installs and updates from this feed get no new core until the feed reports a"
+                   f" max_canonical_bytes of at least {empty}.")
+        self.assertIn(f"::warning title=macOS assets omitted from the cloud feed::{message}\n", out)
+        self.assertEqual(summary.read_text(encoding="utf-8"), f"**Warning:** {message}\n\n")
+        self.assertIn(f"for 16 assets; signer limit: {empty - 1}.", out)
+        self.assertEqual(self.declared_names(BETA), sorted(sixteen))
+        self.assertEqual(self.feed.releases[BETA]["state"], "published")
+        # Without a workflow summary the warning still reaches stdout.
+        self.feed.releases.clear()
+        status, out, err = self.publish(BETA, "beta")
+        self.assertEqual((status, err), (0, ""))
+        self.assertIn(f"::warning title=macOS assets omitted from the cloud feed::{message}\n", out)
+
+    def test_a_cap_that_holds_neither_set_is_refused(self):
+        names = package_names(BETA)
+        self.stage(BETA, names)
+        empty = self.bound_of(BETA, names, notes="")
+        reduced = self.bound_of(BETA, without_macos_headless(names), notes="")
+        summary = self.temp / "summary.md"
+        self.feed.limits = {"max_canonical_bytes": reduced - 1}
+        status, out, err = self.publish(BETA, "beta", summary=summary)
+        self.assertEqual(status, 2, err)
+        self.assertIn(f"the signed manifest would be up to {empty} canonical bytes, over the signer's"
+                      f" max_canonical_bytes of {reduced - 1} (reported by the feed); nothing was created or"
+                      " uploaded. The 19 assets do not fit even with empty release notes, and none is dropped:"
+                      f" the feed must report a max_canonical_bytes of at least {empty} before this release can"
+                      " publish. Raise the cap on the feed. Even without the macOS headless assets the manifest"
+                      f" would need {reduced}.", err)
+        self.assertNotIn("omitted", out)
+        self.assertFalse(summary.exists())
+        self.assertEqual([method for method, _, _ in self.feed.requests], ["GET"])
+        self.assertEqual(self.feed.releases, {})
+
     def test_the_listings_limit_is_used_when_it_gives_one(self):
         names = every_package_name(STABLE)
         self.stage(STABLE, names)
         size = self.bound_of(STABLE, names)
-        self.assertGreater(size, LIMIT)
+        self.assertGreater(size, KMS)
         # A larger cap from the listing wins over the KMS default...
         self.feed.limits = {"max_canonical_bytes": 100_000}
         status, out, err = self.publish(STABLE, "stable")
         self.assertEqual((status, err), (0, ""))
-        self.assertIn(f"at most {size} bytes for 20 assets; signer limit: 100000.", out)
+        self.assertIn(f"at most {size} bytes for 21 assets; signer limit: 100000.", out)
         # ...and so does a smaller one.
         self.feed.releases.clear()
         self.feed.limits = {"max_canonical_bytes": 1000}
         self.assertEqual(self.publish(BETA, "beta")[0], 2)
 
     def test_a_null_or_absent_limit_is_the_kms_default_of_4096(self):
+        # The 21 assets do not fit 4096, the 18 without the macOS headless
+        # assets do: a null or absent limit is read as 4096 for both checks.
         names = every_package_name(STABLE)
         self.stage(STABLE, names)
         for limits in ({"max_canonical_bytes": None}, {}, None):
             with self.subTest(limits=limits):
                 self.feed.limits = limits
                 self.feed.requests.clear()
+                self.feed.releases.clear()
                 status, out, err = self.publish(STABLE, "stable")
-                self.assertEqual(status, 2, err)
-                self.assertIn("for 20 assets; signer limit: 4096 (the KMS default of 4096: the listing gives none, and null or absent is not read as uncapped).", out)
-                self.assertIn("over the signer's max_canonical_bytes of 4096", err)
-                self.assertEqual([method for method, _, _ in self.feed.requests], ["GET"])
-                self.assertEqual(self.feed.releases, {})
-        self.feed.limits = None
+                self.assertEqual((status, err), (0, ""))
+                self.assertIn("for 18 assets; signer limit: 4096 (the KMS default of 4096: the listing gives none, and null or absent is not read as uncapped).", out)
+                self.assertIn("were omitted because the feed's max_canonical_bytes of 4096 (the KMS default, since"
+                              " the feed reports none) is too small for the 21-asset manifest", out)
+                self.assertEqual(self.declared_names(STABLE), sorted(without_macos_headless(names)))
+
+    def test_the_19_asset_set_under_4096_publishes_the_16_and_reports_the_omission(self):
+        # The fixed cloud set does not fit the KMS default, the 16 assets
+        # without the macOS headless ones do: the publish keeps Linux and
+        # Windows flowing and names the cap the feed reported (or the default
+        # it assumed) and the bytes the 19 assets need.
+        names = package_names(BETA)
+        sixteen = without_macos_headless(names)
+        self.stage(BETA, names)
+        empty = self.bound_of(BETA, names, notes="")
+        self.assertGreater(empty, KMS)
+        self.assertLessEqual(self.bound_of(BETA, sixteen, notes=""), KMS)
+        for limits, reported in (({"max_canonical_bytes": KMS}, "reported by the feed"),
+                                 ({"max_canonical_bytes": None}, "the KMS default, since the feed reports none"),
+                                 ({}, "the KMS default, since the feed reports none"),
+                                 (None, "the KMS default, since the feed reports none")):
+            with self.subTest(limits=limits):
+                self.feed.limits = limits
+                self.feed.releases.clear()
+                summary = self.temp / "summary.md"
+                summary.unlink(missing_ok=True)
+                status, out, err = self.publish(BETA, "beta", summary=summary)
+                self.assertEqual((status, err), (0, ""))
+                self.assertIn(f"for 16 assets; signer limit: 4096", out)
+                for text in (out, summary.read_text(encoding="utf-8")):
+                    self.assertIn(f"were omitted because the feed's max_canonical_bytes of 4096 ({reported}) is"
+                                  f" too small for the 19-asset manifest, which needs at least {empty} canonical"
+                                  " bytes with empty release notes.", text)
+                self.assertEqual(self.declared_names(BETA), sorted(sixteen))
+        # Raised on the feed, the 19 assets publish, every one declared.
+        self.feed.releases.clear()
+        self.feed.limits = {"max_canonical_bytes": empty}
         status, out, err = self.publish(BETA, "beta")
         self.assertEqual((status, err), (0, ""))
-        self.assertIn("for 16 assets; signer limit: 4096 (the KMS default of 4096: the listing gives none, and null or absent is not read as uncapped).", out)
+        self.assertNotIn("omitted", out)
+        self.assertEqual(self.declared_names(BETA), sorted(names))
+
+    def test_a_reported_65536_passes_the_19_asset_preflight(self):
+        # A signer that reports a large cap (Control's persistent signer
+        # reports 65536) takes the fixed 19-asset set with the full 300 bytes
+        # of notes, read from the feed like any numeric cap.
+        names = package_names(BETA)
+        self.stage(BETA, names)
+        size = self.bound_of(BETA, names)
+        self.assertGreater(self.bound_of(BETA, names, notes=""), KMS)
+        self.feed.limits = {"max_canonical_bytes": 65536}
+        status, out, err = self.publish(BETA, "beta")
+        self.assertEqual((status, err), (0, ""))
+        self.assertIn(f"Manifest canonical size: at most {size} bytes for 19 assets; signer limit: 65536.", out)
+        self.assertIn("(the fixed cap of 300)", out)
+        self.assertEqual(self.feed.releases[BETA]["state"], "published")
+        self.assertEqual(sorted(a["name"] for a in self.feed.releases[BETA]["body"]["expected_assets"]),
+                         sorted(names))
 
     def test_a_malformed_limit_fails_closed_before_any_draft(self):
         for limits in ({"max_canonical_bytes": "4096"}, {"max_canonical_bytes": 0},
@@ -1022,7 +1175,7 @@ class ManifestCapTests(FeedHarness):
         self.assertEqual(status, 1, err)
         self.assertRegex(out, r"Release notes: kept 1[0-9]{2} of [0-9]+ canonical bytes \([0-9]+ of 46 whole lines"
                               r" and a link to the full notes\),"
-                              rf" capped at 200 \(the room 16 assets leave under the signer limit of {empty + 200}"
+                              rf" capped at 200 \(the room 19 assets leave under the signer limit of {empty + 200}"
                               rf" \({empty} bytes with empty notes\)\)\.")
         self.assertEqual(self.feed.releases[REHEARSAL]["state"], "draft")
         declared_notes = self.feed.releases[REHEARSAL]["body"]["notes"]
@@ -1072,14 +1225,15 @@ class ManifestCapTests(FeedHarness):
         self.assertEqual(feed.cap_notes(capped, said.append, feed.notes_size(capped), link=link), capped)
 
     def test_release_notes_cloud_body_cut_to_the_budget_keeps_the_link(self):
-        # The body release-notes.py --feed cloud writes, at the tightest
-        # budget (212 at LONGEST), ends with the link and fits.
+        # The body release-notes.py --feed cloud writes, at LONGEST under
+        # the required cap (a budget of exactly 300), ends with the link and
+        # fits.
         notes_module = load("release_notes", SCRIPTS / "release-notes.py")
         body = notes_module.cloud_body(f"Desktop-{HOSTED} v{LONGEST} for macOS, Linux and Windows.", LONGEST,
                                        unreleased_notes(), "1.2.3")
         assets = measure(LONGEST)["assets"]
         budget = feed.notes_budget(HOSTED, LONGEST, "beta", assets, LIMIT)[0]
-        self.assertEqual(budget, 212)
+        self.assertEqual(budget, 300)
         link = feed.full_notes_line("https://relay.example.com", LONGEST)
         notes, size = feed.fit_notes(lambda _: None, HOSTED, LONGEST, "beta", body, assets, LIMIT, link)
         self.assertTrue(notes.startswith(f"Desktop-{HOSTED} v{LONGEST} for macOS, Linux and Windows.\n"))
@@ -1087,26 +1241,45 @@ class ManifestCapTests(FeedHarness):
         self.assertLessEqual(feed.notes_size(notes), budget)
         self.assertLessEqual(size, LIMIT)
 
-    def test_a_null_limit_cuts_the_notes_as_the_4096_default_does(self):
+    def test_a_null_limit_is_the_4096_default_and_omits_the_macos_headless_assets(self):
+        # At the longest sizes the 19 assets need more than 4096 and the 16
+        # without the macOS probe bundles and install-macos.sh fit it.
         names = package_names(REHEARSAL, f"Desktop-{HOSTED}")
         self.stage(REHEARSAL, names)
         assets = [dict(asset, size=SIZE) for asset in
                   feed.expected_assets(self.temp / REHEARSAL, names, f"Desktop-{HOSTED}", REHEARSAL)]
+        sixteen = [asset for asset in assets if asset["name"] in without_macos_headless(names)]
         notes = unreleased_notes() * 8
-        link = feed.full_notes_line(SITE, REHEARSAL)
+        empty = feed.canonical_size(HOSTED, REHEARSAL, "beta", "", assets)
+        reduced = feed.canonical_size(HOSTED, REHEARSAL, "beta", "", sixteen)
+        self.assertGreater(empty, KMS)
+        self.assertLessEqual(reduced, KMS)
         self.feed.profile = HOSTED
-        client = feed.Client(SITE, HOSTED, self.token, open_url=self.open_url, out=lambda _: None)
-        expected = feed.fit_notes(lambda _: None, HOSTED, REHEARSAL, "beta", notes, assets, 4096, link)[0]
-        for limits in ({"max_canonical_bytes": None}, {}, None):
+        reports = []
+        client = feed.Client(SITE, HOSTED, self.token, open_url=self.open_url, out=lambda _: None,
+                             summary=reports.append)
+        for limits, reported in (({"max_canonical_bytes": None}, "the KMS default, since the feed reports none"),
+                                 ({}, "the KMS default, since the feed reports none"),
+                                 (None, "the KMS default, since the feed reports none"),
+                                 ({"max_canonical_bytes": 4096}, "reported by the feed")):
             with self.subTest(limits=limits):
                 self.feed.limits = limits
-                self.assertIsNone(client.max_canonical_bytes("beta"))
-                cut, why = feed.preflight(client, REHEARSAL, "beta", notes, assets)
-                self.assertEqual(cut, expected)
-                self.assertIn("under a signer limit of 4096 (the default; the listing gives none)", why)
-        # A listed 4096 cuts them the same way.
-        self.feed.limits = {"max_canonical_bytes": 4096}
-        self.assertEqual(feed.preflight(client, REHEARSAL, "beta", notes, assets)[0], expected)
+                reports.clear()
+                _, _, kept = feed.preflight(client, REHEARSAL, "beta", notes, assets)
+                self.assertEqual(kept, sixteen)
+                self.assertEqual(len(reports), 1)
+                self.assertIn(f"max_canonical_bytes of 4096 ({reported}) is too small for the 19-asset manifest,"
+                              f" which needs at least {empty} canonical bytes", reports[0])
+                self.assertIn(f"The other 16 assets ({reduced} bytes with empty notes)", reports[0])
+        # The required cap keeps all 19 and cuts the notes to the fixed 300.
+        self.feed.limits = {"max_canonical_bytes": REQUIRED}
+        reports.clear()
+        cut, why, kept = feed.preflight(client, REHEARSAL, "beta", notes, assets)
+        self.assertEqual((kept, reports), (assets, []))
+        link = feed.full_notes_line(SITE, REHEARSAL)
+        self.assertEqual(cut, feed.fit_notes(lambda _: None, HOSTED, REHEARSAL, "beta", notes, assets, REQUIRED,
+                                             link)[0])
+        self.assertIn(f"under a signer limit of {REQUIRED}", why)
 
     def test_a_publish_time_422_manifest_too_large_names_the_stranded_draft(self):
         self.feed.too_large_at_publish = (4200, 4096)
@@ -1115,7 +1288,7 @@ class ManifestCapTests(FeedHarness):
         self.assertIn("Publishing failed: HTTP 422 manifest_too_large: the feed measured the signed manifest at"
                       " canonical_bytes 4200, over its max_canonical_bytes of 4096; nothing was published, and it"
                       " is not retried.", err)
-        self.assertIn(f"The draft of v{STABLE} stays on the feed with all 16 declared assets uploaded.", err)
+        self.assertIn(f"The draft of v{STABLE} stays on the feed with all 19 declared assets uploaded.", err)
         self.assertIn("A rerun with the same notes and packages resumes it", err)
         self.assertNotIn("Nothing was created", err)
         # One publish call: no retry, no replay listing.
@@ -1141,10 +1314,12 @@ class ManifestCapTests(FeedHarness):
         status, out, _ = self.publish(STABLE, "stable", "--dry-run")
         self.assertEqual(status, 0)
         self.assertEqual(self.feed.requests, [])
-        self.assertRegex(out, r"Release notes: kept [0-9]+ of 3[0-9]{2} canonical bytes \([0-9]+ of [0-9]+ whole lines"
-                              r" and a link to the full notes\), capped at 300 \(the fixed cap of 300\)\.")
+        # A dry run reads no limit and fits under the 4096 default, which
+        # the 19 assets leave no room under: it plans the notes cut to none.
+        self.assertRegex(out, r"Release notes: kept 0 of 3[0-9]{2} canonical bytes \(0 of [0-9]+ whole lines\),"
+                              r" capped at 0 \(the room 19 assets leave under the signer limit of 4096")
         assets = feed.expected_assets(self.temp / STABLE, package_names(STABLE), PREFIX, STABLE)
-        cut = feed.fit_notes(lambda _: None, PROFILE, STABLE, "stable", raw, assets, LIMIT,
+        cut = feed.fit_notes(lambda _: None, PROFILE, STABLE, "stable", raw, assets, feed.DEFAULT_MAX_CANONICAL_BYTES,
                              feed.full_notes_line(SITE, STABLE))[0]
         self.assertNotEqual(cut, raw)
         planned = json.dumps(cut)
@@ -1157,8 +1332,8 @@ class ManifestCapTests(FeedHarness):
         self.stage(REHEARSAL, names)
         assets = feed.expected_assets(self.temp / REHEARSAL, names, f"Desktop-{HOSTED}", REHEARSAL)
         empty = feed.canonical_size(HOSTED, REHEARSAL, "beta", "", assets)
-        # Attempt 1: the listing gives no limit (4096, the fixed 300 applies); an upload fails.
-        self.feed.limits = {"max_canonical_bytes": None}
+        # Attempt 1: the listing gives the required cap (the fixed 300 applies); an upload fails.
+        self.feed.limits = {"max_canonical_bytes": LIMIT}
         self.feed.fail_upload.add(names[5])
         self.assertEqual(self.publish_hosted(long_notes)[0], 1)
         self.assertEqual(self.feed.releases[REHEARSAL]["state"], "draft")
@@ -1176,7 +1351,7 @@ class ManifestCapTests(FeedHarness):
         self.assertRegex(err, r"older publisher")
         self.assertRegex(err, r"spelling of the site")
         # Back at the earlier limit, the rerun resumes the draft cleanly.
-        self.feed.limits = {"max_canonical_bytes": None}
+        self.feed.limits = {"max_canonical_bytes": LIMIT}
         status, out, err = self.publish_hosted(long_notes)
         self.assertEqual((status, err), (0, ""))
         self.assertIn(f"Resumed the draft of v{REHEARSAL}.", out)
@@ -1225,7 +1400,7 @@ class ManifestCapTests(FeedHarness):
                 self.assertTrue(first and notes.startswith(first) and first.endswith("\n"))
                 self.assertLessEqual(size, LIMIT)
 
-    def test_the_enterprise_profiles_publish_declares_the_16_assets_and_capped_notes(self):
+    def test_the_enterprise_profiles_publish_declares_the_19_assets_and_capped_notes(self):
         self.feed.limits = {"max_canonical_bytes": LIMIT}
         names = release.cloud_assets(candidate_inventory(REHEARSAL, HOSTED), REHEARSAL, HOSTED, log=lambda _: None)
         self.assertEqual(sorted(names), sorted(package_names(REHEARSAL, f"Desktop-{HOSTED}")))
@@ -1234,7 +1409,7 @@ class ManifestCapTests(FeedHarness):
         # The staged packages are small, so the fixed cap applies here.
         self.assertRegex(out, r"Release notes: kept [0-9]+ of [0-9]+ canonical bytes \([0-9]+ of [0-9]+ whole lines"
                               r" and a link to the full notes\), capped at 300 \(the fixed cap of 300\)\.")
-        self.assertRegex(out, r"for 16 assets; signer limit: 4096\.")
+        self.assertRegex(out, rf"for 19 assets; signer limit: {LIMIT}\.")
         published = self.feed.releases[REHEARSAL]
         self.assertLessEqual(feed.notes_size(published["body"]["notes"]), 300)
         # Cut notes end with the link to the full notes, inside the 300.
@@ -1242,33 +1417,44 @@ class ManifestCapTests(FeedHarness):
             f"\n\nFull notes: {SITE}/cloud/dashboard/downloads#v{REHEARSAL}\n"))
         self.assertEqual(sorted(a["name"] for a in published["body"]["expected_assets"]), sorted(names))
 
-    def test_the_16_asset_bound_with_budgeted_notes_fits_under_4096(self):
-        # Measured with ten-digit sizes: with empty notes, the bound and the
-        # notes budget it leaves under 4096 (300 at most).
-        expected = {REHEARSAL: (3854, 242), LONGEST: (3884, 212)}
+    def test_the_19_asset_bound_needs_a_cap_of_4846(self):
+        # Measured with ten-digit sizes and the 10-character profile: with
+        # empty notes the bound is over 4096, so the KMS default refuses the
+        # set; a cap of REQUIRED (the bound at LONGEST plus the full 300
+        # bytes of notes) publishes it with the full notes budget.
+        self.assertEqual(REQUIRED, 4846)
+        expected = {REHEARSAL: 4512, LONGEST: 4546}
         for version in (REHEARSAL, LONGEST):
             with self.subTest(version=version):
                 m = measure(version)
                 print(f"\n{HOSTED} v{version} (prefix Desktop-{HOSTED}): {m['count']} assets, 10-digit sizes:"
-                      f" empty-notes bound {m['empty']}, notes budget {m['budget']} ({m['why']}), final bound"
-                      f" {m['final']} with {m['notes']} bytes of notes (margin {LIMIT - m['final']} under {LIMIT});"
+                      f" empty-notes bound {m['empty']}, notes budget {m['budget']} ({m['why']}) under {LIMIT},"
+                      f" final bound {m['final']} with {m['notes']} bytes of notes (margin {LIMIT - m['final']});"
                       f" without notes, with one 46-character host: {m['likely']}", file=sys.stderr)
-                self.assertEqual(m["count"], 16)
-                self.assertEqual((m["empty"], m["budget"]), expected[version])
-                self.assertEqual(m["budget"], min(feed.NOTES_MAX_BYTES, LIMIT - m["empty"]))
+                self.assertEqual(m["count"], 19)
+                self.assertEqual(m["empty"], expected[version])
+                self.assertGreater(m["empty"], KMS)
+                self.assertEqual(feed.notes_budget(HOSTED, version, "beta", m["assets"], KMS)[0], 0)
+                self.assertEqual((m["budget"], m["why"]), (300, "the fixed cap of 300"))
                 self.assertLessEqual(m["notes"], m["budget"])
                 self.assertEqual(m["final"], m["empty"] + m["notes"])
                 self.assertLessEqual(m["final"], LIMIT)
                 self.assertLess(m["empty"] - m["likely"], 100)
-                # A full 300 bytes of notes would not fit.
-                self.assertGreater(m["empty"] + feed.NOTES_MAX_BYTES, LIMIT)
+        # At LONGEST the cap is exactly the empty bound and the 300 bytes.
+        self.assertEqual(REQUIRED, expected[LONGEST] + feed.NOTES_MAX_BYTES)
+        # Without the macOS headless assets the 16 fit the KMS default, with
+        # 242 and 212 bytes left for notes.
+        for version, sixteen in ((REHEARSAL, 3854), (LONGEST, 3884)):
+            with self.subTest(version=version, assets=16):
+                names = without_macos_headless(package_names(version, f"Desktop-{HOSTED}"))
+                self.assertEqual(measure(version, names=names)["empty"], sixteen)
 
     def test_a_shorter_prefix_gets_the_full_300_bytes_of_notes(self):
         names = package_names(REHEARSAL)
         m = measure(REHEARSAL, PROFILE, names=names)
         print(f"\n{PROFILE} v{REHEARSAL} (prefix {PREFIX}): empty-notes bound {m['empty']}, notes budget"
               f" {m['budget']} ({m['why']}), final bound {m['final']}", file=sys.stderr)
-        self.assertEqual((m["count"], m["budget"], m["why"]), (16, 300, "the fixed cap of 300"))
+        self.assertEqual((m["count"], m["budget"], m["why"]), (19, 300, "the fixed cap of 300"))
         self.assertLessEqual(m["empty"] + 300, LIMIT)
         exact = notes_of(300)
         notes, size = feed.fit_notes(lambda _: None, PROFILE, REHEARSAL, "beta", exact, m["assets"], LIMIT)

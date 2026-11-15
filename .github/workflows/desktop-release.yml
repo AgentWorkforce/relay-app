@@ -1936,12 +1936,13 @@ jobs:
           # releases repository, asset prefix, feed (github or cloud), site,
           # profile id and feed public key replace the default's seven
           # assignments in each (docs/workspace-layout.md, "Site profiles").
-          # install-macos.sh reads releases repositories only and refuses a
-          # cloud feed, which carries no macOS core bundle. A github: profile
-          # needs its releases repository and a cloud profile its site, id
-          # and key; with neither a repository nor a site there is nothing
-          # to install from, and the step fails. Nothing is logged but the
-          # opaque id.
+          # All three install from either feed: a cloud profile's copies
+          # carry its site, profile id and feed key, and install the probe
+          # bundles its feed carries (macOS, Linux and Windows). A github:
+          # profile needs its releases repository and a cloud profile its
+          # site, id and key; with neither a repository nor a site there is
+          # nothing to install from, and the step fails. Nothing is logged
+          # but the opaque id.
           if [ -z "$PROFILE" ]; then
             cp linux/install.sh release-assets/install.sh
             cp macos/install.sh release-assets/install-macos.sh
@@ -2101,9 +2102,14 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-      # A cloud feed: declare the candidate's versioned packages,
-      # install.sh and install.ps1 (never the unversioned aliases, install-macos.sh or .sha256 files: the feed
-      # binds names to <asset_prefix>-<version>- and records each sha256),
+      # A cloud feed: declare the candidate's fixed cloud set of 19 assets,
+      # its versioned packages (the macOS probe bundles included), install.sh,
+      # install.ps1 and install-macos.sh (never the unversioned aliases,
+      # unfloored images or .sha256 files: the feed binds names to
+      # <asset_prefix>-<version>- and records each sha256), measured first
+      # against the feed signer's limit (desktop-feed-publish.py; when only
+      # the set without install-macos.sh and the macOS probe bundles fits,
+      # those three are left out and reported in the step summary),
       # upload each, then publish. Stable is published as latest; beta is
       # not. A failed upload or publish leaves the feed's draft unpublished
       # and this job red; a rerun resumes the same draft. The bridge follows

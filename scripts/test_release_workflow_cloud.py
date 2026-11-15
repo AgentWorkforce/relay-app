@@ -358,8 +358,8 @@ class CloudWorkflowTests(unittest.TestCase):
 
     def test_a_cloud_profile_stages_every_installer_for_its_site(self):
         # install-macos.sh takes the same seven values as install.sh; a
-        # cloud copy refuses to install (scripts/test-macos-install.sh), and
-        # the feed never carries it (release-candidate.py cloud_assets).
+        # cloud copy installs from the feed (scripts/test-macos-install-cloud.sh),
+        # which carries it (release-candidate.py cloud_assets).
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             result = self.stage_installers(root)
@@ -687,6 +687,26 @@ class PullReceiptTests(unittest.TestCase):
     def test_check_refuses_a_missing_or_extra_asset(self):
         self.candidate()
         (self.root / 'cloud-assets.txt').write_text('install.sh\n')
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not declare exactly the candidate's cloud assets", result.stdout)
+
+    def test_check_accepts_a_request_without_all_the_macos_headless_assets(self):
+        # The publisher leaves out install-macos.sh and the macOS probe
+        # bundles together when the feed's signer cap holds only the rest.
+        assets, _ = self.candidate()
+        headless = ['install-macos.sh', 'Desktop-x7k2q-2026.3.1-macOS-arm64-probe.tar.gz',
+                    'Desktop-x7k2q-2026.3.1-macOS-x64-probe.tar.gz']
+        for name in headless:
+            (assets / name).write_bytes(name.encode())
+        listed = self.root / 'cloud-assets.txt'
+        listed.write_text(listed.read_text() + ''.join(name + '\n' for name in headless))
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("declares 2 of the candidate's 5 cloud assets; the macOS headless assets were omitted"
+                      f" from the feed: {', '.join(headless)}.", result.stdout)
+        # Leaving out only some of them is still refused.
+        listed.write_text(listed.read_text().replace('install-macos.sh\n', ''))
         result = self.check()
         self.assertEqual(result.returncode, 1)
         self.assertIn("does not declare exactly the candidate's cloud assets", result.stdout)

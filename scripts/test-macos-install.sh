@@ -18,8 +18,10 @@
 # stops does not hold it up, and never for another install's collector), so
 # an install right after it works, the script piped into bash as the release
 # asset's one-line install is (no command it runs may read the script from
-# standard input), --help and an unknown option, and a cloud profile's copy,
-# which refuses to install. Nothing here talks to a real launchd.
+# standard input), and --help and an unknown option. The cloud release feed
+# cases, a cloud profile's copy installing and updating from a fixture feed,
+# are in scripts/test-macos-install-cloud.sh, which this file sources last.
+# Nothing here talks to a real launchd.
 #
 #   scripts/test-macos-install.sh
 set -euo pipefail
@@ -344,19 +346,6 @@ rc=0; bash "$INSTALL" --frobnicate > "$root/state/out" 2> "$root/state/err" || r
 grep -q "^Usage: install-macos.sh" "$root/state/err" || fail "an unknown option prints no usage on stderr"
 { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "--help or an unknown option left files behind"
 pass "--help and -h print usage and exit 0; an unknown option exits 2 with usage"
-
-# A cloud profile's copy: the Stage step sets the seven assignments.
-cloud_copy="$root/install-cloud.sh"
-sed -e "s/^RELEASE_FEED=.*/RELEASE_FEED=cloud/" -e "s|^SITE_URL=.*|SITE_URL=https://relay.acme.test|" \
-  -e "s/^PROFILE_ID=.*/PROFILE_ID=x7k2q/" "$INSTALL" > "$cloud_copy"
-[ "$(grep -c '^RELEASE_FEED=cloud$' "$cloud_copy")" = 1 ] || fail "the cloud copy does not set RELEASE_FEED once"
-: > "$root/state/curl.log"
-if piped "$cloud_copy" | bash -s > "$root/state/out" 2>&1; then fail "a cloud profile's copy installed"; fi
-grep -q "the macOS installer does not support the cloud feed yet" "$root/state/out" || { cat "$root/state/out"; fail "the cloud refusal does not say why"; }
-[ ! -s "$root/state/curl.log" ] || fail "a cloud profile's copy downloaded something"
-{ [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a cloud profile's copy left files behind"
-bash "$cloud_copy" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a cloud profile's copy could not --uninstall"; }
-pass "a cloud profile's copy refuses to install, and can still --uninstall"
 
 app="$HOME/Applications/Agent Relay.app/Contents/Library/LaunchAgents"
 mkdir -p "$app" && touch "$app/com.agentrelay.desktop.core.plist"
@@ -992,4 +981,8 @@ grep -Fq "kept settings, sign-in and agent registrations in: $data" "$root/state
 [ ! -s "$root/state/stdin-violations" ] || { cat "$root/state/stdin-violations" >&2; fail "a piped run let a command read the script"; }
 [ "$(sha256sum "$data/injectable-agents.json")" = "$data_sum" ] || fail "the core's data changed"
 pass "curl | bash installs and curl | bash -s -- --uninstall removes it, and no command reads the script"
+
+# shellcheck source=scripts/test-macos-install-cloud.sh
+. "$REPO/scripts/test-macos-install-cloud.sh"
+
 echo "all macOS install tests passed"

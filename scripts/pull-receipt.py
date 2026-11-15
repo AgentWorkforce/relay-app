@@ -21,7 +21,10 @@ the sha256 of publish-request.json.
           collision check. An artifact of the same name kept by any other
           workflow or ref is ignored.
   check   checks a kept publish-request.json against the candidate's cloud
-          assets (cloud-assets.txt) before a resumed run attaches it.
+          assets (cloud-assets.txt) before a resumed run attaches it. The
+          request may leave out the macOS headless assets (install-macos.sh
+          and the macOS probe bundles), all of them, as the publisher does
+          when the feed's signer cap holds only the manifest without them.
 
 Exit status: 0 done; 1 refused, or a GitHub API call failed.
 """
@@ -44,6 +47,8 @@ SCHEMA = 1
 MAX_BYTES = 1 << 20
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+MACOS_HEADLESS = re.compile(r"install-macos\.sh|.+-macOS-(arm64|x64)-probe\.tar\.gz")
+MACOS_HEADLESS_COUNT = 3
 
 
 class Refused(Exception):
@@ -172,8 +177,12 @@ def check(args):
     declared = request.get("expected_assets")
     if not isinstance(declared, list) or not all(isinstance(entry, dict) for entry in declared):
         raise Refused("the kept publish-request.json has no expected_assets")
-    declared_names = [entry.get("name") for entry in declared]
-    if sorted(map(str, declared_names)) != sorted(names) or len(set(names)) != len(names):
+    declared_names = sorted(map(str, (entry.get("name") for entry in declared)))
+    headless = [name for name in names if MACOS_HEADLESS.fullmatch(name)]
+    shapes = [sorted(names)]
+    if len(headless) == MACOS_HEADLESS_COUNT:
+        shapes.append(sorted(name for name in names if name not in headless))
+    if declared_names not in shapes or len(set(names)) != len(names):
         raise Refused("the kept publish-request.json does not declare exactly the candidate's cloud assets")
     for entry in declared:
         name = entry["name"]
@@ -185,7 +194,11 @@ def check(args):
             raise Refused(f"the kept publish-request.json declares {name} with another sha256")
         if isinstance(size, bool) or not isinstance(size, int) or path.stat().st_size != size:
             raise Refused(f"the kept publish-request.json declares {name} with another size")
-    print(f"The kept publish-request.json declares the candidate's {len(names)} cloud assets.")
+    if len(declared) == len(names):
+        print(f"The kept publish-request.json declares the candidate's {len(names)} cloud assets.")
+    else:
+        print(f"The kept publish-request.json declares {len(declared)} of the candidate's {len(names)} cloud assets;"
+              f" the macOS headless assets were omitted from the feed: {', '.join(headless)}.")
 
 
 def parse(argv):

@@ -16,7 +16,8 @@
 #   bash install.sh --uninstall
 #
 # Every release publishes this script as the asset install-macos.sh (Stage
-# the release assets, .github/workflows/desktop-release.yml). Piped into
+# the release assets, .github/workflows/desktop-release.yml), a cloud
+# profile's with its site, profile id and feed key. Piped into
 # bash, the script itself is bash's standard input: no command here may read
 # it, so every one that could is given /dev/null.
 #
@@ -27,7 +28,15 @@
 #   2. Resolves the release (latest, or --version), downloads
 #      <ASSET_PREFIX>-<version>-macOS-<arch>-probe.tar.gz, checks it against
 #      the release's .sha256, and checks the core's Developer ID signature
-#      (Apple's anchor, team QUJ7SA6X8X) before running it.
+#      (Apple's anchor, team QUJ7SA6X8X) before running it. A site profile
+#      with RELEASE_FEED='cloud' reads its site's signed release feed instead
+#      (see "the cloud release feed" below): with the install token
+#      (AGENT_RELAY_INSTALL_TOKEN, needed on a first install) or the installed
+#      core's sign-in, it checks the manifest's signature with the installed
+#      core's feed verify or with OpenSSL 3 (Homebrew's openssl@3: the openssl
+#      macOS ships is LibreSSL, which cannot), fetches the asset through the
+#      feed's signed download address, and checks its size and sha256. The
+#      Developer ID check and everything after it are the same for both.
 #   3. Unpacks into versions/<version>, checks the binary reports that
 #      version, records the product beside it (versions/<version>/product),
 #      and points `current` at it atomically. The previous version stays for
@@ -58,21 +67,14 @@ set -euo pipefail
 # publishes a copy with these lines set to its own (Stage the release
 # assets, .github/workflows/desktop-release.yml); keep each one assignment.
 # RELEASE_FEED is 'github' (the releases repository) or 'cloud' (the signed
-# release feed of SITE_URL for PROFILE_ID, checked with FEED_PUBLIC_KEY), as
-# in linux/install.sh. This script reads the releases repository only: a
-# cloud feed carries no macOS core bundle, so a cloud profile's copy refuses
-# to install.
+# release feed of SITE_URL for PROFILE_ID, checked with FEED_PUBLIC_KEY, the
+# standard base64 of the feed's Ed25519 public key), as in linux/install.sh.
 PRODUCT_NAME='Agent Relay'
 RELEASES_REPOSITORY='AgentWorkforce/relay-desktop-releases'
 ASSET_PREFIX='AgentRelay'
 RELEASE_FEED='github'
-# The cloud feed's three values are substituted with the rest but not read
-# until the macOS installer has a cloud path.
-# shellcheck disable=SC2034
 SITE_URL=''
-# shellcheck disable=SC2034
 PROFILE_ID=''
-# shellcheck disable=SC2034
 FEED_PUBLIC_KEY=''
 # The product an install without a product record belongs to: every earlier
 # release of this script was Agent Relay's.
@@ -118,6 +120,13 @@ Usage: install-macos.sh [--version X.Y.Z] [--update] [--rollback] [--dry-run]
                    sign-in and agents stay in the core's data directory.
   --dry-run        Say what would change and change nothing.
 EOF
+  if [ "$RELEASE_FEED" = cloud ]; then
+    cat <<EOF
+
+A first install needs AGENT_RELAY_INSTALL_TOKEN, the install token from your
+workspace's downloads page; an update uses the installed core's sign-in.
+EOF
+  fi
 }
 
 note() { printf '%s: %s\n' "$SCRIPT_NAME" "$*"; }
@@ -191,6 +200,367 @@ fetch() { # url dest
 
 probe_version() { # binary -> version it reports
   "$1" --version < /dev/null 2>/dev/null | awk '{print $NF}' | head -n 1
+}
+
+# --- the cloud release feed (RELEASE_FEED='cloud') ------------------------------
+#
+# As in linux/install.sh: the routes, headers and error codes below are
+# Cloud's proposed release feed contract (docs/enterprise-distribution.md),
+# not a stable API. The manifest is a signed envelope {manifest, signature,
+# key_id}; this script refuses one whose key_id is not fk_<PROFILE_ID>_<label>,
+# whose profile or channel is not this build's, or whose signature does not
+# verify, then checks the asset's size and sha256 before anything is unpacked.
+#
+# The credential is never printed, logged or written to a file: it is held
+# in a shell variable and handed to curl on its standard input (-H @-), so it
+# is in no command line either, and never goes to the signed download URL.
+
+site="${SITE_URL%/}"
+FEED_LIMIT=1048576
+cloud_headers=""
+verified_by=""
+
+cloud_preflight() {
+  [ -z "${AGENT_RELAY_RELEASES_API+set}" ] \
+    || die "AGENT_RELAY_RELEASES_API cannot be used: $PRODUCT_NAME installs from its site's release feed"
+  [ -z "${AGENT_RELAY_DOWNLOAD_BASE+set}" ] \
+    || die "AGENT_RELAY_DOWNLOAD_BASE cannot be used: $PRODUCT_NAME installs from its site's release feed"
+  { [ -n "$SITE_URL" ] && [ -n "$PROFILE_ID" ] && [ -n "$FEED_PUBLIC_KEY" ]; } \
+    || die "this copy of install-macos.sh has no site, profile or feed key; download it again from your workspace's downloads page"
+  printf '%s' "$site" | grep -Eq '^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' \
+    || die "the built-in site is not an https:// address"
+  printf '%s' "$PROFILE_ID" | grep -Eq '^[a-z0-9]{1,32}$' || die "the built-in profile id is malformed"
+  have curl || die "curl is required to read the release feed"
+  # /usr/bin/python3 is a stub until the Command Line Tools are installed.
+  { have python3 && python3 -I -c '' < /dev/null >/dev/null 2>&1; } \
+    || die "python3 is required to read the release feed; install the Command Line Tools (xcode-select --install) and run this again"
+}
+
+# The feed's JSON work, in one place: python3 -I, reading only what it is
+# given. Commands: ids, headers, error, envelope, pem, select, url, verified.
+# The same program as linux/install.sh's.
+feed_py() {
+  python3 -I -c '
+import base64, json, re, sys
+from urllib.parse import urlsplit
+
+LIMIT = 1048576
+def fail(message):
+    sys.stderr.write(message + "\n")
+    sys.exit(1)
+def refuse_float(text):
+    raise ValueError("a non-integer number")
+def unique(pairs):
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("a repeated key")
+    return dict(pairs)
+def walk(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            walk(item)
+    elif isinstance(value, list):
+        for item in value:
+            walk(item)
+    elif isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2 ** 53 - 1:
+        raise ValueError("an integer JCS cannot write")
+def load(path):
+    with (sys.stdin.buffer if path == "-" else open(path, "rb")) as source:
+        data = source.read(LIMIT + 1)
+    if len(data) > LIMIT:
+        fail("the answer is larger than 1 MiB")
+    try:
+        value = json.loads(data.decode("utf-8"), parse_float=refuse_float,
+                           parse_constant=refuse_float, object_pairs_hook=unique)
+        walk(value)
+        return value
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        fail("the answer is not valid JSON")
+def jcs(value):
+    # RFC 8785 for integers, strings, booleans and null: keys in UTF-16 order.
+    if isinstance(value, dict):
+        items = sorted(value.items(), key=lambda item: item[0].encode("utf-16-be"))
+        return "{" + ",".join(json.dumps(key, ensure_ascii=False) + ":" + jcs(item)
+                              for key, item in items) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(jcs(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
+def text(value, pattern):
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+HOST = r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?"
+
+command, args = sys.argv[1], sys.argv[2:]
+if command == "ids":
+    status = load("-")
+    status = status.get("result", status) if isinstance(status, dict) else {}
+    account = (status.get("account") if isinstance(status, dict) else None) or {}
+    person = (account.get("person") if isinstance(account, dict) else None) or {}
+    workspace = account.get("workspace_id") if isinstance(account, dict) else None
+    who = person.get("id") if isinstance(person, dict) else None
+    if not (text(workspace, r"[A-Za-z0-9_.-]{1,128}") and text(who, r"[A-Za-z0-9_.-]{1,128}")):
+        fail("not signed in")
+    print(workspace, who)
+elif command == "headers":
+    headers = load("-")
+    bearer = headers.get("Authorization") if isinstance(headers, dict) else None
+    if not (isinstance(headers, dict) and len(headers) == 3 and text(bearer, r"Bearer [!-~]+")
+            and headers.get("X-Agent-Relay-Profile") == args[0]
+            and headers.get("X-Agent-Relay-Desktop") == "1"):
+        fail("unusable headers")
+    for name in ("Authorization", "X-Agent-Relay-Profile", "X-Agent-Relay-Desktop"):
+        print(name + ": " + headers[name])
+elif command == "error":
+    try:
+        body = load(args[0])
+    except SystemExit:
+        sys.exit(0)
+    code = body.get("error") if isinstance(body, dict) else None
+    if text(code, r"[a-z_]{1,64}"):
+        print(code)
+elif command == "envelope":
+    path, profile, signature_out, jcs_out = args
+    envelope = load(path)
+    if not (isinstance(envelope, dict) and sorted(envelope) == ["key_id", "manifest", "signature"]
+            and isinstance(envelope["manifest"], dict)
+            and text(envelope["signature"], r"[A-Za-z0-9_-]{85}[AQgw]")
+            and text(envelope["key_id"], r"fk_[a-z0-9]{1,32}_[a-z0-9]{1,16}")):
+        fail("the release feed answered something that is not a signed manifest")
+    if envelope["key_id"].split("_")[1] != profile:
+        fail("the manifest is signed with " + envelope["key_id"] + ", not a key of profile " + profile)
+    with open(signature_out, "wb") as out:
+        out.write(base64.urlsafe_b64decode(envelope["signature"] + "=="))
+    try:
+        canonical = jcs(envelope["manifest"]).encode("utf-8")
+    except UnicodeEncodeError:
+        fail("the manifest is not valid JSON")
+    with open(jcs_out, "wb") as out:
+        out.write(canonical)
+elif command == "pem":
+    try:
+        key = base64.b64decode(args[0], validate=True)
+    except ValueError:
+        key = b""
+    if len(key) != 32:
+        fail("the built-in feed key is not a 32-byte Ed25519 key")
+    der = bytes.fromhex("302a300506032b6570032100") + key
+    with open(args[1], "w") as out:
+        out.write("-----BEGIN PUBLIC KEY-----\n" + base64.b64encode(der).decode() + "\n-----END PUBLIC KEY-----\n")
+elif command == "select":
+    path, profile, channel, name, platform, arch, kind = args
+    manifest = load(path)["manifest"]
+    if manifest.get("schema") != 1:
+        fail("the manifest has a schema this script does not know")
+    if manifest.get("profile") != profile:
+        fail("the manifest is for another profile")
+    if manifest.get("channel") != channel:
+        fail("the manifest is for another channel")
+    version = manifest.get("version")
+    if not text(version, r"[0-9]{4}\.(1[0-2]|[1-9])\.(0|[1-9][0-9]*)"):
+        fail("the manifest has no usable stable version")
+    hosts = manifest.get("download_hosts")
+    assets = manifest.get("assets")
+    if not (isinstance(hosts, list) and all(text(host, HOST) for host in hosts)
+            and isinstance(assets, list) and all(isinstance(asset, dict) for asset in assets)):
+        fail("the manifest is malformed")
+    wanted = name.replace("@VERSION@", version)
+    found = [asset for asset in assets if asset.get("name") == wanted]
+    if len(found) != 1:
+        fail("the release has no " + wanted)
+    asset = found[0]
+    size = asset.get("size")
+    if not (asset.get("platform") == platform and asset.get("arch") == arch
+            and asset.get("kind") == kind and text(asset.get("id"), r"[A-Za-z0-9_-]{1,64}")
+            and isinstance(size, int) and not isinstance(size, bool) and 0 < size <= 2 ** 40
+            and text(asset.get("sha256"), r"[0-9a-f]{64}")):
+        fail("the manifest describes " + wanted + " wrongly")
+    print(version, asset["id"], size, asset["sha256"], wanted)
+    print(" ".join(hosts))
+elif command == "url":
+    path, site_host, hosts = args[0], args[1], args[2].split()
+    body = load(path)
+    url = body.get("url") if isinstance(body, dict) else None
+    parts = urlsplit(url) if isinstance(url, str) else None
+    allowed = (parts is not None and parts.scheme == "https" and url.startswith("https://")
+               and parts.username is None and parts.password is None and parts.port is None
+               and text(parts.hostname or "", HOST) and parts.netloc == parts.hostname
+               and (parts.hostname in hosts or parts.hostname == site_host)
+               and not any(ord(c) <= 32 or ord(c) >= 127 for c in url))
+    if not allowed:
+        fail("the download address is not on a host the manifest allows")
+    print(url)
+elif command == "verified":
+    result = load(args[0])
+    if not isinstance(result, dict):
+        fail("unreadable")
+    if result.get("ok") is True:
+        print("ok")
+    elif text(result.get("code"), r"[a-z_]{1,64}"):
+        print(result["code"])
+    else:
+        fail("unreadable")
+else:
+    fail("unknown command")
+' "$@"
+}
+
+# The installed core, if any: it supplies headers and verifies updates.
+installed_probe() {
+  if [ -x "$PROBE" ]; then printf '%s' "$PROBE"; fi
+}
+
+# Sets cloud_headers: the install token when there is one, else the installed
+# core's own (feed-headers), never both: Cloud refuses mixed credentials.
+cloud_auth() {
+  local probe ids workspace account answer
+  if [ -n "${AGENT_RELAY_INSTALL_TOKEN:-}" ]; then
+    # Printable ASCII only; bash 3.2 ranges follow the locale, tr's under C do not.
+    [ -z "$(printf '%s' "$AGENT_RELAY_INSTALL_TOKEN" | LC_ALL=C tr -d '!-~')" ] \
+      || die "AGENT_RELAY_INSTALL_TOKEN is not an install token; copy it again from your workspace's downloads page"
+    cloud_headers="Authorization: Bearer $AGENT_RELAY_INSTALL_TOKEN
+X-Agent-Relay-Profile: $PROFILE_ID"
+    return 0
+  fi
+  probe="$(installed_probe)"
+  if [ -z "$current_version" ] || [ -z "$probe" ]; then
+    die "a first install needs AGENT_RELAY_INSTALL_TOKEN: copy the install token from your workspace's downloads page and run this again with it set"
+  fi
+  # A stopped core cannot say who is signed in: start it first, so a stopped
+  # core is not mistaken for a signed-out one.
+  if [ -z "$(core_version || true)" ]; then
+    [ "$DRY_RUN" = 0 ] \
+      || die "the installed core is not running; start it with: launchctl kickstart -k $DOMAIN/$LABEL, or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
+    note "the installed core is not running; starting it"
+    ensure_plist
+    if ! restart_core || ! healthy "$current_version"; then
+      die "the installed core is not running and did not start; see: $LOG_DIR, or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
+    fi
+  fi
+  ids="$("$probe" relay call status.get --json < /dev/null 2>/dev/null | feed_py ids 2>/dev/null)" \
+    || die "the installed core is not signed in to a workspace; sign in, or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
+  read -r workspace account <<< "$ids"
+  answer="$("$probe" feed-headers --site "$site" --workspace "$workspace" --account "$account" --profile "$PROFILE_ID" < /dev/null)" \
+    || die "the installed core could not supply release feed headers; or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
+  cloud_headers="$(printf '%s' "$answer" | feed_py headers "$PROFILE_ID" 2>/dev/null)" \
+    || die "the installed core supplied unusable release feed headers"
+}
+
+# cloud_call dest limit url [curl options]: a feed request with the
+# credential; sets status to the HTTP status, or "failed".
+cloud_call() {
+  local dest="$1" limit="$2" url="$3"
+  shift 3
+  status="$(printf '%s\n' "$cloud_headers" | curl -sS --proto '=https' --max-redirs 0 --retry 3 \
+    --max-filesize "$limit" -H @- -o "$dest" -w '%{http_code}' "$@" "$url")" || status=failed
+  if [ -f "$dest" ] && [ "$(wc -c < "$dest")" -gt "$limit" ]; then status=failed; fi
+}
+
+# Says why the feed refused, naming only its error code, never the body.
+cloud_refused() { # what body
+  local code
+  code="$(feed_py error "$2" < /dev/null 2>/dev/null || true)"
+  case "$status" in
+    401) if [ -z "${AGENT_RELAY_INSTALL_TOKEN:-}" ]; then
+           die "the release feed refused the installed core's sign-in (${code:-unauthenticated}); sign in again, or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
+         fi
+         die "the release feed refused the install token (${code:-unauthenticated}): it has expired or was revoked; get a new one from your workspace's downloads page" ;;
+    403) if [ "$code" = not_entitled ]; then
+           die "this workspace is not entitled to $PRODUCT_NAME (not_entitled); ask a workspace admin"
+         fi
+         die "the release feed refused this request (${code:-forbidden})" ;;
+    404) die "no $PRODUCT_NAME release is published on the stable channel (${code:-no_release})" ;;
+    429) die "the release feed is busy (${code:-rate_limited}); try again later" ;;
+    failed) die "could not read $1 from $site" ;;
+    *) die "the release feed answered HTTP $status for $1 (${code:-no error code})" ;;
+  esac
+}
+
+# Verifies the envelope's signature: with the installed core's feed verify
+# for an update, else OpenSSL 3, else refuses. The openssl macOS ships is
+# LibreSSL, which cannot check an Ed25519 signature: Homebrew's openssl@3 can.
+cloud_verify() { # envelope
+  local probe result openssl_version
+  probe="$(installed_probe)"
+  if [ -n "$current_version" ] && [ -n "$probe" ] && "$probe" feed --help < /dev/null >/dev/null 2>&1; then
+    set -- "$1" --profile "$PROFILE_ID" --public-key "$FEED_PUBLIC_KEY"
+    if [ "$current_product" = "$ASSET_PREFIX" ] && valid_version "$current_version"; then
+      set -- "$@" --installed-version "$current_version"
+    fi
+    "$probe" feed verify "${@:2}" "$1" < /dev/null > "$work/verified.json" 2>/dev/null || true
+    result="$(feed_py verified "$work/verified.json" < /dev/null 2>/dev/null)" \
+      || die "the installed core could not check the manifest"
+    case "$result" in
+      ok) verified_by="the installed core" ;;
+      not_newer) verified_by="the installed core"; cloud_current=1 ;;
+      *) die "the release feed's manifest was refused ($result)" ;;
+    esac
+    return 0
+  fi
+  openssl_version=""
+  if have openssl; then openssl_version="$(openssl version < /dev/null 2>/dev/null || true)"; fi
+  case "$openssl_version" in
+    "OpenSSL 3."*)
+      feed_py pem "$FEED_PUBLIC_KEY" "$work/feed.pem" < /dev/null || die "the built-in feed key is unusable"
+      openssl pkeyutl -verify -rawin -pubin -inkey "$work/feed.pem" -sigfile "$work/manifest.sig" \
+        -in "$work/manifest.jcs" < /dev/null > /dev/null 2>&1 \
+        || die "the release feed's manifest signature does not verify (signature_invalid)"
+      verified_by="OpenSSL"
+      return 0 ;;
+    LibreSSL*)
+      die "cannot check the release feed's signature: the openssl on PATH is LibreSSL, which cannot verify it, and there is no installed core with feed verify; install Homebrew's openssl@3 (brew install openssl@3) and run this again with it first on PATH: PATH=\"\$(brew --prefix openssl@3)/bin:\$PATH\"" ;;
+  esac
+  die "cannot check the release feed's signature: no installed core with feed verify and no OpenSSL 3; install Homebrew's openssl@3 (brew install openssl@3) and run this again with it first on PATH: PATH=\"\$(brew --prefix openssl@3)/bin:\$PATH\""
+}
+
+# Resolves VERSION and the asset from the signed manifest.
+cloud_resolve() {
+  local selected
+  cloud_auth
+  cloud_call "$work/envelope.json" "$FEED_LIMIT" "$site/cloud/api/v1/desktop/feed/manifest?channel=stable"
+  [ "$status" = 200 ] || cloud_refused "the release manifest" "$work/envelope.json"
+  feed_py envelope "$work/envelope.json" "$PROFILE_ID" "$work/manifest.sig" "$work/manifest.jcs" < /dev/null \
+    || die "the release feed's manifest was refused (key_id_refused or schema_invalid)"
+  cloud_current=0
+  cloud_verify "$work/envelope.json"
+  selected="$(feed_py select "$work/envelope.json" "$PROFILE_ID" stable \
+    "$ASSET_PREFIX-@VERSION@-macOS-$ARCH-probe.tar.gz" macOS "$ARCH" probe < /dev/null)" \
+    || die "the release feed's manifest was refused"
+  read -r cloud_version cloud_asset_id cloud_size cloud_sha256 cloud_asset <<< "$(head -n 1 <<< "$selected")"
+  cloud_hosts="$(sed -n 2p <<< "$selected")"
+  if [ -n "$verified_by" ]; then note "release manifest verified by $verified_by"; fi
+  if [ -n "$VERSION" ] && [ "$VERSION" != "$cloud_version" ]; then
+    die "the release feed offers $cloud_version only; --version $VERSION is not available"
+  fi
+  if [ "$cloud_current" = 1 ]; then
+    VERSION="$current_version"
+  else
+    VERSION="$cloud_version"
+  fi
+}
+
+# Downloads the resolved asset to $work/$1 and checks its size and sha256.
+cloud_download() { # asset
+  local url_json url host
+  [ "$1" = "$cloud_asset" ] || die "the release feed's asset is $cloud_asset, not $1"
+  host="${site#https://}"
+  note "downloading $1"
+  cloud_call "$work/download-url.json" "$FEED_LIMIT" \
+    "$site/cloud/api/v1/desktop/feed/assets/$cloud_asset_id/download-url" -X POST -d ''
+  url_json="$work/download-url.json"
+  if [ "$status" = 200 ]; then
+    url="$(feed_py url "$url_json" "$host" "$cloud_hosts" < /dev/null)" || die "the release feed's download address was refused"
+    # A signed address carries its own authorisation: no credential goes to it.
+    status="$(curl -sS --proto '=https' --max-redirs 0 --retry 3 --max-filesize "$cloud_size" \
+      -o "$work/$1" -w '%{http_code}' "$url" < /dev/null)" || status=failed
+  elif [ "$status" = 501 ]; then
+    # No object storage behind this site: the feed streams the asset itself.
+    cloud_call "$work/$1" "$cloud_size" "$site/cloud/api/v1/desktop/feed/assets/$cloud_asset_id"
+  else
+    cloud_refused "the download address" "$url_json"
+  fi
+  [ "$status" = 200 ] || die "could not download $1 (HTTP $status)"
+  [ "$(wc -c < "$work/$1" | tr -d ' ')" -eq "$cloud_size" ] || die "$1 is not the size the manifest gives"
+  [ "$(shasum -a 256 "$work/$1" < /dev/null | cut -d' ' -f1)" = "$cloud_sha256" ] || die "$1 does not match the manifest's sha256"
+  note "size and sha256 verified"
 }
 
 # The unit and the health check say `relay serve` and `relay call`, as
@@ -470,7 +840,7 @@ fi
 # --status and --uninstall above need no feed; installing does.
 case "$RELEASE_FEED" in
   github) ;;
-  cloud) die "the macOS installer does not support the cloud feed yet; install the $PRODUCT_NAME app from your workspace's downloads page" ;;
+  cloud) cloud_preflight ;;
   *) die "this copy of install-macos.sh names an unknown release feed" ;;
 esac
 
@@ -887,7 +1257,9 @@ fi
 # --- 2. which release -----------------------------------------------------------
 
 work="$(mktemp -d)"
-if [ -z "$VERSION" ]; then
+if [ "$RELEASE_FEED" = cloud ]; then
+  cloud_resolve
+elif [ -z "$VERSION" ]; then
   fetch "$RELEASES_API/latest" "$work/latest.json" || die "could not read the latest release"
   VERSION="$(grep -o '"tag_name": *"[^"]*"' "$work/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
   VERSION="${VERSION#v}"
@@ -920,13 +1292,18 @@ fi
 # --- 3. download, verify, unpack ------------------------------------------------
 
 asset="$ASSET_PREFIX-$VERSION-macOS-$ARCH-probe.tar.gz"
-note "downloading $asset"
-fetch "$DOWNLOAD_BASE/v$VERSION/$asset" "$work/$asset" || die "could not download $asset"
-fetch "$DOWNLOAD_BASE/v$VERSION/$asset.sha256" "$work/$asset.sha256" || die "could not download $asset.sha256"
-expected="$(awk '{print $1}' "$work/$asset.sha256" | head -n 1)"
-printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$' || die "the published checksum is unreadable"
-[ "$(shasum -a 256 "$work/$asset" | cut -d' ' -f1)" = "$expected" ] || die "$asset does not match its published checksum"
-note "checksum verified"
+if [ "$RELEASE_FEED" = cloud ]; then
+  # The manifest's size and sha256 stand in for the .sha256 sidecar.
+  cloud_download "$asset"
+else
+  note "downloading $asset"
+  fetch "$DOWNLOAD_BASE/v$VERSION/$asset" "$work/$asset" || die "could not download $asset"
+  fetch "$DOWNLOAD_BASE/v$VERSION/$asset.sha256" "$work/$asset.sha256" || die "could not download $asset.sha256"
+  expected="$(awk '{print $1}' "$work/$asset.sha256" | head -n 1)"
+  printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$' || die "the published checksum is unreadable"
+  [ "$(shasum -a 256 "$work/$asset" | cut -d' ' -f1)" = "$expected" ] || die "$asset does not match its published checksum"
+  note "checksum verified"
+fi
 
 # Only the published paths are accepted out of the archive: the core, and the
 # project license shipped beside it.

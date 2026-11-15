@@ -11,13 +11,21 @@ feed publishes to its repository and is refused here.
 The release notes are signed inside the manifest. Before creating a draft,
 publish reads the signer's limit on a manifest's canonical bytes from the
 listing (the KMS default of 4096 when it gives none: null or absent is
-never read as uncapped), measures the manifest with empty notes, cuts the
+never read as uncapped), measures the manifest with empty notes, leaves out
+the macOS headless assets (the macOS probe bundles and install-macos.sh)
+when the limit holds the manifest only without them, cuts the
 notes on whole lines to what fits (at most 300 canonical bytes, less when
 the assets leave less room; cut notes end with a link to the full notes on
 the site's downloads page, counted in that budget), measures again, and
 stops, with nothing created or uploaded, when even empty notes do not fit
-(desktop_feed.preflight). A dry run fits the notes, link included, under
-the 4096 default, since it reads nothing, and plans the cut notes.
+(desktop_feed.preflight). That refusal names the limit, the bytes the
+manifest needs and that the feed must raise its limit; no other asset is
+ever dropped to fit. Leaving out the macOS headless assets is reported, not
+hidden: a ::warning line on stdout and, when GITHUB_STEP_SUMMARY is set, a
+line in the workflow summary, each quoting the feed's max_canonical_bytes
+and the bytes the full set needs. A dry run fits the notes, link included,
+under the 4096 default, since it reads nothing, and plans the cut notes for
+every listed asset.
 
 With --request-out, publish writes the exact bytes of its POST /releases
 body (the declaration, notes already fitted) to that file before sending
@@ -101,10 +109,27 @@ def read_names(path):
     return [name for name in names if name]
 
 
+def step_summary(environ):
+    """Appends a line to the workflow summary (GITHUB_STEP_SUMMARY), or None
+    outside a workflow. A failed write is a warning: the publish goes on."""
+    path = environ.get("GITHUB_STEP_SUMMARY", "")
+    if not path:
+        return None
+
+    def write(text):
+        try:
+            with open(path, "a", encoding="utf-8") as summary:
+                summary.write(f"**Warning:** {text}\n\n")
+        except OSError as error:
+            print(f"Warning: could not write to the workflow summary: {error}", file=sys.stderr)
+    return write
+
+
 def run(args, environ, open_url, out):
     feed.check_feed(args.feed)
     token = environ.get(feed.TOKEN_ENV, "")
-    client = feed.Client(args.site, args.profile, token, open_url=open_url, out=out)
+    client = feed.Client(args.site, args.profile, token, open_url=open_url, out=out,
+                         summary=step_summary(environ))
     if args.command == "list":
         query = "include_drafts=true" + (f"&channel={args.channel}" if args.channel else "")
         if args.dry_run:

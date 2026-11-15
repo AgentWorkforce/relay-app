@@ -22,9 +22,9 @@ ARCHITECTURES = ["macOS-arm64", "macOS-x64", "Linux-arm64", "Linux-x64", "Window
 # required_assets).
 INSTALL_SCRIPTS = ("install.sh", "install.ps1")
 OPTIONAL_INSTALL_SCRIPTS = ("install-macos.sh",)
-# The installers a cloud feed publishes. install-macos.sh stays out: the feed
-# carries no macOS probe bundle for it to install, and a cloud copy refuses.
-CLOUD_INSTALL_SCRIPTS = ("install.sh", "install.ps1")
+# The installers a cloud feed publishes: all three, so a cloud release's
+# install-macos.sh is required even though a github one may lack it.
+CLOUD_INSTALL_SCRIPTS = ("install.sh", "install.ps1", "install-macos.sh")
 # A site profile's opaque id (docs/workspace-layout.md, "Site profiles");
 # empty is the default profile. The manifest records the id, never a product
 # name, and the assets are named by it (scripts/site-origin.sh asset_prefix).
@@ -49,16 +49,28 @@ CRATE_VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-
 # What a cloud feed publishes after <prefix>-<version>-, the same for every
 # cloud profile: the floored macOS disk image, the Linux tarball and deb and
 # the Windows zip and Setup.exe, for both architectures (10 packages), the
-# four Linux and Windows probe bundles the headless installers select, plus
-# install.sh and install.ps1: 16 assets. The macOS probe bundles and the
-# unfloored macOS images stay out, because the feed's signer caps a manifest's
-# RFC 8785 canonical bytes (limits.max_canonical_bytes; 4096 for an AWS KMS
-# Ed25519 key) and the full 20-asset set does not fit. Floor-aware updaters ignore an
-# unfloored image when floored ones exist.
-CLOUD_PACKAGE = re.compile(r"macOS[1-9][0-9]*-(arm64|x64)\.dmg|Linux-(arm64|x64)\.(?:tar\.gz|deb)"
+# six macOS, Linux and Windows probe bundles the headless installers select,
+# plus install.sh, install.ps1 and install-macos.sh: 19 assets. The unfloored
+# macOS images and the .sha256 files stay out. Floor-aware updaters ignore an
+# unfloored image when floored ones exist, and the signed manifest carries
+# each sha256. The feed's signer caps a manifest's RFC 8785 canonical bytes
+# (limits.max_canonical_bytes; 4096 for an AWS KMS Ed25519 key), and the
+# 19-asset manifest does not fit 4096. The candidate still lists all 19; the
+# publisher decides what fits: desktop-feed-publish.py leaves out the macOS
+# headless assets (MACOS_HEADLESS) when the feed's limit holds the manifest
+# only without them, reports that with both numbers, and refuses when even
+# the other 16 do not fit. A candidate without all three (CLOUD_ASSET_COUNT
+# less MACOS_HEADLESS_COUNT) lists those 16, the set the feed published
+# before the macOS assets joined it; one with only some of them is refused.
+CLOUD_PACKAGE = re.compile(r"macOS[1-9][0-9]*-(arm64|x64)\.dmg|macOS-(arm64|x64)-probe\.tar\.gz"
+                           r"|Linux-(arm64|x64)\.(?:tar\.gz|deb)"
                            r"|Linux-(arm64|x64)-probe\.tar\.gz"
                            r"|Windows-(arm64|x64)(?:\.zip|-Setup\.exe|-probe\.zip)")
-CLOUD_ASSET_COUNT = 16
+CLOUD_ASSET_COUNT = 19
+# The macOS headless installer's assets within the cloud set: its probe
+# bundles and install-macos.sh (desktop_feed.MACOS_HEADLESS).
+MACOS_HEADLESS = re.compile(r"install-macos\.sh|.+-macOS-(arm64|x64)-probe\.tar\.gz")
+MACOS_HEADLESS_COUNT = 3
 
 
 def asset_prefix(profile):
@@ -141,9 +153,10 @@ def inventory(directory, version, profile=""):
 
 def cloud_assets(files, version, profile, log=None):
     """The names a cloud feed publishes, from a candidate's inventory: the
-    fixed cloud set (CLOUD_PACKAGE) of version-pinned packages, install.sh
-    and install.ps1, exactly 16. The unversioned aliases, the .sha256 files,
-    install-macos.sh, the macOS probes and the unfloored disk images stay out: the feed binds every
+    fixed cloud set (CLOUD_PACKAGE) of version-pinned packages, install.sh,
+    install.ps1 and install-macos.sh, exactly 19, or the 16 without all
+    three macOS headless assets (MACOS_HEADLESS). The unversioned aliases, the
+    .sha256 files and the unfloored disk images stay out: the feed binds every
     name but the installers to <asset_prefix>-<version>-, and its signed
     manifest carries each sha256. Every selected and omitted name is logged
     (to stderr by default), so nothing is dropped silently."""
@@ -156,12 +169,20 @@ def cloud_assets(files, version, profile, log=None):
     )
     selected = [name for name in names
                 if name in CLOUD_INSTALL_SCRIPTS or CLOUD_PACKAGE.fullmatch(name[len(bound):])]
-    if not set(CLOUD_INSTALL_SCRIPTS) <= set(selected) or len(selected) != CLOUD_ASSET_COUNT:
-        raise ValueError(f"a cloud release needs exactly {CLOUD_ASSET_COUNT} assets: install.sh, install.ps1 and"
-                         " the floored macOS images, Linux tarballs, debs and probe bundles and Windows zips,"
-                         f" Setup.exes and probe bundles of both architectures; found {len(selected)}")
+    headless = [name for name in selected if MACOS_HEADLESS.fullmatch(name)]
+    required = set(CLOUD_INSTALL_SCRIPTS) - ({"install-macos.sh"} if not headless else set())
+    expected = CLOUD_ASSET_COUNT - (MACOS_HEADLESS_COUNT if not headless else 0)
+    if (not required <= set(selected) or len(selected) != expected
+            or len(headless) not in (0, MACOS_HEADLESS_COUNT)):
+        raise ValueError(f"a cloud release needs exactly {CLOUD_ASSET_COUNT} assets: install.sh, install.ps1,"
+                         " install-macos.sh and the floored macOS images and macOS probe bundles, Linux tarballs,"
+                         " debs and probe bundles and Windows zips, Setup.exes and probe bundles of both"
+                         f" architectures (or those {CLOUD_ASSET_COUNT - MACOS_HEADLESS_COUNT} without all of"
+                         f" install-macos.sh and the macOS probe bundles); found {len(selected)}")
     omitted = [name for name in names if name not in selected]
     log(f"Cloud assets of profile {profile}: the fixed cloud set selects {len(selected)} of {len(names)}.")
+    if not headless:
+        log("  The candidate has no macOS probe bundles or install-macos.sh: the feed gets no macOS headless assets.")
     for name in selected:
         log(f"  selected: {name}")
     for name in omitted:

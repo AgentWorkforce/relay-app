@@ -26,7 +26,10 @@ manifest at POST /releases, after its version_exists check, and again at
 publish, with 422 manifest_too_large and the canonical_bytes and
 max_canonical_bytes it measured. So a publish first reads the limit and
 measures the manifest it will produce: it measures the manifest with empty
-notes, cuts the release notes on whole lines to what fits (at most
+notes, leaves out the macOS headless assets (MACOS_HEADLESS: the macOS probe
+bundles and install-macos.sh) when the limit holds the manifest only
+without them, and says so with both numbers (fit_assets), cuts the release
+notes on whole lines to what fits (at most
 NOTES_MAX_BYTES, less when the assets leave less room under the limit; cut
 notes end with a link to the full notes, full_notes_line), measures again,
 and stops before creating a draft when even empty notes do not fit. A 422
@@ -111,8 +114,15 @@ NOTES_MAX_BYTES = 300
 # fragment, which never changes what the site serves.
 DOWNLOADS_PATH = "/cloud/dashboard/downloads"
 # The headless installers carry no version in their names; each declares
-# x64, the convention install.sh set before install.ps1 joined it.
-INSTALL_SCRIPTS = {"install.sh": "Linux", "install.ps1": "Windows"}
+# x64, the convention install.sh set before install.ps1 and install-macos.sh
+# joined it.
+INSTALL_SCRIPTS = {"install.sh": "Linux", "install.ps1": "Windows", "install-macos.sh": "macOS"}
+# The (platform, kind) of the assets only the macOS headless installer uses:
+# the macOS probe bundles and install-macos.sh. A feed whose signer limit
+# holds the manifest only without them publishes without them (fit_assets),
+# so a small cap keeps Linux and Windows updates flowing; the omission is
+# always reported.
+MACOS_HEADLESS = {("macOS", "probe"), ("macOS", "install-script")}
 
 
 class FeedError(Exception):
@@ -182,7 +192,7 @@ def describe(name, prefix, version):
         return {"platform": INSTALL_SCRIPTS[name], "arch": "x64", "kind": "install-script"}
     bound = f"{prefix}-{version}-"
     if not name.startswith(bound):
-        raise Refusal(f"{name} is not named {bound}...; only install.sh and install.ps1 may be named otherwise")
+        raise Refusal(f"{name} is not named {bound}...; only install.sh, install.ps1 and install-macos.sh may be named otherwise")
     rest = name[len(bound):]
     for pattern, platform, kind in KINDS:
         match = pattern.fullmatch(rest)
@@ -386,7 +396,7 @@ class Client:
     """One profile's publisher calls. `open_url` is the transport, which
     tests replace; it never changes what is sent."""
 
-    def __init__(self, site, profile, token, open_url=default_open, sleep=time.sleep, out=print):
+    def __init__(self, site, profile, token, open_url=default_open, sleep=time.sleep, out=print, summary=None):
         self.site = check_site(site)
         self.base = self.site + API_PATH
         self.profile = check_profile(profile)
@@ -394,6 +404,9 @@ class Client:
         self.open_url = open_url
         self.sleep = sleep
         self.out = out
+        # Called with what a run's summary must show (the CLI appends it to
+        # GITHUB_STEP_SUMMARY), besides `out`.
+        self.summary = summary
 
     def headers(self, masked=False):
         return {"Authorization": "Bearer " + (MASK if masked else self.token),
@@ -401,6 +414,13 @@ class Client:
 
     def say(self, text):
         self.out(redact(text, self.token))
+
+    def report(self, title, text):
+        """A warning a run must not hide: printed as a workflow warning and
+        handed to `summary`."""
+        self.say(f"::warning title={title}::{text}")
+        if self.summary:
+            self.summary(redact(text, self.token))
 
     def call(self, method, path, body=None, headers=None, upload=None):
         """Send one request. A JSON body is serialised; an upload is a path
@@ -504,30 +524,67 @@ class Client:
         return limit
 
 
+def fit_assets(profile, version, channel, assets, limit):
+    """The assets to declare under the signer's `limit`: all of them when
+    the manifest with empty notes fits, or when even the manifest without
+    the macOS headless assets (MACOS_HEADLESS) does not (the pre-flight then
+    refuses the whole set); otherwise all but those. Returns (assets, the
+    names left out, the empty-notes bound with every asset, the bound
+    without the macOS headless assets). The choice depends on the assets and
+    the limit alone, so a rerun under the same limit declares the same set."""
+    headless = [asset for asset in assets if (asset["platform"], asset["kind"]) in MACOS_HEADLESS]
+    full = canonical_size(profile, version, channel, "", assets)
+    kept = [asset for asset in assets if asset not in headless]
+    reduced = canonical_size(profile, version, channel, "", kept) if headless else full
+    if full <= limit or not headless or reduced > limit:
+        return assets, [], full, reduced
+    return kept, [asset["name"] for asset in headless], full, reduced
+
+
 def preflight(client, version, channel, notes, assets):
     """Read the signer's limit, cut the notes to what fits under it
     (fit_notes, with the link to the full notes), and refuse, before any
     draft or upload, a manifest whose canonical form would still exceed it:
     that is, assets that do not fit even with empty notes. A null or absent
-    limit is the KMS default of 4096, never uncapped. Prints both numbers;
-    returns the capped notes and a sentence on how they were cut, which a
-    409 on a draft quotes (the cut follows the listed limit)."""
+    limit is the KMS default of 4096, never uncapped. When the limit holds
+    the manifest only without the macOS headless assets, they are left out
+    (fit_assets) and the omission is reported, quoting the limit and the
+    bytes the full set needs (Client.report). Prints both numbers; returns
+    the capped notes, a sentence on how they were cut, which a 409 on a
+    draft quotes (the cut follows the listed limit), and the assets to
+    declare."""
     listed = client.max_canonical_bytes(channel)
     limit = DEFAULT_MAX_CANONICAL_BYTES if listed is None else listed
     source = ("" if listed is not None else f" (the KMS default of {DEFAULT_MAX_CANONICAL_BYTES}: the listing"
               " gives none, and null or absent is not read as uncapped)")
+    reported = ("reported by the feed" if listed is not None
+                else "the KMS default, since the feed reports none")
+    everything = assets
+    assets, omitted, full, reduced = fit_assets(client.profile, version, channel, assets, limit)
+    if omitted:
+        client.report("macOS assets omitted from the cloud feed", (
+            f"Profile {client.profile} v{version}: the macOS assets ({', '.join(omitted)}) were omitted because"
+            f" the feed's max_canonical_bytes of {limit} ({reported}) is too small for the {len(everything)}-asset"
+            f" manifest, which needs at least {full} canonical bytes with empty release notes. The other"
+            f" {len(assets)} assets ({reduced} bytes with empty notes) are published without them; macOS headless"
+            f" installs and updates from this feed get no new core until the feed reports a max_canonical_bytes"
+            f" of at least {full}."))
     link = full_notes_line(client.site, version)
     notes, size = fit_notes(client.say, client.profile, version, channel, notes, assets, limit, link)
     budget = notes_budget(client.profile, version, channel, assets, limit)[0]
     client.say(f"Manifest canonical size: at most {size} bytes for {len(assets)} assets;"
                f" signer limit: {limit}{source}.")
     if size > limit:
+        without = (f" Even without the macOS headless assets the manifest would need {reduced}."
+                   if reduced != full else "")
         raise Refusal(f"the signed manifest would be up to {size} canonical bytes, over the signer's"
-                      f" max_canonical_bytes of {limit}; nothing was created or uploaded. The"
-                      f" {len(assets)} assets do not fit even with empty release notes: publish fewer assets.")
+                      f" max_canonical_bytes of {limit} ({reported}); nothing was created or uploaded. The"
+                      f" {len(assets)} assets do not fit even with empty release notes, and none is dropped:"
+                      f" the feed must report a max_canonical_bytes of at least {size} before this release"
+                      f" can publish. Raise the cap on the feed.{without}")
     cut = (f"this attempt cut the release notes to a budget of {budget} canonical bytes under a signer limit"
            f" of {limit}{' (the default; the listing gives none)' if listed is None else ''}")
-    return notes, cut
+    return notes, cut, assets
 
 
 def refuse_too_large(client, step, response, draft=None):
@@ -598,8 +655,9 @@ def publish(client, directory, version, channel, notes, assets, unlisted=False, 
     published this version. Any failure leaves the draft unpublished; a
     manifest over the signer's limit fails before any draft exists, unless
     the feed's own measure refuses it at publish, which leaves the uploaded
-    draft. The notes are cut to what fits first (preflight), the same on
-    every rerun under the same listed limit.
+    draft. The notes are cut to what fits first, and the macOS headless
+    assets left out when only the manifest without them fits (preflight),
+    the same on every rerun under the same listed limit.
     An unlisted candidate's version was taken as given and never checked
     against the feed: it is refused if the feed holds it other than as a
     draft, and a version_exists is never taken for a replay. That refusal
@@ -609,7 +667,7 @@ def publish(client, directory, version, channel, notes, assets, unlisted=False, 
     hands those bytes to the customer's operator (publish-request.json)."""
     if unlisted:
         unheld(client, version, channel)
-    notes, cut = preflight(client, version, channel, notes, assets)
+    notes, cut, assets = preflight(client, version, channel, notes, assets)
     steps = plan(version, channel, notes, assets)
     method, path, body, _, _ = steps[0]
     if on_request:

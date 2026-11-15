@@ -87,8 +87,8 @@ Every updater reads the unauthenticated public GitHub Releases API:
   (`:329-332`). `windows/install.ps1` hardcodes the default repository
   (`:70-71`) and is not substituted per profile. `macos/install.sh`,
   published as `install-macos.sh`, carries the same seven values as
-  `linux/install.sh` and is substituted per profile the same way; it reads
-  a releases repository only and refuses a `cloud` feed.
+  `linux/install.sh` and is substituted per profile the same way, and
+  reads a `cloud` feed as `linux/install.sh` does.
 
 What is unsigned: Linux and Windows artifacts (`linux/install.sh:20-22`,
 `docs/windows-app.md:207-208`). No release carries a signed checksum list or
@@ -128,7 +128,7 @@ The feed is compiled in next to the site, with the feed public key:
 | `scripts/build-gtk.sh`, `scripts/build-windows.sh` | `--releases-repository` | `--release-feed`, `--feed-public-key` |
 | `windows/installer/AgentRelay.iss` | `SupportUrl` defaults to the releases page | for `cloud`, `SupportUrl` defaults to `{site}/cloud/dashboard/downloads` |
 | `linux/install.sh`, `windows/install.ps1` | substituted repository (Linux only) | substituted `RELEASE_FEED`, `SITE_URL`, `PROFILE_ID`, `FEED_PUBLIC_KEY` on both |
-| `macos/install.sh` (published as `install-macos.sh`) | substituted, all seven values | a `cloud` feed path; until then a `cloud` copy refuses to install |
+| `macos/install.sh` (published as `install-macos.sh`) | substituted, all seven values | a `cloud` feed path, as `linux/install.sh` |
 
 No app code reads a feed from the environment. The `AGENT_RELAY_RELEASES_API`
 and `AGENT_RELAY_DOWNLOAD_BASE` overrides of the install scripts stay for a
@@ -367,18 +367,14 @@ every Cloud call.
 Phase 4 implements this against the proposed Cloud contract; the routes
 and result codes below are the draft's and may change.
 
-- `linux/install.sh` and `windows/install.ps1` read seven built-in values
+- `linux/install.sh`, `macos/install.sh` (published as `install-macos.sh`)
+  and `windows/install.ps1` read seven built-in values
   (`PRODUCT_NAME`, `RELEASES_REPOSITORY`, `ASSET_PREFIX`, `RELEASE_FEED`,
   `SITE_URL`, `PROFILE_ID`, `FEED_PUBLIC_KEY`; in PowerShell `$ProductName`
   and so on). The repository's copies are the default product's
   (`RELEASE_FEED='github'`); Desktop Release stages a profile's copies with
   its own values (see [Publish pipeline](#publish-pipeline)).
-- `macos/install.sh`, published as `install-macos.sh`, takes the same seven
-  values but has no `cloud` path yet: a `cloud` copy refuses to install
-  ("the macOS installer does not support the cloud feed yet"; `--status`
-  and `--uninstall` still work), and the feed does not carry it, since the
-  feed has no macOS probe bundle for it to install.
-- For a `cloud` profile, either script refuses `AGENT_RELAY_RELEASES_API`
+- For a `cloud` profile, each script refuses `AGENT_RELAY_RELEASES_API`
   and `AGENT_RELAY_DOWNLOAD_BASE`, then reads the proposed
   `GET {site}/cloud/api/v1/desktop/feed/manifest?channel=stable` with
   `Authorization: Bearer` and `X-Agent-Relay-Profile`. The credential is
@@ -389,13 +385,14 @@ and result codes below are the draft's and may change.
 - The envelope is read with a strict JSON reader (a repeated key and a body
   over 1 MiB are refused; `install.ps1` also refuses nesting deeper than 32), its `key_id` must name the
   built-in profile, and its manifest's JCS bytes are checked against
-  `FEED_PUBLIC_KEY`. The asset is the version's `Linux-<arch>-probe.tar.gz`
-  or `Windows-<arch>-probe.zip`. It is fetched through the proposed
+  `FEED_PUBLIC_KEY`. The asset is the version's `Linux-<arch>-probe.tar.gz`,
+  `macOS-<arch>-probe.tar.gz` or `Windows-<arch>-probe.zip`. It is fetched through the proposed
   `POST .../assets/<id>/download-url`, from a host the manifest's
   `download_hosts` lists (or the site's own), with the proposed
   `GET .../assets/<id>` stream as the fallback on 501. Its size and sha256
   must match the manifest before anything is unpacked; the unpack, health
-  check, rollback and three kept versions are today's.
+  check, rollback and three kept versions are today's, and on macOS so are
+  the bundle and Developer ID checks.
 - Refusals name the draft's codes: 401 (sign in again or a new token), 403
   `not_entitled`, 404 `no_release`, 429, `key_id_refused`,
   `signature_invalid`, and a manifest that is not newer than the installed
@@ -407,12 +404,14 @@ and result codes below are the draft's and may change.
   built-in site, the install token and the sha256 shown on the downloads
   page, and the script verifies the signature with OpenSSL 3
   (`openssl pkeyutl -verify -rawin`, the one on `PATH`). Without it,
-  both scripts refuse and ask for OpenSSL 3. `install.ps1` skips the check
+  the scripts refuse and ask for OpenSSL 3. A Mac's own `openssl` is
+  LibreSSL, so a first macOS install needs Homebrew's `openssl@3` first on
+  `PATH`; `install-macos.sh` says so when it finds LibreSSL. `install.ps1` skips the check
   only when told to (`-AllowUnverifiedFeed`, or
   `AGENT_RELAY_ALLOW_UNVERIFIED_FEED=1`), and then says so loudly (see
   Open question 1). LibreSSL and OpenSSL 1.x are not used.
-- `linux/install.sh` needs `curl`, `python3` and, on a first install,
-  OpenSSL 3 for a `cloud` profile; the
+- `linux/install.sh` and `macos/install.sh` need `curl`, `python3` and, on
+  a first install, OpenSSL 3 for a `cloud` profile; the
   `github` path needs neither beyond what it needed before.
 - Updating a server stays "run the command again", with a fresh install
   token or a signed-in core. An automatic update timer is a follow-up.
@@ -425,7 +424,7 @@ and result codes below are the draft's and may change.
 | Job or file | `cloud` behaviour |
 |---|---|
 | `version` job | Lists versions from `GET /desktop/feed/releases?include_drafts=true` with the publisher token instead of the public repository; prepare-only needs no public repository |
-| `publish` job | Skips the App token, `RELEASES_TOKEN` and the public-repository check (`:1237-1268`); stages the same asset set (`macos-release-assets.py`, probe parity, the substituted install scripts); creates the draft, uploads every versioned package, `install.sh` and `install.ps1` (not the unversioned aliases or `.sha256` files, which the feed's name binding and signed manifest replace), publishes; a failed upload leaves the draft unpublished |
+| `publish` job | Skips the App token, `RELEASES_TOKEN` and the public-repository check (`:1237-1268`); stages the same asset set (`macos-release-assets.py`, probe parity, the substituted install scripts); creates the draft, uploads every versioned package, `install.sh`, `install.ps1` and `install-macos.sh` (not the unversioned aliases or `.sha256` files, which the feed's name binding and signed manifest replace), publishes; a failed upload leaves the draft unpublished |
 | `desktop-promote.yml` | Same producer and candidate verification (`:110-156`); replaces `gh release create`/`edit` (`:185-201`) with the publisher calls; beta publishes without `latest` |
 | `scripts/release-candidate.py` | A `cloud` publisher next to the GitHub one; the manifest records `"feed": "cloud"` |
 | `scripts/release-notes.py` | `--feed cloud` allocates against the feed listing, as `--repository` does today |
@@ -434,18 +433,28 @@ and result codes below are the draft's and may change.
 The signer caps the canonical manifest at `limits.max_canonical_bytes` (4096
 for an AWS KMS Ed25519 key, and assumed when the listing gives null or
 nothing; null is never read as uncapped). Every
-cloud profile therefore publishes one fixed set of 16 assets (the floored
+cloud profile publishes one fixed set of 19 assets (the floored
 macOS dmg, the Linux tarball and deb and the Windows Setup.exe and zip, each
-for arm64 and x64, the four Linux and Windows probe bundles the headless
-installers select, and both install scripts; no macOS probes and no unfloored
-image). The release notes are cut on whole lines to up to 300 canonical
-bytes, less when the asset list leaves less room under 4096, and cut notes end
+for arm64 and x64, the six macOS, Linux and Windows probe bundles the headless
+installers select, and the three install scripts; no unfloored image). The
+release notes are cut on whole lines to up to 300 canonical bytes, less when
+the asset list leaves less room under the limit, and cut notes end
 with a link to `<site>/cloud/dashboard/downloads#v<version>`, inside the
 budget. The publisher measures the manifest
 before it creates a draft, at the longest fields: for a 10-character profile
-the 16 assets with empty notes measure 3854 bytes at 2026.11.1-beta.1 and
-3884 at 2026.12.99-beta.99, leaving the notes 242 and 212 bytes. It exits 2,
-leaving nothing behind, when even empty notes would exceed the cap. A 422
+the 19 assets with empty notes measure 4512 bytes at 2026.11.1-beta.1 and
+4546 at 2026.12.99-beta.99, over the 4096 KMS cap. When the cap cannot hold
+the 19 but holds the 16 without the macOS headless assets (`install-macos.sh`
+and the two macOS probe bundles; 3854 and 3884 bytes with empty notes), it
+publishes those 16 and reports the macOS ones as omitted, as a workflow
+warning and in the run summary, quoting the cap and the bytes the 19 need:
+Linux and Windows keep their releases, and macOS headless installs and
+updates from that feed get no new core. No other asset is ever left out.
+When even the 16 do not fit it exits 2, leaving nothing behind, and names
+the size the feed must report. A cloud profile gets the macOS headless
+assets once the feed reports a larger `limits.max_canonical_bytes`, for
+example 65536; at least 4846 holds the longest version with all 19 assets
+and the full 300 bytes of notes. A 422
 `manifest_too_large` from the feed also exits 2 and is never retried: at
 create nothing is left, and at publish the draft stays with its assets
 uploaded and the message names it (a rerun with the same inputs resumes it). See
@@ -643,7 +652,7 @@ Each relay-desktop phase is one reviewable change on its own
 | 1 | relay-desktop | `RELEASE_FEED` and `DESKTOP_FEED_PUBLIC_KEY` in `site-origin.sh`, the site-profile action, `build-app.sh`, `build-gtk.sh`, `build-windows.sh`, `gtk/build.rs`, `build_profile.rs`, `AppInfo.swift`, `AgentRelay.iss`; docs tables | Probe-script lanes, `build-app.sh` option tests, `test_release_workflow.py`; default build byte-identical in its feed records | none (parallel with 0) |
 | 2 | relay-desktop | `cloud` backend in `desktop-release.yml` version and publish jobs, `desktop-promote.yml` with the `bridge-environment` input, `release-candidate.py`, `release-notes.py --feed` | `test_release_candidate.py`, `test_release_workflow.py`, `test_release_notes.py`; a prepare-only run against the staging feed | 0 (publisher API), 1 |
 | 3 | relay-desktop | macOS and GTK together: `ReleaseFeed`, `CloudFeed`, verifier, `account.feed_headers` in `desktop-core`, signed-out and not-entitled states, `download_hosts` rule | `swift test`, GTK suite, `desktop-core` tests against a fixture feed with good, tampered, wrong-profile, wrong-key and downgrade manifests | 0 (read API), 1 |
-| 4 | relay-desktop | `install.sh` and `install.ps1` `cloud` path, install token, `agent-relay-probe feed verify`, per-profile `install.ps1` substitution and publication (implemented against the proposed contract) | `scripts/test-linux-install-cloud.sh`, `scripts/test-windows-install-cloud.ps1` (fixture feed; refused overrides; tampered asset; wrong key id; signature refused; not newer), `desktop_binary` `feed verify` test, `test_release_workflow_cloud.py` staging | 0, 2, 3 (verifier) |
+| 4 | relay-desktop | `install.sh` and `install.ps1` `cloud` path, install token, `agent-relay-probe feed verify`, per-profile `install.ps1` substitution and publication (implemented against the proposed contract) | `scripts/test-linux-install-cloud.sh`, `scripts/test-macos-install-cloud.sh`, `scripts/test-windows-install-cloud.ps1` (fixture feed; refused overrides; tampered asset; wrong key id; signature refused; not newer), `desktop_binary` `feed verify` test, `test_release_workflow_cloud.py` staging | 0, 2, 3 (verifier) |
 | 5 | relay-control, then relay-desktop docs | `relayctl desktop-feed sync`, `export`, `import`; docs for the three publish paths | Round trip of a bundle into an isolated deployment; signature still verifies | 0 |
 
 **Rollout order.** Phases 0 and 1 run in parallel. Phase 2 follows the
@@ -725,9 +734,10 @@ What relay-control must own and run:
    the first install trusts TLS to the built-in site, the install token and
    the page's sha256 and verifies with OpenSSL 3; every update is verified
    by the installed probe.
-   Phase 4 fails closed on both platforms: with neither an installed core
-   that knows `feed verify` nor OpenSSL 3, `install.sh` and `install.ps1`
-   refuse and ask for OpenSSL 3. Linux already needs `python3`, and
+   Phase 4 fails closed on every platform: with neither an installed core
+   that knows `feed verify` nor OpenSSL 3, `install.sh`, `install-macos.sh`
+   and `install.ps1` refuse and ask for OpenSSL 3 (on a Mac, Homebrew's
+   `openssl@3`, since the system `openssl` is LibreSSL). Linux already needs `python3`, and
    OpenSSL 3 ships on every supported distribution. A stock Windows machine
    has no Ed25519 verifier, so `install.ps1` also accepts an explicit
    opt-in, the `-AllowUnverifiedFeed` switch or
