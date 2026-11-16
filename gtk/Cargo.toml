@@ -36,9 +36,10 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 8f4c82ed8, after 18.7.3: #2180 (public Connect invites from site builds)
-# and #2173. Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "8f4c82ed8f56fb4f337a61bc95e38e50b590c03c", default-features = false }
+# main b0dbb504b, after 18.7.3: #2180 (public Connect invites from site builds),
+# #2173, #2188 (DM history reads) and #2189 (socket reconnect backoff). Move it in
+# desktop-core and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "b0dbb504bbd0e848d9b29c58069e844612b40838", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
