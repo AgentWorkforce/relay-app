@@ -46,8 +46,10 @@ pub struct Progress {
 mod counts;
 mod held;
 mod phase_line;
+mod resume;
 mod stall;
 use counts::captured_sessions;
+pub use resume::capture_resumed;
 
 impl Progress {
     /// [`Progress::read_counts`], with the job's status already read when the
@@ -203,6 +205,11 @@ fn heartbeat_schedule(directory: &Path, url: &str) -> Arc<Mutex<HeartbeatSchedul
 /// delivery only, are unaffected.
 static CAPTURES: AtomicUsize = AtomicUsize::new(0);
 
+/// Held across each `progress.json` write, by every monitor in the process,
+/// so a write that depends on what the file says can check it and write
+/// with no other monitor's report landing in between.
+static WRITES: Mutex<()> = Mutex::new(());
+
 // Local publication has its own lock, never held during a network request.
 // Closing a publisher flushes the terminal snapshot and fences delayed worker
 // snapshots before the collector can hand progress ownership to its next monitor.
@@ -257,6 +264,12 @@ impl LocalProgress {
     }
 
     fn write(&self, progress: &Progress) {
+        let _writing = WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        self.write_locked(progress);
+    }
+
+    /// [`LocalProgress::write`], with [`WRITES`] already held.
+    fn write_locked(&self, progress: &Progress) {
         let _ = super::save_status_json(
             &self.directory.join("progress.json"),
             &serde_json::json!({
@@ -267,23 +280,6 @@ impl LocalProgress {
             super::bridge::emit(serde_json::json!({"event":"progress", "progress":progress}));
         }
     }
-}
-
-/// Rewrite a capture that ended paused as complete, once a later pass
-/// succeeds: its monitor has already finished, so this writes the closing
-/// report a scan that succeeded writes.
-pub fn capture_resumed(directory: &Path) {
-    let local = LocalProgress {
-        directory: directory.to_owned(),
-        closed: Mutex::new(false),
-        delivery: false,
-    };
-    let progress = Progress {
-        phase: "scanning".into(),
-        source: "local history".into(),
-        ..Default::default()
-    };
-    local.finish(progress, None, true, None);
 }
 
 pub struct Monitor {
