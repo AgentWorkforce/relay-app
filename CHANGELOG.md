@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+## v2026.11.10
+
 - **History reads and reconnects no longer overload the service.** The conversation view's history reads no longer re-read every direct-message conversation on each refresh, and a dropped connection to the service is retried with a backoff that honours the service's Retry-After instead of reconnecting at once. Previously an account with many conversations could overload the service.
 - **Direct uploads start soon after they are turned on for your workspace.** On macOS, Linux and Windows, when Agent Relay Cloud says direct upload is off, Agent Relay now asks again after twelve to fifteen minutes (or when Cloud says to), instead of waiting for the next sign-in, which could be up to a day later. Signing in again still asks at once.
 - **Headless installs can sign in with an enrollment key.** On macOS and Linux, pass `--enrollment-key-file PATH` to the headless installer, or run `agent-relay-probe setup --enrollment-key-file <path|->`, to sign in with a per-employee key your administrator minted and no device approval. The key file must be private to you (mode 0600) and not a symbolic link; after Agent Relay accepts the key, setup deletes that same file—even if setup was cancelled meanwhile—or reports that it could not. Setup waits for the key's sign-in and the workspace connection to finish, within `--timeout`, with or without `--wait`. The device code remains the default. On a site that does not offer enrollment keys, setup starts a device sign-in and exits 2 without waiting; an installer leaves the install usable and propagates status 2 so automation knows approval is still required.
