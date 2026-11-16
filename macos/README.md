@@ -38,6 +38,29 @@ bash macos/install.sh --uninstall            # stop and remove it, keep the data
 bash macos/install.sh --dry-run              # say what would change
 ```
 
+A site build's installer is not the GitHub one. Download `install-macos.sh`
+from your workspace's downloads page (the cloud feed), which bakes in the
+site, profile and feed public key. A copy without them refuses to run:
+
+```
+agent-relay install: error: this copy of install-macos.sh has no site, profile or feed key; download it again from your workspace's downloads page
+```
+
+The first install also needs `AGENT_RELAY_INSTALL_TOKEN`, the install token
+from that page; an update uses the installed core's sign-in. Run the saved
+file with the same options as above (`--enrollment-key-file`, `--update`,
+`--status`, `--rollback`, `--uninstall`, `--dry-run`):
+
+```sh
+read -rs AGENT_RELAY_INSTALL_TOKEN && export AGENT_RELAY_INSTALL_TOKEN  # paste the token, not in shell history
+bash ./install-macos.sh --enrollment-key-file /private/path/to/key
+unset AGENT_RELAY_INSTALL_TOKEN
+bash ./install-macos.sh --status
+```
+
+[docs/headless-mac-site-verification.md](../docs/headless-mac-site-verification.md)
+walks one verification run of a site build on a Mac.
+
 It downloads `AgentRelay-<version>-macOS-<arch>-probe.tar.gz` (arm64, also
 from a shell under Rosetta, or x64), checks it against the release's
 `.sha256` and checks the core's Developer ID signature (team `QUJ7SA6X8X`)
@@ -68,8 +91,13 @@ output, and setup attempts to delete the unchanged file only after Agent Relay
 accepts it; if it remains, the installer tells you to inspect and remove it.
 A site without enrollment-key support falls back to the printed device
 approval; the install stays usable and the installer exits 2 to report that
-action is still required. `--enrollment-key-file -` reads the key
-from standard input when running a saved copy of the installer; it is refused
+action is still required. The installer first checks the installed core for
+enrollment-key support (`agent-relay-probe setup --help`) and stops if it has
+none. This holds for a site build too: setup falls back as above when the
+site answers the exchange with 404 (no enrollment-key route); any other
+refusal fails setup instead (exit 1). As a hint before installing,
+`curl -fsS <site-url>/api/v1/auth/login-config` shows `"enrollment_keys": true`
+on a Control that serves the exchange; setup does not read it. `--enrollment-key-file -` reads the key from standard input when running a saved copy of the installer; it is refused
 with `curl | bash`, whose standard input is the installer itself. Enrollment
 removes the browser approval step, not macOS's login-session requirement below.
 
