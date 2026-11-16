@@ -216,12 +216,26 @@ mod tests {
         ));
     }
 
-    fn reported_phase(scheduler: &Scheduler<'_>) -> String {
-        let report: serde_json::Value = serde_json::from_slice(
+    fn reported(scheduler: &Scheduler<'_>) -> serde_json::Value {
+        let mut report: serde_json::Value = serde_json::from_slice(
             &std::fs::read(scheduler.context.directory.join("progress.json")).unwrap(),
         )
         .unwrap();
-        report["progress"]["phase"].as_str().unwrap().to_owned()
+        report["progress"].take()
+    }
+
+    fn reported_phase(scheduler: &Scheduler<'_>) -> String {
+        reported(scheduler)["phase"].as_str().unwrap().to_owned()
+    }
+
+    /// The report a scan that ended complete closes with. A running scan
+    /// reports "scanning" too; the closing report counts the catalog afresh.
+    fn assert_closing_report(scheduler: &Scheduler<'_>) {
+        let report = reported(scheduler);
+        assert_eq!(report["phase"], "scanning");
+        let db = scheduler.context.directory.join("history.db");
+        let captured = crate::history::probe::history::captured_sessions(&db).unwrap();
+        assert_eq!(report["sessionsCaptured"], captured);
     }
 
     /// Issue #5: on a computer whose sessions are always being written, the
@@ -249,7 +263,7 @@ mod tests {
                     scheduler.context.progress.is_none(),
                     "the startup scan ended with its last round"
                 );
-                assert_ne!(reported_phase(scheduler), "capture_paused");
+                assert_closing_report(scheduler);
             },
         );
     }
@@ -275,7 +289,7 @@ mod tests {
                 scheduler.lost = true;
                 scheduler.refresh(Instant::now());
                 drain(scheduler);
-                assert_ne!(reported_phase(scheduler), "capture_paused");
+                assert_closing_report(scheduler);
             },
         );
     }
@@ -329,7 +343,7 @@ mod tests {
                 std::fs::create_dir_all(&bad).unwrap();
                 drain(scheduler);
                 assert!(scheduler.rounds.is_empty(), "the retry completed the round");
-                assert_ne!(reported_phase(scheduler), "capture_paused");
+                assert_closing_report(scheduler);
             },
         );
     }
