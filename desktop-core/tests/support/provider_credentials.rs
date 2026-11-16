@@ -300,3 +300,204 @@ async fn enabling_a_host_installs_detected_providers_before_returning() {
         .any(|row| row["id"] == "codex" && row["selected"] == false));
     harness.stop().await;
 }
+
+/// Puts a usable command-line helper where the installer looks for it, so
+/// Cursor's messaging hooks can be installed.
+fn usable_helper(home: &std::path::Path) {
+    let helper = agent_relay_desktop_core::probe_copy::destination(home);
+    std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+    std::fs::write(&helper, "fixture executable").unwrap();
+    agent_relay_node::platform::fs::set_mode(&helper, 0o700).unwrap();
+}
+
+fn tool<'a>(report: &'a Value, id: &str) -> &'a Value {
+    report["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id)
+        .unwrap()
+}
+
+/// A gate-only workspace's resolve names `urls.relaygateUrl` and no
+/// `relaycastApiKey`. The hosted MCP pipeline does not depend on the key:
+/// the app login mints a Cursor grant at the site and Cursor's config points
+/// at the site's hosted MCP endpoint with that grant.
+#[tokio::test]
+async fn a_gate_only_sign_in_writes_cursor_s_hosted_mcp_entry() {
+    let harness = Harness::start_with(|cloud, setup| {
+        let mut state = cloud.state.lock().unwrap();
+        state.relaycast_url = Some(cloud.site_url.clone());
+        state.relaygate_url = Some(cloud.site_url.clone());
+        state.resolve_without_key = true;
+        usable_helper(&setup.home);
+    })
+    .await;
+    let site = harness.cloud.site_url.clone();
+    let mut client = harness.client().await;
+    client
+        .ok("account.sign_in", json!({"sharing":"new","flow":"device"}))
+        .await;
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    eventually("the gate-only workspace is kept", || {
+        harness.core.store.read(|s| {
+            s.cloud
+                .as_ref()
+                .is_some_and(|cloud| cloud.gate_url.as_deref() == Some(site.as_str()))
+        })
+    })
+    .await;
+    let report = client
+        .ok("tools.select", json!({"tool_ids":["cursor"]}))
+        .await;
+
+    // The site advertised the provider-credential protocol, then minted a grant.
+    let initialize = harness
+        .cloud
+        .requests("/cloud/api/v1/mcp/shared-sessions")
+        .into_iter()
+        .filter(|r| r.body["method"] == "initialize")
+        .count();
+    assert!(initialize >= 1, "no hosted MCP initialize");
+    let issued = harness.cloud.requests(&format!(
+        "/cloud/api/v1/workspaces/{WORKSPACE}/mcp/shared-sessions-tokens"
+    ));
+    assert!(
+        issued
+            .iter()
+            .any(|r| r.method == "POST" && r.body["provider"] == "cursor"),
+        "{issued:?}"
+    );
+    let grant = harness.cloud.state.lock().unwrap().provider_grants["grant-cursor"]["accessToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!report.to_string().contains(&grant));
+
+    let installed = std::fs::read_to_string(harness.home.join(".cursor/mcp.json")).unwrap();
+    let mcp: Value = json5::from_str(&installed).unwrap();
+    let entry = &mcp["mcpServers"]["agent-relay"];
+    assert_eq!(
+        entry["url"],
+        format!("{site}/cloud/api/v1/mcp/shared-sessions")
+    );
+    assert_eq!(entry["headers"]["Authorization"], format!("Bearer {grant}"));
+    assert!(!installed.contains("access-"));
+    assert!(!installed.contains(ACCOUNT_KEY));
+
+    let cursor = tool(&report, "cursor");
+    assert_eq!(cursor["selected"], true, "{cursor}");
+    assert!(
+        matches!(cursor["state"].as_str(), Some("configured" | "installed")),
+        "{cursor}"
+    );
+    harness.stop().await;
+}
+
+/// The resolve is not what the hosted MCP pipeline depends on: one naming
+/// neither a relaygate URL nor a key (`ResolveError::NoKey`) leaves no
+/// workspace in the store, and the sign-in, the grant and Cursor's entry go
+/// ahead all the same (`Account::adopt_workspace` reports a workspace that
+/// shares no key and carries on).
+#[tokio::test]
+async fn a_resolve_with_no_gate_and_no_key_still_writes_cursor_s_hosted_mcp_entry() {
+    let harness = Harness::start_with(|cloud, setup| {
+        let mut state = cloud.state.lock().unwrap();
+        state.relaycast_url = Some(cloud.site_url.clone());
+        state.resolve_without_key = true;
+        usable_helper(&setup.home);
+    })
+    .await;
+    let site = harness.cloud.site_url.clone();
+    let mut client = harness.client().await;
+    client
+        .ok("account.sign_in", json!({"sharing":"new","flow":"device"}))
+        .await;
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    assert!(!harness
+        .cloud
+        .requests(&format!("/cloud/api/v1/workspaces/{WORKSPACE}/resolve"))
+        .is_empty());
+    assert!(harness.core.store.read(|s| s.cloud.is_none()));
+    let report = client
+        .ok("tools.select", json!({"tool_ids":["cursor"]}))
+        .await;
+    let grant = harness.cloud.state.lock().unwrap().provider_grants["grant-cursor"]["accessToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mcp: Value =
+        json5::from_str(&std::fs::read_to_string(harness.home.join(".cursor/mcp.json")).unwrap())
+            .unwrap();
+    let entry = &mcp["mcpServers"]["agent-relay"];
+    assert_eq!(
+        entry["url"],
+        format!("{site}/cloud/api/v1/mcp/shared-sessions")
+    );
+    assert_eq!(entry["headers"]["Authorization"], format!("Bearer {grant}"));
+    let cursor = tool(&report, "cursor");
+    assert!(
+        matches!(cursor["state"].as_str(), Some("configured" | "installed")),
+        "{cursor}"
+    );
+    harness.stop().await;
+}
+
+/// What does stop Cursor's setup on a gate-only site: a hosted MCP
+/// initialize that does not advertise
+/// `com.agentrelay/desktop-provider-credentials` version 1. No grant is
+/// asked for, Cursor gets no entry, and the row says the provider could not
+/// be authorized.
+#[tokio::test]
+async fn a_gate_only_site_without_the_provider_credential_protocol_writes_no_cursor_entry() {
+    let harness = Harness::start_with(|cloud, setup| {
+        let mut state = cloud.state.lock().unwrap();
+        state.relaycast_url = Some(cloud.site_url.clone());
+        state.relaygate_url = Some(cloud.site_url.clone());
+        state.resolve_without_key = true;
+        state.mcp_native_identity = false;
+        usable_helper(&setup.home);
+    })
+    .await;
+    let mut client = harness.client().await;
+    client
+        .ok("account.sign_in", json!({"sharing":"new","flow":"device"}))
+        .await;
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    let report = client
+        .ok("tools.select", json!({"tool_ids":["cursor"]}))
+        .await;
+    assert!(harness
+        .cloud
+        .requests("/cloud/api/v1/mcp/shared-sessions")
+        .iter()
+        .any(|r| r.body["method"] == "initialize"));
+    assert!(harness
+        .cloud
+        .requests(&format!(
+            "/cloud/api/v1/workspaces/{WORKSPACE}/mcp/shared-sessions-tokens"
+        ))
+        .is_empty());
+    assert!(harness
+        .cloud
+        .state
+        .lock()
+        .unwrap()
+        .provider_grants
+        .is_empty());
+    let mcp_path = harness.home.join(".cursor/mcp.json");
+    if mcp_path.exists() {
+        let mcp: Value = json5::from_str(&std::fs::read_to_string(mcp_path).unwrap()).unwrap();
+        assert!(mcp["mcpServers"].get("agent-relay").is_none(), "{mcp}");
+    }
+    let cursor = tool(&report, "cursor");
+    assert_eq!(cursor["state"], "action_required", "{cursor}");
+    assert!(
+        cursor["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Agent Relay could not authorize this provider."),
+        "{cursor}"
+    );
+    harness.stop().await;
+}

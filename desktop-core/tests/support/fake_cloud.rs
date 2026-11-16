@@ -47,6 +47,9 @@ pub struct State {
     pub relaycast_url: Option<String>,
     pub relaycast_key: String,
     pub relaycast_status: u16,
+    /// The resolve names no `relaycastApiKey` while set, as Control does for
+    /// a gate-only workspace.
+    pub resolve_without_key: bool,
     pub mcp_status: u16,
     pub provider_grants: HashMap<String, Value>,
     pub provider_grant_status: u16,
@@ -120,6 +123,7 @@ impl Default for State {
             relaycast_url: None,
             relaycast_key: ACCOUNT_KEY.into(),
             relaycast_status: 200,
+            resolve_without_key: false,
             mcp_status: 200,
             provider_grants: HashMap::new(),
             provider_grant_status: 200,
@@ -558,13 +562,14 @@ fn route(
             if state.resolve_status != 200 {
                 return (state.resolve_status, json!({"error": "nope"}));
             }
-            (
-                200,
-                json!({"data": {"relaycastApiKey": state.relaycast_key, "name": "Acme",
-                       "relaycastWorkspaceId": "rw_acme", "cloudWorkspaceId": WORKSPACE,
-                       "urls": {"relaycastUrl": state.relaycast_url.as_deref().unwrap_or("https://cast.agentrelay.com"),
-                                "relaygateUrl": state.relaygate_url}}}),
-            )
+            let mut data = json!({"relaycastApiKey": state.relaycast_key, "name": "Acme",
+                   "relaycastWorkspaceId": "rw_acme", "cloudWorkspaceId": WORKSPACE,
+                   "urls": {"relaycastUrl": state.relaycast_url.as_deref().unwrap_or("https://cast.agentrelay.com"),
+                            "relaygateUrl": state.relaygate_url}});
+            if state.resolve_without_key {
+                data.as_object_mut().unwrap().remove("relaycastApiKey");
+            }
+            (200, json!({"data": data}))
         }
         ("POST", p) if p == format!("/workspaces/{WORKSPACE}/relay-node/self-tokens") => {
             if let Some(refusal) = state.self_token_refusals.pop_front() {
