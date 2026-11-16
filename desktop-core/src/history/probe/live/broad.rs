@@ -57,6 +57,9 @@ struct Scheduler<'a> {
     // many of its closing maintenances were deferred or failed.
     initial: Option<LiveOptions>,
     initial_unfinished_closings: u32,
+    // The startup scan ended as paused capture; a later round that ends
+    // with success reports it complete.
+    scan_paused: bool,
 }
 
 pub(super) fn follow(context: Context<'_>, roots: history::RootSettings) {
@@ -72,6 +75,7 @@ impl<'a> Scheduler<'a> {
         Self {
             initial: Some(initial::initial_options(context.options)),
             initial_unfinished_closings: 0,
+            scan_paused: false,
             context,
             owed: None,
             lost: false,

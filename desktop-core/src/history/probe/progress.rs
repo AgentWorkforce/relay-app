@@ -36,10 +36,17 @@ pub struct Progress {
     #[serde(skip_serializing_if = "held::is_zero")]
     pub records_held: i64,
     pub backlog_complete: bool,
+    /// Why uploads are not moving, while they are not: the job's state, its
+    /// allowlisted failure code and when it is tried next. Local only, like
+    /// `records_held`: omitted while unset, and never in the Cloud report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stall: Option<stall::Stall>,
 }
 
 mod counts;
 mod held;
+mod phase_line;
+mod stall;
 use counts::captured_sessions;
 
 impl Progress {
@@ -68,6 +75,7 @@ impl Progress {
         self.records_queued = (status.pending_records - self.records_held).max(0);
         self.records_quarantined = status.quarantined_records;
         self.backlog_complete = status.bootstrap_complete && status.unqueued_changes == 0;
+        self.stall = stall::Stall::of(status);
         let transient_progress = status.failure.as_deref() == Some("transient")
             && !delivery::retry_failure_is_sustained(
                 status.attempts,
@@ -85,52 +93,6 @@ impl Progress {
             "uploading"
         }
         .into();
-    }
-    fn phase_line(&self) -> String {
-        match self.phase.as_str() {
-            "scanning" => match self.total_files {
-                Some(total) => format!(
-                    "Reading {} session files: {} of {} processed · {} sessions captured",
-                    self.source, self.processed_files, total, self.sessions_captured
-                ),
-                None => format!(
-                    "Scanning {}… {} sessions captured",
-                    self.source, self.sessions_captured
-                ),
-            },
-            "capture_paused" => format!(
-                "Local capture paused; retrying. {} session files processed, {} sessions captured",
-                self.processed_files, self.sessions_captured
-            ),
-            "paused" => format!(
-                "Upload paused; retrying. {} records uploaded, {} queued{}",
-                self.records_uploaded,
-                self.records_queued,
-                if self.records_quarantined > 0 {
-                    format!(", {} quarantined", self.records_quarantined)
-                } else {
-                    String::new()
-                }
-            ),
-            "conflict" => format!(
-                "Delivery conflict: {} records quarantined, {} queued; other records continue uploading. Inspect delivery status for repair.",
-                self.records_quarantined, self.records_queued
-            ),
-            "watching" => format!(
-                "Up to date: {} records uploaded. Watching for new sessions.",
-                self.records_uploaded
-            ),
-            _ => format!(
-                "Uploading: {} records received, {} queued{}",
-                self.records_uploaded,
-                self.records_queued,
-                if self.backlog_complete {
-                    ""
-                } else {
-                    " · preparing remaining records"
-                }
-            ),
-        }
     }
 }
 
@@ -305,6 +267,23 @@ impl LocalProgress {
             super::bridge::emit(serde_json::json!({"event":"progress", "progress":progress}));
         }
     }
+}
+
+/// Rewrite a capture that ended paused as complete, once a later pass
+/// succeeds: its monitor has already finished, so this writes the closing
+/// report a scan that succeeded writes.
+pub fn capture_resumed(directory: &Path) {
+    let local = LocalProgress {
+        directory: directory.to_owned(),
+        closed: Mutex::new(false),
+        delivery: false,
+    };
+    let progress = Progress {
+        phase: "scanning".into(),
+        source: "local history".into(),
+        ..Default::default()
+    };
+    local.finish(progress, None, true, None);
 }
 
 pub struct Monitor {
@@ -631,6 +610,87 @@ mod tests {
         assert_eq!(progress.phase, "conflict");
     }
 
+    /// A job stuck on one batch (issue #5) printed "Upload paused; retrying"
+    /// with unchanging counts for two days and never said why. The line now
+    /// tells a blocked job from a retried failure and a paused job, names the
+    /// allowlisted failure and its sentence, and says when it is tried next.
+    #[test]
+    fn a_paused_upload_names_its_failure_and_whether_it_retries() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let stuck = |state: &str, failure: Option<&str>| delivery::DeliveryStatus {
+            state: state.into(),
+            failure: failure.map(str::to_owned),
+            pending_records: 500,
+            acknowledged_records: 3_235_224,
+            attempts: 7,
+            last_attempt_ms: Some(now - 60_000),
+            next_attempt_ms: now + 240_000,
+            last_acknowledged_ms: Some(now - 2 * 24 * 60 * 60 * 1_000),
+            oldest_pending_ms: Some(now - 2 * 24 * 60 * 60 * 1_000),
+            ..delivery_status(None, 0)
+        };
+        let mut progress = Progress::default();
+
+        progress.apply_delivery(&stuck("blocked", Some("receiver_rejected")));
+        assert_eq!(progress.phase, "paused");
+        let line = progress.line();
+        assert!(line.starts_with("Upload blocked (receiver_rejected); not retried until a retry or an update. 3235224 records uploaded, 500 queued"), "{line}");
+        assert!(line.contains("The server rejected an upload"), "{line}");
+        assert!(!line.contains("retrying"), "{line}");
+        assert!(!line.contains("next attempt"), "{line}");
+
+        progress.apply_delivery(&stuck("active", Some("transient")));
+        assert_eq!(progress.phase, "paused");
+        let line = progress.line();
+        assert!(
+            line.starts_with("Upload paused; retrying after transient (7 attempts)"),
+            "{line}"
+        );
+        assert!(line.contains("temporarily unavailable"), "{line}");
+        // Timing, at the same pinned clock the statuses were dated from.
+        assert_eq!(
+            stall::detail(progress.stall.as_ref(), now),
+            " · The upload service is temporarily unavailable. Agent Relay will retry · last attempt 60s ago · next attempt in 240s"
+        );
+
+        // A blocked job is not retried: no sentence promises a retry, and
+        // no next attempt is named.
+        progress.apply_delivery(&stuck("blocked", Some("transient")));
+        assert_eq!(
+            stall::detail(progress.stall.as_ref(), now),
+            " · last attempt 60s ago"
+        );
+        assert!(
+            !progress.line().contains("will retry"),
+            "{}",
+            progress.line()
+        );
+
+        progress.apply_delivery(&stuck("paused", None));
+        assert!(progress
+            .line()
+            .starts_with("Uploads paused; nothing is uploaded until you resume"));
+
+        // Receiver text is never shown: only an allowlisted code.
+        progress.apply_delivery(&stuck("blocked", Some("<html>teapot</html>")));
+        assert!(progress.line().starts_with("Upload blocked (unknown)"));
+        assert!(!progress.line().contains("teapot"));
+
+        // The reason stays on this Mac: the Cloud report carries no stall.
+        let local = serde_json::to_value(&progress).unwrap();
+        assert_eq!(local["stall"]["state"], "blocked");
+        let cloud = serde_json::to_value(cloud_delivery_progress(&progress)).unwrap();
+        assert!(cloud.get("stall").is_none(), "{cloud}");
+
+        // A healthy job has none.
+        progress.apply_delivery(&delivery_status(None, 0));
+        assert!(progress.stall.is_none());
+        assert!(serde_json::to_value(&progress)
+            .unwrap()
+            .get("stall")
+            .is_none());
+    }
+
     #[test]
     fn held_records_wait_for_ownership_and_stay_out_of_the_cloud_report() {
         let held = |pending_records, held_records| delivery::DeliveryStatus {
@@ -671,6 +731,7 @@ mod tests {
             records_quarantined: 0,
             records_held: 0,
             backlog_complete: true,
+            stall: None,
         };
         let cloud = cloud_delivery_progress(&local);
         assert!(cloud.source.is_empty());

@@ -100,11 +100,29 @@ impl Scheduler<'_> {
                 // complete, and objects that keep failing must not hold the
                 // initial budget for the rest of the run.
                 self.end_initial_pass();
+                // Nor may they keep the startup scan reported as running: it
+                // ends as paused capture, and the failure the round judged is
+                // the reason the status reports.
+                self.end_scan(false);
             }
             if std::mem::take(&mut self.rescan_again) {
                 self.lost = true;
                 self.backstop = Instant::now();
             }
+        }
+    }
+
+    /// End the startup scan's progress report: `success` reports the scan
+    /// complete, otherwise capture as paused. Until it ends, delivery's own
+    /// progress (an upload failure among it) yields to it locally.
+    /// A scan that ended paused (a partial pass, or a failed maintenance)
+    /// is reported complete when a later round ends with success.
+    pub(super) fn end_scan(&mut self, success: bool) {
+        if let Some(progress) = self.context.progress.take() {
+            progress.finish(success);
+            self.scan_paused = !success;
+        } else if success && std::mem::take(&mut self.scan_paused) {
+            crate::history::probe::progress::capture_resumed(self.context.directory);
         }
     }
 
@@ -163,6 +181,7 @@ impl Scheduler<'_> {
             self.audit_at = Instant::now() + self.context.options.min_gap;
         }
         let maintained = due && !audit.interrupted && matches!(audit.result, Ok(Some(_)));
+        let maintenance_failed = !audit.interrupted && audit.result.is_err();
         match audit.result {
             Ok(Some(_)) => {
                 if due {
@@ -170,9 +189,6 @@ impl Scheduler<'_> {
                     self.safety = Default::default();
                 }
                 self.context.shared.judge(None);
-                if let Some(progress) = self.context.progress.take() {
-                    progress.finish(true);
-                }
             }
             Ok(None) => self.audit_at = Instant::now() + self.context.options.min_gap,
             Err(_) if audit.interrupted => {}
@@ -181,6 +197,12 @@ impl Scheduler<'_> {
                 .shared
                 .judge(Some(collector::capture_error_class(&error).into())),
         }
+        // Every reconciliation round has completed, so the scan the startup
+        // progress reports is over, whatever its closing maintenance did. That
+        // maintenance is a daily repair sweep that new activity defers (and
+        // retries); waiting for it kept "Scanning history" up for days on a
+        // busy computer. A maintenance that failed reports capture as paused.
+        self.end_scan(!maintenance_failed);
         // An expensive audit contributes to cold duty pacing, never hot pacing.
         self.cold_due = self.cold_due.max(
             Instant::now()

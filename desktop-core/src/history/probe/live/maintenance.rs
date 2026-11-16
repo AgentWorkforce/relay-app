@@ -7,6 +7,12 @@ pub(super) struct Audit {
     pub interrupted: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Fails this thread's next maintenance, as a sweep that errors would.
+    pub(super) static FAIL_NEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(super) fn run(
     store: &ai_hist::SessionStore,
     cancelled: &Arc<AtomicBool>,
@@ -15,6 +21,13 @@ pub(super) fn run(
     recent: &history::RecentPaths,
     roots: &history::RootSettings,
 ) -> Audit {
+    #[cfg(test)]
+    if FAIL_NEXT.with(|fail| fail.replace(false)) {
+        return Audit {
+            result: Err(anyhow::anyhow!("synthetic maintenance failure")),
+            interrupted: false,
+        };
+    }
     let mut guard = Interrupt::watching(store, cancelled, watch, recent, activity_before_drain);
     guard.consent = Some((
         roots.clone(),

@@ -206,6 +206,134 @@ mod tests {
         );
     }
 
+    /// The startup scan's progress, as `startup::capture` starts it.
+    fn scanning(scheduler: &mut Scheduler<'_>) {
+        scheduler.context.progress = Some(crate::history::probe::progress::Monitor::start(
+            scheduler.context.directory,
+            "http://127.0.0.1:9",
+            None,
+            false,
+        ));
+    }
+
+    fn reported_phase(scheduler: &Scheduler<'_>) -> String {
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(scheduler.context.directory.join("progress.json")).unwrap(),
+        )
+        .unwrap();
+        report["progress"]["phase"].as_str().unwrap().to_owned()
+    }
+
+    /// Issue #5: on a computer whose sessions are always being written, the
+    /// closing maintenance of every round is deferred for queued hot work,
+    /// and the startup scan waited for one that completed, so "Scanning
+    /// history" was reported for two days, and delivery's progress yielded
+    /// `progress.json` to it all that time. The scan ends with its last
+    /// reconciliation round; the maintenance stays due.
+    #[test]
+    fn a_deferred_closing_maintenance_still_ends_the_startup_scan() {
+        with_native_scheduler(
+            "history::probe::live::broad::initial::tests::a_deferred_closing_maintenance_still_ends_the_startup_scan",
+            false,
+            |scheduler, _, paths| {
+                scanning(scheduler);
+                scheduler.recent.poll(&scheduler.context.store).unwrap();
+                scheduler.owed = Some(owed(paths));
+                scheduler.refresh(Instant::now());
+                drain(scheduler);
+                assert!(
+                    scheduler.audit_at < Instant::now() + Duration::from_secs(3600),
+                    "the maintenance was deferred and stays due"
+                );
+                assert!(
+                    scheduler.context.progress.is_none(),
+                    "the startup scan ended with its last round"
+                );
+                assert_ne!(reported_phase(scheduler), "capture_paused");
+            },
+        );
+    }
+
+    /// A closing maintenance that fails (not one deferred) ends the scan as
+    /// paused capture; a later round that ends with success reports it
+    /// complete again.
+    #[test]
+    fn a_failed_closing_maintenance_ends_the_startup_scan_as_paused() {
+        with_native_scheduler(
+            "history::probe::live::broad::initial::tests::a_failed_closing_maintenance_ends_the_startup_scan_as_paused",
+            false,
+            |scheduler, _, _| {
+                scanning(scheduler);
+                scheduler.recent.poll(&scheduler.context.store).unwrap();
+                crate::history::probe::live::maintenance::FAIL_NEXT.with(|fail| fail.set(true));
+                scheduler.refresh(Instant::now());
+                drain(scheduler);
+                assert!(scheduler.context.progress.is_none());
+                assert_eq!(reported_phase(scheduler), "capture_paused");
+
+                scheduler.audit_at = Instant::now();
+                scheduler.lost = true;
+                scheduler.refresh(Instant::now());
+                drain(scheduler);
+                assert_ne!(reported_phase(scheduler), "capture_paused");
+            },
+        );
+    }
+
+    /// An object that keeps failing keeps its round owed forever. The scan
+    /// still ends once the healthy part of the pass is exhausted, and says
+    /// capture is paused rather than scanning.
+    #[test]
+    fn a_permanently_failing_object_ends_the_startup_scan_as_paused() {
+        with_native_scheduler(
+            "history::probe::live::broad::initial::tests::a_permanently_failing_object_ends_the_startup_scan_as_paused",
+            false,
+            |scheduler, home, _| {
+                scanning(scheduler);
+                let bad = home.join(".codex/archived_sessions");
+                std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
+                std::fs::write(&bad, b"not a directory").unwrap();
+                scheduler.refresh(Instant::now());
+                for _ in 0..120 {
+                    scheduler.cold();
+                }
+                assert!(!scheduler.rounds.is_empty(), "failed enumeration remains owed");
+                assert!(scheduler.context.progress.is_none());
+                assert_eq!(reported_phase(scheduler), "capture_paused");
+            },
+        );
+    }
+
+    /// An object that failed at startup and then reads: once its retry
+    /// completes the round, the scan that ended paused is reported complete,
+    /// not left paused for the rest of the run.
+    #[test]
+    fn a_retried_object_that_recovers_reports_the_scan_complete() {
+        with_native_scheduler(
+            "history::probe::live::broad::initial::tests::a_retried_object_that_recovers_reports_the_scan_complete",
+            false,
+            |scheduler, home, _| {
+                scanning(scheduler);
+                scheduler.recent.poll(&scheduler.context.store).unwrap();
+                let bad = home.join(".codex/archived_sessions");
+                std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
+                std::fs::write(&bad, b"not a directory").unwrap();
+                scheduler.refresh(Instant::now());
+                for _ in 0..120 {
+                    scheduler.cold();
+                }
+                assert!(!scheduler.rounds.is_empty(), "failed enumeration remains owed");
+                assert_eq!(reported_phase(scheduler), "capture_paused");
+
+                std::fs::remove_file(&bad).unwrap();
+                std::fs::create_dir_all(&bad).unwrap();
+                drain(scheduler);
+                assert!(scheduler.rounds.is_empty(), "the retry completed the round");
+                assert_ne!(reported_phase(scheduler), "capture_paused");
+            },
+        );
+    }
+
     /// Hot work queued at every round end cannot hold the budget forever.
     #[test]
     fn repeatedly_deferred_maintenance_ends_the_initial_pass_after_a_bound() {
