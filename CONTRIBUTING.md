@@ -33,7 +33,7 @@ This repository does not take pull requests. Open a
 
 ## Building and testing
 
-The [Development](README.md#development) section of the README covers
+The [Development guide](docs/repository-guide.md#development) covers
 building the apps and the core. The checks in
 [docs/workspace-layout.md](docs/workspace-layout.md#validation) cover
 `swift test`, the GTK suite and `bash scripts/check-open-source.sh`.

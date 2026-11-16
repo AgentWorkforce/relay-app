@@ -1,26 +1,25 @@
 # Working in relay-app
 
-```sh
-swift test
-scripts/check-open-source.sh
-```
+**Which workflow you follow depends on who you work for, not on the files in your checkout.**
+This repository takes no pull requests. If the maintainers did not assign you the work, propose it as a GitHub issue as [CONTRIBUTING.md](CONTRIBUTING.md) describes, and ignore `docs/maintainer-workflow.md`. Follow `docs/maintainer-workflow.md` only when this repository’s maintainers assigned you the work and your instructions say to use the maintainer workflow.
 
-- This repo takes no PRs. External proposals use CONTRIBUTING.md. Only maintainer-assigned work explicitly instructed to use it follows docs/maintainer-workflow.md.
-- Run swift test, the GTK suite and scripts/check-open-source.sh; exact platform commands are in docs/workspace-layout.md#validation.
-- macOS is the reference; GTK matches feature/layout/wording and OS code has Windows counterparts. Report unavailable features explicitly.
-- Messaging core changes land in AgentWorkforce/relay first; update both pins/lockfiles and run scripts/generate-contract.sh. Desktop integrations/history stay in desktop-core.
+- Before asking for review, `scripts/check-open-source.sh` must pass. Run `swift test --package-path macos` and the GTK suite as described in [validation](docs/workspace-layout.md#validation).
+- **macOS and GTK change together.** macOS is the reference; GTK matches features, layout and wording. See [platform pairs](docs/workspace-layout.md#macos-and-gtk-counterparts). In `gtk/src` and `desktop-core/`, code that touches the OS needs a `cfg(windows)` counterpart. Report unavailable features explicitly.
+- The public core is `AgentWorkforce/relay` (`agent-relay-node` in `crates/relay-node`), messaging only. Change it there first; update the `agent-relay-node` pin in both Cargo.toml files, refresh both lockfiles and run `scripts/generate-contract.sh`.
+- Desktop-only concerns—sign-in, hosted MCP, provider setup, attestation and session history (`desktop-core/src/history`) through plugin hooks—belong in `desktop-core/`. Never put them in relay’s core.
 - Add platform-specific Unreleased notes for user-visible changes, excluding build/CI/test/iOS-only changes.
-- Never stop, kill or disable the installed core; restart if needed. Maintainers publish; do not dispatch releases or push desktop-v*/released-v* tags.
+- Never stop, kill or disable the running core: the `agent-relay.service` user unit on Linux, the loaded `com.agentrelay.desktop*.core*` LaunchAgent on macOS, or the `Agent Relay (<account>)` logon task on Windows. Restart it if needed.
+- Maintainers publish releases; do not dispatch release workflows or push `desktop-v*`/`released-v*` tags.
 
 ## Agency and guidance
 
 - Act autonomously on routine assigned work; ask forgiveness rather than permission. Preserve explicit production, release and credential gates.
 - For guidance, ask the engineering leads, the agent that spawned you, or the layered owner on Agent Relay.
-- Only a truly pressing or blocking question goes to `khaliq-gant` or `will-washburn` (CODEOWNERS) on Agent Relay.
+- Only a truly pressing or blocking question goes to `khaliq-gant` or `will-washburn` on Agent Relay.
 
 ## Review and landing
 
-- Pull requests are disabled. Use the review-branch and `layered-relay-app` owner workflow in `docs/maintainer-workflow.md`; review findings and the required CI/GitHub gate must be resolved on the exact commit that lands. Changes reach `main` through the owner’s documented squash/verification process, not a pull request.
+- Only for maintainer-assigned work explicitly instructed to use `docs/maintainer-workflow.md`: submit a review branch to `layered-relay-app`, resolve findings, and let the owner squash the commit that passes the required CI/GitHub gate onto `main`. Outside contributors follow `CONTRIBUTING.md`, propose GitHub issues, and ignore the maintainer workflow. Pull requests are disabled.
 
 ## Cross-repo context
 
