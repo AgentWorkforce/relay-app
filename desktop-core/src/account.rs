@@ -294,33 +294,6 @@ impl Account {
         }
     }
 
-    // The kept session.
-
-    /// A session for `site` with no person involved: the kept one, with at
-    /// least `margin` left; one kept but not renewable gives `None`.
-    async fn session_for(&self, site: &str, margin: Duration) -> Option<CloudSession> {
-        match self.kept_session(site, margin).await {
-            Kept::Usable(session) => Some(session),
-            Kept::Unrenewable | Kept::Unavailable(_) | Kept::Absent => None,
-        }
-    }
-
-    /// A bearer for `site` without asking the person: the environment's,
-    /// else `session_for`'s; `true` when it is the kept session.
-    async fn bearer(&self, site: &str) -> Option<(Secret, bool)> {
-        if let Some(token) = &self.env_token {
-            return Some((token.clone(), false));
-        }
-        self.session_for(site, FRESH_MARGIN)
-            .await
-            .map(|session| (session.access_token, true))
-    }
-
-    /// A session to start setup with: fresh for at least a minute.
-    async fn reusable_session(&self, site: &str) -> Option<CloudSession> {
-        self.session_for(site, Duration::from_secs(60)).await
-    }
-
     // State.
 
     /// `status.account`.
@@ -1868,6 +1841,10 @@ impl CloudAccess for Account {
 
     fn credential(&self, refused: Option<Secret>) -> BoxFuture<'_, Option<(String, Secret)>> {
         Box::pin(self.pinned_credential(refused))
+    }
+
+    fn device_token(&self) -> BoxFuture<'_, Option<Secret>> {
+        Box::pin(self.device_bearer())
     }
 
     fn request(
