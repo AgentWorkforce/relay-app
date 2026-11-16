@@ -29,6 +29,7 @@ pub(super) fn init(conn: &Connection) -> Result<()> {
     fence INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until_ms INTEGER,
     next_attempt_ms INTEGER NOT NULL DEFAULT 0, receiver_retry_after_ms INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
+    attempt_outcome INTEGER NOT NULL DEFAULT 0,
     last_attempt_ms INTEGER, last_acknowledged_ms INTEGER, acceptance_level TEXT, failure TEXT, retry_build TEXT,
     suppressed_records INTEGER NOT NULL DEFAULT 0, skipped_records INTEGER NOT NULL DEFAULT 0,
     acknowledged_records INTEGER NOT NULL DEFAULT 0
@@ -157,7 +158,19 @@ CREATE TABLE IF NOT EXISTS delivery_origin (
 fn add_later_columns(conn: &Connection) -> Result<()> {
     add_held_columns(conn)?;
     add_user_exclusion_column(conn)?;
+    add_attempt_outcome_column(conn)?;
     add_upload_key_column(conn)
+}
+
+/// The current claim window's increment is provisional (0), was undone
+/// because nothing sent (-1), or has a real outcome and must stand (1).
+fn add_attempt_outcome_column(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "delivery_jobs",
+        "attempt_outcome",
+        "ALTER TABLE delivery_jobs ADD COLUMN attempt_outcome INTEGER NOT NULL DEFAULT 0;",
+    )
 }
 
 /// The key of an object a receiver stored for the batch and is still

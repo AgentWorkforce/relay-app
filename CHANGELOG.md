@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **History uploads in the same OS profile no longer compete with each other.** On macOS, Linux and Windows, jobs for the same History workspace share one batch upload slot and the service's retry deadline, including across desktop and helper processes. A busy upload defers without holding up shutdown or increasing retry backoff, and a rate limit cannot be bypassed by another job in that profile or a restart.
+
 ## v2026.11.10
 
 - **History reads and reconnects no longer overload the service.** The conversation view's history reads no longer re-read every direct-message conversation on each refresh, and a dropped connection to the service is retried with a backoff that honours the service's Retry-After instead of reconnecting at once. Previously an account with many conversations could overload the service.

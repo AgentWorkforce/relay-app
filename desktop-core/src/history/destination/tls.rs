@@ -19,6 +19,7 @@ pub(super) fn configuration_verdict(error: &anyhow::Error) -> Option<ReceiverFai
         recovery: None,
         hold: None,
         upload: None,
+        deferred: false,
     })
 }
 
@@ -33,6 +34,9 @@ pub(super) fn transport_error(error: ureq::Transport) -> anyhow::Error {
 /// Receiver decisions on the batch remain permanent; a local configuration
 /// refusal says nothing about the batch and uses a fixed local wait instead.
 pub(super) fn verdict(error: &anyhow::Error) -> ReceiverFailure {
+    if let Some(deferred) = error.downcast_ref::<super::post_gate::Deferred>() {
+        return deferred.verdict();
+    }
     if let Some(rejection) = error.downcast_ref::<ReceiverRejection>() {
         return ReceiverFailure {
             failure: rejection.failure,
@@ -41,6 +45,7 @@ pub(super) fn verdict(error: &anyhow::Error) -> ReceiverFailure {
             recovery: rejection.recovery.clone(),
             hold: rejection.hold.clone(),
             upload: None,
+            deferred: false,
         };
     }
     configuration_verdict(error).unwrap_or_else(|| {

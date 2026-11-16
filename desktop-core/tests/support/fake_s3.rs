@@ -130,7 +130,7 @@ impl FakeS3 {
     }
 }
 
-fn read(stream: &std::net::TcpStream) -> Request {
+pub(super) fn read(stream: &std::net::TcpStream) -> Request {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();

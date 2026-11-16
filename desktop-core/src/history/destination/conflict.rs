@@ -616,6 +616,7 @@ mod tests {
                 let conflict = sent.batch.records[0].clone();
                 return Err(worker::ReceiverFailure {
                     failure: DeliveryFailure::DeliveryConflict,
+                    deferred: false,
                     retry_after_ms: None,
                     local_wait_ms: None,
                     recovery: parse(409, &response(&[conflict]), &sent.batch),
@@ -790,6 +791,7 @@ mod tests {
             }
             Err(worker::ReceiverFailure {
                 failure: DeliveryFailure::DeliveryConflict,
+                deferred: false,
                 local_wait_ms: None,
                 retry_after_ms: None,
                 recovery: Some(recovery),

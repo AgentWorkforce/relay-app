@@ -368,6 +368,34 @@ and receipt compaction; the receiver owns only the consent and destination guard
 the transport, so progress advances only on a validated receipt. Mapping/account
 mismatches block delivery. A failed attempt retains unacknowledged data and the
 job waits out its own backoff, which is normal operation rather than a fault.
+
+Batch POSTs also share a coordinator under the OS profile's
+`~/.agentworkforce/delivery-posts/`, independent of an install's auth directory.
+For each normalized History stage, organization and workspace, an OS file lock
+allows only one POST across jobs and processes, through receipt validation.
+The whole-workspace scope is intentional: the stored History session has no user ID,
+so different History users in that workspace under the same OS profile share the slot. Token
+rotation does not change the key. A busy slot returns a short local deferral
+to the worker; it does not wait while holding up shutdown. A valid receiver
+`Retry-After` (within the existing one-hour header bound) is persisted before
+releasing the slot, so another install, job or restarted process cannot POST
+before that deadline. The job waits for the longer of this minimum and its
+own backoff when it actually sent a request. Local slot/cooldown deferrals do
+not consume an attempt and retain their exact scheduling deadline, so waiting
+behind a sibling cannot inflate transport backoff. The coordinator retains only
+a retry timestamp and its transient/rate-limit class, never credentials
+or batch content; a malformed timestamp is repaired under the lock. Consent,
+cancellation, destination checks and job leases
+still apply on each attempt. Direct object uploads retain their own transport
+contract; their fallback batch POSTs use this same coordinator.
+
+Explicitly isolated sandbox profiles remain separate. For example, `history
+flush` intentionally keeps its sandbox home rather than adopting the desktop's
+home. On Unix, a different `HOME` selects a different coordinator; on Windows
+the profile is selected by `USERPROFILE` (falling back to `HOME`). Such a flush
+does not participate in another profile's slot or cooldown. Different auth
+directories within one profile still coordinate, as do token rotations.
+
 Transport credentials refresh through the existing RelayHistory auth
 implementation. The stored `rth_*` pair is only a cache of what the Cloud
 workspace bridge issued: when it dies (a revoked, expired or lost one-time

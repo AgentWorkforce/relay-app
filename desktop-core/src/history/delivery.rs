@@ -1426,7 +1426,7 @@ pub fn claim_batch(
             }
         }
     };
-    tx.execute("UPDATE delivery_jobs SET fence=fence+1,worker_id=?,lease_until_ms=?,last_attempt_ms=?,attempts=attempts+1 WHERE id=?",params![worker_id,expires_at_ms,now_ms,job_id])?;
+    tx.execute("UPDATE delivery_jobs SET fence=fence+1,worker_id=?,lease_until_ms=?,last_attempt_ms=?,attempts=attempts+1,attempt_outcome=0 WHERE id=?",params![worker_id,expires_at_ms,now_ms,job_id])?;
     let fence = tx.query_row(
         "SELECT fence FROM delivery_jobs WHERE id=?",
         [job_id],
@@ -2028,7 +2028,7 @@ pub(crate) fn settle(
         // its backoff and verdict, and so does an older batch still in
         // flight, which may yet fail.
         let stands = backoff_stands("?6", "?7");
-        tx.execute(&format!("UPDATE delivery_jobs SET acknowledged_cursor=MAX(acknowledged_cursor,COALESCE((SELECT MAX(journal_end) FROM delivery_batches WHERE job_id=?1 AND state='acknowledged' AND journal_end<COALESCE((SELECT MIN(journal_end) FROM delivery_batches WHERE job_id=?1 AND state IN {UNRESOLVED}),9223372036854775807)),0)),last_acknowledged_ms=?2,acceptance_level=?3,acknowledged_records=acknowledged_records+?4,suppressed_records=suppressed_records+?5,skipped_records=skipped_records+?5,attempts=CASE WHEN {stands} THEN attempts ELSE 0 END,next_attempt_ms=CASE WHEN {stands} THEN next_attempt_ms ELSE 0 END,receiver_retry_after_ms=CASE WHEN {stands} THEN receiver_retry_after_ms ELSE 0 END,failure=CASE WHEN {stands} THEN failure ELSE NULL END WHERE id=?1"),params![lease.job_id,now_ms,ack.acceptance_level.name(),ordered_accepted.len() as i64,ordered_suppressed.len() as i64,end,&lease.batch_id])?;
+        tx.execute(&format!("UPDATE delivery_jobs SET acknowledged_cursor=MAX(acknowledged_cursor,COALESCE((SELECT MAX(journal_end) FROM delivery_batches WHERE job_id=?1 AND state='acknowledged' AND journal_end<COALESCE((SELECT MIN(journal_end) FROM delivery_batches WHERE job_id=?1 AND state IN {UNRESOLVED}),9223372036854775807)),0)),last_acknowledged_ms=?2,acceptance_level=?3,acknowledged_records=acknowledged_records+?4,suppressed_records=suppressed_records+?5,skipped_records=skipped_records+?5,attempts=CASE WHEN {stands} THEN attempts ELSE 0 END,attempt_outcome=CASE WHEN {stands} THEN attempt_outcome ELSE 1 END,next_attempt_ms=CASE WHEN {stands} THEN next_attempt_ms ELSE 0 END,receiver_retry_after_ms=CASE WHEN {stands} THEN receiver_retry_after_ms ELSE 0 END,failure=CASE WHEN {stands} THEN failure ELSE NULL END WHERE id=?1"),params![lease.job_id,now_ms,ack.acceptance_level.name(),ordered_accepted.len() as i64,ordered_suppressed.len() as i64,end,&lease.batch_id])?;
         end_claim(&tx, lease)?;
     }
     let complete = unsupported.is_empty() && accounted == expected;
@@ -2053,24 +2053,19 @@ fn apply_failure(
     wait: FailureWait,
     now_ms: i64,
 ) -> Result<()> {
-    let attempts: i64 = conn.query_row(
-        "SELECT attempts FROM delivery_jobs WHERE id=?",
-        [&lease.job_id],
-        |row| row.get(0),
-    )?;
-    // The receiver's own wait replaces the backoff: its 429 for a lock
-    // wait that ran out names seconds, where the doubling backoff reaches
-    // minutes and would idle the uploader long after the contention passed.
+    let attempts = retry::attempts_for_outcome(conn, lease, wait)?;
+    // Retry-After is the receiver's minimum delay, not permission to shorten
+    // a longer client backoff after sustained failures.
     // A local wait is not marked as the receiver's, so Retry still wakes
     // it; like a client backoff it never shortens a standing deadline, so
     // a sibling's longer wait stays.
     let next = wait.deadline(failure, attempts, &lease.batch_id, now_ms);
     let retryable = failure.retryable();
-    // Receiver waits replace client backoff; concurrent receiver waits keep
-    // the later deadline. A standing receiver wait also outranks a sibling's
-    // client backoff. Its exact deadline lets restarts and Retry preserve it,
+    // Receiver waits include the client backoff; concurrent receiver waits keep
+    // the later deadline. A sibling's client backoff can extend a receiver
+    // minimum but cannot shorten it. Restarts and Retry preserve that deadline,
     // while a rolled-back older build changing the deadline invalidates it.
-    conn.execute("UPDATE delivery_jobs SET state=CASE WHEN ?1 AND state<>'blocked' THEN 'active' ELSE 'blocked' END,failure=CASE WHEN state='blocked' AND failure IS NOT NULL THEN failure WHEN failure='rate_limited' AND ?2='transient' AND next_attempt_ms>?5 THEN failure ELSE ?2 END,next_attempt_ms=CASE WHEN ?6 AND receiver_retry_after_ms=next_attempt_ms AND next_attempt_ms>?5 THEN MAX(next_attempt_ms,?3) WHEN ?6 THEN ?3 WHEN receiver_retry_after_ms=next_attempt_ms AND next_attempt_ms>?5 THEN next_attempt_ms ELSE MAX(next_attempt_ms,?3) END,receiver_retry_after_ms=CASE WHEN ?6 AND receiver_retry_after_ms=next_attempt_ms AND next_attempt_ms>?5 THEN MAX(next_attempt_ms,?3) WHEN ?6 THEN ?3 WHEN receiver_retry_after_ms=next_attempt_ms AND next_attempt_ms>?5 THEN next_attempt_ms ELSE 0 END WHERE id=?4",params![retryable,failure.code(),next,lease.job_id,now_ms,wait.receiver_directed()])?;
+    conn.execute("UPDATE delivery_jobs SET state=CASE WHEN ?1 AND state<>'blocked' THEN 'active' ELSE 'blocked' END,failure=CASE WHEN state='blocked' AND failure IS NOT NULL THEN failure WHEN failure='rate_limited' AND ?2='transient' AND next_attempt_ms>?5 THEN failure ELSE ?2 END,next_attempt_ms=MAX(next_attempt_ms,?3),receiver_retry_after_ms=CASE WHEN ?6 OR (receiver_retry_after_ms=next_attempt_ms AND next_attempt_ms>?5) THEN MAX(next_attempt_ms,?3) ELSE 0 END WHERE id=?4",params![retryable,failure.code(),next,lease.job_id,now_ms,wait.receiver_directed()])?;
     conn.execute(
         "UPDATE delivery_batches SET state=? WHERE id=?",
         params![
@@ -2177,7 +2172,7 @@ pub(crate) fn recover_conflict_classified(
     )
     .map_err(|error| storage(error.into()))?;
     let stands = backoff_stands("?4", "?5");
-    tx.execute(&format!("UPDATE delivery_jobs SET suppressed_records=suppressed_records+?2,acknowledged_cursor=CASE WHEN ?3 THEN MAX(acknowledged_cursor,COALESCE((SELECT MAX(journal_end) FROM delivery_batches WHERE job_id=?1 AND state='acknowledged' AND journal_end<COALESCE((SELECT MIN(journal_end) FROM delivery_batches WHERE job_id=?1 AND state IN {UNRESOLVED}),9223372036854775807)),0)) ELSE acknowledged_cursor END,attempts=CASE WHEN {stands} THEN attempts ELSE 0 END,next_attempt_ms=CASE WHEN {stands} THEN next_attempt_ms ELSE 0 END,receiver_retry_after_ms=CASE WHEN {stands} THEN receiver_retry_after_ms ELSE 0 END,failure=CASE WHEN {stands} THEN failure ELSE NULL END WHERE id=?1"),
+    tx.execute(&format!("UPDATE delivery_jobs SET suppressed_records=suppressed_records+?2,acknowledged_cursor=CASE WHEN ?3 THEN MAX(acknowledged_cursor,COALESCE((SELECT MAX(journal_end) FROM delivery_batches WHERE job_id=?1 AND state='acknowledged' AND journal_end<COALESCE((SELECT MIN(journal_end) FROM delivery_batches WHERE job_id=?1 AND state IN {UNRESOLVED}),9223372036854775807)),0)) ELSE acknowledged_cursor END,attempts=CASE WHEN {stands} THEN attempts ELSE 0 END,attempt_outcome=CASE WHEN {stands} THEN attempt_outcome ELSE 1 END,next_attempt_ms=CASE WHEN {stands} THEN next_attempt_ms ELSE 0 END,receiver_retry_after_ms=CASE WHEN {stands} THEN receiver_retry_after_ms ELSE 0 END,failure=CASE WHEN {stands} THEN failure ELSE NULL END WHERE id=?1"),
         params![lease.job_id,recovery.quarantined.len() as i64,child.records.is_empty(),end,&lease.batch_id]).map_err(|error| storage(error.into()))?;
     end_claim(&tx, lease).map_err(|error| storage(error.into()))?;
     tx.commit().map_err(|error| storage(error.into()))?;
@@ -3241,11 +3236,34 @@ mod tests {
         assert_eq!(left, 0);
     }
 
-    /// The receiver's Retry-After replaces the doubling backoff, however
-    /// many rate limits came before. Its persisted origin protects even a
-    /// long receiver wait from restart and Retry; without one, backoff stands.
     #[test]
-    fn a_retry_after_replaces_a_long_backoff() {
+    fn a_retry_after_longer_than_backoff_stands_in_full() {
+        let (_directory, conn, job_id) = windowed_job(1);
+        let store = feed::store(&conn).unwrap();
+        prepare_batch_from(&conn, &store, &job_id, 0, 3, PublishedLimits::default()).unwrap();
+        let clock = || 1_000;
+        let claim = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .unwrap();
+        persisted(&conn, &claim, &clock);
+        record_failure(
+            &conn,
+            &claim.lease,
+            DeliveryFailure::RateLimited,
+            Some(301_000),
+            &clock,
+        )
+        .unwrap();
+        assert_eq!(status(&conn, &job_id).unwrap().next_attempt_ms, 301_000);
+        assert!(!retry_requested(&conn, &job_id, 100_000).unwrap());
+        assert!(!clamp_retry_wait(&conn, &job_id, 100_000).unwrap());
+        assert_eq!(status(&conn, &job_id).unwrap().next_attempt_ms, 301_000);
+    }
+
+    /// A receiver minimum cannot shorten a long client backoff. The combined
+    /// deadline remains durable and cannot be bypassed by Retry.
+    #[test]
+    fn a_retry_after_preserves_a_longer_backoff() {
         let (_directory, conn, job_id) = windowed_job(1);
         let store = feed::store(&conn).unwrap();
         prepare_batch_from(&conn, &store, &job_id, 0, 3, PublishedLimits::default()).unwrap();
@@ -3264,7 +3282,11 @@ mod tests {
             &clock,
         )
         .unwrap();
-        assert_eq!(status(&conn, &job_id).unwrap().next_attempt_ms, 601_000);
+        let next = status(&conn, &job_id).unwrap().next_attempt_ms;
+        assert!(
+            next > 601_000,
+            "the shorter receiver minimum must not shorten backoff"
+        );
         assert_eq!(
             conn.query_row(
                 "SELECT receiver_retry_after_ms FROM delivery_jobs WHERE id=?",
@@ -3272,11 +3294,11 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-            601_000
+            next
         );
         assert!(!clamp_retry_wait(&conn, &job_id, 60_000).unwrap());
         assert!(!retry_requested(&conn, &job_id, 60_000).unwrap());
-        let clock = || 601_000;
+        let clock = || next;
         let claim = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
             .unwrap()
             .unwrap();
@@ -3289,7 +3311,7 @@ mod tests {
             &clock,
         )
         .unwrap();
-        assert!(status(&conn, &job_id).unwrap().next_attempt_ms > 601_000 + 60_000);
+        assert!(status(&conn, &job_id).unwrap().next_attempt_ms > next + 60_000);
         assert_eq!(
             conn.query_row(
                 "SELECT receiver_retry_after_ms FROM delivery_jobs WHERE id=?",
@@ -3912,13 +3934,16 @@ mod tests {
                 Some("rate_limited"),
                 "rate limited first: {rate_limited_first}"
             );
-            assert_eq!(waiting.next_attempt_ms, 120_000);
+            assert!(waiting.next_attempt_ms > 120_000);
             assert_eq!(holder(&conn, &job_id), None);
             assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
-            assert_eq!(status(&conn, &job_id).unwrap().next_attempt_ms, 120_000);
+            assert_eq!(
+                status(&conn, &job_id).unwrap().next_attempt_ms,
+                waiting.next_attempt_ms
+            );
 
             // Once that wait is over, a transient failure is reported as such.
-            let later = || 120_000;
+            let later = || waiting.next_attempt_ms;
             let retried = claim_batch(&conn, &job_id, "worker", 30_000, &later)
                 .unwrap()
                 .unwrap();

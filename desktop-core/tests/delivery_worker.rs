@@ -1623,6 +1623,7 @@ fn host_stop_preserves_explicit_receiver_retry_after() {
                     recovery: None,
                     hold: None,
                     upload: None,
+                deferred: false,
                 })
             })
         },
@@ -1657,6 +1658,7 @@ fn a_local_wait_through_the_worker_is_not_a_receiver_wait_and_retry_wakes_it() {
                 recovery: None,
                 hold: None,
                 upload: None,
+                deferred: false,
             })
         }),
         ..Fake::default()

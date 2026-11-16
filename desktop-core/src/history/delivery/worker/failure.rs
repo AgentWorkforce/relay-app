@@ -6,6 +6,9 @@ use crate::history::delivery::{record_failure_after, FailureWait, StoredUpload};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiverFailure {
     pub failure: DeliveryFailure,
+    /// This call was deferred before sending. Do not count it as a failed
+    /// attempt or extend its wait with transport backoff.
+    pub deferred: bool,
     pub retry_after_ms: Option<i64>,
     /// A fixed wait in ms that this computer chose, not the receiver: it
     /// replaces the backoff, yet Retry wakes it. `retry_after_ms` outranks it.
@@ -25,6 +28,7 @@ impl From<DeliveryFailure> for ReceiverFailure {
     fn from(failure: DeliveryFailure) -> Self {
         Self {
             failure,
+            deferred: false,
             retry_after_ms: None,
             local_wait_ms: None,
             recovery: None,
@@ -41,9 +45,12 @@ impl ReceiverFailure {
         lease: &DeliveryLease,
         clock: &dyn Fn() -> i64,
     ) -> Result<DeliveryStatus> {
-        let wait = match (self.retry_after_ms, self.local_wait_ms) {
-            (None, Some(wait_ms)) => FailureWait::Local(wait_ms),
-            (retry_after_ms, _) => FailureWait::of(retry_after_ms),
+        let wait = match (self.deferred, self.retry_after_ms, self.local_wait_ms) {
+            (true, Some(at), _) => FailureWait::ReceiverDeferral(at),
+            (true, None, Some(wait_ms)) => FailureWait::LocalDeferral(wait_ms),
+            (true, None, None) => anyhow::bail!("delivery deferral has no wait"),
+            (false, None, Some(wait_ms)) => FailureWait::Local(wait_ms),
+            (false, retry_after_ms, _) => FailureWait::of(retry_after_ms),
         };
         record_failure_after(conn, lease, self.failure, wait, self.upload.as_ref(), clock)
     }

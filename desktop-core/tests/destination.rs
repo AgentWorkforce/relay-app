@@ -23,6 +23,8 @@ use std::{
 };
 #[path = "destination/direct_s3.rs"]
 mod direct_s3;
+#[path = "destination/serialized_posts.rs"]
+mod serialized_posts;
 #[path = "support/fake_s3.rs"]
 mod fake_s3;
 fn batch() -> HistoryExportBatch {

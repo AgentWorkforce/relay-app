@@ -222,6 +222,7 @@ impl RelayHistoryReceiver {
                 recovery: None,
                 hold: Some(hold),
                 upload: None,
+                deferred: false,
             }),
         }
     }

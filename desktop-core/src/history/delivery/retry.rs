@@ -18,7 +18,8 @@ use sha2::{Digest, Sha256};
 pub const TRANSIENT_BACKOFF_CEILING_MS: i64 = 5 * 60 * 1_000;
 /// Longest wait after a rate limit (HTTP 408, 425 or 429) that named no wait
 /// of its own. The receiver asked for less traffic, so the backoff keeps
-/// growing to an hour. A receiver `Retry-After` replaces this backoff.
+/// growing to an hour. A receiver `Retry-After` is a minimum: the longer of
+/// that wait and this backoff stands.
 pub const RATE_LIMITED_BACKOFF_CEILING_MS: i64 = 60 * 60 * 1_000;
 
 /// Another worker owns the claim. The core refuses every write under a lease
@@ -151,7 +152,8 @@ pub(super) fn retry_backoff_ms(failure: DeliveryFailure, attempts: i64, seed: &s
 /// When a failed attempt is tried next.
 ///
 /// `Receiver` is a receiver's Retry-After, an absolute epoch-ms deadline: it
-/// replaces the backoff, and restarts and Retry leave it standing. `Local` is
+/// is a minimum alongside the backoff, and restarts and Retry leave the
+/// resulting deadline standing. `Local` is
 /// a fixed wait in ms that this computer chose for itself, such as a local TLS
 /// configuration refusal: it replaces the backoff too, but the receiver never
 /// asked for it, so Retry wakes it like any backoff.
@@ -160,6 +162,10 @@ pub(crate) enum FailureWait {
     Backoff,
     Receiver(i64),
     Local(i64),
+    /// No request was made; preserve the shared receiver deadline exactly.
+    ReceiverDeferral(i64),
+    /// No request was made; wait locally without consuming an attempt.
+    LocalDeferral(i64),
 }
 
 impl FailureWait {
@@ -168,7 +174,11 @@ impl FailureWait {
     }
 
     pub(super) fn receiver_directed(self) -> bool {
-        matches!(self, Self::Receiver(_))
+        matches!(self, Self::Receiver(_) | Self::ReceiverDeferral(_))
+    }
+
+    fn deferred(self) -> bool {
+        matches!(self, Self::ReceiverDeferral(_) | Self::LocalDeferral(_))
     }
 
     /// The epoch-ms deadline of the next attempt, dated from `now_ms`.
@@ -181,10 +191,34 @@ impl FailureWait {
     ) -> i64 {
         match self {
             Self::Backoff => now_ms.saturating_add(retry_backoff_ms(failure, attempts, seed)),
-            Self::Receiver(at_ms) => at_ms,
-            Self::Local(wait_ms) => now_ms.saturating_add(wait_ms),
+            Self::Receiver(at_ms) => {
+                at_ms.max(now_ms.saturating_add(retry_backoff_ms(failure, attempts, seed)))
+            }
+            Self::ReceiverDeferral(at_ms) => at_ms,
+            Self::Local(wait_ms) | Self::LocalDeferral(wait_ms) => now_ms.saturating_add(wait_ms),
         }
     }
+}
+
+/// Claims count once per window, not once per batch. Undo that provisional
+/// increment only once if no sibling has reported a real attempt, and restore
+/// it if a real outcome follows a deferral in the same window.
+pub(super) fn attempts_for_outcome(
+    conn: &Connection,
+    lease: &DeliveryLease,
+    wait: FailureWait,
+) -> Result<i64> {
+    let update = if wait.deferred() {
+        "UPDATE delivery_jobs SET attempts=CASE WHEN attempt_outcome=0 THEN MAX(attempts-1,0) ELSE attempts END,attempt_outcome=CASE WHEN attempt_outcome=0 THEN -1 ELSE attempt_outcome END WHERE id=?"
+    } else {
+        "UPDATE delivery_jobs SET attempts=attempts+CASE WHEN attempt_outcome=-1 THEN 1 ELSE 0 END,attempt_outcome=1 WHERE id=?"
+    };
+    conn.execute(update, [&lease.job_id])?;
+    Ok(conn.query_row(
+        "SELECT attempts FROM delivery_jobs WHERE id=?",
+        [&lease.job_id],
+        |r| r.get(0),
+    )?)
 }
 
 /// What a receiver asks the queue to keep of an object it stored for a
