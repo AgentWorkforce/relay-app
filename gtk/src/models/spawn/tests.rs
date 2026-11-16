@@ -23,6 +23,7 @@ fn status(state: SpawnState, node: Option<&str>, error: Option<&str>) -> SpawnSt
         slots: None,
         harness_descriptors: Some(core_descriptors()),
         claim: None,
+        credential_refused: None,
         plan_limit: None,
     }
 }

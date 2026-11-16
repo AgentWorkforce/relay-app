@@ -85,6 +85,9 @@ fn a_postrename_hook_failure_restores_the_exact_previous_legacy_configuration() 
         );
         entries[0]["command"] = json!(command);
     }
+    // The initial adapter also used a 20-second pre-tool timeout; the node only
+    // recognises that complete document as its own, not a mix with today's.
+    legacy["hooks"]["preToolUse"][0]["timeoutSec"] = json!(20);
     legacy["hooks"]["sessionStart"][0]["timeoutSec"] = json!(10);
     let original = format!("{}\n", serde_json::to_string_pretty(&legacy).unwrap());
     fs::write(&hooks, &original).unwrap();
