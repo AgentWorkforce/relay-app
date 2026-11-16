@@ -33,8 +33,25 @@ impl Account {
         };
         // Including a setup's `cloud install`, which has no install yet.
         let _ = self.uploader.runner().cancel_all().await;
-        if let Some(session) = session.filter(|_| !clear_queued) {
-            tokio::spawn(async move { crate::cloud_api::revoke(&session).await });
+        // A gate-only install's relay-node tokens leave the keychain now and
+        // are revoked at Control with the session, before the session is.
+        let node_tokens = self.forget_relay_node_token().await;
+        let bearer = session
+            .as_ref()
+            .map(|s| (s.site_url.clone(), s.access_token.clone()));
+        let revoke = session.filter(|_| !clear_queued);
+        if !node_tokens.is_empty() || revoke.is_some() {
+            tokio::spawn(async move {
+                if let Some((site, bearer)) = bearer {
+                    for (workspace, id) in node_tokens {
+                        crate::cloud_api::self_tokens::delete(&site, &bearer, &workspace, &id)
+                            .await;
+                    }
+                }
+                if let Some(session) = revoke {
+                    crate::cloud_api::revoke(&session).await;
+                }
+            });
         }
         self.forget_account_in_core().await;
         *self

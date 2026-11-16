@@ -40,6 +40,7 @@ use std::time::Duration;
 pub mod plugin;
 mod usage_tracking;
 pub(crate) mod cloud_binding;
+mod cloud_access;
 mod credential;
 mod health;
 mod mcp_auth;
@@ -48,6 +49,8 @@ mod profile;
 mod progress;
 mod provider_credentials;
 mod provider_connections;
+mod relay_node_credential;
+mod relay_node_token;
 mod service_callers;
 mod session;
 mod sign_out;
@@ -210,6 +213,14 @@ pub struct Account {
     /// The last workspace resolve's refusal, when Cloud answered but would
     /// not give this computer the workspace (`health::WorkspaceUnavailable`).
     workspace_unavailable: Mutex<Option<health::WorkspaceUnavailable>>,
+    /// Where a gate-only install keeps the relay-node token it mints: the
+    /// OS keychain (`crate::relay_node_token`). Tests put one in memory.
+    pub relay_node_keychain: Arc<dyn crate::relay_node_token::Keychain>,
+    /// One mint at a time, with its backoff (`relay_node_token`).
+    relay_node_mint: tokio::sync::Mutex<relay_node_token::MintProgress>,
+    /// What the node's `relay_node_credential` hook answers, from memory
+    /// (`relay_node_credential`).
+    relay_node_held: Mutex<relay_node_credential::Held>,
 }
 
 /// Backoff for a Cloud call supervision repeats.
@@ -272,6 +283,9 @@ impl Account {
             upload_auth_retry: Mutex::default(),
             workspace_name_retry: Mutex::default(),
             workspace_unavailable: Mutex::default(),
+            relay_node_keychain: Arc::new(crate::relay_node_token::Os),
+            relay_node_mint: Default::default(),
+            relay_node_held: Mutex::default(),
         }
     }
 
@@ -456,6 +470,7 @@ impl Account {
         self.discover().await;
         self.uploader.reclaim();
         if let Some(core) = self.core() {
+            self.watch_relay_node_refusals(&core);
             self.spawn_watchers(core);
         }
         let mut last: Option<Value> = None;
@@ -500,6 +515,7 @@ impl Account {
             self.operator_policy_tick().await;
             self.schedule_auth_health();
             self.sync_cloud_identities().await;
+            self.schedule_relay_node_token();
         }
     }
 
@@ -1524,6 +1540,7 @@ impl Account {
                 }
                 self.update(|account| account.workspace_name = name.clone());
                 core.refresh_workspace().await;
+                self.wake_for_relay_node_token(&core);
             }
             Err(error) => core.hub.activity(Level::Warning, error.to_string()),
         }
@@ -1783,91 +1800,6 @@ pub fn launch_at_login_once(
     enable().then_some(())?;
     let _ = agent_relay_node::platform::fs::write_private(&marker, b"");
     Some(())
-}
-
-
-impl CloudAccess for Account {
-    fn may_sync_identities(&self) -> bool {
-        self.identity_sync_allowed()
-    }
-
-    fn identity_sync_generation(&self) -> u64 {
-        self.attempt
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .id
-    }
-
-    fn agent_owner(&self) -> Option<AgentOwner> {
-        let install = self.uploader.install()?;
-        Some(AgentOwner {
-            user_id: install.target.account_id?,
-            workspace_id: install.target.workspace_id,
-        })
-    }
-
-    fn account(&self) -> Option<CloudAccount> {
-        let identity = self.identity.lock().unwrap().clone();
-        if let Some(install) = self.uploader.install() {
-            return Some(CloudAccount {
-                site_url: install.target.site_url,
-                workspace_id: install.target.workspace_id?,
-                user_id: install.target.account_id.or(identity.map(|i| i.user_id)),
-            });
-        }
-        let session = self.load_session()?;
-        let workspace = self.core()?.store.read(|s| {
-            s.cloud
-                .as_ref()
-                .and_then(|c| c.account_workspace_id.clone())
-        })?;
-        Some(CloudAccount {
-            site_url: session.site_url,
-            workspace_id: workspace,
-            user_id: identity.map(|i| i.user_id),
-        })
-    }
-
-    fn credential(&self, refused: Option<Secret>) -> BoxFuture<'_, Option<(String, Secret)>> {
-        Box::pin(self.pinned_credential(refused))
-    }
-
-    fn device_token(&self) -> BoxFuture<'_, Option<Secret>> {
-        Box::pin(self.device_bearer())
-    }
-
-    fn request(
-        &self,
-        method: &'static str,
-        path: String,
-        body: Option<Value>,
-    ) -> BoxFuture<'_, Result<Value, CloudError>> {
-        Box::pin(async move {
-            let site = self.account().ok_or(CloudError::SignedOut)?.site_url;
-            let answer = async {
-                let (bearer, kept) = self.request_bearer(&site).await?;
-                match cloud_session::api(&site, &bearer, method, &path, body.clone()).await {
-                    Err(CloudError::Rejected) if kept => {
-                        // Revoked or expired server-side despite looking fresh:
-                        // renew once; a session Cloud refuses is forgotten, one
-                        // it could not answer for is kept.
-                        let renewed = self.renew(&site, &bearer).await?;
-                        let retried =
-                            cloud_session::api(&site, &renewed.access_token, method, &path, body)
-                                .await;
-                        if matches!(retried, Err(CloudError::Rejected)) {
-                            self.note_refused(&renewed);
-                        }
-                        retried
-                    }
-                    other => other,
-                }
-            }
-            .await;
-            self.note_cloud_answer(&answer);
-            answer
-        })
-    }
 }
 
 /// `plugins` with this account as the Cloud access: the uploader over this

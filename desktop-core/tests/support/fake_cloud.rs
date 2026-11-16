@@ -1,6 +1,7 @@
 //! An in-process Agent Relay Cloud on a loopback port: sign-in (device and
 //! browser handoff), refresh, revoke, whoami, the workspace resolve, the
-//! members list and the relay key rotation, with every request recorded.
+//! members list, the relay key rotation and the relay-node self-tokens, with
+//! every request recorded.
 
 #![allow(dead_code)]
 
@@ -24,6 +25,8 @@ pub struct Recorded {
     pub bearer: Option<String>,
     pub analytics: Option<String>,
     pub body: Value,
+    /// When the request arrived.
+    pub at: std::time::Instant,
 }
 
 /// What the fake answers; tests change it as they go.
@@ -78,6 +81,17 @@ pub struct State {
     pub enrollment_cut_short: CutShort,
     /// Sent as `Location` with any 3xx answer.
     pub redirect_location: Option<String>,
+    /// The resolve names this relaygate: the workspace is gate-only.
+    pub relaygate_url: Option<String>,
+    /// Self-token mints answered with these, in turn, before minting.
+    pub self_token_refusals: std::collections::VecDeque<(u16, Value)>,
+    /// Self-tokens minted and not deleted, by id.
+    pub self_tokens: HashMap<String, Value>,
+    /// Self-tokens minted so far, deleted ones included: each new one is
+    /// `tok_<n>` with the value `sh_wk_minted<n>`.
+    pub self_tokens_minted: u32,
+    /// Sent as `Retry-After` with any 429 answer; `0` while unset.
+    pub retry_after: Option<String>,
 }
 
 /// An answer that does not arrive whole.
@@ -128,6 +142,11 @@ impl Default for State {
             enrollment_slow_downs: 0,
             enrollment_cut_short: CutShort::No,
             redirect_location: None,
+            relaygate_url: None,
+            self_token_refusals: Default::default(),
+            self_tokens: HashMap::new(),
+            self_tokens_minted: 0,
+            retry_after: None,
         }
     }
 }
@@ -300,6 +319,7 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
             bearer: bearer.clone(),
             analytics,
             body: body.clone(),
+            at: std::time::Instant::now(),
         });
         route(&mut state, &site, &method, &path, bearer.as_deref(), &body)
     };
@@ -315,23 +335,28 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
     if let Some(gate) = gate {
         gate.notified().await;
     }
-    let (cut_short, location) = {
+    let (cut_short, location, retry_after) = {
         let state = state.lock().unwrap();
         let cut_short = if path == "/cloud/api/v1/auth/enrollment/token" {
             state.enrollment_cut_short
         } else {
             CutShort::No
         };
-        (cut_short, state.redirect_location.clone())
+        (
+            cut_short,
+            state.redirect_location.clone(),
+            state.retry_after.clone().unwrap_or_else(|| "0".into()),
+        )
     };
     if cut_short == CutShort::HangUp {
         let _ = write.shutdown().await;
         return;
     }
     let text = answer.to_string();
-    // A 429 asks for no wait, so tests that slow down stay fast.
+    // A 429 asks for no wait unless a test names one, so tests that slow
+    // down stay fast.
     let retry = if status == 429 {
-        "Retry-After: 0\r\n".to_string()
+        format!("Retry-After: {retry_after}\r\n")
     } else {
         String::new()
     };
@@ -537,8 +562,32 @@ fn route(
                 200,
                 json!({"data": {"relaycastApiKey": state.relaycast_key, "name": "Acme",
                        "relaycastWorkspaceId": "rw_acme", "cloudWorkspaceId": WORKSPACE,
-                       "urls": {"relaycastUrl": state.relaycast_url.as_deref().unwrap_or("https://cast.agentrelay.com")}}}),
+                       "urls": {"relaycastUrl": state.relaycast_url.as_deref().unwrap_or("https://cast.agentrelay.com"),
+                                "relaygateUrl": state.relaygate_url}}}),
             )
+        }
+        ("POST", p) if p == format!("/workspaces/{WORKSPACE}/relay-node/self-tokens") => {
+            if let Some(refusal) = state.self_token_refusals.pop_front() {
+                return refusal;
+            }
+            state.self_tokens_minted += 1;
+            let id = format!("tok_{}", state.self_tokens_minted);
+            let token = json!({"id": id, "label": "desktop host", "purpose": "relay-node",
+                "nodeName": body["nodeName"], "scopes": ["relay-node"],
+                "expiresAt": "2099-01-01T00:00:00Z"});
+            state.self_tokens.insert(id.clone(), token.clone());
+            let mut answer = token;
+            answer["accessToken"] = json!(format!("sh_wk_minted{}", state.self_tokens_minted));
+            (201, answer)
+        }
+        ("DELETE", p)
+            if p.starts_with(&format!("/workspaces/{WORKSPACE}/relay-node/self-tokens/")) =>
+        {
+            let id = p.rsplit('/').next().unwrap_or_default();
+            match state.self_tokens.remove(id) {
+                Some(_) => (204, Value::Null),
+                None => (404, json!({"error": {"code": "not_found"}})),
+            }
         }
         ("PUT", p) if p == format!("/workspaces/{WORKSPACE}/messaging/desktop-identities") => {
             let valid = body["source_id"].as_str().is_some_and(|id| !id.is_empty())

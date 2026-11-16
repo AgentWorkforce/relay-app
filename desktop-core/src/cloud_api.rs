@@ -187,6 +187,7 @@ pub async fn resolve_workspace(
 }
 
 mod recovery;
+pub mod self_tokens;
 pub use recovery::resolve_workspace_for_recovery;
 
 /// Reads a resolve answer, bare or in a `data` envelope. A production build
