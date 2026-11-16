@@ -3998,6 +3998,122 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(relay.shownHistory(at: "@bot")?.messages.map(\.id), ["m1"])
     }
 
+    func testAFailedConversationReadHoldsInvalidationsUntilItsBackoffEnds() async {
+        let overloaded = Locked(false)
+        core.on("roster.get") { _ in Self.recipient("live", message: nil) }
+        core.on("messages.history") { _ in
+            if overloaded.value {
+                throw FakeCore.Failure(kind: "relaycast_unreachable", message: "Agent Relay could not complete the request.")
+            }
+            return ["identity": "ada", "messages": []]
+        }
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let relay = model.relay
+        relay.openComposer("@bot")
+        await relay.loadConversation("@bot")
+        XCTAssertNil(relay.conversationError)
+
+        overloaded.value = true
+        await relay.loadConversation("@bot")
+        let error = relay.conversationError ?? ""
+        XCTAssertTrue(error.hasPrefix("Could not read the conversation: Agent Relay could not complete the request. Trying again in 1"), error)
+        XCTAssertTrue(error.hasSuffix(" s."), error)
+
+        // Invalidations start no read while the backoff runs.
+        let reads = core.callCount("messages.history")
+        let lookUps = core.callCount("roster.get")
+        core.publish("invalidated", ["what": "messages"])
+        core.publish("invalidated", ["what": "sessions"])
+        core.publish("invalidated", ["what": "roster"])
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(core.callCount("messages.history"), reads)
+        XCTAssertEqual(core.callCount("roster.get"), lookUps)
+
+        // The person's own refresh reads at once; its success ends the backoff.
+        overloaded.value = false
+        await relay.refreshConversation("@bot")
+        XCTAssertEqual(core.callCount("messages.history"), reads + 1)
+        XCTAssertNil(relay.conversationError)
+        core.publish("invalidated", ["what": "messages"])
+        let followed = await eventually { core.callCount("messages.history") == reads + 2 }
+        XCTAssertTrue(followed, "after a success invalidations read again")
+
+        // Another recipient starts without the last one's backoff.
+        overloaded.value = true
+        await relay.loadConversation("@bot")
+        XCTAssertNotNil(relay.conversationError)
+        relay.composerShows("@other")
+        XCTAssertNil(relay.conversationError)
+        overloaded.value = false
+        await relay.loadConversation("@other")
+        let after = core.callCount("messages.history")
+        core.publish("invalidated", ["what": "messages"])
+        let other = await eventually { core.callCount("messages.history") == after + 1 }
+        XCTAssertTrue(other)
+
+        // Turning back to the first recipient drops its backoff too: an
+        // invalidation reads it at once.
+        relay.composerShows("@bot")
+        let backLookUps = core.callCount("roster.get")
+        core.publish("invalidated", ["what": "sessions"])
+        let bot = await eventually { core.callCount("roster.get") == backLookUps + 1 }
+        XCTAssertTrue(bot, "turning back to a recipient reads it without the old backoff")
+        XCTAssertEqual(core.lastParams("roster.get")?["to"] as? String, "bot")
+    }
+
+    func testAFailedRecipientLookUpBacksOffEvenWhenTheHistoryReads() async {
+        let overloaded = Locked(false)
+        core.on("roster.get") { _ in
+            if overloaded.value {
+                throw FakeCore.Failure(kind: "relaycast_unreachable", message: "Agent Relay could not complete the request.")
+            }
+            return Self.recipient("live", message: nil)
+        }
+        core.on("messages.history") { _ in ["identity": "ada", "messages": []] }
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let relay = model.relay
+        relay.openComposer("@bot")
+        await relay.loadConversation("@bot")
+        XCTAssertNil(relay.conversationError)
+
+        // An invalidation's look-up that fails starts the backoff and says so.
+        overloaded.value = true
+        core.publish("invalidated", ["what": "roster"])
+        let backingOff = await eventually {
+            relay.conversationError?.hasPrefix("Could not look up the recipient: Agent Relay could not complete the request. Trying again in 1") == true
+        }
+        XCTAssertTrue(backingOff, relay.conversationError ?? "")
+
+        // A history read that succeeds does not end it: invalidations read
+        // nothing while it lasts.
+        await relay.loadConversation("@bot")
+        let reads = core.callCount("messages.history")
+        let lookUps = core.callCount("roster.get")
+        core.publish("invalidated", ["what": "messages"])
+        core.publish("invalidated", ["what": "sessions"])
+        core.publish("invalidated", ["what": "roster"])
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(core.callCount("messages.history"), reads)
+        XCTAssertEqual(core.callCount("roster.get"), lookUps)
+
+        // The person's refresh reads both at once; the history reads but the
+        // look-up fails again, so the backoff runs on, twice as long.
+        await relay.refreshConversation("@bot")
+        XCTAssertEqual(core.callCount("messages.history"), reads + 1)
+        XCTAssertEqual(core.callCount("roster.get"), lookUps + 1)
+        let error = relay.conversationError ?? ""
+        XCTAssertTrue(error.hasPrefix("Could not look up the recipient: Agent Relay could not complete the request. Trying again in 2"), error)
+        core.publish("invalidated", ["what": "messages"])
+        core.publish("invalidated", ["what": "sessions"])
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(core.callCount("messages.history"), reads + 1)
+        XCTAssertEqual(core.callCount("roster.get"), lookUps + 1)
+    }
+
     func testClaudeDeliveryChangesShowAtOnceAndFallBackWhenTheyFail() async {
         let gate = DispatchSemaphore(value: 0)
         defer { gate.signal() }

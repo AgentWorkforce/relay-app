@@ -214,7 +214,8 @@ impl App {
                     chat.state.borrow().last_send.as_ref().is_some_and(|sent| {
                         sent.message_id.as_deref() == Some(message_id.as_str())
                     });
-                if current && same {
+                // A failed read's wait holds this read back too.
+                if current && same && !chat.state.borrow().backing_off() {
                     app.look_up_recipient(&chat.key);
                 }
             }),

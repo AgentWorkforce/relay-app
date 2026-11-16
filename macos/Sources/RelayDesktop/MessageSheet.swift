@@ -46,10 +46,7 @@ struct MessageSheet: View {
                 TextField("To: @name or agent@machine", text: $model.messageEndpoint)
                     .textFieldStyle(.roundedBorder).zoomFont(.body, design: .monospaced)
                 Button {
-                    Task {
-                        await relay.lookUpRecipient(endpoint)
-                        await relay.loadConversation(endpoint)
-                    }
+                    Task { await relay.refreshConversation(endpoint) }
                 } label: {
                     if relay.isLoadingConversation {
                         ProgressView().controlSize(.small)
@@ -74,7 +71,9 @@ struct MessageSheet: View {
                     .buttonStyle(AgentRelayPrimaryButtonStyle())
                     .disabled(!canSend)
             }
-            if let error = relay.conversationError, history == nil {
+            // A failed read says so, and when it is tried again, even over
+            // the history read before it.
+            if let error = relay.conversationError {
                 Text(error).zoomFont(.caption).foregroundStyle(.red)
             }
             if let history, !history.messages.isEmpty {

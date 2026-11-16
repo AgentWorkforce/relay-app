@@ -2477,6 +2477,186 @@ fn a_lookup_asked_for_mid_read_reads_once_more(runtime: &tokio::runtime::Runtime
     assert_eq!(case.called("roster.get").len(), before + 2);
 }
 
+fn a_failed_read_holds_reads_back_until_its_wait_ends(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    let chat = case.open_conversation("web@desk");
+    case.pump(|_| chat.state.borrow().shown == ["m1"]);
+    let reads = |case: &Case| {
+        case.called("messages.history")
+            .iter()
+            .filter(|params| params["endpoint"] == json!("web@desk"))
+            .count()
+    };
+    let history = json!({"identity": "ada", "messages": [
+        {"id": "m1", "sender": "web", "sender_id": null, "sender_address": "web@desk",
+         "text": "hello", "created_at": "2026-09-30T10:00:00Z", "thread_id": null,
+         "mine": false},
+    ]});
+    case.answer(
+        "messages.history",
+        fail(
+            ErrorKind::RelaycastUnreachable,
+            "Agent Relay could not complete the request.",
+        ),
+    );
+    let before = reads(&case);
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.pump(|_| chat.status.text().starts_with("Could not read"));
+    let status = chat.status.text().to_string();
+    assert!(
+        status.starts_with(
+            "Could not read the conversation: Agent Relay could not complete the request. \
+             Trying again in 1"
+        ) && status.ends_with(" s."),
+        "{status}"
+    );
+    // While the wait runs, the core's invalidations read neither the
+    // conversation nor its recipient.
+    let (failed, lookups) = (reads(&case), case.lookups("web@desk"));
+    assert_eq!(failed, before + 1);
+    for what in ["messages", "sessions", "roster", "messages"] {
+        case.emit("invalidated", json!({"what": what}));
+    }
+    case.wait(2);
+    assert_eq!(reads(&case), failed);
+    assert_eq!(case.lookups("web@desk"), lookups);
+    // Asked for, it is read at once; a read that succeeds ends the wait.
+    case.answer("messages.history", history.clone());
+    case.app.refresh_page();
+    case.pump(|_| chat.status.text().contains("@ada"));
+    assert_eq!(reads(&case), failed + 1);
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.pump(|case| reads(case) > failed + 1);
+    // Turning to a conversation that waits reads it at once.
+    case.answer(
+        "messages.history",
+        fail(ErrorKind::RelaycastUnreachable, "Relaycast is busy"),
+    );
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.pump(|_| chat.status.text().starts_with("Could not read"));
+    case.answer("messages.history", history);
+    case.open_conversation("@other");
+    let waited = reads(&case);
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.wait(1);
+    assert_eq!(reads(&case), waited);
+    case.app.select_chat("web@desk");
+    case.pump(|case| reads(case) > waited);
+    case.pump(|_| chat.status.text().contains("@ada"));
+}
+
+fn a_failed_read_is_read_once_when_its_wait_ends(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    let chat = case.open_conversation("web@desk");
+    case.pump(|_| chat.state.borrow().shown == ["m1"]);
+    let reads = |case: &Case| {
+        case.called("messages.history")
+            .iter()
+            .filter(|params| params["endpoint"] == json!("web@desk"))
+            .count()
+    };
+    // Waits of 0.5 s, then 1 s, each with up to a quarter more at random.
+    chat.state.borrow_mut().backoff_unit = Some(Duration::from_millis(500));
+    case.answer(
+        "messages.history",
+        fail(ErrorKind::RelaycastUnreachable, "Relaycast is busy"),
+    );
+    let before = reads(&case);
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.pump(|_| chat.status.text().starts_with("Could not read"));
+    let failed = Instant::now();
+    assert_eq!(reads(&case), before + 1);
+    // The wait ends with one read, which fails again.
+    case.pump(|case| reads(case) > before + 1);
+    let first = failed.elapsed();
+    let failed = Instant::now();
+    assert!(
+        first >= Duration::from_millis(450) && first < Duration::from_millis(1000),
+        "{first:?}"
+    );
+    case.settle();
+    assert_eq!(reads(&case), before + 2);
+    // The second failure waits longer, and ends with one read too.
+    case.answer(
+        "messages.history",
+        json!({"identity": "ada", "messages": [
+            {"id": "m1", "sender": "web", "sender_id": null, "sender_address": "web@desk",
+             "text": "hello", "created_at": "2026-09-30T10:00:00Z", "thread_id": null,
+             "mine": false},
+        ]}),
+    );
+    case.pump(|case| reads(case) > before + 2);
+    let second = failed.elapsed();
+    assert!(
+        second >= Duration::from_millis(950) && second > first,
+        "{first:?} then {second:?}"
+    );
+    case.pump(|_| chat.status.text().contains("@ada"));
+    case.wait(1);
+    assert_eq!(reads(&case), before + 3);
+}
+
+fn a_failed_recipient_lookup_holds_reads_back(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    let chat = case.open_conversation("web@desk");
+    case.pump(|_| chat.state.borrow().shown == ["m1"]);
+    let reads = |case: &Case| {
+        case.called("messages.history")
+            .iter()
+            .filter(|params| params["endpoint"] == json!("web@desk"))
+            .count()
+    };
+    case.answer(
+        "roster.get",
+        fail(
+            ErrorKind::RelaycastUnreachable,
+            "Agent Relay could not complete the request.",
+        ),
+    );
+    case.emit("invalidated", json!({"what": "roster"}));
+    case.pump(|_| chat.status.text().starts_with("Could not look up"));
+    let status = chat.status.text().to_string();
+    assert!(
+        status.starts_with(
+            "Could not look up the recipient: Agent Relay could not complete the request. \
+             Trying again in 1"
+        ) && status.ends_with(" s."),
+        "{status}"
+    );
+    // While the wait runs, the core's invalidations read neither the
+    // conversation nor its recipient.
+    let (history, lookups) = (reads(&case), case.lookups("web@desk"));
+    for what in ["messages", "sessions", "roster"] {
+        case.emit("invalidated", json!({"what": what}));
+    }
+    case.wait(1);
+    assert_eq!(reads(&case), history);
+    assert_eq!(case.lookups("web@desk"), lookups);
+    // A history read that succeeds says nothing about the recipient: the
+    // wait and its line stay.
+    case.app.refresh_page();
+    case.pump(|case| reads(case) > history);
+    case.settle();
+    assert!(chat.status.text().starts_with("Could not look up"));
+    let history = reads(&case);
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.settle();
+    assert_eq!(reads(&case), history);
+    // Turning to the conversation looks the recipient up at once, and a
+    // look-up that succeeds ends the wait.
+    case.answer("roster.get", recipient(Some("live"), None, true));
+    case.open_conversation("@other");
+    case.app.select_chat("web@desk");
+    case.pump(|case| case.lookups("web@desk") > lookups);
+    case.pump(|_| chat.status.text().contains("@ada"));
+    let history = reads(&case);
+    case.emit("invalidated", json!({"what": "messages"}));
+    case.pump(|case| reads(case) > history);
+}
+
 fn a_closed_conversation_starts_no_lookup_again(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -3065,6 +3245,18 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "a_closed_conversation_starts_no_lookup_again",
         a_closed_conversation_starts_no_lookup_again,
+    ),
+    (
+        "a_failed_read_holds_reads_back_until_its_wait_ends",
+        a_failed_read_holds_reads_back_until_its_wait_ends,
+    ),
+    (
+        "a_failed_read_is_read_once_when_its_wait_ends",
+        a_failed_read_is_read_once_when_its_wait_ends,
+    ),
+    (
+        "a_failed_recipient_lookup_holds_reads_back",
+        a_failed_recipient_lookup_holds_reads_back,
     ),
     (
         "a_queued_message_to_a_stopped_agent_says_so",

@@ -151,6 +151,11 @@ final class RelayModel {
     /// settles, then again every 10 s while the window shows it.
     @ObservationIgnored private var composerRefresh: Task<Void, Never>?
     @ObservationIgnored private var windowVisible = false
+    /// After a read of the conversation with `endpoint` failed: the failures
+    /// so far, when the next read may run, and whether the last failure was
+    /// its recipient's look-up alone. Until then nothing but the person
+    /// reads it.
+    @ObservationIgnored private var readBackoff: (endpoint: String, backoff: ReadBackoff, until: Date, recipient: Bool)?
     private(set) var titleOverviews: [String: SessionOverview] = [:]
     private(set) var titleCapabilities: [String: SessionTitleCapability] = [:]
     private(set) var titleEdits = SessionTitleEdits() { didSet { sessionRowsRevision &+= 1; model?.sessionPresentationChanged() } }
@@ -242,7 +247,12 @@ final class RelayModel {
         await refresh(what)
         switch what {
         case .sessions, .roster, .messages:
-            if let endpoint = composerEndpoint { await readRecipient(endpoint) }
+            // Not while a failed read's backoff runs: the read waits for it.
+            // A look-up that fails starts (or lengthens) one.
+            if let endpoint = composerEndpoint, !backingOff(endpoint) {
+                let lookUp = await readRecipient(endpoint)
+                settleRead(endpoint, conversation: .dropped, recipient: lookUp)
+            }
         default:
             break
         }
@@ -273,7 +283,7 @@ final class RelayModel {
                 // Any other failure keeps the last roster.
             }
         case .messages:
-            if let endpoint = conversation?.endpoint { await loadConversation(endpoint) }
+            if let endpoint = conversation?.endpoint, !backingOff(endpoint) { await loadConversation(endpoint) }
         default:
             break
         }
@@ -348,6 +358,7 @@ final class RelayModel {
         recipient = nil
         lastSend = nil
         pendingMessages = [:]
+        readBackoff = nil
         roster = []
         Task { await refresh(.roster) }
     }
@@ -694,9 +705,30 @@ final class RelayModel {
         return value.hasPrefix("@") ? String(value.dropFirst()) : value
     }
 
+    /// Reads the conversation with `raw`. A failure starts (or lengthens)
+    /// its backoff and a success ends it.
     func loadConversation(_ raw: String) async {
         let endpoint = Self.endpoint(raw)
-        guard !endpoint.isEmpty else { return }
+        let read = await readConversation(endpoint)
+        settleRead(endpoint, conversation: read, recipient: .dropped)
+    }
+
+    /// What became of one read of the history or of the recipient.
+    private enum ReadOutcome {
+        case read
+        case failed(String)
+        /// Not read, or it cannot tell: a newer read (or none at all)
+        /// answers for it.
+        case dropped
+
+        var succeeded: Bool {
+            if case .read = self { return true }
+            return false
+        }
+    }
+
+    private func readConversation(_ endpoint: String) async -> ReadOutcome {
+        guard !endpoint.isEmpty else { return .dropped }
         if conversation?.endpoint != endpoint { conversation = nil }
         // The newest read wins: an older one finishing later is dropped.
         conversationReads += 1
@@ -705,13 +737,55 @@ final class RelayModel {
         defer { if read == conversationReads { isLoadingConversation = false } }
         do {
             let history = try await client.messagesHistory(HistoryParams(endpoint: endpoint))
-            guard read == conversationReads else { return }
+            guard read == conversationReads else { return .dropped }
             conversation = (endpoint, history)
             conversationError = nil
             retirePendingMessages(endpoint, listed: history)
+            return .read
         } catch {
-            if read == conversationReads { conversationError = error.localizedDescription }
+            guard read == conversationReads else { return .dropped }
+            conversationError = error.localizedDescription
+            return .failed(error.localizedDescription)
         }
+    }
+
+    /// Whether a failed read's backoff for `endpoint` still runs: until it
+    /// ends only the person's own actions read the conversation.
+    private func backingOff(_ endpoint: String) -> Bool {
+        backoffRemaining(endpoint) != nil
+    }
+
+    /// How long the backoff for `endpoint` still runs, if it does.
+    private func backoffRemaining(_ endpoint: String) -> TimeInterval? {
+        guard let readBackoff, readBackoff.endpoint == endpoint else { return nil }
+        let remaining = readBackoff.until.timeIntervalSinceNow
+        return remaining > 0 ? remaining : nil
+    }
+
+    /// One read of `endpoint` answered: a failure of either the
+    /// conversation or its recipient waits a backoff before the next, and
+    /// says so. A success goes back to the normal cadence only when it read
+    /// what failed last: a history read says nothing about a look-up of
+    /// the recipient that failed.
+    private func settleRead(_ endpoint: String, conversation read: ReadOutcome, recipient lookUp: ReadOutcome) {
+        let failed: (message: String, recipient: Bool)
+        switch (read, lookUp) {
+        case (.failed(let message), _): failed = (message, false)
+        case (_, .failed(let message)): failed = (message, true)
+        default:
+            if let readBackoff, readBackoff.endpoint == endpoint,
+               readBackoff.recipient ? lookUp.succeeded : read.succeeded {
+                self.readBackoff = nil
+            }
+            return
+        }
+        var backoff = readBackoff.flatMap { $0.endpoint == endpoint ? $0.backoff : nil } ?? ReadBackoff()
+        // The core's errors name no Retry-After, so the doubling applies.
+        let delay = backoff.failed()
+        readBackoff = (endpoint, backoff, Date().addingTimeInterval(delay), failed.recipient)
+        conversationError = failed.recipient
+            ? ReadBackoff.recipientFailureText(failed.message, retryingIn: delay)
+            : ReadBackoff.failureText(failed.message, retryingIn: delay)
     }
 
     /// `to` for a name, `address` for an exact address.
@@ -730,13 +804,30 @@ final class RelayModel {
         recipientReads += 1
         if recipient?.endpoint != endpoint { recipient = nil }
         if lastSend?.endpoint != endpoint { lastSend = nil }
+        // The person moved to another recipient: it is read once To
+        // settles, and a backoff from an earlier one says nothing about it.
+        readBackoff = nil
+        conversationError = nil
         refreshComposer(settle: true)
+    }
+
+    /// The person asked to read the conversation with `raw` again: its
+    /// recipient and history are read at once, backoff or not. A failure
+    /// lengthens the backoff; a success ends it.
+    func refreshConversation(_ raw: String) async {
+        let endpoint = Self.endpoint(raw)
+        let lookUp = await readRecipient(endpoint)
+        let read = await readConversation(endpoint)
+        settleRead(endpoint, conversation: read, recipient: lookUp)
     }
 
     /// `messages`, `sessions` and `roster` invalidations read the
     /// recipient again; this also catches what the core does not announce,
     /// such as a message handed over or a remote agent going offline. Typing
     /// changes To on every key, so a new recipient is read once it settles.
+    /// After a failed read the next waits for its backoff to end instead
+    /// of 10 s, checking at least every 10 s whether the person's own read
+    /// ended it sooner.
     private func refreshComposer(settle: Bool) {
         composerRefresh?.cancel()
         composerRefresh = nil
@@ -746,11 +837,21 @@ final class RelayModel {
                 do { try await Task.sleep(nanoseconds: 300_000_000) } catch { return }
             }
             while let self, !Task.isCancelled, endpoint == self.composerEndpoint {
-                await self.lookUpRecipient(endpoint)
-                await self.loadConversation(endpoint)
-                do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
+                if let wait = self.backoffRemaining(endpoint) {
+                    do { try await Task.sleep(nanoseconds: RelayModel.nanoseconds(min(wait, ReadBackoff.cadence))) } catch { return }
+                    continue
+                }
+                let lookUp = await self.readRecipient(endpoint)
+                let read = await self.readConversation(endpoint)
+                self.settleRead(endpoint, conversation: read, recipient: lookUp)
+                let wait = min(self.backoffRemaining(endpoint) ?? ReadBackoff.cadence, ReadBackoff.cadence)
+                do { try await Task.sleep(nanoseconds: RelayModel.nanoseconds(wait)) } catch { return }
             }
         }
+    }
+
+    private nonisolated static func nanoseconds(_ interval: TimeInterval) -> UInt64 {
+        UInt64(max(0, interval) * 1_000_000_000)
     }
 
     /// The main window came on screen or left it: the open composer is
@@ -777,24 +878,41 @@ final class RelayModel {
 
     /// Reads `endpoint` while it is the composer's recipient; an answer that
     /// arrives after the composer moved on is dropped. A read that cannot
-    /// tell keeps the last state Relaycast reported.
-    private func readRecipient(_ endpoint: String) async {
-        guard endpoint == composerEndpoint else { return }
+    /// tell keeps the last state Relaycast reported. Only a look-up that
+    /// failed for this recipient, on a core that offers it, while it is
+    /// still the one asked for, comes back failed, for the backoff.
+    @discardableResult
+    private func readRecipient(_ endpoint: String) async -> ReadOutcome {
+        guard endpoint == composerEndpoint else { return .dropped }
         recipientReads += 1
         let read = recipientReads
         guard !endpoint.isEmpty else {
             recipient = nil
-            return
+            return .dropped
         }
         let (address, to) = Self.recipientParams(endpoint)
         let messageId = lastSend.flatMap { $0.endpoint == endpoint ? $0.messageId : nil }
         let current = account
-        guard let result = try? await client.rosterGet(RecipientParams(address: address, messageId: messageId, to: to)),
-              read == recipientReads, current == account, endpoint == composerEndpoint else { return }
+        let result: Recipient
+        do {
+            result = try await client.rosterGet(RecipientParams(address: address, messageId: messageId, to: to))
+        } catch is CancellationError {
+            return .dropped
+        } catch {
+            // As on Linux: a core without roster.get cannot tell, which is no
+            // failure to back off from. Asked after the call, which waited
+            // for the core's hello: before it, nothing is known as offered.
+            guard client.offers(CoreMethod.rosterGet),
+                  (error as? CoreError)?.kind != ErrorKind.methodNotFound.rawValue else { return .dropped }
+            guard read == recipientReads, current == account, endpoint == composerEndpoint else { return .dropped }
+            return .failed(error.localizedDescription)
+        }
+        guard read == recipientReads, current == account, endpoint == composerEndpoint else { return .dropped }
         recipient = (endpoint, result)
         if let state = result.message, let sent = lastSend, sent.endpoint == endpoint, sent.messageId == messageId {
             lastSend = (endpoint, messageId, state)
         }
+        return .read
     }
 
     /// The recipient's record when it is the composer's `endpoint`.
@@ -821,6 +939,7 @@ final class RelayModel {
         composerRefresh?.cancel()
         composerRefresh = nil
         composerEndpoint = nil
+        readBackoff = nil
         recipientReads += 1
         recipient = nil
         lastSend = nil
@@ -870,7 +989,9 @@ final class RelayModel {
             recipientReads += 1
             recipient = (endpoint, sent.recipient)
             lastSend = (endpoint, sent.messageId, sent.recipient.message)
-            await loadConversation(endpoint)
+            // A failed read's backoff holds the follow-up reads too; the
+            // message shows as on its way until the next read lists it.
+            if !backingOff(endpoint) { await loadConversation(endpoint) }
             // Relaycast hands a message to a running agent's host within
             // moments; read its state again once it has had the chance.
             Task { [weak self] in
@@ -878,8 +999,9 @@ final class RelayModel {
                 // Only while the composer still shows this send: a To changed
                 // since retired it, and its read never displaces the new one.
                 guard let self, sent.messageId != nil, self.lastSend?.endpoint == endpoint,
-                      self.lastSend?.messageId == sent.messageId else { return }
-                await self.readRecipient(endpoint)
+                      self.lastSend?.messageId == sent.messageId, !self.backingOff(endpoint) else { return }
+                let lookUp = await self.readRecipient(endpoint)
+                self.settleRead(endpoint, conversation: .dropped, recipient: lookUp)
             }
             return nil
         } catch let error as CoreError where error.kind == ErrorKind.notFound.rawValue {

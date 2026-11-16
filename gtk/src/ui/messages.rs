@@ -18,29 +18,33 @@ use super::state::Page;
 use super::widgets::{self, button, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
     delivery_note, endpoint_label, queues, recipient_params, recipient_warning, reply_note,
-    DeliveryTone,
+    DeliveryTone, ReadBackoff,
 };
-use agent_relay_node::relay::contract::directory::{
-    History, HistoryParams, Recipient, SendParams,
-};
+use agent_relay_node::relay::contract::directory::{History, HistoryParams, Recipient, SendParams};
 use agent_relay_node::relay::contract::method;
+use agent_relay_node::relay::messaging::DirectMessage;
 use agent_relay_node::relay::people::MessageState;
 use agent_relay_node::relay::protocol::ErrorKind;
 use gtk::{gdk, glib, prelude::*};
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+mod backoff;
+mod recipient;
 mod send;
+
+use backoff::Read;
 
 /// How often an open conversation is read without being asked.
 const FOLLOW_EVERY: Duration = Duration::from_secs(10);
 /// How long after a send its state is read again.
 const RECHECK_AFTER: Duration = Duration::from_secs(2);
 
-/// The line under a conversation before anything is known.
-const EXACT_ADDRESS: &str = "An exact address reaches only that agent on that machine.";
+/// Who you message as, until a history read names you.
+const MESSAGE_AS: &str =
+    "You message as your Agent Relay identity, the same one the dashboard uses.";
 
 /// The stack's child while no conversation is open.
 const EMPTY: &str = "empty";
@@ -73,6 +77,17 @@ pub struct ChatState {
     /// history lists it; `echo_sent` once the core took it.
     pub echoes: Vec<send::Echo>,
     echo_token: u64,
+    /// Who the last history read said you message as.
+    identity: String,
+    /// Failed reads in a row; while `backoff_until` is ahead, only the
+    /// user's own asking reads the conversation. `backoff_by` is the read
+    /// whose failure is still unanswered.
+    backoff: ReadBackoff,
+    backoff_until: Option<Instant>,
+    backoff_by: Option<Read>,
+    /// The wait after the first failure, when not `ReadBackoff::CADENCE`;
+    /// every wait scales with it. Only tests shorten it.
+    pub backoff_unit: Option<Duration>,
 }
 
 /// One open conversation: its page in the stack and its row in the list.
@@ -95,6 +110,8 @@ pub struct Chat {
     pub send: gtk::Button,
     pub state: RefCell<ChatState>,
     timer: RefCell<Option<glib::SourceId>>,
+    /// The read that ends a failed read's wait.
+    retry: RefCell<Option<glib::SourceId>>,
     /// The echoes' rows while shown.
     echo_rows: RefCell<Vec<gtk::Box>>,
 }
@@ -193,11 +210,17 @@ impl MessagesPage {
     pub fn close_all(&self) {
         let chats: Vec<Rc<Chat>> = self.chats.borrow_mut().drain(..).collect();
         for chat in chats {
-            if let Some(timer) = chat.timer.borrow_mut().take() {
-                timer.remove();
-            }
+            chat.stop_following();
         }
     }
+}
+
+/// Who you message as: the identity a history read named, if it did.
+fn message_as(identity: &str) -> String {
+    if identity.is_empty() {
+        return MESSAGE_AS.to_string();
+    }
+    format!("You message as @{identity}, the same you as on the dashboard.")
 }
 
 /// `Oct 3, 18:45` in local time, from an ISO-8601 instant.
@@ -210,25 +233,6 @@ fn message_time(value: Option<&str>) -> String {
                 .to_string()
         })
         .unwrap_or_default()
-}
-
-fn tone_class(tone: DeliveryTone) -> &'static str {
-    match tone {
-        DeliveryTone::Delivered => "ok",
-        DeliveryTone::Waiting => "warn",
-        DeliveryTone::Failed => "error",
-        DeliveryTone::Unknown => "secondary",
-    }
-}
-
-/// Once a message is picked up or has no recipient, nothing more is
-/// learned about it. One Claude Code holds for approval is followed until
-/// it reaches the session.
-fn settled(state: Option<MessageState>) -> bool {
-    matches!(
-        state,
-        Some(MessageState::PickedUp | MessageState::NoSuchAgent)
-    )
 }
 
 impl App {
@@ -384,11 +388,7 @@ impl App {
         let scroll = widgets::scrolled(&messages);
         scroll.set_min_content_height(320);
         view.append(&scroll);
-        let status = text(
-            "You message as your Agent Relay identity, the same one the dashboard uses.",
-            &["caption"],
-        )
-        .wrapped();
+        let status = text(MESSAGE_AS, &["caption"]).wrapped();
         view.append(&status);
         let delivery = text("", &["caption"]).wrapped();
         view.append(&delivery);
@@ -447,6 +447,7 @@ impl App {
             send,
             state: RefCell::default(),
             timer: RefCell::new(None),
+            retry: RefCell::new(None),
             echo_rows: RefCell::new(Vec::new()),
         });
         page.chats.borrow_mut().push(chat.clone());
@@ -522,147 +523,11 @@ impl App {
         self.refresh_chat(key);
     }
 
-    /// Looks the recipient up again for the conversation shown, and for one
-    /// whose last message may still change state.
-    fn follow_recipient(&self, key: &str) {
-        let Some(chat) = self.chat(key) else {
-            return;
-        };
-        let shown = self.shown_chat().as_deref() == Some(key);
-        let unsettled = chat
-            .state
-            .borrow()
-            .last_send
-            .as_ref()
-            .is_some_and(|sent| !settled(sent.state));
-        if shown || unsettled {
-            self.look_up_recipient(key);
-        }
-    }
-
-    /// The core said something a followed recipient depends on changed.
-    pub(super) fn follow_recipients(&self) {
-        for key in self.open_chats() {
-            self.follow_recipient(&key);
-        }
-    }
-
     /// The core said conversations changed: each open one is read.
     pub(super) fn refresh_chats(&self) {
         for key in self.open_chats() {
             self.refresh_chat(&key);
         }
-    }
-
-    /// Reads the recipient and, after a send, what Relaycast holds for the
-    /// message. Asked again while a read runs, it reads once more when that
-    /// one answers. A read that cannot tell keeps the last state Relaycast
-    /// reported; an answer for a closed conversation, or older than a send,
-    /// is dropped.
-    pub fn look_up_recipient(&self, key: &str) {
-        let Some(chat) = self.chat(key) else {
-            return;
-        };
-        if !self.bridge().offers(method::RosterGet::NAME) {
-            return;
-        }
-        let (read, message_id) = {
-            let mut state = chat.state.borrow_mut();
-            if state.recipient_loading {
-                state.recipient_pending = true;
-                return;
-            }
-            state.recipient_loading = true;
-            state.recipient_pending = false;
-            state.recipient_reads += 1;
-            (
-                state.recipient_reads,
-                state
-                    .last_send
-                    .as_ref()
-                    .and_then(|sent| sent.message_id.clone()),
-            )
-        };
-        let mut params = recipient_params(key);
-        params.message_id = message_id.clone();
-        let key = key.to_string();
-        self.view_call::<method::RosterGet>(params, move |app, result| {
-            if !app
-                .chat(&key)
-                .is_some_and(|current| Rc::ptr_eq(&current, &chat))
-            {
-                return;
-            }
-            let again = {
-                let mut state = chat.state.borrow_mut();
-                state.recipient_loading = false;
-                std::mem::take(&mut state.recipient_pending)
-            };
-            if again {
-                let key = key.clone();
-                glib::idle_add_local_once(app.on(move |app| app.look_up_recipient(&key)));
-            }
-            let Ok(recipient) = result else {
-                return;
-            };
-            {
-                let mut state = chat.state.borrow_mut();
-                if read != state.recipient_reads {
-                    return;
-                }
-                if let (Some(message), Some(sent)) = (recipient.message, state.last_send.as_mut()) {
-                    if sent.message_id == message_id {
-                        sent.state = Some(message);
-                    }
-                }
-                state.recipient = Some(recipient);
-            }
-            app.render_delivery(&key);
-        });
-    }
-
-    /// Before a send: whether the recipient runs. After one: what it met,
-    /// updated as the recipient comes and goes.
-    fn render_delivery(&self, key: &str) {
-        let Some(chat) = self.chat(key) else {
-            return;
-        };
-        let state = chat.state.borrow();
-        let recipient = state.recipient.as_ref();
-        let (line, class) = if let Some(error) = &state.error {
-            (error.clone(), "error")
-        } else if let Some(sent) = &state.last_send {
-            let (note, tone) = delivery_note(sent.state, recipient);
-            (note.to_string(), tone_class(tone))
-        } else if let Some((recipient, warning)) = recipient
-            .and_then(|recipient| recipient_warning(recipient).map(|warning| (recipient, warning)))
-        {
-            (
-                warning,
-                if recipient.agent.is_none() {
-                    "error"
-                } else {
-                    "warn"
-                },
-            )
-        } else {
-            (EXACT_ADDRESS.to_string(), "secondary")
-        };
-        for name in ["ok", "warn", "error", "secondary"] {
-            chat.delivery.remove_css_class(name);
-        }
-        chat.delivery.add_css_class(class);
-        chat.delivery.set_text(&line);
-        let note = recipient.and_then(|recipient| reply_note(recipient, super::now_ms()));
-        chat.reply.set_text(note.as_deref().unwrap_or_default());
-        chat.reply.set_visible(note.is_some());
-        chat.send.set_label(if state.sending {
-            "Sending…"
-        } else if queues(recipient) {
-            "Queue Anyway"
-        } else {
-            "Send"
-        });
     }
 
     /// Shows the conversation with `key`; newly shown, its recipient is
@@ -690,7 +555,13 @@ impl App {
         self.mark_chat(&chat, false);
         chat.text.grab_focus();
         if newly {
+            // Turning to a conversation is asking for it: one waiting
+            // after a failed read is read at once, from a fresh start.
+            let waiting = chat.drop_backoff();
             self.look_up_recipient(key);
+            if waiting {
+                self.refresh_chat(key);
+            }
         }
     }
 
@@ -719,9 +590,7 @@ impl App {
         page.chats
             .borrow_mut()
             .retain(|open| !Rc::ptr_eq(open, &chat));
-        if let Some(timer) = chat.timer.borrow_mut().take() {
-            timer.remove();
-        }
+        chat.stop_following();
         page.selecting.set(true);
         page.list.remove(&chat.row);
         page.selecting.set(false);
@@ -744,12 +613,26 @@ impl App {
         }
     }
 
+    /// Reads the conversation, unless a failed read's wait is pending: the
+    /// read that ends the wait is already set.
     pub(super) fn refresh_chat(&self, key: &str) {
+        self.read_chat(key, false);
+    }
+
+    /// Reads the conversation because the user asked, wait or not.
+    pub(super) fn ask_chat(&self, key: &str) {
+        self.read_chat(key, true);
+    }
+
+    fn read_chat(&self, key: &str, asked: bool) {
         let Some(chat) = self.chat(key) else {
             return;
         };
         {
             let mut state = chat.state.borrow_mut();
+            if !asked && state.backing_off() {
+                return;
+            }
             if state.loading {
                 // A reply that arrives while a read is in flight may be
                 // newer than what that read returns: read once more when it
@@ -788,18 +671,11 @@ impl App {
             glib::idle_add_local_once(self.on(move |app| app.refresh_chat(&key)));
         }
         let history = match result {
-            Err(error) => {
-                chat.status.set_text(&error.message);
-                return;
-            }
+            Err(error) => return self.back_off_chat(chat, Read::History, &error.message),
             Ok(history) => history,
         };
-        if !history.identity.is_empty() {
-            chat.status.set_text(&format!(
-                "You message as @{}, the same you as on the dashboard.",
-                history.identity
-            ));
-        }
+        chat.state.borrow_mut().identity = history.identity.clone();
+        self.chat_read(chat, Read::History);
         let ids: Vec<String> = history
             .messages
             .iter()
@@ -833,42 +709,7 @@ impl App {
             ));
         }
         for message in &history.messages {
-            let who = if message.mine {
-                "You".to_string()
-            } else {
-                message
-                    .sender_address
-                    .clone()
-                    .filter(|address| !address.is_empty())
-                    .unwrap_or_else(|| format!("@{}", message.sender))
-            };
-            let reply = if message.thread_id.is_some() {
-                "↳ Reply · "
-            } else {
-                ""
-            };
-            let entry = vbox(4, &[]);
-            let meta = text(
-                &format!(
-                    "{reply}{who} · {}",
-                    message_time(message.created_at.as_deref())
-                ),
-                &["caption"],
-            );
-            let body = text(&message.text, &[]).wrapped().copyable();
-            if message.mine {
-                entry.set_margin_start(super::zoom::px(60));
-                meta.set_xalign(1.0);
-                body.set_xalign(1.0);
-            } else {
-                entry.set_margin_end(super::zoom::px(60));
-            }
-            if message.thread_id.is_some() {
-                entry.set_margin_start(entry.margin_start().max(super::zoom::px(28)));
-            }
-            entry.append(&meta);
-            entry.append(&body);
-            chat.messages.append(&entry);
+            chat.messages.append(&message_entry(message));
         }
         // A message the core took is listed now; one still on its way
         // stays at the end.
@@ -876,4 +717,45 @@ impl App {
         let adjustment = chat.scroll.vadjustment();
         glib::idle_add_local_once(move || adjustment.set_value(adjustment.upper()));
     }
+}
+
+/// One message of the conversation: who sent it and when, over its text;
+/// yours on the right, a reply indented.
+fn message_entry(message: &DirectMessage) -> gtk::Box {
+    let who = if message.mine {
+        "You".to_string()
+    } else {
+        message
+            .sender_address
+            .clone()
+            .filter(|address| !address.is_empty())
+            .unwrap_or_else(|| format!("@{}", message.sender))
+    };
+    let reply = if message.thread_id.is_some() {
+        "↳ Reply · "
+    } else {
+        ""
+    };
+    let entry = vbox(4, &[]);
+    let meta = text(
+        &format!(
+            "{reply}{who} · {}",
+            message_time(message.created_at.as_deref())
+        ),
+        &["caption"],
+    );
+    let body = text(&message.text, &[]).wrapped().copyable();
+    if message.mine {
+        entry.set_margin_start(super::zoom::px(60));
+        meta.set_xalign(1.0);
+        body.set_xalign(1.0);
+    } else {
+        entry.set_margin_end(super::zoom::px(60));
+    }
+    if message.thread_id.is_some() {
+        entry.set_margin_start(entry.margin_start().max(super::zoom::px(28)));
+    }
+    entry.append(&meta);
+    entry.append(&body);
+    entry
 }

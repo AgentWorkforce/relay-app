@@ -1011,7 +1011,7 @@ impl App {
             }
             Page::Messages => {
                 if let Some(shown) = self.shown_chat() {
-                    self.refresh_chat(&shown);
+                    self.ask_chat(&shown);
                 }
             }
             Page::Settings(Pane::Tools) => self.refresh_provider_preferences(),
