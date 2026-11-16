@@ -15,6 +15,7 @@ whose `## Unreleased` section has no bullet stops before building.
 ## Unreleased
 
 - **History uploads in the same OS profile no longer compete with each other.** On macOS, Linux and Windows, jobs for the same History workspace share one batch upload slot and the service's retry deadline, including across desktop and helper processes. A busy upload defers without holding up shutdown or increasing retry backoff, and a rate limit cannot be bypassed by another job in that profile or a restart.
+- **Shared session history records who sent each message.** On macOS, Linux and Windows, uploaded Claude sessions now carry each message's origin (typed by a person, sent by another agent session, or a background task's notification), so History can show and search human-typed messages apart from agent-to-agent traffic. Sessions uploaded before this update are not changed.
 
 ## v2026.11.10
 
