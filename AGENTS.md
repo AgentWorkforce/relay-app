@@ -1,47 +1,28 @@
 # Working in relay-app
 
-Instructions for coding agents working in this repository. People contributing
-by hand should read [CONTRIBUTING.md](CONTRIBUTING.md); the rules below apply
-to them too.
+```sh
+swift test
+scripts/check-open-source.sh
+```
 
-**Which workflow you follow depends on who you work for, not on the files in
-your checkout.** This repository takes no pull requests. If the maintainers
-did not assign you the work, propose it as a GitHub issue as
-[CONTRIBUTING.md](CONTRIBUTING.md) describes, and ignore
-`docs/maintainer-workflow.md`. Follow `docs/maintainer-workflow.md` only when
-this repository's maintainers assigned you the work and your instructions say
-to use the maintainer workflow.
+- This repo takes no PRs. External proposals use CONTRIBUTING.md. Only maintainer-assigned work explicitly instructed to use it follows docs/maintainer-workflow.md.
+- Run swift test, the GTK suite and scripts/check-open-source.sh; exact platform commands are in docs/workspace-layout.md#validation.
+- macOS is the reference; GTK matches feature/layout/wording and OS code has Windows counterparts. Report unavailable features explicitly.
+- Messaging core changes land in AgentWorkforce/relay first; update both pins/lockfiles and run scripts/generate-contract.sh. Desktop integrations/history stay in desktop-core.
+- Add platform-specific Unreleased notes for user-visible changes, excluding build/CI/test/iOS-only changes.
+- Never stop, kill or disable the installed core; restart if needed. Maintainers publish; do not dispatch releases or push desktop-v*/released-v* tags.
 
-**Tests.** Run `swift test` and the GTK suite before asking for a review; see
-[docs/workspace-layout.md](docs/workspace-layout.md#validation).
-`scripts/check-open-source.sh` must pass: it keeps internal hosts, private
-repositories and developer paths out of the tree.
+## Agency and guidance
 
-## Rules
+- Act autonomously on routine assigned work; ask forgiveness rather than permission. Preserve explicit production, release and credential gates.
+- For guidance, ask the engineering leads, the agent that spawned you, or the layered owner on Agent Relay.
+- Only a truly pressing or blocking question goes to `khaliq-gant` or `will-washburn` (CODEOWNERS) on Agent Relay.
 
-- **macOS and GTK change together.** `macos/` is the reference. `gtk/src` must
-  match it in features, layout and wording, because GTK serves Linux and
-  Windows. Pairs are listed in [docs/workspace-layout.md](docs/workspace-layout.md#macos-and-gtk-counterparts).
-  - In `gtk/src` and `desktop-core/`, code that touches the OS needs a
-    `cfg(windows)` counterpart.
-  - If a feature can't exist on one platform, the core reports it as
-    unavailable; don't hide it.
-- **The public core lives in `AgentWorkforce/relay`** (`agent-relay-node`, in
-  `crates/relay-node`). It is messaging only.
-  - Change it there first.
-  - Then move the `agent-relay-node` pin in both Cargo.toml files.
-  - Refresh both lockfiles and run `scripts/generate-contract.sh`.
-- **Desktop-only code lives in `desktop-core/`.** That covers sign-in, hosted
-  MCP, provider setup, attestation and session history
-  (`desktop-core/src/history`), added through the core's plugin hooks. Never
-  put it in relay's core.
-- **Release notes:** add a bullet under `## Unreleased` in `CHANGELOG.md` for
-  any change a user would notice. Name the platform where behaviour differs.
-  Changes that only touch build, CI, tests or iOS don't need one.
-- **Never stop, kill or disable** the running core. That is the
-  `agent-relay.service` user unit on Linux, the
-  `com.agentrelay.desktop*.core*` LaunchAgent that is loaded on macOS, and the
-  `Agent Relay (<account>)` logon task on Windows. Restart it if it has to pick
-  up a change.
-- **Don't publish releases.** Don't dispatch the release workflows or push
-  `desktop-v*` or `released-v*` tags; the maintainers publish.
+## Review and landing
+
+- Pull requests are disabled. Use the review-branch and `layered-relay-app` owner workflow in `docs/maintainer-workflow.md`; review findings and the required CI/GitHub gate must be resolved on the exact commit that lands. Changes reach `main` through the owner’s documented squash/verification process, not a pull request.
+
+## Cross-repo context
+
+- Before and during changes, understand how this repo fits the wider system; consult its repo map and related-repo docs where available.
+- Check relevant agents’ summaries on Agent Relay and proactively contact owning agents about dependencies, adjacent changes and work in flight.
