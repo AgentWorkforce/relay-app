@@ -28,6 +28,8 @@
 //! durations through [`Shared`], which the delivery loop folds into each pass
 //! report; it never writes the pass report itself.
 mod broad;
+#[cfg(test)]
+mod copilot_append_tests;
 #[cfg(all(test, unix))]
 mod cpu_bench;
 mod maintenance;
