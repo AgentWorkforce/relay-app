@@ -995,6 +995,7 @@ mod tests {
                     owner: None,
                     taken_over_at: None,
                     task_unconfirmed: None,
+                    gate_launch: false,
                 });
                 assert!(store.add(spawned, Secret::new("two")));
             })
