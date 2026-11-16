@@ -178,6 +178,7 @@ impl Harness {
                     account_workspace_id: None,
                     name: None,
                     relayfile_workspace_id: None,
+                    gate_url: None,
                 })
             })
             .unwrap();
@@ -377,6 +378,7 @@ fn agent_messages_require_the_account_workspace_and_canonical_history_source() {
         account_workspace_id: None,
         name: None,
         relayfile_workspace_id: None,
+        gate_url: None,
     };
     let registration: Registration = serde_json::from_value(json!({
         "name": "agent-one", "agentID": "id", "target": codex(&thread_id()), "title": "Work",

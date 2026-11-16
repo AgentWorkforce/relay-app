@@ -190,6 +190,7 @@ fn fixture_with(sessions: impl FnOnce(&std::path::Path) -> Arc<dyn SessionDirect
                 account_workspace_id: Some(WORKSPACE.into()),
                 name: None,
                 relayfile_workspace_id: None,
+                gate_url: None,
             });
             let claude = Target::new(SessionKind::ClaudeTerminal, REGISTERED.to_ascii_lowercase());
             assert!(store.add(registration("claude-chat", claude), Secret::new("t1")));

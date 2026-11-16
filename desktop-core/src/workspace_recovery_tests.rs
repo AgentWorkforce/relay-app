@@ -236,6 +236,7 @@ impl Harness {
                     account_workspace_id: Some(CLOUD_ID.into()),
                     name: None,
                     relayfile_workspace_id: None,
+                    gate_url: None,
                 });
                 s.cloud_session = Some(CloudSession {
                     access_token: Secret::new("old-access"),

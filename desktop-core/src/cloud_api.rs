@@ -221,6 +221,7 @@ pub fn decode_resolution_with(
         account_workspace_id: Some(workspace_id.to_string()),
         name: string(value, "name"),
         relayfile_workspace_id: string(value, "relayfileWorkspaceId"),
+        gate_url: None,
     })
 }
 

@@ -103,6 +103,7 @@ fn workspace() -> Workspace {
         workspace_id: Some("rw_test".into()),
         source: Default::default(),
         control_url: None,
+        gate_url: None,
     }
 }
 

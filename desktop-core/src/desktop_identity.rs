@@ -717,6 +717,7 @@ mod tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
         }
     }
 
@@ -834,6 +835,7 @@ mod tests {
                     account_workspace_id: Some(WORKSPACE.into()),
                     name: Some("Acme".into()),
                     relayfile_workspace_id: None,
+                    gate_url: None,
                 });
                 assert!(store.add(
                     registration("claude-session", "agent-1", KEY),
@@ -1317,6 +1319,7 @@ mod tests {
             workspace_id: Some("rw_cast".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let mut status = WorkspaceStatus::discovered(Some(&active));
         let account_id = "rw_cast".to_string();
@@ -1353,6 +1356,7 @@ mod tests {
                     account_workspace_id: Some(WORKSPACE.into()),
                     name: None,
                     relayfile_workspace_id: None,
+                    gate_url: None,
                 });
                 store.desktop_identity_clears_pending = Some(vec![DesktopIdentityClear::new(
                     "00000000-0000-4000-8000-000000000099".into(),
@@ -1557,6 +1561,7 @@ mod tests {
             account_workspace_id: Some(WORKSPACE.into()),
             name: None,
             relayfile_workspace_id: None,
+            gate_url: None,
         });
     }
 

@@ -68,6 +68,7 @@ impl Account {
             // Recovery only ever re-reads the Cloud account's workspace.
             source: agent_relay_node::relay::workspace::WorkspaceSource::Cloud,
             control_url: None,
+            gate_url: None,
         };
         // This is the sole safe retry; a mutation that triggered recovery is never replayed.
         let info = agent_relay_node::relay::client::workspace_info(&replacement)

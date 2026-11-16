@@ -29,10 +29,11 @@ service-callers-dev-attest = []
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main b0dbb504b, after 18.7.3: #2180 (public Connect invites from site builds),
-# #2173, #2188 (DM history reads) and #2189 (socket reconnect backoff). Move it in
+# main 0ec98fd5, after 18.7.3: #2180 (public Connect invites from site builds),
+# #2173, #2188 (DM history reads), #2189 (socket reconnect backoff) and #2193
+# (agents register through relaygate on gate-only installs). Move it in
 # desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "b0dbb504bbd0e848d9b29c58069e844612b40838", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "0ec98fd5c2293b314334462595a5fda9107dedfb", default-features = false }
 # relayhistory 0.60.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.

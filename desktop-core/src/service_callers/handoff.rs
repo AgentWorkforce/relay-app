@@ -394,6 +394,7 @@ mod fixture_tests {
                 workspace_id: Some("rw_fixture0001".into()),
                 source: Default::default(),
                 control_url: None,
+                gate_url: None,
             },
             relaycast_workspace_id: "rw_fixture0001".into(),
             folder: PathBuf::from("/fixture/ServiceCallers"),
