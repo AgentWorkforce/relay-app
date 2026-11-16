@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Self-hosted sites can connect a workspace without a workspace key.** On macOS, Linux and Windows, when your site's Control names a relay gate for the workspace, Agent Relay signs in and connects through that gate: no Agent Relay key is required or recovered, and a site whose gate address is invalid reports that instead of falling back to a key. Agents on such an install register at the gate with your signed-in session, and when that session cannot be renewed the install reports itself signed out instead of failing. Sites that share a workspace key are unchanged.
+
 ## v2026.11.12
 
 - **Shared session history records who sent each message.** On macOS, Linux and Windows, uploaded Claude sessions now carry each message's origin (typed by a person, sent by another agent session, or a background task's notification), so History can show and search human-typed messages apart from agent-to-agent traffic. Sessions uploaded before this update are not changed.
