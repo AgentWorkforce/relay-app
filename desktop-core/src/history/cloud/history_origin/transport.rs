@@ -9,6 +9,22 @@ pub(super) fn agent() -> ureq::AgentBuilder {
     platform_agent(client_config)
 }
 
+/// The `User-Agent` of every request made through this transport (the
+/// History service and its listed storage origins), so History can tell
+/// which desktop release each computer runs: `agent-relay-desktop/<version>
+/// <os>`. Requests made elsewhere (the enrollment-key exchange, telemetry)
+/// keep their own. The version is `agent_relay_node::VERSION`, which relay's build
+/// script stamps with this repository's release (`.cargo/config.toml`,
+/// `tests/build_metadata.rs`): the version the app shows and telemetry
+/// reports as `desktop_version`, in the core and the probe alike.
+pub(crate) fn user_agent() -> String {
+    user_agent_for(agent_relay_node::VERSION, crate::telemetry::platform())
+}
+
+fn user_agent_for(version: &str, os: &str) -> String {
+    format!("agent-relay-desktop/{version} {os}")
+}
+
 type RootLoader = fn() -> Arc<rustls::ClientConfig>;
 
 /// Whether a connection to `host` on `port` may reach a non-public
@@ -154,9 +170,10 @@ fn with_selected_roots(
     listed: StorageListed,
 ) -> ureq::AgentBuilder {
     let admitted = roots.is_some();
+    let builder = ureq::AgentBuilder::new().user_agent(&user_agent());
     let builder = match roots {
-        Some(roots) => ureq::AgentBuilder::new().tls_config(roots),
-        None => ureq::AgentBuilder::new(),
+        Some(roots) => builder.tls_config(roots),
+        None => builder,
     };
     builder.resolver(move |netloc: &str| {
         // Also catch overrides introduced after construction, before DNS.
@@ -193,3 +210,5 @@ mod pool_tests;
 mod storage_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod user_agent_tests;

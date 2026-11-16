@@ -799,7 +799,9 @@ fn elapsed(earlier: Instant, later: Instant) -> Duration {
     later.saturating_duration_since(earlier)
 }
 
-fn platform() -> &'static str {
+/// `macos`, `windows` or `linux`: telemetry's `os` and the History and Cloud
+/// `User-Agent`'s.
+pub(crate) fn platform() -> &'static str {
     if cfg!(target_os = "macos") {
         "macos"
     } else if cfg!(windows) {

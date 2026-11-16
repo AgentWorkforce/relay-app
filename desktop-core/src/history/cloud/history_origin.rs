@@ -208,6 +208,7 @@ fn require_history_address(base_url: &str) -> Result<()> {
 /// verifies the name itself, using the core's shared operating-system roots.
 /// Certificate-file overrides refuse construction and new connections; an
 /// existing pooled connection keeps its previously verified trust configuration.
+/// Every request names the desktop release and OS in its `User-Agent`.
 pub fn history_agent() -> ureq::AgentBuilder {
     transport::agent()
 }
