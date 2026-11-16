@@ -41,6 +41,10 @@ pub(crate) struct Release {
     /// for a workspace key and in files written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     control_url: Option<String>,
+    /// The relaygate origin of a gate-only install; absent for every other
+    /// workspace and in files written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gate_url: Option<String>,
     relaycast_workspace_id: String,
     workspace_key: Secret,
 }
@@ -65,6 +69,7 @@ impl Release {
             user_id: binding.user_id.clone(),
             base_url: binding.workspace.base_url.clone(),
             control_url: binding.workspace.control_url.clone(),
+            gate_url: binding.workspace.gate_url.clone(),
             relaycast_workspace_id: binding.relaycast_workspace_id.clone(),
             workspace_key: binding.workspace.key.clone(),
         }
@@ -83,7 +88,7 @@ impl Release {
                 workspace_id: Some(self.relaycast_workspace_id.clone()),
                 source: Default::default(),
                 control_url: self.control_url.clone(),
-                gate_url: None,
+                gate_url: self.gate_url.clone(),
             },
             relaycast_workspace_id: self.relaycast_workspace_id.clone(),
             folder: app_data.join(registry::FOLDER),
@@ -158,7 +163,8 @@ mod tests {
     use super::*;
 
     /// A release admitted under a node-scoped key keeps its Control
-    /// origin across the file, so the late release still goes to the broker.
+    /// origin across the file, so the late release still goes to the broker;
+    /// one admitted on a gate-only install keeps its relaygate origin.
     #[test]
     fn a_kept_release_rebuilds_its_control_origin() {
         let app_data = Path::new("/app");
@@ -173,7 +179,7 @@ mod tests {
                 workspace_id: Some("rw_1".into()),
                 source: Default::default(),
                 control_url: Some("https://control.example".into()),
-                gate_url: None,
+                gate_url: Some("https://gate.example".into()),
             },
             relaycast_workspace_id: "rw_1".into(),
             folder: app_data.join(registry::FOLDER),
@@ -185,11 +191,18 @@ mod tests {
             kept.binding(app_data).workspace.control_url.as_deref(),
             Some("https://control.example")
         );
+        assert_eq!(
+            kept.binding(app_data).workspace.gate_url.as_deref(),
+            Some("https://gate.example")
+        );
+        assert!(kept.binding(app_data).workspace.is_gate_only());
 
         let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
         legacy.as_object_mut().unwrap().remove("control_url");
+        legacy.as_object_mut().unwrap().remove("gate_url");
         let kept: Release = serde_json::from_value(legacy).unwrap();
         assert_eq!(kept.binding(app_data).workspace.control_url, None);
+        assert_eq!(kept.binding(app_data).workspace.gate_url, None);
     }
 
     /// `control_url` is written only when present, and a file written
@@ -219,6 +232,7 @@ mod tests {
 
         let without = serde_json::to_value(release_with(None)).unwrap();
         assert!(!without.as_object().unwrap().contains_key("control_url"));
+        assert!(!without.as_object().unwrap().contains_key("gate_url"));
 
         let with = serde_json::to_value(release_with(Some("https://control.example"))).unwrap();
         assert_eq!(with["control_url"], "https://control.example");

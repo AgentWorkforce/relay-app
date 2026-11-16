@@ -4,6 +4,8 @@ use super::*;
 
 /// Recovery requires an explicit, unchanged destination; missing or invalid
 /// fields never receive the defaults used during first-time workspace adoption.
+/// A gate-only workspace has no key to recover: one stored with a gate URL,
+/// or a resolve that now names one, is [`ResolveError::GateOnly`].
 pub async fn resolve_workspace_for_recovery(
     site_url: &str,
     bearer: &Secret,
@@ -11,6 +13,9 @@ pub async fn resolve_workspace_for_recovery(
     refused: &agent_relay_node::relay::workspace::Workspace,
     relaycast_workspace_id: &str,
 ) -> Result<CloudWorkspace, ResolveError> {
+    if refused.is_gate_only() {
+        return Err(ResolveError::GateOnly);
+    }
     if !is_workspace_uuid(workspace_id) {
         return Err(ResolveError::InvalidWorkspace);
     }
@@ -31,6 +36,9 @@ pub async fn resolve_workspace_for_recovery(
         return Err(ResolveError::Cloud(status_error(&answer)));
     }
     let value = answer.inner();
+    if gate_url(site_url, &value["urls"]["relaygateUrl"]) != Ok(None) {
+        return Err(ResolveError::GateOnly);
+    }
     let key = value["relaycastApiKey"]
         .as_str()
         .ok_or(ResolveError::NoKey)?;
@@ -67,7 +75,7 @@ pub async fn resolve_workspace_for_recovery(
     {
         return Err(ResolveError::NoKey);
     }
-    decode_resolution(value, &id)
+    decode_resolution(site_url, value, &id)
 }
 
 fn valid_live_key(key: &str) -> bool {

@@ -127,6 +127,16 @@ pub enum ResolveError {
     /// `relaycastUrl`, and such a build never falls back to the public
     /// Relaycast.
     NoRelaycastUrl,
+    /// The resolve named a `relaygateUrl` that is not a valid origin. The
+    /// field names the site that answered. A gate URL makes the install
+    /// gate-only, so an invalid one fails closed instead of falling back to
+    /// a workspace key.
+    InvalidGateUrl {
+        site: String,
+    },
+    /// The workspace is gate-only (it has a relaygate URL): agents enrol
+    /// through the gate and there is no workspace key to recover.
+    GateOnly,
     Cloud(CloudError),
 }
 
@@ -139,6 +149,13 @@ impl std::fmt::Display for ResolveError {
             ),
             ResolveError::NoRelaycastUrl => f.write_str(
                 "Your Agent Relay site did not name a valid Relaycast address for this workspace. This app is built for its own site and does not fall back to the public Agent Relay.",
+            ),
+            ResolveError::InvalidGateUrl { site } => write!(
+                f,
+                "{site}'s workspace resolve named no valid relaygateUrl (it must be a bare https origin), so this computer's agents cannot enrol through the gate. It will not fall back to a workspace key; sign in again once {site} names a valid one."
+            ),
+            ResolveError::GateOnly => f.write_str(
+                "This Agent Relay workspace is gate-only: agents enrol through relaygate and there is no workspace key to recover.",
             ),
             ResolveError::Cloud(error) => error.fmt(f),
         }
@@ -166,7 +183,7 @@ pub async fn resolve_workspace(
     )
     .await
     .map_err(ResolveError::Cloud)?;
-    decode_resolution(&value, &id)
+    decode_resolution(site_url, &value, &id)
 }
 
 mod recovery;
@@ -175,21 +192,27 @@ pub use recovery::resolve_workspace_for_recovery;
 /// Reads a resolve answer, bare or in a `data` envelope. A production build
 /// takes the public Relaycast when the answer names no valid `relaycastUrl`;
 /// a build made for its own site refuses it as
-/// [`ResolveError::NoRelaycastUrl`].
+/// [`ResolveError::NoRelaycastUrl`]. `site_url` is the site that answered,
+/// named by [`ResolveError::InvalidGateUrl`].
 pub fn decode_resolution(
+    site_url: &str,
     value: &Value,
     workspace_id: &str,
 ) -> Result<CloudWorkspace, ResolveError> {
     decode_resolution_with(
         agent_relay_node::relay::links::built_in_site_url(),
+        site_url,
         value,
         workspace_id,
     )
 }
 
-/// [`decode_resolution`] for a build made for `built_in`.
+/// [`decode_resolution`] for a build made for `built_in`. `built_in` only
+/// decides whether the public Relaycast is a fallback; errors name
+/// `site_url`, the site that answered.
 pub fn decode_resolution_with(
     built_in: &str,
+    site_url: &str,
     value: &Value,
     workspace_id: &str,
 ) -> Result<CloudWorkspace, ResolveError> {
@@ -197,23 +220,32 @@ pub fn decode_resolution_with(
         Some(data) if data.is_object() => data,
         _ => value,
     };
-    let key = value["relaycastApiKey"]
-        .as_str()
-        .map(str::trim)
-        .filter(|key| is_workspace_key(key))
-        .ok_or(ResolveError::NoKey)?;
-    let base_url = match value["urls"]["relaycastUrl"]
-        .as_str()
-        .and_then(validated_base_url)
-    {
-        Some(base_url) => base_url,
-        None if crate::site_build::is_site_build_for(built_in) => {
-            return Err(ResolveError::NoRelaycastUrl)
+    // A gate-only install never holds a workspace key: with a gate URL the
+    // key is optional and dropped even if the answer carries one, and the
+    // gate, which serves the Relaycast paths, is the base URL too.
+    let (key, base_url, gate_url) = match gate_url(site_url, &value["urls"]["relaygateUrl"])? {
+        Some(gate) => (Secret::default(), gate.clone(), Some(gate)),
+        None => {
+            let key = value["relaycastApiKey"]
+                .as_str()
+                .map(str::trim)
+                .filter(|key| is_workspace_key(key))
+                .ok_or(ResolveError::NoKey)?;
+            let base_url = match value["urls"]["relaycastUrl"]
+                .as_str()
+                .and_then(validated_base_url)
+            {
+                Some(base_url) => base_url,
+                None if crate::site_build::is_site_build_for(built_in) => {
+                    return Err(ResolveError::NoRelaycastUrl)
+                }
+                None => DEFAULT_BASE_URL.to_string(),
+            };
+            (Secret::new(key), base_url, None)
         }
-        None => DEFAULT_BASE_URL.to_string(),
     };
     Ok(CloudWorkspace {
-        key: Secret::new(key),
+        key,
         base_url,
         workspace_id: string(value, "relaycastWorkspaceId")
             .or(string(value, "workspaceId"))
@@ -221,8 +253,23 @@ pub fn decode_resolution_with(
         account_workspace_id: Some(workspace_id.to_string()),
         name: string(value, "name"),
         relayfile_workspace_id: string(value, "relayfileWorkspaceId"),
-        gate_url: None,
+        gate_url,
     })
+}
+
+/// The resolve's `urls.relaygateUrl` as a validated origin. Absent, null or
+/// blank means the workspace is not gate-only; anything else that is not a
+/// valid origin is [`ResolveError::InvalidGateUrl`] naming `site`.
+fn gate_url(site: &str, value: &Value) -> Result<Option<String>, ResolveError> {
+    let invalid = || ResolveError::InvalidGateUrl {
+        site: site.to_string(),
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::String(gate) if gate.trim().is_empty() => Ok(None),
+        Value::String(gate) => validated_base_url(gate).map(Some).ok_or_else(invalid),
+        _ => Err(invalid()),
+    }
 }
 
 /// Linux's former `cloud-session.json`, in the format `cloud_auth.py` wrote:
@@ -298,6 +345,7 @@ mod tests {
     fn a_resolution_takes_only_a_workspace_key_and_a_valid_origin() {
         let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
         let resolved = decode_resolution(
+            SITE,
             &json!({"data": {"relaycastApiKey": "rk_live_abcdefgh1234", "name": "Acme",
                 "relaycastWorkspaceId": "rw_1", "relayfileWorkspaceId": "rf_1",
                 "urls": {"relaycastUrl": "https://cast.agentrelay.com/"}}}),
@@ -313,6 +361,7 @@ mod tests {
 
         let untrusted = decode_resolution_with(
             agent_relay_node::relay::links::DEFAULT_SITE_URL,
+            SITE,
             &json!({"relaycastApiKey": "rk_live_abcdefgh1234", "urls": {"relaycastUrl": "http://evil.example"}}),
             id,
         )
@@ -320,10 +369,13 @@ mod tests {
         assert_eq!(untrusted.base_url, DEFAULT_BASE_URL);
         assert_eq!(untrusted.workspace_id.as_deref(), Some(id));
         assert_eq!(
-            decode_resolution(&json!({"relaycastApiKey": "at_live_agenttoken"}), id),
+            decode_resolution(SITE, &json!({"relaycastApiKey": "at_live_agenttoken"}), id),
             Err(ResolveError::NoKey)
         );
-        assert_eq!(decode_resolution(&json!({}), id), Err(ResolveError::NoKey));
+        assert_eq!(
+            decode_resolution(SITE, &json!({}), id),
+            Err(ResolveError::NoKey)
+        );
     }
 
     const SITE: &str = "https://relay.example.test";
@@ -336,7 +388,7 @@ mod tests {
             json!({"relaycastApiKey": "rk_live_abcdefgh1234"}),
             json!({"relaycastApiKey": "rk_live_abcdefgh1234", "urls": {"relaycastUrl": "http://evil.example"}}),
         ] {
-            let found = decode_resolution_with(production, &answer, id).unwrap();
+            let found = decode_resolution_with(production, SITE, &answer, id).unwrap();
             assert_eq!(found.base_url, DEFAULT_BASE_URL);
         }
     }
@@ -350,7 +402,7 @@ mod tests {
             json!({"relaycastApiKey": "rk_live_abcdefgh1234", "urls": {"relaycastUrl": "http://evil.example"}}),
         ] {
             assert_eq!(
-                decode_resolution_with(SITE, &answer, id),
+                decode_resolution_with(SITE, SITE, &answer, id),
                 Err(ResolveError::NoRelaycastUrl)
             );
         }
@@ -361,6 +413,7 @@ mod tests {
         // still reported first.
         let found = decode_resolution_with(
             SITE,
+            SITE,
             &json!({"relaycastApiKey": "rk_live_abcdefgh1234",
                     "urls": {"relaycastUrl": "https://cast.relay.example.test/"}}),
             id,
@@ -368,9 +421,124 @@ mod tests {
         .unwrap();
         assert_eq!(found.base_url, "https://cast.relay.example.test");
         assert_eq!(
-            decode_resolution_with(SITE, &json!({}), id),
+            decode_resolution_with(SITE, SITE, &json!({}), id),
             Err(ResolveError::NoKey)
         );
+    }
+
+    /// A gate-only install never holds a workspace key: with a valid gate
+    /// URL the key Control returns is dropped, and the gate is the origin.
+    #[test]
+    fn a_resolution_with_a_gate_url_drops_the_workspace_key() {
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        for built_in in [agent_relay_node::relay::links::DEFAULT_SITE_URL, SITE] {
+            let found = decode_resolution_with(
+                built_in,
+                SITE,
+                &json!({"data": {"relaycastApiKey": "rk_live_abcdefgh1234",
+                    "relaycastWorkspaceId": "rw_1", "name": "Acme",
+                    "urls": {"relaycastUrl": "https://cast.relay.example.test",
+                             "relaygateUrl": "https://gate.relay.example.test/"}}}),
+                id,
+            )
+            .unwrap();
+            assert_eq!(found.key.expose(), "", "the workspace key is never kept");
+            assert_eq!(
+                found.gate_url.as_deref(),
+                Some("https://gate.relay.example.test")
+            );
+            assert_eq!(found.base_url, "https://gate.relay.example.test");
+            assert_eq!(found.workspace_id.as_deref(), Some("rw_1"));
+            assert_eq!(found.account_workspace_id.as_deref(), Some(id));
+            assert_eq!(found.name.as_deref(), Some("Acme"));
+        }
+    }
+
+    #[test]
+    fn a_resolution_with_a_gate_url_needs_no_workspace_key() {
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        for built_in in [agent_relay_node::relay::links::DEFAULT_SITE_URL, SITE] {
+            for answer in [
+                json!({"urls": {"relaygateUrl": "https://gate.relay.example.test"}}),
+                json!({"relaycastApiKey": null,
+                       "urls": {"relaygateUrl": "http://127.0.0.1:8790"}}),
+            ] {
+                let found = decode_resolution_with(built_in, SITE, &answer, id).unwrap();
+                assert_eq!(found.key.expose(), "");
+                assert!(found.gate_url.is_some());
+                assert_eq!(found.base_url, found.gate_url.clone().unwrap());
+            }
+        }
+    }
+
+    /// Without a gate URL the key is required exactly as before.
+    #[test]
+    fn a_resolution_without_a_gate_url_still_needs_a_workspace_key() {
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        for built_in in [agent_relay_node::relay::links::DEFAULT_SITE_URL, SITE] {
+            for answer in [
+                json!({}),
+                json!({"urls": {"relaycastUrl": "https://cast.relay.example.test"}}),
+                json!({"urls": {"relaycastUrl": "https://cast.relay.example.test",
+                                "relaygateUrl": null}}),
+                json!({"urls": {"relaycastUrl": "https://cast.relay.example.test",
+                                "relaygateUrl": " "}}),
+            ] {
+                assert_eq!(
+                    decode_resolution_with(built_in, SITE, &answer, id),
+                    Err(ResolveError::NoKey)
+                );
+            }
+            let found = decode_resolution_with(
+                built_in,
+                SITE,
+                &json!({"relaycastApiKey": "rk_live_abcdefgh1234",
+                        "urls": {"relaycastUrl": "https://cast.relay.example.test",
+                                 "relaygateUrl": null}}),
+                id,
+            )
+            .unwrap();
+            assert_eq!(found.key.expose(), "rk_live_abcdefgh1234");
+            assert_eq!(found.gate_url, None);
+        }
+    }
+
+    /// The error names the site that answered the resolve, not the site
+    /// the build was made for.
+    #[test]
+    fn an_invalid_gate_url_is_an_error_naming_the_site() {
+        const ANSWERED: &str = "https://answering.relay.example.test";
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        for built_in in [agent_relay_node::relay::links::DEFAULT_SITE_URL, SITE] {
+            for bad in [
+                json!("ftp://gate.relay.example.test"),
+                json!("http://gate.relay.example.test"),
+                json!("https://gate.relay.example.test/v1"),
+                json!("https://user@gate.relay.example.test"),
+                json!("not a url"),
+                json!(42),
+            ] {
+                let error = decode_resolution_with(
+                    built_in,
+                    ANSWERED,
+                    &json!({"relaycastApiKey": "rk_live_abcdefgh1234",
+                            "urls": {"relaycastUrl": "https://cast.relay.example.test",
+                                     "relaygateUrl": bad}}),
+                    id,
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error,
+                    ResolveError::InvalidGateUrl {
+                        site: ANSWERED.into()
+                    }
+                );
+                let message = error.to_string();
+                assert!(message.contains(ANSWERED), "{message}");
+                assert!(!message.contains(built_in), "{message}");
+                assert!(message.contains("relaygateUrl"), "{message}");
+            }
+        }
     }
 
     #[test]
@@ -388,6 +556,7 @@ mod tests {
         for built_in in [agent_relay_node::relay::links::DEFAULT_SITE_URL, SITE] {
             let found = decode_resolution_with(
                 built_in,
+                SITE,
                 &json!({"relaycastApiKey": "ar_ws_0123456789abcdef",
                         "urls": {"relaycastUrl": "https://cast.relay.example.test"}}),
                 "workspace",
@@ -400,6 +569,7 @@ mod tests {
     #[test]
     fn a_resolved_armadillo_key_keeps_the_origin_cloud_names() {
         let found = decode_resolution(
+            SITE,
             &json!({"relaycastApiKey": "ar_ws_0123456789abcdef",
                     "urls": {"relaycastUrl": "https://armadillo.agentrelay.com"}}),
             "workspace",

@@ -668,3 +668,113 @@ async fn recovery_refused_key_is_not_rechecked_in_a_loop() {
 fn workspace_stale_ms() -> i64 {
     agent_relay_node::relay::daemon::key_rotation::REVERIFY_VERIFIED_AFTER.as_millis() as i64 + 1_000
 }
+
+/// The gate-only warnings posted since the last call.
+fn gate_only_warnings(
+    events: &mut tokio::sync::broadcast::Receiver<agent_relay_node::relay::protocol::Event>,
+) -> usize {
+    let message = crate::cloud_api::ResolveError::GateOnly.to_string();
+    let mut found = 0;
+    loop {
+        match events.try_recv() {
+            Ok(event) => {
+                found += usize::from(
+                    event.topic == agent_relay_node::relay::protocol::Topic::Activity
+                        && event.data["level"] == "warning"
+                        && event.data["message"] == message.as_str(),
+                )
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(_) => return found,
+        }
+    }
+}
+
+/// A gate-only workspace holds no key: recovery is refused before Cloud is
+/// asked anything, and the stored workspace is left as it was. The refusal
+/// is posted as a warning once per epoch, not on every attempt.
+#[tokio::test]
+async fn recovery_is_refused_for_a_stored_gate_only_workspace() {
+    let h = Harness::new().await;
+    h.core
+        .store
+        .update(|s| s.cloud.as_mut().unwrap().gate_url = Some(h.fake.site.clone()))
+        .unwrap();
+    h.core.rediscover_workspace();
+    let gated = h.core.discover().unwrap();
+    assert!(gated.is_gate_only());
+    let mut events = h.core.hub.subscribe();
+    assert!(h
+        .account
+        .recover_workspace_key(&gated, "rw_review")
+        .await
+        .is_none());
+    assert_eq!(gate_only_warnings(&mut events), 1);
+    assert!(h
+        .account
+        .recover_workspace_key(&gated, "rw_review")
+        .await
+        .is_none());
+    assert_eq!(gate_only_warnings(&mut events), 0);
+    assert_eq!(h.fake.count("/auth/token/refresh"), 0);
+    assert_eq!(h.fake.count("/resolve"), 0);
+    assert_eq!(h.fake.new_gets(), 0);
+    assert!(h.cloud_key_is(OLD));
+    assert_eq!(
+        h.core
+            .store
+            .read(|s| s.cloud.as_ref().unwrap().gate_url.clone()),
+        Some(h.fake.site.clone())
+    );
+}
+
+/// A resolve that now names a gate has no key to hand back either, and
+/// says so once per epoch. A malformed gate URL never recovers a key.
+#[tokio::test]
+async fn recovery_is_refused_when_the_resolve_names_a_gate() {
+    for gate in [None, Some(json!("ftp://x")), Some(json!(42))] {
+        let h = Harness::new().await;
+        {
+            let mut state = h.fake.state.lock().unwrap();
+            let gate = gate.clone().unwrap_or_else(|| json!(h.fake.site.clone()));
+            state.resolved["data"]["urls"]["relaygateUrl"] = gate;
+        }
+        let refused = h.core.discover().unwrap();
+        let mut events = h.core.hub.subscribe();
+        assert!(h.verify().await.is_err(), "{gate:?}");
+        assert_eq!(gate_only_warnings(&mut events), 1, "{gate:?}");
+        assert!(h
+            .account
+            .recover_workspace_key(&refused, "rw_review")
+            .await
+            .is_none());
+        assert_eq!(gate_only_warnings(&mut events), 0, "{gate:?}");
+        assert_eq!(h.fake.count("/resolve"), 1, "{gate:?}");
+        assert_eq!(h.fake.new_gets(), 0, "{gate:?}");
+        assert!(h.cloud_key_is(OLD), "{gate:?}");
+        assert_eq!(
+            h.core
+                .store
+                .read(|s| s.cloud.as_ref().unwrap().gate_url.clone()),
+            None
+        );
+    }
+}
+
+/// Without a gate URL the refused key is recovered as before.
+#[tokio::test]
+async fn recovery_without_a_gate_url_is_unchanged() {
+    let h = Harness::new().await;
+    let refused = h.core.discover().unwrap();
+    assert!(!refused.is_gate_only());
+    let (replacement, info) = h
+        .account
+        .recover_workspace_key(&refused, "rw_review")
+        .await
+        .unwrap();
+    assert_eq!(replacement.key.expose(), NEW);
+    assert_eq!(replacement.gate_url, None);
+    assert_eq!(info.id, "rw_review");
+    assert!(h.cloud_key_is(NEW));
+    assert_eq!(h.fake.count("/resolve"), 1);
+}

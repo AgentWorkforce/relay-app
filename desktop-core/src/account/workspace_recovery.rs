@@ -25,6 +25,17 @@ impl Account {
         if recovery.as_ref() == Some(&(epoch, refused.clone())) {
             return None;
         }
+        // A gate-only workspace holds no key, so there is none to recover.
+        // Say so once per epoch rather than failing silently, and ask Cloud
+        // nothing.
+        if is_gate_only(&core, refused) {
+            *recovery = Some((epoch, refused.clone()));
+            core.hub.activity(
+                Level::Warning,
+                crate::cloud_api::ResolveError::GateOnly.to_string(),
+            );
+            return None;
+        }
         let (before, session) = self.recovery_context(&core, refused, epoch)?;
         let account_workspace = before.account_workspace_id.as_deref()?;
         *recovery = Some((epoch, refused.clone()));
@@ -54,6 +65,10 @@ impl Account {
                 {
                     let _ = self.save_session(None);
                 }
+                return None;
+            }
+            Err(error @ crate::cloud_api::ResolveError::GateOnly) => {
+                core.hub.activity(Level::Warning, error.to_string());
                 return None;
             }
             Err(_) => return None,
@@ -118,6 +133,15 @@ impl Account {
         }
         Some((before, session))
     }
+}
+
+/// Whether the refused workspace, or the Cloud workspace stored for it,
+/// names a relaygate URL.
+fn is_gate_only(core: &Core, refused: &Workspace) -> bool {
+    refused.is_gate_only()
+        || core
+            .store
+            .read(|store| store.cloud.as_ref().is_some_and(|c| c.gate_url.is_some()))
 }
 
 fn commit_recovery(
