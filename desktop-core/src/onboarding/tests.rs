@@ -332,6 +332,134 @@ fn denied_approval_and_backend_errors_have_static_safe_reasons() {
     );
     ui.assert_private();
 }
+/// The running core, for setup: its account answers the account calls.
+struct Running(crate::account::login_start::tests::TestAccount);
+impl Backend for Running {
+    fn call(&mut self, method: &'static str, params: Value) -> Result<Value, ()> {
+        let account = &self.0.account;
+        let report = match method {
+            "account.status" => Ok(account.report()),
+            "account.sign_in" => self
+                .0
+                .runtime
+                .block_on(account.sign_in(serde_json::from_value(params).unwrap())),
+            _ => return Err(()),
+        };
+        report
+            .map(|report| serde_json::to_value(report).unwrap())
+            .map_err(|_| ())
+    }
+    fn pause(&mut self, _: Duration) {}
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn start_service(&mut self) -> bool {
+        false
+    }
+}
+/// Run in a child process with `SSL_CERT_FILE` set; see the parent below.
+#[test]
+fn renewal_refused_through_setup_child() {
+    if std::env::var_os("RELAY_SETUP_RENEWAL_CHILD").is_none() {
+        return;
+    }
+    let mut core = Running(crate::account::login_start::tests::test_account());
+    let signed_in = core.0.needing_renewal();
+    for args in [
+        &["--json"][..],
+        &["--json", "--enrollment-key-file", KEY_FILE],
+    ] {
+        let mut ui = Console::default();
+        let failure = setup(&mut core, &mut ui, &options(args)).unwrap_err();
+        assert_eq!(failure.code, "tls_roots_refused", "{args:?}");
+        assert_eq!(
+            failure.message,
+            crate::account::login_start::TLS_ROOTS_REFUSED_MESSAGE
+        );
+        ui.assert_private();
+        // Still signed in to the same workspace: only the reason is added.
+        let status = core.0.account.status();
+        assert_eq!(status.phase.as_deref(), Some("tls_roots_refused"));
+        assert_eq!(
+            agent_relay_node::relay::state::AccountStatus {
+                phase: None,
+                error: None,
+                ..status
+            },
+            signed_in
+        );
+    }
+}
+#[test]
+fn renewal_refused_through_setup_reports_tls_roots_refused() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "onboarding::tests::renewal_refused_through_setup_child",
+        ])
+        .env_remove("SSL_CERT_DIR")
+        .env("SSL_CERT_FILE", "unused-test-root-path")
+        .env("RELAY_SETUP_RENEWAL_CHILD", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("1 passed"), "{stdout}");
+}
+#[test]
+fn a_refused_certificate_override_says_how_to_fix_it() {
+    let refused = || json!({"state":"error","phase":"tls_roots_refused","error":"SECRET_ACCESS_TOKEN PRIVATE_TRANSCRIPT_PATH"});
+    for args in [
+        &["--json"][..],
+        &["--json", "--enrollment-key-file", KEY_FILE],
+    ] {
+        let mut core = Fake {
+            account: json!({"state":"signed_out"}),
+            statuses: VecDeque::from([json!({"state":"signed_out"}), refused()]),
+            failed: Some("account.sign_in"),
+            ..Fake::default()
+        };
+        let mut ui = Console::default();
+        let failure = setup(&mut core, &mut ui, &options(args)).unwrap_err();
+        assert_eq!(failure.code, "tls_roots_refused", "{args:?}");
+        assert_eq!(failure.message, crate::account::login_start::TLS_ROOTS_REFUSED_MESSAGE);
+        assert!(failure.message.contains("SSL_CERT_FILE"));
+        assert!(!failure.message.contains("SECRET"));
+        ui.assert_private();
+    }
+    // Any other failed sign-in stays a failed step: no RPC text is echoed.
+    let mut core = Fake {
+        account: json!({"state":"signed_out"}),
+        statuses: VecDeque::from([
+            json!({"state":"signed_out"}),
+            json!({"state":"error","error":"SECRET_ACCESS_TOKEN"}),
+        ]),
+        failed: Some("account.sign_in"),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    assert_eq!(
+        setup(&mut core, &mut ui, &options(&["--json"]))
+            .unwrap_err()
+            .code,
+        "core_request_failed"
+    );
+    ui.assert_private();
+    // A refusal the core reports in status is named as well.
+    let mut core = Fake {
+        account: json!({"state":"signed_out"}),
+        sign_in: refused(),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    assert_eq!(
+        setup(&mut core, &mut ui, &options(&["--json", "--wait"]))
+            .unwrap_err()
+            .code,
+        "tls_roots_refused"
+    );
+    ui.assert_private();
+}
 #[test]
 fn schedule_acknowledgement_is_never_implied_by_automation() {
     let mut core = Fake {
