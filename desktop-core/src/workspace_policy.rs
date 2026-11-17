@@ -454,6 +454,9 @@ pub struct WorkspacePolicies {
     /// the first; `Some(None)` once none applies), so it is handed over only
     /// when it changes.
     applied_settings: Mutex<Option<Option<SettingsPolicy>>>,
+    /// The last failure to hand the settings policy to the core, so it is
+    /// reported once rather than on every tick.
+    settings_failure: Mutex<Option<String>>,
 }
 
 impl WorkspacePolicies {
@@ -470,7 +473,20 @@ impl WorkspacePolicies {
             file,
             saved: Mutex::new(saved),
             applied_settings: Mutex::new(None),
+            settings_failure: Mutex::new(None),
         }
+    }
+
+    /// Records `message` as the latest failure to hand the settings policy
+    /// over; answers whether it differs from the one before (worth showing).
+    pub fn settings_failure_is_new(&self, message: &str) -> bool {
+        let mut last = self
+            .settings_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let new = last.as_deref() != Some(message);
+        *last = Some(message.to_string());
+        new
     }
 
     /// Whether `wanted` differs from the settings policy last handed to the
@@ -485,6 +501,10 @@ impl WorkspacePolicies {
 
     /// Records `applied` as handed to the core.
     pub fn settings_applied(&self, applied: Option<SettingsPolicy>) {
+        *self
+            .settings_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         *self
             .applied_settings
             .lock()
