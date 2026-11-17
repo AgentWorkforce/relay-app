@@ -375,8 +375,9 @@ private enum SecureStore {
     /// so the lists say they are loading instead of being empty.
     @Published var rosterLoaded = false
     @Published var fleetAgents: [RelayAgent] = []
-    /// Agents the online nodes report having spawned, by name, with the harness they run.
-    @Published var spawnedSessions: [String: SessionFork.Spawned] = [:]
+    /// Agents the online nodes report having spawned, by name, with the harness
+    /// they run: every reporting node, in node order.
+    @Published var spawnedSessions: [String: [SessionFork.Spawned]] = [:]
     @Published var spawnNodes: [RelaySpawnNode] = []
     /// Every online node that accepts forks, including a machine's second installation.
     @Published var forkNodes: [RelaySpawnNode] = []
@@ -1187,12 +1188,12 @@ private enum SecureStore {
             forkNodes = availableNodes.filter { !$0.forkHarnesses.isEmpty }
             let sessionIDs = Dictionary(relayAgents.map { ($0.name, $0.sessionID) }, uniquingKeysWith: { first, _ in first })
             var live: [RelayAgent] = []
-            var spawned: [String: SessionFork.Spawned] = [:]
+            var reporting: [(name: String, capabilities: [JSONObject])] = []
             for node in nodes where string(node["status"]) == "online" &&
                 node["live"] as? Bool != false && node["handlers_live"] as? Bool != false &&
                 !(node["tags"] as? [String] ?? []).contains("direct") {
                 let nodeName = string(node["name"])
-                spawned.merge(SessionFork.spawned(node: nodeName, capabilities: objects(node["capabilities"]))) { first, _ in first }
+                reporting.append((name: nodeName, capabilities: objects(node["capabilities"])))
                 for capability in objects(node["capabilities"]) where string(capability["name"]) == "relay:live-agents:v1" {
                     for name in object(capability["metadata"])["names"] as? [String] ?? [] {
                         live.append(RelayAgent(fleet: ["name": name, "node": nodeName,
@@ -1201,7 +1202,7 @@ private enum SecureStore {
                 }
             }
             fleetAgents = live
-            spawnedSessions = spawned
+            spawnedSessions = SessionFork.spawned(nodes: reporting)
             connected = true
             error = nil
             connectionReports.succeeded(ticket)
@@ -2064,16 +2065,9 @@ private enum SecureStore {
         SessionFork.availability(for: agent, nodes: forkNodes, live: isLive(agent),
                                  roster: relayAgents, spawned: spawnedSessions)
     }
-    /// The harness an agent's icon shows: a structured statement first (its
-    /// record, or the node that spawned it), then a name or persona guess.
+    /// The harness an agent's icon shows (`SessionFork.displayCLI`).
     func displayCLI(for agent: RelayAgent) -> String {
-        if !agent.statedCLI.isEmpty { return agent.statedCLI }
-        if let entry = SessionFork.spawnedEntry(for: agent, in: spawnedSessions) {
-            let cli = cliInName(entry.harness)
-            if !cli.isEmpty { return cli }
-        }
-        let known = [agent] + relayAgents.filter { $0.name == agent.name } + fleetAgents.filter { $0.name == agent.name }
-        return known.first { !$0.statedCLI.isEmpty }?.statedCLI ?? known.first { !$0.cli.isEmpty }?.cli ?? ""
+        SessionFork.displayCLI(for: agent, roster: relayAgents, fleet: fleetAgents, spawned: spawnedSessions)
     }
     /// Starts `name` on the agent's own computer as a copy of its session.
     /// A node that doesn't hold the agent sends the request to the next
@@ -2250,5 +2244,28 @@ extension SessionFork {
             }
         }
         return spawned
+    }
+
+    /// Every node's spawned agents by name, in node order. A name that more
+    /// than one node reports keeps every node, since one entry may be stale.
+    static func spawned(nodes: [(name: String, capabilities: [JSONObject])]) -> [String: [Spawned]] {
+        var all: [String: [Spawned]] = [:]
+        for node in nodes {
+            for (name, entry) in spawned(node: node.name, capabilities: node.capabilities) {
+                all[name, default: []].append(entry)
+            }
+        }
+        return all
+    }
+
+    /// The harness an agent's icon shows: the statement the fork decides from
+    /// (`statedHarness(for:roster:spawned:)`), in the same order, then a
+    /// name or persona guess from its records.
+    static func displayCLI(for agent: RelayAgent, roster: [RelayAgent], fleet: [RelayAgent],
+                           spawned: [String: [Spawned]]) -> String {
+        let stated = cliInName(statedHarness(for: agent, roster: roster, spawned: spawned))
+        if !stated.isEmpty { return stated }
+        let known = [agent] + roster.filter { $0.name == agent.name } + fleet.filter { $0.name == agent.name }
+        return known.first { !$0.cli.isEmpty }?.cli ?? ""
     }
 }

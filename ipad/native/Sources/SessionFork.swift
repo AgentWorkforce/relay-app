@@ -39,23 +39,37 @@ enum SessionFork {
         let harness: String
     }
 
-    /// `agent`'s entry in the nodes' spawned agents, when it is on that node.
-    static func spawnedEntry(for agent: RelayAgent, in spawned: [String: Spawned]) -> Spawned? {
-        guard let entry = spawned[agent.name], agent.node.isEmpty || entry.node == agent.node else { return nil }
-        return entry
+    /// `agent`'s entries in the nodes' spawned agents, in node order: every
+    /// node that reports its name, or only its own node when it names one.
+    static func spawnedEntries(for agent: RelayAgent, in spawned: [String: [Spawned]]) -> [Spawned] {
+        (spawned[agent.name] ?? []).filter { agent.node.isEmpty || $0.node == agent.node }
     }
 
-    /// The spawn harness that forks this agent's kind of session, from what
-    /// is stated about it, in order: the node that spawned it, its current
-    /// roster record, then the copy at hand. The first statement decides; a
+    /// The harness `agent`'s nodes state, only when they all state the same
+    /// one; nodes that disagree state nothing.
+    static func spawnedHarness(for agent: RelayAgent, in spawned: [String: [Spawned]]) -> String {
+        let harnesses = Set(spawnedEntries(for: agent, in: spawned).map(\.harness))
+        return harnesses.count == 1 ? harnesses.first ?? "" : ""
+    }
+
+    /// The first harness stated about `agent`, in order: the nodes that
+    /// spawned it, its current roster record, then the copy at hand. Empty
+    /// when nothing states one. A name or persona is never a statement.
+    /// The fork and the icon both decide from this.
+    static func statedHarness(for agent: RelayAgent, roster: [RelayAgent] = [],
+                              spawned: [String: [Spawned]] = [:]) -> String {
+        [spawnedHarness(for: agent, in: spawned),
+         roster.first { $0.name == agent.name }?.statedCLI ?? "",
+         agent.statedCLI].first { !$0.isEmpty } ?? ""
+    }
+
+    /// The spawn harness that forks this agent's kind of session, from the
+    /// first statement about it (`statedHarness(for:roster:spawned:)`). A
     /// name or persona is never evidence, since the node forks with exactly
     /// the harness asked for and a wrong one fails on the computer.
     static func harness(for agent: RelayAgent, roster: [RelayAgent] = [],
-                        spawned: [String: Spawned] = [:]) -> String? {
-        let statements = [spawnedEntry(for: agent, in: spawned)?.harness ?? "",
-                          roster.first { $0.name == agent.name }?.statedCLI ?? "",
-                          agent.statedCLI]
-        switch statements.first(where: { !$0.isEmpty }) ?? "" {
+                        spawned: [String: [Spawned]] = [:]) -> String? {
+        switch statedHarness(for: agent, roster: roster, spawned: spawned) {
         case "claude", "claudecode": return "claude"
         case "codex": return "codex"
         default: return nil
@@ -83,9 +97,10 @@ enum SessionFork {
 
     /// `live`: `isLive(_:roster:fleet:at:)` for `agent`.
     /// `roster` and `spawned` state the agent's harness and, for a spawned
-    /// agent, the node it runs on (`harness(for:roster:spawned:)`).
+    /// agent with no node of its own, every node reporting it, in order
+    /// (`harness(for:roster:spawned:)`).
     static func availability(for agent: RelayAgent, nodes: [RelaySpawnNode], live: Bool,
-                             roster: [RelayAgent] = [], spawned: [String: Spawned] = [:]) -> Availability {
+                             roster: [RelayAgent] = [], spawned: [String: [Spawned]] = [:]) -> Availability {
         guard live else {
             return .unavailable("\(agent.name) is no longer running. Only active agents can be forked.")
         }
@@ -94,9 +109,11 @@ enum SessionFork {
         }
         let capable = nodes.filter { $0.forkHarnesses.contains(harness) }
         let matched: [RelaySpawnNode]
-        let node = agent.node.isEmpty ? spawnedEntry(for: agent, in: spawned)?.node ?? "" : agent.node
-        if !node.isEmpty {
-            matched = capable.filter { $0.name == node }
+        // A name two nodes report (one may be a stale entry) keeps both as
+        // candidates, so a node answering `spawn_fork_not_found` passes to the next.
+        let reported = agent.node.isEmpty ? spawnedEntries(for: agent, in: spawned).map(\.node) : [agent.node]
+        if !reported.isEmpty {
+            matched = reported.flatMap { node in capable.filter { $0.name == node } }
         } else {
             matched = capable.filter {
                 !agent.machine.isEmpty && MobileMachineFilter.key($0.machine) == MobileMachineFilter.key(agent.machine)
