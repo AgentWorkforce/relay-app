@@ -2,6 +2,7 @@
 
 use super::{browser_link, enrollment_key, failed, validation, Account, Flow, Start};
 use crate::browser_login::BrowserLogin;
+use crate::history::uploader::Install;
 use agent_relay_node::relay::cloud_login::{DeviceLogin, LoginError};
 use agent_relay_node::relay::contract::account::SignInLink;
 use agent_relay_node::relay::protocol::{ErrorKind, RpcError};
@@ -14,7 +15,8 @@ use std::sync::Once;
 /// `SSL_CERT_DIR` is set: Cloud calls never trust file-selected roots.
 pub(crate) const TLS_ROOTS_REFUSED: &str = "tls_roots_refused";
 /// What such a sign-in says. Static: it never names the variables' values.
-pub(crate) const TLS_ROOTS_REFUSED_MESSAGE: &str = "Agent Relay does not accept SSL_CERT_FILE or SSL_CERT_DIR certificate overrides. Unset them (for example `env -u SSL_CERT_FILE -u SSL_CERT_DIR agent-relay-probe ...`) and add your CA to the operating system trust store.";
+/// The variables are the running core's, so they are removed where it runs.
+pub(crate) const TLS_ROOTS_REFUSED_MESSAGE: &str = "Agent Relay does not accept SSL_CERT_FILE or SSL_CERT_DIR certificate overrides. Remove them from the environment of the Agent Relay core (or the service that starts it) and restart it, for example `env -u SSL_CERT_FILE -u SSL_CERT_DIR agent-relay-probe serve --headless`, and add your CA to the operating system trust store.";
 
 /// Whether a certificate-file override would make every Cloud call fail,
 /// as node's `platform_root_environment_is_safe` decides. The first refusal
@@ -27,10 +29,23 @@ fn certificate_overrides_refused() -> bool {
     WARNED.call_once(|| {
         // Never print the environment values: they can contain private paths.
         agent_relay_node::relay::diagnostics::write(format_args!(
-            "relay: sign-in refuses certificate-file overrides; unset SSL_CERT_FILE and SSL_CERT_DIR and install the CA in the operating system trust store"
+            "relay: sign-in refuses certificate-file overrides; remove SSL_CERT_FILE and SSL_CERT_DIR from this core's environment (or its service), restart it, and install the CA in the operating system trust store"
         ));
     });
     true
+}
+
+/// A renewal under a certificate-file override: refused for the same
+/// reason, before any Cloud call, leaving the signed-in state alone.
+pub(super) fn refuse_renewal() -> Result<(), RpcError> {
+    if certificate_overrides_refused() {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+fn refused() -> RpcError {
+    RpcError::new(ErrorKind::Refused, TLS_ROOTS_REFUSED_MESSAGE)
 }
 
 /// Keep the loopback receiver, state, workspace and PKCE challenge intact,
@@ -131,7 +146,62 @@ impl Account {
                 message: TLS_ROOTS_REFUSED_MESSAGE.into(),
             },
         );
-        Err(RpcError::new(ErrorKind::Refused, TLS_ROOTS_REFUSED_MESSAGE))
+        Err(refused())
+    }
+
+    /// How `account.sign_in` starts `attempt`, after refusing a
+    /// certificate-file override: the default sign-in continues in the
+    /// background, a device request reuses an eligible login, and any other
+    /// opens `flow`'s sign-in.
+    pub(super) async fn start_login(
+        &self,
+        attempt: u64,
+        site: &str,
+        request: &SignInRequest,
+        flow: Flow,
+    ) -> Result<Start, RpcError> {
+        self.refuse_certificate_overrides(attempt)?;
+        // Default setup reuses an eligible login before opening Google. An
+        // explicit browser request (Use another account) chooses an account.
+        let reusable = if request.flow == Some(Flow::Device) {
+            self.reusable_session(site).await
+        } else {
+            None
+        };
+        if request.flow.is_none() {
+            Ok(Start::Continue)
+        } else if let Some(session) = reusable {
+            Ok(Start::Reused(session))
+        } else {
+            let file = request.enrollment_key_file.as_deref();
+            self.begin_login(attempt, site, flow, file).await
+        }
+    }
+
+    /// The sign-in a renewal of `install` opens, its phase and its link.
+    pub(super) async fn renewal_start(
+        &self,
+        install: &Install,
+        flow: Flow,
+        provider: Option<SignInProvider>,
+    ) -> Result<(Start, &'static str, SignInLink), RpcError> {
+        let site = &install.target.site_url;
+        match flow {
+            Flow::Device => {
+                let login = DeviceLogin::begin(site, Some(&self.desktop_host()?))
+                    .await
+                    .map_err(|error| failed(error.message))?;
+                let link = login.public();
+                Ok((Start::Device(login), "waiting_for_device_approval", link))
+            }
+            Flow::Browser => {
+                let login = self.desktop_browser_login().await?;
+                let workspace = install.target.workspace_id.as_deref();
+                let link = browser_start_link(&login, site, true, workspace, provider)?;
+                Ok((Start::Browser(login), "waiting_for_browser", link))
+            }
+            Flow::EnrollmentKey => Err(enrollment_key::renewal_refused()),
+        }
     }
 
     /// A browser sign-in that is the desktop's own, naming this computer.
@@ -158,7 +228,7 @@ mod tests {
     use crate::contract::account::{Flow, SharingMode};
     use agent_relay_node::relay::daemon::{Config, Core};
     use agent_relay_node::relay::paths::CorePaths;
-    use agent_relay_node::relay::state::SignInState;
+    use agent_relay_node::relay::state::{AccountStatus, SignInState};
     use std::sync::Arc;
 
     const CHILD: &str = "RELAY_SIGN_IN_TLS_CHILD";
@@ -230,6 +300,30 @@ mod tests {
             } else {
                 assert_ne!(status.phase.as_deref(), Some(TLS_ROOTS_REFUSED));
                 assert_ne!(status.error.as_deref(), Some(TLS_ROOTS_REFUSED_MESSAGE));
+            }
+        }
+        // A signed-in computer renewing its approval keeps its state.
+        let signed_in = account.update(|status| {
+            *status = AccountStatus {
+                state: SignInState::SignedIn,
+                site_url: Some(site.clone()),
+                workspace_id: Some("workspace-a".into()),
+                ..AccountStatus::default()
+            }
+        });
+        let install = Install::from_json(
+            &serde_json::json!({"site_url": site, "workspace_id": "workspace-a"}),
+        )
+        .unwrap();
+        for flow in [Flow::Device, Flow::Browser] {
+            let renewed = runtime.block_on(account.renew_sign_in(install.clone(), flow, None));
+            if mode == "refused" {
+                let error = renewed.unwrap_err();
+                assert_eq!(error.data.kind, ErrorKind::Refused);
+                assert_eq!(error.message, TLS_ROOTS_REFUSED_MESSAGE);
+                assert_eq!(account.status(), signed_in);
+            } else if let Err(error) = renewed {
+                assert_ne!(error.message, TLS_ROOTS_REFUSED_MESSAGE);
             }
         }
     }
