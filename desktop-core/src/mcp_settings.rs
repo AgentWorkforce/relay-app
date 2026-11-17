@@ -12,6 +12,7 @@ mod claude_hook;
 mod codex;
 mod copilot;
 mod cursor;
+mod cursor_guide;
 pub(crate) mod development;
 mod external;
 pub(crate) use external::derive_host_connections;
@@ -273,6 +274,9 @@ impl Installer {
             Err(error) => return vec![error],
         };
         let mut warnings = self.install_native(binding, &selected);
+        if selected.iter().any(|id| id == "cursor") {
+            self.refresh_cursor_guide();
+        }
         if !selected
             .iter()
             .any(|id| matches!(id.as_str(), "codex" | "claude"))

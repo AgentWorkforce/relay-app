@@ -38,6 +38,7 @@ const DESKTOP_COMMANDS: &[(&str, &str)] = &[
     ("service-callers", "List service callers, or ask Settings to provision or rotate one"),
     ("claude-attestation-hook", "Agent Relay's Claude Code tool-call proof hook"),
     ("teammate-context-hook", "Retired Claude Code SessionStart hook; prints nothing"),
+    ("cursor-guide-hook", "Agent Relay's Cursor hook naming a chat's relay commands"),
 ];
 
 /// Every command the helper answers, for `--help`.

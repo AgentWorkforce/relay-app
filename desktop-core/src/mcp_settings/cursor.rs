@@ -2,6 +2,7 @@
 use super::*;
 use agent_relay_node::relay::agents::SettingsExtension;
 use agent_relay_node::relay::cursor_cli::{CursorConfig, CursorSettings};
+use cursor_guide::GuideHooks;
 
 impl Installer {
     pub(super) fn cursor_detail(
@@ -17,7 +18,7 @@ impl Installer {
         if cfg!(windows) {
             format!("{detail} Cursor MCP setup is available; local Cursor session messaging hooks are unavailable on Windows.")
         } else if matches!(state, "configured" | "installed") {
-            format!("{detail} Cursor messaging hooks are installed. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks.")
+            format!("{detail} Cursor messaging hooks are installed, and each new Cursor chat is told the agent-relay-probe commands to use for its relay identity. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks.")
         } else if state == "action_required" && selected && !self.cursor_hooks_ready() {
             format!("{detail} Cursor messaging hooks are off or could not be installed. Repair reconnects the hooks and Agent Relay MCP configuration.")
         } else {
@@ -25,17 +26,46 @@ impl Installer {
         }
     }
 
+    fn cursor_config(&self) -> CursorConfig {
+        CursorConfig::from_env(&|_| None, &self.home).development(self.helper.development_scope())
+    }
+
     fn cursor_settings(&self) -> CursorSettings {
-        let config = CursorConfig::from_env(&|_| None, &self.home)
-            .development(self.helper.development_scope());
-        CursorSettings::new(&config, self.helper.cursor_hook())
+        CursorSettings::new(&self.cursor_config(), self.helper.cursor_hook())
+    }
+
+    /// This build's own `cursor-guide-hook` entries (`cursor_guide`).
+    fn cursor_guide(&self) -> Result<GuideHooks, String> {
+        self.helper
+            .cursor_guide_hook()
+            .and_then(|(command, socket)| GuideHooks::new(&self.cursor_config(), command, socket))
+            .ok_or_else(|| "Agent Relay's command-line helper path cannot be written into Cursor hooks.".into())
+    }
+
+    /// The core's messaging hooks for this build are on.
+    fn cursor_delivery_on(&self) -> bool {
+        self.cursor_settings().get().get("cursor_direct_delivery") == Some(&Value::Bool(true))
     }
 
     pub(super) fn cursor_hooks_ready(&self) -> bool {
         cfg!(windows)
             || (self.helper.usable()
-                && self.cursor_settings().get().get("cursor_direct_delivery")
-                    == Some(&Value::Bool(true)))
+                && self.cursor_delivery_on()
+                && self.cursor_guide().is_ok_and(|guide| guide.ready()))
+    }
+
+    /// Maintenance: where this build's messaging hooks are on, brings its
+    /// guide entries up to date, so an install made before them gets them
+    /// without a repair. An explicit Off has taken the messaging hooks out,
+    /// so it stays off.
+    pub(super) fn refresh_cursor_guide(&self) {
+        if cfg!(windows) || !self.helper.usable() || !self.cursor_delivery_on() {
+            return;
+        }
+        if self.cursor_guide().is_ok_and(|guide| guide.ready()) {
+            return;
+        }
+        let _ = self.set_cursor_hooks(true);
     }
 
     pub(super) fn set_cursor_hooks(&self, enabled: bool) -> Result<(), String> {
@@ -54,7 +84,19 @@ impl Installer {
         if enabled && (!self.helper.ensure() || !self.helper.usable()) {
             return Err("Cursor hook setup is waiting for Agent Relay’s command-line helper. Repair this provider after it is installed.".into());
         }
-        self.cursor_settings().set_enabled(enabled)
+        if enabled {
+            let guide = self.cursor_guide()?;
+            self.cursor_settings().set_enabled(true)?;
+            return guide.set(true);
+        }
+        // Both go, even when one of them cannot.
+        let delivery = self.cursor_settings().set_enabled(false);
+        let guide = self.cursor_guide().and_then(|guide| guide.set(false));
+        match (delivery, guide) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(first), Err(second)) => Err(format!("{first}; {second}")),
+        }
     }
 
     pub(super) fn request_cursor_hooks(&self) {
@@ -156,6 +198,10 @@ mod tests {
                         .as_str()
                         .is_some_and(|s| s.contains("cursor-hook"))));
             }
+            for event in crate::cursor_guide::EVENTS {
+                assert_eq!(guide_hooks(&hooks, event), 1, "{event}");
+            }
+            assert_eq!(hooks["hooks"]["stop"][0]["command"], "other-hook");
             assert!(app.cursor_hooks_ready());
         }
         app.manage("cursor", "uninstall", Some(&binding), None)
@@ -167,6 +213,22 @@ mod tests {
         let hooks = fs::read_to_string(profile.join("hooks.json")).unwrap();
         assert!(hooks.contains("other-hook"));
         assert!(!hooks.contains("cursor-hook"));
+        assert!(!hooks.contains("cursor-guide-hook"));
+    }
+
+    /// How many of this build's guide entries `event` holds.
+    fn guide_hooks(hooks: &Value, event: &str) -> usize {
+        hooks["hooks"][event].as_array().map_or(0, |entries| {
+            entries
+                .iter()
+                .filter(|hook| hook["command"].as_str().is_some_and(|s| s.contains(" cursor-guide-hook")))
+                .count()
+        })
+    }
+
+    fn hooks_file(root: &Path) -> Value {
+        serde_json::from_str(&fs::read_to_string(root.join(".cursor/hooks.json")).unwrap_or_default())
+            .unwrap_or_default()
     }
 
     #[cfg(not(windows))]
@@ -181,7 +243,10 @@ mod tests {
             BTreeMap::from([("cursor".into(), "cursor-fixture-grant".into())]),
         );
         app.refresh(Some(&binding));
+        let guide = &crate::cursor_guide::EVENTS;
+        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
         app.set_cursor_hooks(false).unwrap();
+        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 0));
         app.select(vec!["cursor".into()], Some(&binding), None)
             .unwrap();
         app.refresh(Some(&binding));
@@ -189,6 +254,7 @@ mod tests {
             !app.cursor_hooks_ready(),
             "maintenance and repeated choices keep an explicit Off"
         );
+        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 0));
         assert_ne!(
             app.report(Some(&binding), None)
                 .tools
@@ -207,6 +273,7 @@ mod tests {
         app.manage("cursor", "repair", Some(&binding), None)
             .unwrap();
         assert!(app.cursor_hooks_ready());
+        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
         let repaired: Value = json5::from_str(&fs::read_to_string(mcp_path).unwrap()).unwrap();
         assert_eq!(
             repaired["mcpServers"][NAME]["url"],

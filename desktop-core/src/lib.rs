@@ -15,6 +15,7 @@ pub mod contract;
 pub mod contractor_access;
 mod copilot_attestation;
 pub mod copilot_dispatch;
+pub mod cursor_guide;
 pub mod desktop_identity;
 pub mod executable_identity;
 pub mod feed;
