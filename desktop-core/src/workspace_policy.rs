@@ -173,6 +173,8 @@ impl std::fmt::Display for Malformed {
     }
 }
 
+impl std::error::Error for Malformed {}
+
 impl TryFrom<Value> for WorkspacePolicy {
     type Error = Malformed;
 
@@ -228,7 +230,10 @@ fn read_consent(entries: &[Value]) -> BTreeSet<String> {
                 consent.insert(key.name().to_string());
             }
             Some(key) => ignored(format_args!("consent entry {}", key.name())),
-            None => ignored("an unknown consent entry"),
+            None => match entry.as_str() {
+                Some(name) => ignored(format_args!("unknown consent entry {name}")),
+                None => ignored("a consent entry that is not a name"),
+            },
         }
     }
     consent
@@ -385,6 +390,58 @@ pub fn apply(entry: Option<Entry>, workspace_id: &str, fetched: Fetched) -> Opti
 struct Saved {
     #[serde(default)]
     workspaces: BTreeMap<String, Entry>,
+    /// The file does not hold `workspaces` yet: the last write failed, so
+    /// the next [`WorkspacePolicies::record`] writes even if nothing changed.
+    #[serde(skip)]
+    unwritten: bool,
+}
+
+/// Reads the cache at `file`, one workspace at a time: a malformed entry
+/// is dropped and the others are kept. Returns what was read and why
+/// anything was not (no file is not a problem).
+fn load(file: &Path) -> (Saved, Vec<String>) {
+    let bytes = match std::fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Saved::default(), Vec::new())
+        }
+        Err(error) => {
+            return (
+                Saved::default(),
+                vec![format!("could not read {FILE}: {error}")],
+            )
+        }
+    };
+    let workspaces = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(mut document)) => match document.remove("workspaces") {
+            None | Some(Value::Null) => Map::new(),
+            Some(Value::Object(workspaces)) => workspaces,
+            Some(_) => {
+                return (
+                    Saved::default(),
+                    vec![format!("{FILE} has unreadable workspaces")],
+                )
+            }
+        },
+        Ok(_) => return (Saved::default(), vec![format!("{FILE} is not an object")]),
+        Err(error) => {
+            return (
+                Saved::default(),
+                vec![format!("{FILE} is unreadable: {error}")],
+            )
+        }
+    };
+    let mut saved = Saved::default();
+    let mut problems = Vec::new();
+    for (workspace_id, entry) in workspaces {
+        match serde_json::from_value::<Entry>(entry) {
+            Ok(entry) => {
+                saved.workspaces.insert(workspace_id, entry);
+            }
+            Err(error) => problems.push(format!("{FILE} entry {workspace_id} dropped: {error}")),
+        }
+    }
+    (saved, problems)
 }
 
 /// The workspace policies cached for this computer's workspaces.
@@ -394,14 +451,15 @@ pub struct WorkspacePolicies {
 }
 
 impl WorkspacePolicies {
-    /// The policies cached in `app_data_dir`. An unreadable cache starts
-    /// empty, and the next read rewrites it.
+    /// The policies cached in `app_data_dir`. A malformed workspace entry
+    /// is dropped and logged and the rest are kept; an unreadable cache
+    /// starts empty, logged, and the next read rewrites it.
     pub fn new(app_data_dir: &Path) -> WorkspacePolicies {
         let file = app_data_dir.join(FILE);
-        let saved = std::fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let (saved, problems) = load(&file);
+        for problem in problems {
+            eprintln!("workspace policy: {problem}");
+        }
         WorkspacePolicies {
             file,
             saved: Mutex::new(saved),
@@ -422,12 +480,12 @@ impl WorkspacePolicies {
     }
 
     /// Caches what a read of `workspace_id` found, writing the file when the
-    /// entry changed.
+    /// entry changed or the last write failed.
     pub fn record(&self, workspace_id: &str, fetched: Fetched) {
         let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
         let cached = saved.workspaces.get(workspace_id).cloned();
         let applied = apply(cached.clone(), workspace_id, fetched);
-        if applied == cached {
+        if applied == cached && !saved.unwritten {
             return;
         }
         match applied {
@@ -444,6 +502,7 @@ impl WorkspacePolicies {
                     .write(|f| std::io::Write::write_all(f, &bytes))
                     .map_err(std::io::Error::other)
             });
+        saved.unwritten = written.is_err();
         if let Err(error) = written {
             eprintln!("workspace policy: could not write {FILE}: {error}");
         }

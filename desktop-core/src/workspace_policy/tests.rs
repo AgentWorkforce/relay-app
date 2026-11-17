@@ -5,6 +5,8 @@ use futures_util::future::BoxFuture;
 use serde_json::json;
 use std::collections::VecDeque;
 
+mod cache;
+
 const WORKSPACE: &str = "11111111-2222-3333-4444-555555555555";
 
 /// Answers `access/me` reads from a script, in order.
@@ -436,19 +438,6 @@ async fn a_failed_read_keeps_the_cached_document() {
     }
     let reopened = WorkspacePolicies::new(dir.path());
     assert_eq!(reopened.entry(WORKSPACE).unwrap().revision, 5);
-}
-
-#[test]
-fn an_unreadable_cache_starts_unset() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(FILE), "not json").unwrap();
-    let store = WorkspacePolicies::new(dir.path());
-    assert_eq!(store.policy(WORKSPACE), WorkspacePolicy::unset());
-    store.record(WORKSPACE, Fetched::Policy(Box::new(parsed(example(2)))));
-    assert_eq!(
-        WorkspacePolicies::new(dir.path()).policy(WORKSPACE),
-        parsed(example(2))
-    );
 }
 
 #[tokio::test]
