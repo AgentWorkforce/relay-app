@@ -51,6 +51,30 @@ fn trace_gate(phase: &'static str) {
     let _ = phase;
 }
 
+fn normalize_join(
+    registration: &agent_relay_node::relay::store::Registration,
+    prefix: &str,
+    args: &mut serde_json::Map<String, Value>,
+) -> Result<(), OutboundError> {
+    if args.get("name").and_then(Value::as_str)
+        .is_some_and(|name| name != registration.display_name()) {
+        return Err(unavailable());
+    }
+    args.remove("name");
+    args.remove("description");
+    if let Some(address) = args.get("desktop_address") {
+        let current = registration.current_address(prefix);
+        let registered = registration.link_address(prefix);
+        if address != &Value::String(current.clone()) && address != &Value::String(registered) {
+            return Err(unavailable());
+        }
+        // Managed hints use the stable registration address. A native join
+        // must match the current credential that desktop identity sync sent.
+        args.insert("desktop_address".into(), Value::String(current));
+    }
+    Ok(())
+}
+
 pub(crate) async fn route(
     outbound: &Outbound,
     dispatch_account: Arc<crate::account::Account>,
@@ -129,37 +153,17 @@ pub(crate) async fn route_with_presence_budget(
     // Ordinary lifecycle reconciliation may still hold its previous inactive
     // state after a restart. Wait for that existing registration; never create
     // one or clear inactivity ourselves, which would bypass normal eligibility.
-    let (registration, source) = presence::wait_for_active(
-        || {
-            if outbound.core.plugins.cloud.account().as_ref() != Some(&account)
-                || outbound.core.plugins.cloud.identity_sync_generation() != generation
-            {
-                return Err(unavailable());
-            }
-            outbound.core.store.read(|store| {
-                let registration = store.registration_for(&target)
-                    .ok_or_else(OutboundError::not_registered)?;
-                let source = store.desktop_sync_source_id.as_ref()
-                    .ok_or_else(OutboundError::not_registered)?;
-                Ok(registration.missing_since.is_none()
-                    .then(|| (registration.clone(), source.clone())))
-            })
-        },
+    presence::wait_for_active(
+        || presence::active_registration(outbound, &target, &account, generation),
         Instant::now() + presence_budget,
     ).await?.ok_or_else(OutboundError::not_registered)?;
+    let (registration, source) = Identities::new(outbound.core.clone())
+        .sync_copilot_identity(&target).await.ok_or_else(unavailable)?;
     trace_gate("registration verified");
     // A native join always keeps the already-registered chat identity. It
     // never creates a hosted participant under a model-provided name.
     if tool == "join_relay" {
-        if args
-            .get("name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| name != registration.display_name())
-        {
-            return Err(unavailable());
-        }
-        args.remove("name");
-        args.remove("description");
+        normalize_join(&registration, &outbound.core.machine_prefix, &mut args)?;
     }
     if outbound.core.workspace().is_none()
         || outbound.core.plugins.cloud.account().as_ref() != Some(&account)
@@ -181,7 +185,7 @@ pub(crate) async fn route_with_presence_budget(
             workspace: account.workspace_id,
             generation,
             source,
-            registration: format!("{}:{}", registration.agent_id, registration.registered_at),
+            registration: crate::copilot_dispatch::intent::registration_key(&registration),
         },
     );
     trace_gate(if result.is_ok() { "ticket issued" } else { "ticket refused" });

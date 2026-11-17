@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod failure;
+mod copilot;
 mod native;
 mod outcome;
 mod refusal;
@@ -217,16 +218,10 @@ impl Identities {
                         || (active_is_account_workspace
                             && key == active_workspace.as_ref().map(|workspace| &workspace.key));
                     (registration.base_url == cloud.base_url && key_matches).then(|| {
-                        let mut identity = json!({
-                            "name": registration.name,
-                            "address": registration.direct_address(&self.machine_prefix),
-                            "agent_id": registration.agent_id,
-                            "token": token,
-                        });
-                        native::attach(&mut identity, &registration.target, support);
-                        identity
+                        copilot::identities(registration, token, &self.machine_prefix, support)
                     })
                 })
+                .flatten()
                 .collect();
             let body = json!({"source_id": source_id, "identities": identities});
             Some(native::with_attestation_key(body, attestation_key.as_ref()))

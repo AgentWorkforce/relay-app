@@ -18,6 +18,30 @@ pub(super) struct SyncedSnapshot {
 }
 
 impl DesktopIdentitySync {
+    /// The exact current native identity must be in the accepted snapshot.
+    /// A failed rename sync cannot reuse the previous sender's credential.
+    pub(super) fn identity_synced(
+        &self,
+        account: &CloudAccount,
+        generation: u64,
+        source: &str,
+        identity: &Value,
+    ) -> bool {
+        self.synced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.account == *account
+                    && snapshot.generation == generation
+                    && snapshot.at.elapsed() < REFRESH
+                    && snapshot.body["source_id"] == source
+                    && snapshot.body["identities"]
+                        .as_array()
+                        .is_some_and(|identities| identities.contains(identity))
+            })
+    }
+
     /// Whether Cloud already holds exactly this snapshot, accepted less than
     /// `REFRESH` ago.
     pub(super) fn already_synced(

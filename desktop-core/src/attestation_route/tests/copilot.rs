@@ -1,5 +1,6 @@
 use super::*;
 mod presence;
+pub(crate) mod rename;
 
 pub(super) struct NativeFixture;
 impl crate::copilot_dispatch::peer::Verifier for NativeFixture {
@@ -263,6 +264,9 @@ async fn joins_refuse_another_name_and_sign_matching_or_absent_names_without_des
 ) -> anyhow::Result<()> {
     let f = registered_copilot().await?;
     let uid = agent_relay_node::relay::peer::current_uid();
+    let address = f.core.store.read(|store| store.registration_for(&Target::new(
+        SessionKind::Copilot, REGISTERED.to_ascii_lowercase())).unwrap()
+        .current_address(&f.core.machine_prefix));
     let refused = hook_request(
         "agentrelay-join_relay",
         json!({"name":"another-chat","description":"must not rename"}),
@@ -276,8 +280,8 @@ async fn joins_refuse_another_name_and_sign_matching_or_absent_names_without_des
         409
     );
     for mut args in [
-        json!({"name":"copilot-chat","description":"do not forward","desktop_address":"copilot-chat@fixture"}),
-        json!({"description":"also removed","desktop_address":"copilot-chat@fixture"}),
+        json!({"name":"copilot-chat","description":"do not forward","desktop_address":address}),
+        json!({"description":"also removed","desktop_address":address}),
     ] {
         let request = hook_request("agentrelay-join_relay", args.clone())?;
         let answer = f

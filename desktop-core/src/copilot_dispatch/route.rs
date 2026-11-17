@@ -47,7 +47,7 @@ fn owner(core: &Core, sid: &str) -> Option<Owner> {
                     .is_none_or(|key| key == &workspace.key)
         })?;
         Some((
-            format!("{}:{}", registration.agent_id, registration.registered_at),
+            super::intent::registration_key(registration),
             store.desktop_sync_source_id.clone()?,
         ))
     })?;
