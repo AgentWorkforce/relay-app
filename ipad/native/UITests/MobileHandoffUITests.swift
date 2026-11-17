@@ -53,22 +53,29 @@ final class MobileHandoffUITests: XCTestCase {
         }
         send.tap()
         let outgoing = app.staticTexts[text].firstMatch
-        let consumed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            outgoing.exists || (composer.exists && composer.value as? String != text)
-        }, object: nil)
-        if XCTWaiter.wait(for: [consumed], timeout: 5) != .completed {
-            // The simulator reported a tap while this draft stayed untouched.
-            // sendDraft clears the draft synchronously, before
-            // its network task starts. Retry only an untouched, enabled draft;
-            // never retry a pending or failed delivery that already consumed it.
+        // sendDraft clears the draft synchronously, before its network task
+        // starts, so the complete draft disappearing is the consumption
+        // signal. Ask the accessibility query for it, like the readiness
+        // checks above: a closure reading a StaticText search plus a value
+        // can take one whole slow snapshot per evaluation and run past a
+        // short deadline after the app has already sent.
+        let consumed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: completeDraft)
+        if XCTWaiter.wait(for: [consumed], timeout: 10) != .completed {
             capture(app, "mobile-handoff-unconsumed-send-tap")
-            guard composer.value as? String == text, !outgoing.exists, send.isEnabled else {
-                XCTFail("The send state changed without an observable submitted message")
-                return
+            // Retry only an untouched draft; never retry a pending or failed
+            // delivery that already consumed it. A draft consumed after the
+            // deadline still has to show the submitted message below.
+            if completeDraft.exists {
+                guard enabledSend.exists, !outgoing.exists else {
+                    XCTFail("The send state changed without an observable submitted message")
+                    return
+                }
+                send.tap()
             }
-            send.tap()
         }
-        XCTAssertTrue(outgoing.waitForExistence(timeout: 10))
+        XCTAssertTrue(outgoing.waitForExistence(timeout: 10),
+                      "The submitted message must appear after the draft is consumed")
         let queued = NSPredicate(format: "label == 'Queued'")
         expectation(for: queued, evaluatedWith: app.staticTexts["Delivery status"])
         waitForExpectations(timeout: 10)
@@ -78,16 +85,23 @@ final class MobileHandoffUITests: XCTestCase {
         // SwiftUI's existing control appears only while messageFocused is true.
         // Wait for that focus transition, including when a simulator tap lands
         // during a layout change; do not type into an unfocused element.
+        // Either Hide keyboard control proves focus; firstMatch keeps the
+        // query from resolving both of them on every evaluation.
+        let hideKeyboard = app.buttons["Hide keyboard"].firstMatch
+        let focused = NSPredicate(format: "exists == true")
         for _ in 0..<2 {
+            // A tap that already focused the composer only looked unfocused
+            // because the previous wait ran out; do not tap it again.
+            if hideKeyboard.exists { return true }
             // iOS 26 can reject a valid TextField activation point while its
             // measured frame is onscreen. Tap that center, then prove focus.
             composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                app.buttons["Hide keyboard"].exists
-            }, object: nil)
-            if XCTWaiter.wait(for: [focused], timeout: 5) == .completed { return true }
+            // One accessibility snapshot can take several seconds on a loaded
+            // simulator, so leave room for more than one evaluation.
+            let arrived = XCTNSPredicateExpectation(predicate: focused, object: hideKeyboard)
+            if XCTWaiter.wait(for: [arrived], timeout: 10) == .completed { return true }
         }
-        return false
+        return hideKeyboard.exists
     }
 
     private func capture(_ app: XCUIApplication, _ name: String) {
