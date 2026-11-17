@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { AGENT_CI_PREFIXES, latestRuns, mobilePrefixes, refuseToPublish, snapshot, staleSnapshots, touches } from "./remote-ci.mjs";
+import { parse } from "yaml";
+
+import { AGENT_CI_PREFIXES, DEFERRED_LANES, latestRuns, mobilePrefixes, refuseToPublish, snapshot, staleSnapshots, touches, verdict } from "./remote-ci.mjs";
 
 test("Mobile CI's path filter is read from its workflow, so an iOS-only change dispatches it", () => {
   const prefixes = mobilePrefixes(readFileSync(new URL("../../.github/workflows/mobile-ci.yml", import.meta.url), "utf8"));
@@ -147,4 +149,54 @@ test("a snapshot holding machine-local state is never pushed", () => {
   } finally {
     process.chdir(cwd);
   }
+});
+
+const desktop = (conclusion) => ({ workflowName: "Desktop CI", conclusion });
+const green = ["changes", "Probe", "macOS Swift tests (arm64)", "macOS package (arm64)", "Linux tests (arm64)", "Windows x64"]
+  .map((name) => ({ name, conclusion: "success" }));
+
+test("a Desktop CI run whose only red jobs are the macOS x64 lanes passes the gate and says why", () => {
+  const jobs = [
+    ...green,
+    { name: "macOS Swift tests (x64)", conclusion: "failure" },
+    { name: "macOS package (x64)", conclusion: "failure" },
+    // Both completion gates read the lanes' result over the whole matrix.
+    { name: "macOS arm64", conclusion: "failure" },
+    { name: "macOS x64", conclusion: "failure" },
+    { name: "Record successful snapshot gate", conclusion: "skipped" },
+  ];
+  assert.deepEqual(verdict(desktop("failure"), jobs), { pass: true, note: " (macOS x64 lanes deferred)" });
+});
+
+test("an x64 failure beside any other red job, or no x64 failure at all, still fails the gate", () => {
+  const x64 = { name: "macOS Swift tests (x64)", conclusion: "failure" };
+  for (const other of [
+    { name: "macOS Swift tests (arm64)", conclusion: "failure" },
+    { name: "Linux tests (arm64)", conclusion: "failure" },
+    { name: "Windows tests (x64)", conclusion: "cancelled" },
+    { name: "macOS core tests (arm64)", conclusion: "timed_out" },
+  ]) {
+    assert.equal(verdict(desktop("failure"), [...green, x64, other]).pass, false, other.name);
+  }
+  // A completion gate red on its own is not an x64 lane's doing.
+  assert.equal(verdict(desktop("failure"), [...green, { name: "macOS arm64", conclusion: "failure" }]).pass, false);
+  // No jobs listed (the listing failed) proves nothing.
+  assert.equal(verdict(desktop("failure")).pass, false);
+  // Only Desktop CI failures are ever excused, and never a cancelled run.
+  assert.equal(verdict({ workflowName: "Mobile CI", conclusion: "failure" }, [...green, x64]).pass, false);
+  assert.equal(verdict(desktop("cancelled"), [...green, x64]).pass, false);
+});
+
+test("a run with no failed jobs passes as before", () => {
+  assert.deepEqual(verdict(desktop("success"), green), { pass: true, note: "" });
+  assert.deepEqual(verdict({ workflowName: "Mobile CI", conclusion: "success" }), { pass: true, note: "" });
+});
+
+test("the deferred lanes are the x64 rows of Desktop CI's macOS lane jobs", () => {
+  const { jobs } = parse(readFileSync(new URL("../../.github/workflows/desktop-ci.yml", import.meta.url), "utf8"));
+  const x64 = ["macos-package", "macos-swift-tests", "macos-core-tests"]
+    .map((id) => jobs[id].name.replace("${{ matrix.arch }}", "x64"));
+  assert.deepEqual([...x64].sort(), [...DEFERRED_LANES].sort());
+  assert.equal(jobs.macos.name, "macOS ${{ matrix.arch }}");
+  assert.deepEqual(jobs.macos.needs, ["changes", "macos-package", "macos-swift-tests", "macos-core-tests"]);
 });

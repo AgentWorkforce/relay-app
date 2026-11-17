@@ -75,6 +75,13 @@ reviews of the same change are not the process.
 GitHub gate does. To run them before asking for a review, see
 [docs/workspace-layout.md](workspace-layout.md#validation).
 
+The GitHub gate runs every lane on every architecture, but the macOS x64
+lanes (`macOS Swift tests (x64)`, `macOS package (x64)`, `macOS core tests
+(x64)`) do not block landing: their results are reported, and a gate whose
+only failures are those lanes passes. Desktop CI on the push to `main` and
+the release candidate still require them, so fix a red x64 lane forward
+before the next release.
+
 ## Releases
 
 Releases are `layered-relay-app`'s job:
