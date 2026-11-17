@@ -1653,6 +1653,11 @@ struct RelayWorkspaceView: View {
         savedSpawnProjects.filter { $0.node == spawnNodeName }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
+    /// Folders the chosen machine reports, minus those already saved there.
+    private var spawnFolderSuggestions: [SpawnFolderSuggestion] {
+        SpawnFolderSuggestions.suggestions(for: spawnNodeName, in: client.spawnNodes,
+                                           saved: spawnProjectsOnNode.map(\.path))
+    }
     private var selectedSpawnProject: SavedSpawnProject? {
         spawnProjectsOnNode.first { $0.id == spawnProjectID }
     }
@@ -1849,6 +1854,24 @@ struct RelayWorkspaceView: View {
                                 .disabled(newProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                                           newProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                                           newProjectPathProblem != nil)
+                        }
+                        if !spawnFolderSuggestions.isEmpty {
+                            Text("Recent folders on \(spawnNodeName)").font(.caption).foregroundStyle(.secondary)
+                            ForEach(spawnFolderSuggestions) { suggestion in
+                                Button {
+                                    newProjectName = suggestion.name
+                                    newProjectPath = suggestion.path
+                                    addingSpawnProject = true
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(suggestion.name).foregroundStyle(Color.primary)
+                                        Text(suggestion.path).font(.caption).foregroundStyle(.secondary)
+                                            .lineLimit(1).truncationMode(.head)
+                                    }
+                                }
+                                .accessibilityLabel("Use folder \(suggestion.name)")
+                                .accessibilityHint(suggestion.path)
+                            }
                         }
                     }
                 }

@@ -265,6 +265,9 @@ struct RelaySpawnNode: Identifiable, Hashable {
     var forkHarnesses: [String] = []
     /// The computer's name as its agents' `host` metadata gives it.
     var machine = ""
+    /// Newest-first working folders of agents started here, when the node
+    /// publishes them (`SpawnFolderSuggestions`).
+    var recentFolders: [String] = []
     var id: String { name }
 }
 
@@ -1153,7 +1156,8 @@ private enum SecureStore {
                 let fork = object(objects(node["capabilities"]).first { string($0["name"]) == SessionFork.capability }?["metadata"])
                 return RelaySpawnNode(name: name, harnesses: harnesses.sorted(),
                                       forkHarnesses: fork["harnesses"] as? [String] ?? [],
-                                      machine: string(fork["machine"]))
+                                      machine: string(fork["machine"]),
+                                      recentFolders: SpawnFolderSuggestions.advertisedFolders(in: objects(node["capabilities"])))
             }.sorted { ($0.name.lowercased(), $0.name) < ($1.name.lowercased(), $1.name) }
             var machineKeys: Set<String> = []
             spawnNodes = availableNodes.filter { machineKeys.insert(MobileMachineFilter.key($0.name)).inserted }
