@@ -63,6 +63,7 @@ mod tests {
     fn claude_delivery_lists_change_at_once() {
         let status = ClaudeDeliveryStatus {
             restricted: false,
+            organization_hold: false,
             sessions: vec![ClaudeDeliverySession {
                 id: "s1".into(),
                 agent: "ada".into(),
