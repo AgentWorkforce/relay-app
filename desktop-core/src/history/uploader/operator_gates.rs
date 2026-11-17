@@ -78,12 +78,29 @@ impl Uploader {
     }
 
     /// The person's sharing choice, refused when the operator enforces
-    /// another.
-    pub async fn sharing_set(&self, mode: SharingMode) -> Result<Value, RpcError> {
+    /// another, and, when it re-sends the whole local history, unless the
+    /// person `replay_confirmed` it.
+    pub async fn sharing_set(
+        &self,
+        mode: SharingMode,
+        replay_confirmed: bool,
+    ) -> Result<Value, RpcError> {
+        self.sharing_preview(mode)?;
+        if replays_history(mode) && !replay_confirmed {
+            return Err(UploaderError::new(REPLAY_UNCONFIRMED).into());
+        }
+        self.sharing_set_unchecked(mode).await
+    }
+
+    /// What the person's switch to `mode` would do, changing nothing:
+    /// refused as [`Uploader::sharing_set`] would refuse it, else whether it
+    /// re-sends the whole local history.
+    pub fn sharing_preview(&self, mode: SharingMode) -> Result<Value, RpcError> {
+        self.attached()?;
         if let Some(policy) = self.operator_policy() {
             policy.check_sharing(self.workspace_id().as_deref(), mode)?;
         }
-        self.sharing_set_unchecked(mode).await
+        Ok(json!({ "sharing_mode": mode, "replays_history": replays_history(mode) }))
     }
 
     /// Sets the sharing mode whatever the operator policy says: the policy
@@ -99,6 +116,24 @@ impl Uploader {
         if let Some(install) = install.as_mut().filter(|install| install.target == target) {
             install.sharing_mode = Some(mode);
         }
-        Ok(json!({ "sharing_mode": value["sharing_mode"].as_str().unwrap_or(mode.as_str()) }))
+        Ok(json!({
+            "sharing_mode": value["sharing_mode"].as_str().unwrap_or(mode.as_str()),
+            "replays_history": replays_history(mode),
+        }))
     }
+}
+
+/// The refusal of a switch that re-sends the whole local history, asked
+/// for without the person's confirmation.
+pub const REPLAY_UNCONFIRMED: &str = "Sharing all sessions re-sends your whole local history to Agent Relay Cloud. Confirm the change to go ahead.";
+
+/// Whether switching to `mode` re-sends the whole local history. Every
+/// switch to a mode starts a new delivery generation (the probe's
+/// `change_with_cloud` cancels the job and `apply_plan_with_cloud` creates
+/// another), never carrying the cursor across. Only All's generation starts
+/// at journal revision 0 sending every local session: New's starts there
+/// too but withholds every session it did not already share, and
+/// Selected's starts at the head, its sessions backfilling on their own.
+pub fn replays_history(mode: SharingMode) -> bool {
+    mode == SharingMode::All
 }

@@ -3619,8 +3619,15 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(core.lastParams("uploader.sessions.include")?["session_keys"] as? [String], ["claude:b"])
         await model.setPaused(true)
         XCTAssertEqual(core.callCount("uploader.pause"), 1)
-        await model.setSharingMode(.all)
+        core.on("uploader.sharing.preview") { params in
+            ["sharing_mode": params["mode"] ?? "new", "replays_history": (params["mode"] as? String) == "all"]
+        }
+        let replays = await model.sharingReplaysHistory(.all)
+        XCTAssertTrue(replays)
+        XCTAssertEqual(core.callCount("uploader.sharing.set"), 0, "A preview changes nothing")
+        await model.setSharingMode(.all, replayConfirmed: replays)
         XCTAssertEqual(core.lastParams("uploader.sharing.set")?["mode"] as? String, "all")
+        XCTAssertEqual(core.lastParams("uploader.sharing.set")?["replay_confirmed"] as? Bool, true)
         model.shutdown()
     }
 
