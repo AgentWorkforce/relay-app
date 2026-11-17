@@ -303,11 +303,22 @@ pub struct UploaderDisconnected {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct SharingParams {
     pub mode: SharingMode,
+    /// The person was told that the switch re-sends the whole local history
+    /// (`uploader.sharing.preview`'s `replays_history`) and agreed.
+    /// `uploader.sharing.set` refuses such a switch without it; the preview
+    /// ignores it.
+    #[serde(default)]
+    pub replay_confirmed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SharingChanged {
     pub sharing_mode: SharingMode,
+    /// Whether the switch to `sharing_mode` re-sends the whole local
+    /// history to Agent Relay Cloud: it starts a new delivery from the
+    /// beginning, which can take hours while new sessions wait behind it.
+    #[serde(default)]
+    pub replays_history: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

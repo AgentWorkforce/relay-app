@@ -89,6 +89,7 @@ impl State {
         // Answers to these never arrive from the old core: what was asked
         // for falls back to the last confirmed state.
         self.sharing_mode_wanted.clear();
+        self.sharing_replay_confirmed = None;
         self.paused_wanted.clear();
         self.pending_upload_action = None;
         self.pending_settings.clear();

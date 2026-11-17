@@ -16,6 +16,8 @@ pub use session_state::{upload_label, uploads_in, SessionUploadState};
 mod capture;
 use capture::capture_is_paused;
 pub use capture::{capture_detail, capture_fraction, capture_headline, capture_is_active};
+mod sharing_replay;
+pub use sharing_replay::{SHARING_REPLAY_ACTION, SHARING_REPLAY_DETAIL, SHARING_REPLAY_TITLE};
 
 /// The order Settings offers the sharing modes in.
 pub const SHARING_DISPLAY_ORDER: [SharingMode; 3] =
