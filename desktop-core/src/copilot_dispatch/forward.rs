@@ -126,7 +126,8 @@ fn post_with_resolver(
     #[cfg(debug_assertions)]
     eprintln!(
         "[copilot-dispatch] HTTP start: bytes={}, budget_ms={}",
-        bytes.len(), remaining.as_millis()
+        bytes.len(),
+        remaining.as_millis()
     );
     // Fresh agent + POST/nonempty body: neither recycled-connection retry path
     // in ureq2's Unit::is_retryable applies. No outer retry or auth refresh.
@@ -163,7 +164,10 @@ fn post_with_resolver(
     eprintln!("[copilot-dispatch] HTTP response: status={status}, json={json}, sse={stream}");
     if !(200..300).contains(&status) {
         // Do not read/echo an upstream error body, even if it contains a proof.
-        return status_error(client, status, &body["id"]);
+        let attested = body["params"]["arguments"]
+            .get(crate::claude_attestation::FIELD)
+            .is_some();
+        return status_error(client, status, &body["id"], attested);
     }
     if body.get("id").is_some() && stream {
         return sse::receive(response.into_reader(), &body["id"], deadline);
@@ -190,8 +194,19 @@ fn post_with_resolver(
     response_value(&bytes, &body["id"])
 }
 
-fn status_error(client: Client, status: u16, id: &Value) -> Result<Value, &'static str> {
+/// The error a non-success `status` gives the chat. `attested` says the
+/// call carried a chat proof: Cloud answers 400 to a proof it cannot verify.
+fn status_error(
+    client: Client,
+    status: u16,
+    id: &Value,
+    attested: bool,
+) -> Result<Value, &'static str> {
     let message = match (client, status) {
+        (Client::Cursor, 400) if attested => {
+            "Agent Relay Cloud could not verify this Cursor chat's attestation, so the call was \
+             not run. Retry once; if it fails again, run whoami from this chat's shell."
+        }
         (Client::Copilot, 401 | 403) => {
             "Agent Relay authentication changed. Repair this Copilot connection."
         }

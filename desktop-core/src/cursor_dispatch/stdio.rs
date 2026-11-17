@@ -33,6 +33,16 @@ pub(super) fn message(class: &str, probe: &Path, socket: Option<&Path>) -> Strin
     }
 }
 
+/// `reply` with a Desktop refusal's message replaced by what its class tells
+/// the chat, naming the class: Core's own dispatch refusals reach the helper
+/// as a reply, so `reply_as` passes their generic message through.
+fn with_class(mut reply: Value, message: &dyn Fn(&str) -> String) -> Value {
+    if let Some(class) = reply["error"]["data"]["class"].as_str().map(str::to_owned) {
+        reply["error"]["message"] = json!(format!("{} ({class})", message(&class)));
+    }
+    reply
+}
+
 pub(super) fn run(args: &[String]) -> i32 {
     if args == ["--help"] || args == ["-h"] {
         println!(
@@ -65,9 +75,8 @@ pub(super) fn run(args: &[String]) -> i32 {
             &body,
             super::route::LOCAL_RESPONSE_BUDGET,
         );
-        reply_as(&request["id"], answer, &|class| {
-            message(class, &probe, named.as_deref())
-        })
+        let message = |class: &str| message(class, &probe, named.as_deref());
+        with_class(reply_as(&request["id"], answer, &message), &message)
     });
     match serve_with(std::io::stdin().lock(), std::io::stdout(), dispatch, true) {
         Ok(()) => 0,
@@ -148,6 +157,29 @@ mod tests {
         assert_eq!(socket.as_deref(), Some(Path::new("/tmp/r.sock")));
         assert!(parse(&[&base[..], &["--token", "secret"]].concat()).is_none());
         assert!(parse(&[&base[..], &["--socket", "/a", "--socket", "/b"]].concat()).is_none());
+    }
+
+    #[test]
+    fn a_dispatch_refusal_tells_the_chat_its_class() {
+        let probe = Path::new("/opt/relay/agent-relay-probe");
+        let message = |class: &str| message(class, probe, None);
+        let refusal = crate::copilot_dispatch::classified(
+            json!({"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"generic"}}),
+            "cursor_intent_missing",
+        );
+        let reply = json!({"ok": true, "data": refusal})
+            .to_string()
+            .into_bytes();
+        let out = with_class(
+            reply_as::<()>(&json!(7), Ok((200, reply)), &message),
+            &message,
+        );
+        let text = out["error"]["message"].as_str().unwrap();
+        assert!(text.ends_with(" (cursor_intent_missing)"), "{text}");
+        assert!(text.contains("agent-relay-probe whoami"), "{text}");
+        assert_eq!(out["error"]["data"]["class"], "cursor_intent_missing");
+        let hosted = json!({"jsonrpc":"2.0","id":8,"error":{"code":-32602,"message":"Cloud"}});
+        assert_eq!(with_class(hosted.clone(), &message), hosted);
     }
 
     #[test]

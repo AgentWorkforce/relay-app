@@ -2,10 +2,11 @@
 //!
 //! Cursor names no chat in an MCP call, so Cloud cannot act as any Cursor
 //! chat from the call alone. Instead:
-//! - the `beforeMCPExecution` hook (`cursor_guide`) announces each call of
-//!   Agent Relay's server to Core ([`INTENT_ROUTE`]) with its chat, Cursor's
-//!   `tool_use_id`, the tool and its arguments; Core keeps it only when the
-//!   hook runs under the process holding that chat ([`intents`]);
+//! - the `beforeMCPExecution` hook (`cursor_guide`) announces each identity
+//!   tool call of Agent Relay's server to Core ([`INTENT_ROUTE`]) with its
+//!   chat, Cursor's `tool_use_id`, the tool and its arguments; Core keeps it
+//!   only when the hook runs under the process holding that chat
+//!   ([`intents`]), and refuses any other tool;
 //! - Cursor's `mcp.json` entry runs this build's probe as `cursor-mcp`, an
 //!   app-owned stdio helper that hands each request to Core ([`ROUTE`]);
 //! - Core matches a `tools/call` to one announced call by its exact tool and
@@ -14,10 +15,14 @@
 //!   Cursor-bound grant it holds. Neither the hook nor the helper sees the
 //!   grant, the key or the proof.
 //!
-//! Without Cloud's `cursor_session_attestation`, or without an announced
-//! call, the call goes out unsigned, as before; an identity tool without one
-//! is refused, naming the command that registers the chat. Windows keeps
-//! Cursor's URL entry: its hooks are unavailable there.
+//! Any other tool's call always goes out unsigned: Cloud refuses a proof on
+//! it. Without Cloud's `cursor_session_attestation` every call goes out
+//! unsigned, as before. While calls are attested, an identity tool call
+//! without an announcement is refused by the helper with its class (Core
+//! refused the announcement, e.g. for an unknown chat, and the hook let the
+//! call through); only while they are not does the hook deny it, naming the
+//! command that registers the chat. Windows keeps Cursor's URL entry: its
+//! hooks are unavailable there.
 pub(crate) mod intents;
 pub(crate) mod proof;
 mod route;

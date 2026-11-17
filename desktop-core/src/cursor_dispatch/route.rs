@@ -89,7 +89,8 @@ fn announced(input: &Value, generation: u64) -> Result<Intent, &'static str> {
     let sid = field("conversation_id")?.to_ascii_lowercase();
     let tuid = field("tool_use_id")?;
     let tool = field("tool_name")?;
-    if !proof::valid_tuid(tuid) || tool.is_empty() || tool.len() > 128 {
+    // Only an identity tool carries a proof: Cloud refuses one on any other.
+    if !proof::valid_tuid(tuid) || !IDENTITY_TOOLS.contains(&tool) {
         return Err("cursor_call_invalid");
     }
     let (_, args) = proof::arguments(&hook_arguments(&input["tool_input"])?)?;
@@ -103,7 +104,8 @@ fn announced(input: &Value, generation: u64) -> Result<Intent, &'static str> {
 }
 
 /// [`super::INTENT_ROUTE`]: Cursor's `beforeMCPExecution` hook announces a
-/// call of Agent Relay's server. Kept only while Cursor's calls are
+/// call of one of Agent Relay's identity tools; any other tool is refused as
+/// `cursor_call_invalid`. Kept only while Cursor's calls are
 /// attested, the chat is on the relay, and the hook runs under the process
 /// holding that chat.
 pub(crate) async fn intent(
@@ -315,10 +317,11 @@ impl Dispatch {
         Ok(())
     }
 
-    /// Strips any caller-supplied proof from a `tools/call` and, for a call
-    /// a chat's hook announced, signs that chat's proof into it. An identity
-    /// tool without exactly one chat's announcement is refused while
-    /// Cursor's calls are attested; any other tool then goes out unsigned.
+    /// Strips any caller-supplied proof from a `tools/call` and, for an
+    /// identity tool a chat's hook announced, signs that chat's proof into
+    /// it. An identity tool without exactly one chat's announcement is
+    /// refused while Cursor's calls are attested. Any other tool always goes
+    /// out unsigned: Cloud refuses a proof on it with HTTP 400.
     fn attest(&mut self, attesting: bool) -> Result<(), &'static str> {
         let request = &mut self.envelope.request;
         if request["method"] != "tools/call" {
@@ -333,7 +336,9 @@ impl Dispatch {
         if !attesting {
             return Ok(());
         }
-        let identity = IDENTITY_TOOLS.contains(&tool.as_str());
+        if !IDENTITY_TOOLS.contains(&tool.as_str()) {
+            return Ok(());
+        }
         let intent = match self.account.copilot_dispatch.cursor_intents.take(
             &tool,
             &canonical,
@@ -341,7 +346,6 @@ impl Dispatch {
             Instant::now(),
         ) {
             Ok(Some(intent)) => intent,
-            Ok(None) | Err(_) if !identity => return Ok(()),
             Ok(None) => return Err("cursor_intent_missing"),
             Err(class) => return Err(class),
         };

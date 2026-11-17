@@ -111,8 +111,8 @@ fn non_success_error_is_correlated_and_never_echoes_upstream_body() {
 fn a_refusal_names_the_client_whose_connection_to_repair() {
     let id = json!(3);
     for status in [400, 401, 403] {
-        let copilot = status_error(Client::Copilot, status, &id).unwrap();
-        let cursor = status_error(Client::Cursor, status, &id).unwrap();
+        let copilot = status_error(Client::Copilot, status, &id, false).unwrap();
+        let cursor = status_error(Client::Cursor, status, &id, false).unwrap();
         assert!(copilot["error"]["message"]
             .as_str()
             .unwrap()
@@ -122,9 +122,31 @@ fn a_refusal_names_the_client_whose_connection_to_repair() {
         assert_eq!(cursor["id"], 3);
     }
     assert_eq!(
-        status_error(Client::Cursor, 500, &id).unwrap_err(),
+        status_error(Client::Cursor, 500, &id, true).unwrap_err(),
         IN_DOUBT
     );
+}
+
+#[test]
+fn a_cursor_400_on_a_signed_call_names_the_attestation() {
+    let id = json!(5);
+    let signed = status_error(Client::Cursor, 400, &id, true).unwrap();
+    let message = signed["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("could not verify this Cursor chat's attestation"),
+        "{message}"
+    );
+    let unsigned = status_error(Client::Cursor, 400, &id, false).unwrap();
+    assert!(!unsigned["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("attestation"));
+    for status in [401, 403] {
+        assert_eq!(
+            status_error(Client::Cursor, status, &id, true),
+            status_error(Client::Cursor, status, &id, false)
+        );
+    }
 }
 
 #[test]

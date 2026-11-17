@@ -310,6 +310,53 @@ fn usable_helper(home: &std::path::Path) {
     agent_relay_node::platform::fs::set_mode(&helper, 0o700).unwrap();
 }
 
+/// Cursor's `mcp.json` entry for Agent Relay. On macOS and Linux it runs
+/// this install's probe as the `cursor-mcp` bridge for `site` and holds no
+/// grant; Windows has no Cursor hooks, so it keeps the hosted MCP URL with
+/// `grant`.
+fn assert_cursor_entry(home: &std::path::Path, site: &str, grant: &str) {
+    let installed = std::fs::read_to_string(home.join(".cursor/mcp.json")).unwrap();
+    let mcp: Value = json5::from_str(&installed).unwrap();
+    let entry = &mcp["mcpServers"]["agent-relay"];
+    if cfg!(windows) {
+        assert_eq!(
+            entry["url"],
+            format!("{site}/cloud/api/v1/mcp/shared-sessions")
+        );
+        assert_eq!(entry["headers"]["Authorization"], format!("Bearer {grant}"));
+        return;
+    }
+    let helper = agent_relay_desktop_core::probe_copy::destination(home);
+    assert_eq!(entry["command"], helper.to_str().unwrap(), "{entry}");
+    let args: Vec<&str> = entry["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        args[..6],
+        [
+            "cursor-mcp",
+            "--site",
+            site,
+            "--workspace",
+            WORKSPACE,
+            "--account"
+        ],
+        "{entry}"
+    );
+    assert!(!args[6].is_empty(), "{entry}");
+    assert!(
+        entry.get("url").is_none() && entry.get("headers").is_none(),
+        "{entry}"
+    );
+    assert!(
+        !installed.contains(grant),
+        "the bridge entry holds no grant"
+    );
+}
+
 fn tool<'a>(report: &'a Value, id: &str) -> &'a Value {
     report["tools"]
         .as_array()
@@ -374,14 +421,8 @@ async fn a_gate_only_sign_in_writes_cursor_s_hosted_mcp_entry() {
         .to_string();
     assert!(!report.to_string().contains(&grant));
 
+    assert_cursor_entry(&harness.home, &site, &grant);
     let installed = std::fs::read_to_string(harness.home.join(".cursor/mcp.json")).unwrap();
-    let mcp: Value = json5::from_str(&installed).unwrap();
-    let entry = &mcp["mcpServers"]["agent-relay"];
-    assert_eq!(
-        entry["url"],
-        format!("{site}/cloud/api/v1/mcp/shared-sessions")
-    );
-    assert_eq!(entry["headers"]["Authorization"], format!("Bearer {grant}"));
     assert!(!installed.contains("access-"));
     assert!(!installed.contains(ACCOUNT_KEY));
 
@@ -426,15 +467,7 @@ async fn a_resolve_with_no_gate_and_no_key_still_writes_cursor_s_hosted_mcp_entr
         .as_str()
         .unwrap()
         .to_string();
-    let mcp: Value =
-        json5::from_str(&std::fs::read_to_string(harness.home.join(".cursor/mcp.json")).unwrap())
-            .unwrap();
-    let entry = &mcp["mcpServers"]["agent-relay"];
-    assert_eq!(
-        entry["url"],
-        format!("{site}/cloud/api/v1/mcp/shared-sessions")
-    );
-    assert_eq!(entry["headers"]["Authorization"], format!("Bearer {grant}"));
+    assert_cursor_entry(&harness.home, &site, &grant);
     let cursor = tool(&report, "cursor");
     assert!(
         matches!(cursor["state"].as_str(), Some("configured" | "installed")),

@@ -173,7 +173,7 @@ async fn an_ambiguous_intent_refuses_only_identity_calls() {
     assert!(posted.unwrap().1["params"]["arguments"]
         .get(FIELD)
         .is_none());
-    assert_eq!(intents.len(), 0, "both announcements are dropped");
+    assert_eq!(intents.len(), 2, "a read never takes an intent");
 
     let arguments = json!({"to":"peer","text":"x"});
     two_chats("send_relay_message", &arguments);
@@ -217,4 +217,56 @@ async fn the_mcp_route_refuses_another_binding_and_invalid_bodies() {
             (409, "request_invalid")
         );
     }
+}
+
+/// The hook's view of Core: the class the intent route refused with.
+struct Refusing(String);
+
+impl crate::cursor_guide::Relay for Refusing {
+    fn attesting(&self) -> bool {
+        panic!("the refusal class already says Cursor's calls are attested")
+    }
+    fn announce(&self, _: &Value) -> Result<(), String> {
+        Err(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_chat_s_identity_call_is_left_to_the_helper_which_refuses_it() {
+    let f = fixture().await;
+    let account = account(&f);
+    assert!(attesting(&account, &f.core));
+    let unknown = "5d1c0b8e-7a2f-4c3d-9e8b-1a2b3c4d5e6f";
+    let arguments = json!({"to":"synthetic-peer","text":"synthetic-message"});
+    let hook = json!({
+        "hook_event_name": "beforeMCPExecution", "mcp_server_name": "agent-relay",
+        "conversation_id": unknown, "tool_use_id": TUID,
+        "tool_name": "send_relay_message", "tool_input": arguments.to_string(),
+    });
+    let uid = agent_relay_node::relay::peer::current_uid();
+    let request = post(
+        crate::cursor_dispatch::INTENT_ROUTE,
+        serde_json::to_vec(&hook).unwrap(),
+    );
+    let error = f
+        .outbound
+        .handle(HOOK_PID, uid, &request)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (409, "cursor_chat_unknown")
+    );
+    let relay = Refusing(crate::copilot_dispatch::refusal_class(&error.code).to_owned());
+    let never = || -> crate::cursor_guide::Commands { panic!("the helper refuses, not the hook") };
+    let output =
+        crate::cursor_guide::answer(hook.to_string().as_bytes(), "agent-relay", &relay, never);
+    assert_eq!(output, json!({}));
+    assert_eq!(account.copilot_dispatch.cursor_intents.len(), 0);
+    let (reply, posted) = run(
+        dispatch(&f, "send_relay_message", arguments),
+        &helper_table(&f),
+    );
+    assert_eq!(class(&reply), "cursor_intent_missing");
+    assert!(posted.is_none());
 }

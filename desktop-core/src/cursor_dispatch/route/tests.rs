@@ -136,6 +136,7 @@ fn announcements_read_cursor_s_payload_and_refuse_malformed_calls() {
         ("tool_use_id", json!("has space")),
         ("tool_use_id", json!("")),
         ("tool_name", json!("")),
+        ("tool_name", json!("list_relay_agents")),
         ("conversation_id", json!(7)),
         ("tool_input", json!("not json")),
         ("tool_input", json!([1])),
@@ -238,6 +239,27 @@ async fn unannounced_calls_go_unsigned_only_for_tools_without_an_identity() {
         &table,
     );
     assert_eq!(class(&reply), "cursor_intent_missing");
+}
+
+/// Cloud refuses a proof on any tool but an identity tool, so a read goes
+/// out unsigned even when a kept intent matches it.
+#[tokio::test]
+async fn a_read_call_is_never_signed_even_with_a_matching_intent() {
+    let f = fixture().await;
+    let table = helper_table(&f);
+    let generation = f.cloud.generation.load(std::sync::atomic::Ordering::SeqCst);
+    let intent = Intent {
+        sid: sid(),
+        tool: "list_relay_agents".into(),
+        args: "{}".into(),
+        tuid: TUID.into(),
+        generation,
+    };
+    let intents = &account(&f).copilot_dispatch.cursor_intents;
+    intents.register(intent, Instant::now()).unwrap();
+    let (reply, posted) = run(dispatch(&f, "list_relay_agents", json!({})), &table);
+    assert!(reply.get("error").is_none(), "{reply}");
+    assert_eq!(posted.unwrap().1["params"]["arguments"], json!({}));
 }
 
 #[tokio::test]
@@ -391,4 +413,5 @@ fn cursor_routes_ride_on_the_hook_paths_the_pinned_core_forwards() {
     }
 }
 
+mod control;
 mod routes;
