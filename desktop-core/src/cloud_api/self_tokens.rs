@@ -232,21 +232,23 @@ fn post_blocking(url: &str, bearer: &str, body: &Value) -> Result<SelfToken, Min
     decode_mint(status, &body, retry.as_deref())
 }
 
-/// Revokes this computer's token `token_id`. Best effort: a failure is in
+/// Revokes this computer's token `token_id`. Whether Control answered that
+/// it is gone: deleted (2xx) or not found (404). A failure is otherwise in
 /// the request log only.
-pub async fn delete(site: &str, bearer: &Secret, workspace_id: &str, token_id: &str) {
+pub async fn delete(site: &str, bearer: &Secret, workspace_id: &str, token_id: &str) -> bool {
     let Some(url) = self_tokens_url(site, workspace_id) else {
-        return;
+        return false;
     };
     let id: String = url::form_urlencoded::byte_serialize(token_id.as_bytes()).collect();
-    let _ = cloud_http::send(
+    cloud_http::send(
         "DELETE",
         format!("{url}/{id}"),
         Some(bearer.expose().to_string()),
         None,
         TIMEOUT,
     )
-    .await;
+    .await
+    .is_ok_and(|answer| answer.ok() || answer.status == 404)
 }
 
 #[cfg(test)]
