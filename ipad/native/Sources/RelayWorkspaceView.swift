@@ -1226,7 +1226,7 @@ struct RelayWorkspaceView: View {
         .task(id: "\(agent.id):\(agent.sessionID):\(client.canLoadSummaries):goal") {
             await client.loadGoal(for: agent)
         }
-        .task(id: "\(agent.id):\(agent.sessionID):\(client.canLoadSummaries):\(client.sessionSources[agent.sessionID] ?? ""):session-summary") {
+        .task(id: "\(agent.id):\(agent.sessionID):\(client.canLoadSummaries):\(client.sessionSources[agent.sessionID] ?? ""):\(client.sessionRevisions[agent.sessionID] ?? ""):session-summary") {
             await client.loadSessionSummary(for: agent)
         }
     }

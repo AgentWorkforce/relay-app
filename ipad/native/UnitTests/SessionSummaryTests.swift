@@ -130,4 +130,67 @@ final class SessionSummaryTests: XCTestCase {
         let failed = SessionSummaryCacheEntry(state: .unavailable, revision: "r1", fetchedAt: fetched)
         XCTAssertFalse(failed.isFresh(revision: "r1", now: fetched))
     }
+
+    @MainActor func testConcurrentLoadsForOneSessionShareOneFetchAndSeeItsResult() async {
+        let cloud = FakeSummaryCloud()
+        let loads = SessionSummaryLoads()
+        let callers = (0..<2).map { _ in
+            Task { @MainActor in
+                cloud.callers += 1
+                await loads.run("s") { await cloud.fetch("s") }
+            }
+        }
+        while cloud.gate == nil || cloud.callers < 2 { await Task.yield() }
+        cloud.gate?.resume()
+        for caller in callers { await caller.value }
+        XCTAssertEqual(cloud.fetches, 1)
+        XCTAssertEqual(cloud.stored["s"], "summary 1")
+        XCTAssertFalse(loads.isLoading("s"))
+    }
+
+    @MainActor func testACancelledLoadStillStoresItsResultForTheRestartedOne() async {
+        let cloud = FakeSummaryCloud()
+        let loads = SessionSummaryLoads()
+        let cancelled = Task { @MainActor in
+            cloud.callers += 1
+            await loads.run("s") { await cloud.fetch("s") }
+        }
+        while cloud.gate == nil { await Task.yield() }
+        cancelled.cancel()
+        // The restarted `.task` (or a Retry tap during a backoff) joins the
+        // running load instead of being turned away.
+        let restarted = Task { @MainActor in
+            cloud.callers += 1
+            await loads.run("s") { await cloud.fetch("s") }
+        }
+        while cloud.callers < 2 { await Task.yield() }
+        cloud.gate?.resume()
+        await restarted.value
+        await cancelled.value
+        XCTAssertEqual(cloud.fetches, 1)
+        XCTAssertEqual(cloud.stored["s"], "summary 1")
+        XCTAssertFalse(loads.isLoading("s"))
+
+        // Once it has finished, the next load fetches again.
+        cloud.holds = false
+        await loads.run("s") { await cloud.fetch("s") }
+        XCTAssertEqual(cloud.fetches, 2)
+        XCTAssertEqual(cloud.stored["s"], "summary 2")
+    }
+}
+
+/// Counts callers and summary fetches; a fetch waits on `gate` while `holds`.
+@MainActor private final class FakeSummaryCloud {
+    var fetches = 0
+    var stored: [String: String] = [:]
+    var gate: CheckedContinuation<Void, Never>?
+    var holds = true
+    var callers = 0
+
+    func fetch(_ id: String) async {
+        fetches += 1
+        let fetch = fetches
+        if holds { await withCheckedContinuation { gate = $0 } }
+        stored[id] = "summary \(fetch)"
+    }
 }

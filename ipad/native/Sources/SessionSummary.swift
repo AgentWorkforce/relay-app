@@ -150,3 +150,29 @@ struct SessionSummaryCacheEntry: Equatable {
         return now.timeIntervalSince(fetchedAt) < Self.maximumAge
     }
 }
+
+/// One hosted-summary load per session at a time. A caller that finds a load
+/// running for the session awaits it instead of starting another. The load
+/// runs in its own task, so it finishes and stores its result even when every
+/// caller that awaited it was cancelled (a `.task` restarted mid-fetch).
+@MainActor final class SessionSummaryLoads {
+    private var inFlight: [String: (id: UUID, task: Task<Void, Never>)] = [:]
+
+    /// Whether a load for `sessionID` is running.
+    func isLoading(_ sessionID: String) -> Bool { inFlight[sessionID] != nil }
+
+    /// Runs `load` for `sessionID`, or awaits the load already running for it.
+    func run(_ sessionID: String, _ load: @escaping @MainActor () async -> Void) async {
+        if let running = inFlight[sessionID] {
+            await running.task.value
+            return
+        }
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            await load()
+            if self?.inFlight[sessionID]?.id == id { self?.inFlight[sessionID] = nil }
+        }
+        inFlight[sessionID] = (id, task)
+        await task.value
+    }
+}
