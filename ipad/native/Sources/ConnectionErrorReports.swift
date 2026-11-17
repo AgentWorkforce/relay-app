@@ -1,10 +1,7 @@
 import Foundation
 
 /// Decides whether a failed automatic Relaycast read (the presence refresh or
-/// the open conversation's history) is reported to the person: as Offline,
-/// or as the open conversation's inline "Couldn't refresh messages" line.
-/// An automatic read never raises the "Agent Relay" alert, and what it
-/// reports is the app's own words (`UserFacingError`), never the server's.
+/// the open conversation's history) is shown in the "Agent Relay" alert.
 ///
 /// iOS suspends the app a few seconds after it leaves the screen, and after a
 /// background push wake as soon as the push is handled, with any request still
@@ -14,7 +11,7 @@ import Foundation
 /// about the connection now, so it is not shown. Each stretch in the
 /// foreground or in the background is its own epoch; only a request that
 /// started in the current foreground epoch, and fails while the app is still
-/// in the foreground, is reported. The foreground refresh reports a
+/// in the foreground, can raise the alert. The foreground refresh reports a
 /// connection that is really down or slow itself.
 ///
 /// Within an epoch, a transport failure is also dropped when a newer request
@@ -75,7 +72,7 @@ struct ConnectionErrorReports {
         if Self.isTransport(error), (newestSuccess[ticket.operation] ?? 0) > ticket.sequence {
             return .drop(.superseded)
         }
-        return .show(UserFacingError.message(for: error, retriesAutomatically: true) ?? UserFacingError.generic)
+        return .show(error.localizedDescription)
     }
 
     static func isCancellation(_ error: Error) -> Bool {

@@ -322,7 +322,7 @@ struct SessionSummarySearchView<Avatar: View>: View {
             } else if error is CancellationError || (error as? URLError)?.code == .cancelled {
                 phase = .failure("Search was interrupted. Try again.")
             } else {
-                phase = .failure(UserFacingError.message(for: error) ?? "Search was interrupted. Try again.")
+                phase = .failure(error.localizedDescription)
             }
         }
     }
@@ -363,7 +363,7 @@ struct SessionSummarySearchView<Avatar: View>: View {
             if error is CancellationError || (error as? URLError)?.code == .cancelled {
                 paginationError = "Loading was interrupted. Try again."
             } else {
-                paginationError = UserFacingError.message(for: error) ?? "Loading was interrupted. Try again."
+                paginationError = error.localizedDescription
             }
         }
     }

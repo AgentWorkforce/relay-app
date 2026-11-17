@@ -254,7 +254,7 @@ struct RelayWorkspaceView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             // Requests that were in flight when iOS suspended the app fail on
-            // the way back; this keeps them from being reported.
+            // the way back; this keeps them out of the alert.
             client.sceneChanged(foreground: phase != .background)
             if phase == .active {
                 Task {
@@ -1107,15 +1107,6 @@ struct RelayWorkspaceView: View {
                     .padding(.horizontal, 16).padding(.vertical, 8)
                     .accessibilityIdentifier("Mobile native continuation status")
             }
-            if let notice = client.refreshNotice {
-                // Messages may be out of date; a DM's next read retries on its own.
-                Label(notice, systemImage: "arrow.clockwise")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .accessibilityIdentifier("Conversation refresh status")
-            }
             Divider()
             if client.attachedID != nil {
                 summaryCard(for: agent)
@@ -1499,7 +1490,7 @@ struct RelayWorkspaceView: View {
                     defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
                     await uploadFiles(urls, for: agent, upload: upload)
                 }
-            case .failure(let failure): client.reportFailure(failure)
+            case .failure(let failure): client.error = failure.localizedDescription
             }
         }
     }
@@ -1513,7 +1504,7 @@ struct RelayWorkspaceView: View {
                     openURL(url)
                 } catch is CancellationError {
                 } catch {
-                    if generation == client.sessionGeneration { client.reportFailure(error) }
+                    if generation == client.sessionGeneration { client.error = error.localizedDescription }
                 }
             }
         } label: {
@@ -1562,7 +1553,7 @@ struct RelayWorkspaceView: View {
                 guard current() else { return }
                 uploadedAttachments.append(attachment)
             } catch {
-                if current(), !(error is CancellationError) { client.reportFailure(error) }
+                if current(), !(error is CancellationError) { client.error = error.localizedDescription }
                 return
             }
         }
@@ -1937,7 +1928,7 @@ struct RelayWorkspaceView: View {
                 // A lost reply may already have started the fork. Stop the
                 // sheet from sending a second one; a server rejection can be retried.
                 if SessionFork.submissionUncertain(error) { forkAccepted = true }
-                forkNotice = UserFacingError.message(for: error)
+                forkNotice = error.localizedDescription
             }
             forking = false
         }
@@ -1976,7 +1967,7 @@ struct RelayWorkspaceView: View {
                         + "Check Agents in a minute before trying again."
                 }
             } catch {
-                spawnNotice = UserFacingError.message(for: error)
+                spawnNotice = error.localizedDescription
             }
             spawning = false
         }
