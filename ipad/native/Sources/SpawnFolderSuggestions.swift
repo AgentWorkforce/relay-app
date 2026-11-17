@@ -19,15 +19,20 @@ enum SpawnFolderSuggestions {
     static let limit = 8
 
     /// The `recent_folders` a node's capabilities list, newest first. Every
-    /// spawn capability carries the same list; they are merged in order.
+    /// spawn capability carries the same list; they are merged in order and
+    /// kept to `limit * 4`, room for entries `suggestions` drops.
     static func advertisedFolders(in capabilities: [JSONObject]) -> [String] {
+        let cap = limit * 4
         var folders: [String] = []
+        var seen = Set<String>()
         for capability in capabilities {
+            guard folders.count < cap else { break }
             guard let name = capability["name"] as? String, name.hasPrefix("spawn:") else { continue }
             let metadata = capability["metadata"] as? JSONObject ?? [:]
             let configured = metadata["configured"] as? JSONObject ?? [:]
-            for folder in configured["recent_folders"] as? [String] ?? [] where !folders.contains(folder) {
-                folders.append(folder)
+            for folder in configured["recent_folders"] as? [String] ?? [] {
+                guard folders.count < cap else { break }
+                if seen.insert(folder).inserted { folders.append(folder) }
             }
         }
         return folders

@@ -7,7 +7,7 @@ final class SpawnFolderSuggestionsTests: XCTestCase {
     }
 
     private func capability(_ name: String, folders: [String]?) -> JSONObject {
-        var configured: JSONObject = ["harness": String(name.dropFirst("spawn:".count)), "machine": "dogpatch-mini"]
+        var configured: JSONObject = ["harness": String(name.dropFirst("spawn:".count)), "machine": "node-a"]
         if let folders { configured["recent_folders"] = folders }
         return ["name": name, "kind": "capacity", "metadata": ["configured": configured, "live": JSONObject()]]
     }
@@ -30,7 +30,7 @@ final class SpawnFolderSuggestionsTests: XCTestCase {
 
     func testSuggestionsKeepTheNodesNewestFirstOrderAndNameTheLastFolder() {
         let suggestions = SpawnFolderSuggestions.suggestions(
-            for: "dogpatch-mini", in: [node("dogpatch-mini", folders: ["/Users/sam/relay-app", "/srv/work/cloud"])])
+            for: "node-a", in: [node("node-a", folders: ["/Users/sam/relay-app", "/srv/work/cloud"])])
         XCTAssertEqual(suggestions, [
             SpawnFolderSuggestion(name: "relay-app", path: "/Users/sam/relay-app"),
             SpawnFolderSuggestion(name: "cloud", path: "/srv/work/cloud"),
@@ -39,37 +39,37 @@ final class SpawnFolderSuggestionsTests: XCTestCase {
 
     func testDuplicatesAreSuggestedOnceAtTheirNewestPlace() {
         let suggestions = SpawnFolderSuggestions.suggestions(
-            for: "dogpatch-mini",
-            in: [node("dogpatch-mini", folders: ["/Users/sam/relay", "/Users/sam/cloud", "/Users/sam/relay/", " /Users/sam/cloud"])])
+            for: "node-a",
+            in: [node("node-a", folders: ["/Users/sam/relay", "/Users/sam/cloud", "/Users/sam/relay/", " /Users/sam/cloud"])])
         XCTAssertEqual(suggestions.map(\.path), ["/Users/sam/relay", "/Users/sam/cloud"])
     }
 
     func testFoldersAlreadySavedOnTheNodeAreNotSuggestedAgain() {
         let suggestions = SpawnFolderSuggestions.suggestions(
-            for: "dogpatch-mini", in: [node("dogpatch-mini", folders: ["/Users/sam/relay", "/Users/sam/cloud"])],
+            for: "node-a", in: [node("node-a", folders: ["/Users/sam/relay", "/Users/sam/cloud"])],
             saved: ["/Users/sam/relay/"])
         XCTAssertEqual(suggestions.map(\.path), ["/Users/sam/cloud"])
     }
 
     func testSuggestionsStopAtTheLimit() {
         let folders = (1...12).map { "/work/project-\($0)" }
-        let suggestions = SpawnFolderSuggestions.suggestions(for: "dogpatch-mini", in: [node("dogpatch-mini", folders: folders)])
+        let suggestions = SpawnFolderSuggestions.suggestions(for: "node-a", in: [node("node-a", folders: folders)])
         XCTAssertEqual(suggestions.count, SpawnFolderSuggestions.limit)
         XCTAssertEqual(suggestions.map(\.path), Array(folders.prefix(SpawnFolderSuggestions.limit)))
     }
 
     func testOnlyTheChosenNodesFoldersAreSuggested() {
-        let nodes = [node("studio-mac", folders: ["/Users/ana/site"]), node("dogpatch-mini", folders: ["/Users/sam/relay"])]
-        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "dogpatch-mini", in: nodes).map(\.path), ["/Users/sam/relay"])
+        let nodes = [node("studio-mac", folders: ["/Users/ana/site"]), node("node-a", folders: ["/Users/sam/relay"])]
+        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "node-a", in: nodes).map(\.path), ["/Users/sam/relay"])
         XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "missing-node", in: nodes), [])
         XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "", in: nodes), [])
     }
 
     func testEmptyAndUnusablePathsAreNotSuggested() {
-        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "dogpatch-mini", in: []), [])
-        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "dogpatch-mini", in: [node("dogpatch-mini", folders: [])]), [])
+        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "node-a", in: []), [])
+        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "node-a", in: [node("node-a", folders: [])]), [])
         let unusable = ["", "   ", "/", "~/relay", "relative/path", "/two\nlines"]
-        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "dogpatch-mini",
-                                                          in: [node("dogpatch-mini", folders: unusable)]), [])
+        XCTAssertEqual(SpawnFolderSuggestions.suggestions(for: "node-a",
+                                                          in: [node("node-a", folders: unusable)]), [])
     }
 }
