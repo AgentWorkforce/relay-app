@@ -29,14 +29,12 @@ service-callers-dev-attest = []
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main bbf04c6d, after 18.7.3: #2180 (public Connect invites from site builds),
-# #2173, #2188 (DM history reads), #2189 (socket reconnect backoff), #2193
-# (agents register through relaygate on gate-only installs), #2195 (message as
-# yourself through relaygate), #2196 (gate aliases, refused-send retry), #2197
-# (spawn through Control's node bridge) and #2201 (agents spawned on a gate-only
-# install get their own gate credential). Move it in desktop-core and gtk
-# together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "0cabdd76afbbc55945dfb2b3d1c694bceafa4052", default-features = false }
+# main 499f1b2d, after 0cabdd76: #2207 (spawn failures say why; Claude ready
+# timeout), #2208-#2210 (organization workspace policy: repositories join by
+# themselves, non-admin senders' messages held when the organization says so)
+# and #2215 (a brand-new Cursor chat's first prompt puts it on its window).
+# Move it in desktop-core and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "499f1b2de05769f708df1346b04b3758587df9f3", default-features = false }
 # relayhistory 0.60.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
