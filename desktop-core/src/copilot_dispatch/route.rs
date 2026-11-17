@@ -16,9 +16,9 @@ use agent_relay_node::relay::{
     store::{SessionKind, Target},
 };
 mod protocol;
-use protocol::request_valid;
 #[cfg(any(debug_assertions, test))]
 use protocol::request_shape;
+use protocol::request_valid;
 #[cfg(test)]
 use protocol::{catalog, transport_capabilities};
 
@@ -34,7 +34,7 @@ struct Envelope {
     request: Value,
 }
 
-fn owner(core: &Core, sid: &str) -> Option<Owner> {
+fn owner(core: &Arc<Core>, sid: &str) -> Option<Owner> {
     let account = core.plugins.cloud.account()?;
     let workspace = core.workspace()?;
     let target = Target::new(SessionKind::Copilot, sid);
@@ -46,18 +46,18 @@ fn owner(core: &Core, sid: &str) -> Option<Owner> {
                     .as_ref()
                     .is_none_or(|key| key == &workspace.key)
         })?;
-        Some((
-            format!("{}:{}", registration.agent_id, registration.registered_at),
-            store.desktop_sync_source_id.clone()?,
-        ))
+        Some((registration.clone(), store.desktop_sync_source_id.clone()?))
     })?;
+    if !Identities::new(core.clone()).copilot_sender_synced(sid, &source, &registration) {
+        return None;
+    }
     Some(Owner {
         site: account.site_url,
         user: account.user_id?,
         workspace: account.workspace_id,
         generation: core.plugins.cloud.identity_sync_generation(),
         source,
-        registration,
+        registration: super::registration_stamp(&registration),
     })
 }
 
@@ -150,12 +150,11 @@ pub(crate) async fn route(
         eprintln!("[copilot-dispatch] rejected request: body too large");
         return Err(refused("request_invalid"));
     }
-    let envelope: Envelope =
-        serde_json::from_slice(&request.body).map_err(|_| {
-            #[cfg(debug_assertions)]
-            eprintln!("[copilot-dispatch] rejected request: invalid envelope");
-            refused("request_invalid")
-        })?;
+    let envelope: Envelope = serde_json::from_slice(&request.body).map_err(|_| {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-dispatch] rejected request: invalid envelope");
+        refused("request_invalid")
+    })?;
     if !request_valid(&envelope.request) {
         #[cfg(debug_assertions)]
         eprintln!(
@@ -434,9 +433,11 @@ impl Dispatch {
             // server. Answer the modern discovery probe as an unsupported RPC
             // so clients can negotiate the legacy handshake. Never forward a
             // modern request with our legacy HTTP protocol-version header.
-            Ok(()) if self.envelope.request["method"] == "server/discover" => Some(
-                forward::error(&id, -32601, "Use initialize to negotiate this MCP connection."),
-            ),
+            Ok(()) if self.envelope.request["method"] == "server/discover" => Some(forward::error(
+                &id,
+                -32601,
+                "Use initialize to negotiate this MCP connection.",
+            )),
             Ok(()) => post(
                 &self.envelope.binding,
                 bearer,

@@ -5,7 +5,8 @@ use super::DesktopIdentitySync;
 use super::Identities;
 use agent_relay_node::relay::{
     cloud_session::CloudAccount,
-    store::{SessionKind, Target},
+    store::{Registration, SessionKind, Target},
+    workspace::Secret,
 };
 use serde_json::{json, Value};
 
@@ -26,6 +27,36 @@ pub(super) struct Support {
     /// Claude Code chats, whose calls carry this installation's proof.
     pub(super) claude: bool,
     pub(super) copilot: bool,
+}
+
+/// Keep explicit links to the registered identity, but give a verified native
+/// Copilot chat exactly one sender: its current alias, when it has one.
+/// Publishing both rows with the native ID would make Cloud reject the chat as
+/// ambiguous; publishing only the original token replies in the wrong DM.
+pub(super) fn identities(
+    registration: &Registration,
+    token: &Secret,
+    prefix: &str,
+    support: Support,
+) -> Vec<Value> {
+    let entry = |registration: &Registration, token: &Secret| {
+        json!({
+            "name": registration.name,
+            "address": registration.direct_address(prefix),
+            "agent_id": registration.agent_id,
+            "token": token,
+        })
+    };
+    let mut original = entry(registration, token);
+    if support.copilot && registration.target.kind == SessionKind::Copilot {
+        if let Some((alias, token)) = registration.alias_credential() {
+            let mut sender = entry(&alias, &token);
+            attach(&mut sender, &registration.target, support);
+            return vec![original, sender];
+        }
+    }
+    attach(&mut original, &registration.target, support);
+    vec![original]
 }
 impl DesktopIdentitySync {
     pub(super) fn native_providers_supported(
@@ -164,6 +195,30 @@ impl Identities {
             self.state
                 .copilot_attestation_supported(&account, cloud.identity_sync_generation())
         })
+    }
+
+    /// A proof must not use Cloud's previous sender while a rename or an
+    /// identity-sync failure is still being reconciled.
+    pub(crate) fn copilot_sender_synced(
+        &self,
+        sid: &str,
+        source: &str,
+        registration: &Registration,
+    ) -> bool {
+        let Some(account) = self.plugins.cloud.account() else {
+            return false;
+        };
+        let sender = registration
+            .alias_credential()
+            .map(|(alias, _)| alias)
+            .unwrap_or_else(|| registration.clone());
+        self.state.native_sender_synced(
+            &account,
+            self.plugins.cloud.identity_sync_generation(),
+            source,
+            sid,
+            &sender.agent_id,
+        )
     }
 
     /// Records what Cloud's identity read advertises, and points provider

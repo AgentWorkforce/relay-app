@@ -10,6 +10,71 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn copilot_alias_change_revokes_an_approved_queued_call() {
+    use agent_relay_node::relay::store::{AgentAlias, SessionKind};
+    use agent_relay_node::relay::workspace::Secret;
+    let f = fixture().await;
+    let (ticket, call) = pending(&f).await;
+    control(&f, &ticket, &call, true);
+    let reply = dispatch(&f, ticket, call).run_after_resolve(
+        |_, _, _, _| panic!("a call approved before the rename must not POST as another sender"),
+        |_| {
+            f.core
+                .store
+                .update(|store| {
+                    let registration = store
+                        .registrations
+                        .iter_mut()
+                        .find(|r| r.target.kind == SessionKind::Copilot)
+                        .unwrap();
+                    registration.alias = Some(AgentAlias {
+                        name: "copilot-renamed".into(),
+                        agent_id: "alias-agent".into(),
+                        token: Secret::new("synthetic-alias-token"),
+                        registered_at: "2026-11-17T00:00:00Z".into(),
+                        gate: None,
+                    });
+                })
+                .unwrap();
+        },
+    );
+    assert!(reply.get("error").is_some());
+}
+
+#[tokio::test]
+async fn copilot_alias_change_still_revokes_a_queued_call_after_cloud_sync() {
+    use agent_relay_node::relay::store::{AgentAlias, SessionKind};
+    use agent_relay_node::relay::workspace::Secret;
+    let f = fixture().await;
+    let (ticket, call) = pending(&f).await;
+    control(&f, &ticket, &call, true);
+    f.core
+        .store
+        .update(|store| {
+            let registration = store
+                .registrations
+                .iter_mut()
+                .find(|r| r.target.kind == SessionKind::Copilot)
+                .unwrap();
+            registration.alias = Some(AgentAlias {
+                name: "copilot-renamed".into(),
+                agent_id: "alias-agent".into(),
+                token: Secret::new("synthetic-alias-token"),
+                registered_at: "2026-11-17T00:00:00Z".into(),
+                gate: None,
+            });
+        })
+        .unwrap();
+    Identities::new(f.core.clone())
+        .sync_desktop_identities()
+        .await;
+    let reply = dispatch(&f, ticket, call).run_with(|_, _, _, _| {
+        panic!("re-syncing the new sender must not resurrect a pre-rename approval")
+    });
+    assert!(reply.get("error").is_some());
+}
+
 #[test]
 fn rejected_request_diagnostics_expose_only_protocol_shape() {
     let request = json!({
@@ -145,8 +210,14 @@ async fn initialize_dispatch_removes_unavailable_stream_capabilities_and_keeps_o
     });
     assert_eq!(reply["id"], 17);
     assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(reply["result"]["serverInfo"], json!({"name":"fixture","version":"1"}));
-    assert_eq!(reply["result"]["capabilities"], json!({"tools":{"extra":"kept"},"resources":{},"prompts":{},"experimental":{"fixture":true}}));
+    assert_eq!(
+        reply["result"]["serverInfo"],
+        json!({"name":"fixture","version":"1"})
+    );
+    assert_eq!(
+        reply["result"]["capabilities"],
+        json!({"tools":{"extra":"kept"},"resources":{},"prompts":{},"experimental":{"fixture":true}})
+    );
     assert!(f.dispatch.call(&ticket, Instant::now()).is_ok());
 }
 
@@ -171,7 +242,8 @@ async fn discovery_probe_still_requires_current_provider_authority() {
     let (ticket, call) = pending(&f).await;
     let mut d = dispatch(&f, ticket, call);
     d.pending = None;
-    d.envelope.request = json!({"jsonrpc":"2.0","id":8,"method":"server/discover","params":{"_meta":{}}});
+    d.envelope.request =
+        json!({"jsonrpc":"2.0","id":8,"method":"server/discover","params":{"_meta":{}}});
     f.installer.select(vec![], Some(&binding()), None).unwrap();
     let response = d.run_with(|_, _, _, _| panic!("revoked discovery must not reach the network"));
     assert_eq!(response["error"]["code"], -32000);
@@ -474,13 +546,23 @@ fn initialize_advertises_only_capabilities_this_transport_can_deliver() {
             "prompts":{"listChanged":true},"experimental":{"fixture":true}}
     }});
     transport_capabilities(&mut reply);
-    assert_eq!(reply["result"]["capabilities"], json!({
-        "tools":{"other":true},"resources":{},"prompts":{},
-        "experimental":{"fixture":true}
-    }));
+    assert_eq!(
+        reply["result"]["capabilities"],
+        json!({
+            "tools":{"other":true},"resources":{},"prompts":{},
+            "experimental":{"fixture":true}
+        })
+    );
     assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(reply["result"]["serverInfo"], json!({"name":"relay","version":"1"}));
-    for original in [json!(null), json!({"result":{"content":[]}}), json!({"error":{"code":-32000}})] {
+    assert_eq!(
+        reply["result"]["serverInfo"],
+        json!({"name":"relay","version":"1"})
+    );
+    for original in [
+        json!(null),
+        json!({"result":{"content":[]}}),
+        json!({"error":{"code":-32000}}),
+    ] {
         let mut reply = original.clone();
         transport_capabilities(&mut reply);
         assert_eq!(reply, original);

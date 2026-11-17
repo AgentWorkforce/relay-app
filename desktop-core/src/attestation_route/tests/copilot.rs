@@ -1,6 +1,134 @@
 use super::*;
 mod presence;
 
+#[tokio::test]
+async fn copilot_alias_identity_sync_uses_current_sender_once() -> anyhow::Result<()> {
+    use agent_relay_node::relay::store::AgentAlias;
+    let f = registered_copilot().await?;
+    f.core.store.update(|store| {
+        let registration = store
+            .registrations
+            .iter_mut()
+            .find(|r| r.target.kind == SessionKind::Copilot)
+            .unwrap();
+        registration.alias = Some(AgentAlias {
+            name: "copilot-renamed".into(),
+            agent_id: "alias-agent".into(),
+            token: Secret::new("synthetic-alias-token"),
+            registered_at: "2026-11-17T00:00:00Z".into(),
+            gate: None,
+        });
+    })?;
+    Identities::new(f.core.clone())
+        .sync_desktop_identities()
+        .await;
+    {
+        let calls = f.cloud.calls.lock().unwrap();
+        let body = calls
+            .iter()
+            .rev()
+            .find(|(method, path, _)| {
+                method == "PUT" && path.ends_with("/messaging/desktop-identities")
+            })
+            .and_then(|(_, _, body)| body.as_ref())
+            .unwrap();
+        let identities = body["identities"].as_array().unwrap();
+        let native: Vec<_> = identities
+            .iter()
+            .filter(|r| r["native_session"]["kind"] == "copilot")
+            .collect();
+        assert_eq!(
+            native.len(),
+            1,
+            "one verified native chat must resolve to one sender"
+        );
+        assert_eq!(native[0]["agent_id"], "alias-agent");
+        assert_eq!(native[0]["name"], "copilot-renamed");
+        assert_eq!(native[0]["token"], "synthetic-alias-token");
+        assert_eq!(
+            native[0]["native_session"]["id"],
+            REGISTERED.to_ascii_lowercase()
+        );
+        assert!(
+            identities
+                .iter()
+                .any(|r| r["name"] == "copilot-chat" && r.get("native_session").is_none()),
+            "the original identity must retain its explicit legacy bindings"
+        );
+    }
+    let (original, current) = f.core.store.read(|store| {
+        let registration = store
+            .registrations
+            .iter()
+            .find(|r| r.target.kind == SessionKind::Copilot)
+            .unwrap();
+        (
+            registration.link_address(&f.core.machine_prefix),
+            registration.current_address(&f.core.machine_prefix),
+        )
+    });
+    for (supplied, expected) in [
+        (original, current),
+        (
+            "foreign@another-desk-123".into(),
+            "foreign@another-desk-123".into(),
+        ),
+    ] {
+        let request = hook_request("agentrelay-join_relay", json!({"desktop_address":supplied}))?;
+        let answer = f
+            .outbound
+            .handle(
+                IN_REGISTERED,
+                agent_relay_node::relay::peer::current_uid(),
+                &request,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["modifiedArgs"]["desktop_address"], expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn copilot_alias_sync_failure_cannot_issue_a_call_as_the_previous_sender(
+) -> anyhow::Result<()> {
+    use agent_relay_node::relay::store::AgentAlias;
+    use std::sync::atomic::Ordering;
+    let f = registered_copilot().await?;
+    Identities::new(f.core.clone())
+        .sync_desktop_identities()
+        .await;
+    f.core.store.update(|store| {
+        store
+            .registrations
+            .iter_mut()
+            .find(|r| r.target.kind == SessionKind::Copilot)
+            .unwrap()
+            .alias = Some(AgentAlias {
+            name: "copilot-renamed".into(),
+            agent_id: "alias-agent".into(),
+            token: Secret::new("synthetic-alias-token"),
+            registered_at: "2026-11-17T00:00:00Z".into(),
+            gate: None,
+        });
+    })?;
+    f.cloud.offline.store(true, Ordering::SeqCst);
+    let request = hook_request(
+        "agentrelay-send_relay_message",
+        json!({"to":"synthetic-peer","text":"fixture"}),
+    )?;
+    let result = f
+        .outbound
+        .handle(
+            IN_REGISTERED,
+            agent_relay_node::relay::peer::current_uid(),
+            &request,
+        )
+        .await;
+    assert_eq!(result.unwrap_err().status, 409);
+    Ok(())
+}
+
 pub(super) struct NativeFixture;
 impl crate::copilot_dispatch::peer::Verifier for NativeFixture {
     fn runtime(
@@ -298,12 +426,28 @@ async fn non_relay_tools_get_no_proof_and_oversized_args_or_missing_registration
     Ok(())
 }
 
-async fn before_with_budget(f: &Fixture, request: &Request, budget: Duration) -> Result<Value, OutboundError> {
-    let account = f.core.plugins.account.as_ref().unwrap().clone().as_any()
-        .downcast::<crate::account::Account>().unwrap();
+async fn before_with_budget(
+    f: &Fixture,
+    request: &Request,
+    budget: Duration,
+) -> Result<Value, OutboundError> {
+    let account = f
+        .core
+        .plugins
+        .account
+        .as_ref()
+        .unwrap()
+        .clone()
+        .as_any()
+        .downcast::<crate::account::Account>()
+        .unwrap();
     crate::copilot_attestation::route_with_presence_budget(
-        &f.outbound, account, IN_REGISTERED,
+        &f.outbound,
+        account,
+        IN_REGISTERED,
         agent_relay_node::relay::peer::current_uid(),
-        serde_json::from_slice(&request.body).unwrap(), budget,
-    ).await
+        serde_json::from_slice(&request.body).unwrap(),
+        budget,
+    )
+    .await
 }

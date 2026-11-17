@@ -65,7 +65,7 @@ async fn native_route_waits_for_reactivation_of_the_same_registration() {
     let call = f.dispatch.call(ticket, std::time::Instant::now()).unwrap();
     assert_eq!(
         call.owner.registration,
-        format!("{}:{}", original.agent_id, original.registered_at)
+        json!([original.agent_id, original.registered_at, null]).to_string()
     );
     assert_eq!(call.sid, target().id);
 }

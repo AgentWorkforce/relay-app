@@ -18,6 +18,36 @@ pub(super) struct SyncedSnapshot {
 }
 
 impl DesktopIdentitySync {
+    pub(super) fn native_sender_synced(
+        &self,
+        account: &CloudAccount,
+        generation: u64,
+        source: &str,
+        sid: &str,
+        agent: &str,
+    ) -> bool {
+        self.synced
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|snapshot| {
+                if snapshot.account != *account
+                    || snapshot.generation != generation
+                    || snapshot.at.elapsed() >= REFRESH
+                    || snapshot.body["source_id"] != source
+                {
+                    return false;
+                }
+                let Some(rows) = snapshot.body["identities"].as_array() else {
+                    return false;
+                };
+                let mut native = rows.iter().filter(|row| {
+                    row["native_session"]["kind"] == "copilot" && row["native_session"]["id"] == sid
+                });
+                native.next().is_some_and(|row| row["agent_id"] == agent) && native.next().is_none()
+            })
+    }
+
     /// Whether Cloud already holds exactly this snapshot, accepted less than
     /// `REFRESH` ago.
     pub(super) fn already_synced(

@@ -3,7 +3,7 @@
 use crate::claude_attestation::{Key, FIELD};
 use crate::desktop_identity::Identities;
 use agent_relay_node::relay::outbound::{Outbound, OutboundError};
-use agent_relay_node::relay::store::{SessionKind, Target};
+use agent_relay_node::relay::store::{Registration, SessionKind, Target};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -12,6 +12,47 @@ mod presence;
 
 fn unavailable() -> OutboundError {
     OutboundError::new(409, "attestation_unavailable", "Agent Relay could not verify this Copilot chat. Keep the desktop app open, put this chat on the relay, and retry. Do not substitute another chat's identity.")
+}
+
+async fn confirm_synced_sender(
+    core: &Arc<agent_relay_node::relay::daemon::Core>,
+    sid: &str,
+    source: &str,
+    registration: &Registration,
+) -> Result<(), OutboundError> {
+    let identities = Identities::new(core.clone());
+    identities.sync_desktop_identities().await;
+    identities
+        .copilot_sender_synced(sid, source, registration)
+        .then_some(())
+        .ok_or_else(unavailable)
+}
+
+fn normalize_join_identity(
+    args: &mut serde_json::Map<String, Value>,
+    registration: &Registration,
+    prefix: &str,
+) -> Result<(), OutboundError> {
+    if args
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name != registration.display_name())
+    {
+        return Err(unavailable());
+    }
+    args.remove("name");
+    args.remove("description");
+    // Stable links may name the original registration. Translate only this
+    // verified chat's own link; foreign addresses remain refused by Cloud.
+    if args.get("desktop_address").and_then(Value::as_str)
+        == Some(registration.link_address(prefix).as_str())
+    {
+        args.insert(
+            "desktop_address".into(),
+            json!(registration.current_address(prefix)),
+        );
+    }
+    Ok(())
 }
 
 // The hook supplies a flattened name, not a verified server URL. A separator-free
@@ -65,7 +106,8 @@ pub(crate) async fn route(
         uid,
         input,
         Duration::from_secs(35),
-    ).await
+    )
+    .await
 }
 
 // The production route chooses the budget; fixtures can exercise the same
@@ -116,11 +158,6 @@ pub(crate) async fn route_with_presence_budget(
         .account()
         .ok_or_else(unavailable)?;
     let generation = outbound.core.plugins.cloud.identity_sync_generation();
-    if tool == "join_relay" {
-        Identities::new(outbound.core.clone())
-            .sync_desktop_identities()
-            .await;
-    }
     if !Identities::new(outbound.core.clone()).copilot_attestation_verified() {
         return Err(unavailable());
     }
@@ -137,29 +174,29 @@ pub(crate) async fn route_with_presence_budget(
                 return Err(unavailable());
             }
             outbound.core.store.read(|store| {
-                let registration = store.registration_for(&target)
+                let registration = store
+                    .registration_for(&target)
                     .ok_or_else(OutboundError::not_registered)?;
-                let source = store.desktop_sync_source_id.as_ref()
+                let source = store
+                    .desktop_sync_source_id
+                    .as_ref()
                     .ok_or_else(OutboundError::not_registered)?;
-                Ok(registration.missing_since.is_none()
+                Ok(registration
+                    .missing_since
+                    .is_none()
                     .then(|| (registration.clone(), source.clone())))
             })
         },
         Instant::now() + presence_budget,
-    ).await?.ok_or_else(OutboundError::not_registered)?;
+    )
+    .await?
+    .ok_or_else(OutboundError::not_registered)?;
+    confirm_synced_sender(&outbound.core, sid, &source, &registration).await?;
     trace_gate("registration verified");
     // A native join always keeps the already-registered chat identity. It
     // never creates a hosted participant under a model-provided name.
     if tool == "join_relay" {
-        if args
-            .get("name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| name != registration.display_name())
-        {
-            return Err(unavailable());
-        }
-        args.remove("name");
-        args.remove("description");
+        normalize_join_identity(&mut args, &registration, &outbound.core.machine_prefix)?;
     }
     if outbound.core.workspace().is_none()
         || outbound.core.plugins.cloud.account().as_ref() != Some(&account)
@@ -181,10 +218,14 @@ pub(crate) async fn route_with_presence_budget(
             workspace: account.workspace_id,
             generation,
             source,
-            registration: format!("{}:{}", registration.agent_id, registration.registered_at),
+            registration: crate::copilot_dispatch::registration_stamp(&registration),
         },
     );
-    trace_gate(if result.is_ok() { "ticket issued" } else { "ticket refused" });
+    trace_gate(if result.is_ok() {
+        "ticket issued"
+    } else {
+        "ticket refused"
+    });
     result
 }
 
@@ -201,15 +242,31 @@ pub(crate) fn sign(
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    sign_at(key, Proof {sid,source,tool,args,workspace,user}, now)
+    sign_at(
+        key,
+        Proof {
+            sid,
+            source,
+            tool,
+            args,
+            workspace,
+            user,
+        },
+        now,
+    )
 }
 
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 struct Proof<'a> {
-    sid:&'a str, source:&'a str,tool:&'a str,args:&'a Value,workspace:&'a str,user:&'a str,
+    sid: &'a str,
+    source: &'a str,
+    tool: &'a str,
+    args: &'a Value,
+    workspace: &'a str,
+    user: &'a str,
 }
 
-fn sign_at(key: &Key, proof:Proof<'_>, now:u64) -> Option<String> {
+fn sign_at(key: &Key, proof: Proof<'_>, now: u64) -> Option<String> {
     let mut nonce = [0; 16];
     getrandom::getrandom(&mut nonce).ok()?;
     key.sign_payload(&json!({"v":1,"kind":"copilot","sid":proof.sid.to_ascii_lowercase(),
@@ -229,10 +286,16 @@ mod tests {
         let args = json!({"to":"fixture-peer","text":"synthetic dispatch fixture","idempotency_key":"dispatch_fixture_key"});
         let issued = 1_794_000_000u64;
         let dispatched = issued + 185;
-        let claims=Proof {sid,source,tool:"send_relay_message",args:&args,
-            workspace:"dispatch-fixture-workspace",user:"dispatch-fixture-user"};
-        let proof = sign_at(&key,claims,dispatched).unwrap();
-        let old = sign_at(&key,claims,issued).unwrap();
+        let claims = Proof {
+            sid,
+            source,
+            tool: "send_relay_message",
+            args: &args,
+            workspace: "dispatch-fixture-workspace",
+            user: "dispatch-fixture-user",
+        };
+        let proof = sign_at(&key, claims, dispatched).unwrap();
+        let old = sign_at(&key, claims, issued).unwrap();
         let claims: Value = serde_json::from_slice(
             &URL_SAFE_NO_PAD
                 .decode(proof.split('.').nth(1).unwrap())

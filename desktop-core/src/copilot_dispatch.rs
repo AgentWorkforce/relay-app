@@ -23,6 +23,18 @@ pub(crate) mod peer;
 
 pub(crate) use intent::Registry;
 
+/// Rename changes the sender even though the original registration is kept
+/// for forwarding. Never let an already approved intent cross that change.
+pub(crate) fn registration_stamp(
+    registration: &agent_relay_node::relay::store::Registration,
+) -> String {
+    let alias = registration
+        .alias
+        .as_ref()
+        .map(|alias| serde_json::json!([alias.agent_id, alias.name, alias.registered_at]));
+    serde_json::json!([registration.agent_id, registration.registered_at, alias]).to_string()
+}
+
 pub(crate) fn issue(
     account: &crate::account::Account,
     pid: i32,
