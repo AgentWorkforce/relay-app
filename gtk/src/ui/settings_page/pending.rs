@@ -1,6 +1,7 @@
 //! Settings controls whose change shows before the core answers: the
 //! upload policy, launch at login, and the switch rows' pending spinner.
 use super::*;
+use crate::models::{SHARING_REPLAY_ACTION, SHARING_REPLAY_DETAIL, SHARING_REPLAY_TITLE};
 
 /// A switch row whose change may be on its way to the core: the switch
 /// holds the position asked for, with a spinner beside it, until the
@@ -49,20 +50,46 @@ pub(in crate::ui) fn switch_accessory(switch: &gtk::Switch, pending: bool) -> gt
 impl App {
     /// Asks, then changes which sessions upload. The policy asked for shows
     /// at once; the last choice wins while the uploader answers, and a
-    /// failed final choice falls back to the last confirmed one.
+    /// failed final choice falls back to the last confirmed one. A switch
+    /// the core says re-sends the whole local history asks about that
+    /// instead.
     pub fn change_sharing(&self, mode: SharingMode) {
         let current = self.with_state(|state| state.sharing_mode());
         if current.is_none_or(|current| current == mode) {
             return;
         }
-        let answer = self.confirm(Confirmation::new(
-            mode.confirmation_title(),
-            &format!(
-                "{}\n\nChanging this rebuilds the upload queue and can take a few minutes. Previously uploaded data is not deleted.",
-                mode.explanation()
-            ),
-            mode.confirmation_action(),
-        ));
+        // A core that cannot preview (an older one still running) gets the
+        // usual question; it applies the switch as it always did.
+        self.call::<agent_relay_desktop_core::contract::method::UploaderSharingPreview>(
+            SharingParams {
+                mode,
+                replay_confirmed: false,
+            },
+            move |app, preview| {
+                let replays = preview.is_ok_and(|preview| preview.replays_history);
+                app.confirm_sharing(mode, replays);
+            },
+        );
+    }
+
+    fn confirm_sharing(&self, mode: SharingMode, replays: bool) {
+        let confirmation = if replays {
+            Confirmation::new(
+                SHARING_REPLAY_TITLE,
+                SHARING_REPLAY_DETAIL,
+                SHARING_REPLAY_ACTION,
+            )
+        } else {
+            Confirmation::new(
+                mode.confirmation_title(),
+                &format!(
+                    "{}\n\nChanging this rebuilds the upload queue and can take a few minutes. Previously uploaded data is not deleted.",
+                    mode.explanation()
+                ),
+                mode.confirmation_action(),
+            )
+        };
+        let answer = self.confirm(confirmation);
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let (true, Some(app)) = (answer.await, weak.upgrade()) else {
@@ -72,6 +99,7 @@ impl App {
                 state.settings_error = None;
                 let driving = state.sharing_mode_wanted.is_pending();
                 state.sharing_mode_wanted.begin(mode);
+                state.sharing_replay_confirmed = replays.then_some(mode);
                 driving
             });
             app.render_settings();
@@ -84,20 +112,24 @@ impl App {
     /// Sends the policy asked for while it differs from the confirmed one:
     /// one change at a time, the last one asked for wins.
     fn drive_sharing(&self) {
-        let Some((mode, token)) = self.with_state(|state| {
+        let Some((mode, replay_confirmed, token)) = self.with_state(|state| {
             let wanted = *state.sharing_mode_wanted.wanted()?;
             let confirmed = state.status.as_ref()?.sharing_mode;
             if wanted == confirmed {
                 return None;
             }
-            Some((wanted, state.sharing_mode_wanted.token()))
+            let replay_confirmed = state.sharing_replay_confirmed == Some(wanted);
+            Some((wanted, replay_confirmed, state.sharing_mode_wanted.token()))
         }) else {
             self.update_state(|state| state.sharing_mode_wanted.clear());
             self.render_settings();
             return;
         };
         let started = self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderSharingSet>(
-            SharingParams { mode },
+            SharingParams {
+                mode,
+                replay_confirmed,
+            },
             "Changing the upload policy…",
             move |app, error| {
                 let again = app.update_state(|state| match error {

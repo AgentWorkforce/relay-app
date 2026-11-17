@@ -1,4 +1,5 @@
 use super::*;
+use crate::history::uploader::operator_gates::REPLAY_UNCONFIRMED;
 use crate::history::operator_policy::{OperatorPolicy, ENFORCED, FILE, WITHHELD};
 use std::collections::BTreeMap;
 
@@ -105,10 +106,13 @@ async fn an_enforced_mode_refuses_the_persons_changes_and_runs_nothing() {
     let target = uploader.target().unwrap();
     let keys = vec!["codex:s1".to_string()];
 
-    let error = uploader.sharing_set(SharingMode::New).await.unwrap_err();
+    let error = uploader
+        .sharing_set(SharingMode::New, false)
+        .await
+        .unwrap_err();
     assert_eq!(error.message, ENFORCED);
     let error = uploader
-        .sharing_set(SharingMode::Selected)
+        .sharing_set(SharingMode::Selected, false)
         .await
         .unwrap_err();
     assert_eq!(error.message, ENFORCED);
@@ -123,7 +127,7 @@ async fn an_enforced_mode_refuses_the_persons_changes_and_runs_nothing() {
 
     // What the operator enforces anyway, including every session, and a
     // resume are still the person's.
-    uploader.sharing_set(SharingMode::All).await.unwrap();
+    uploader.sharing_set(SharingMode::All, true).await.unwrap();
     uploader.sessions_change(true, &keys).await.unwrap();
     uploader.pause(false).await.unwrap();
     assert_eq!(probe.names(), ["sharing set", "sessions include", "resume"]);
@@ -248,11 +252,55 @@ async fn defaults_stand_in_for_the_policy_until_it_is_read() {
         .into()
     );
     // And refuse what the person may not change.
-    let error = uploader.sharing_set(SharingMode::New).await.unwrap_err();
+    let error = uploader
+        .sharing_set(SharingMode::New, false)
+        .await
+        .unwrap_err();
     assert_eq!(error.message, ENFORCED);
     for paused in [true, false] {
         let error = uploader.pause(paused).await.unwrap_err();
         assert_eq!(error.message, ENFORCED);
     }
     assert!(probe.names().is_empty(), "{:?}", probe.names());
+}
+
+#[tokio::test]
+async fn only_a_switch_that_re_sends_all_history_asks_first_and_a_preview_changes_nothing() {
+    let (_dir, probe, uploader, _policy) = uploader(json!({
+        "workspace_id": "w1", "revision": 1, "fetched_at": 1, "settings": {},
+    }));
+    // Every switch to All starts the delivery again from the first journal
+    // revision, re-apply included; New and Selected never send it all.
+    for (mode, replays) in [
+        (SharingMode::All, true),
+        (SharingMode::New, false),
+        (SharingMode::Selected, false),
+    ] {
+        let preview = uploader.sharing_preview(mode).unwrap();
+        assert_eq!(preview["replays_history"], replays, "{mode:?}");
+        assert_eq!(preview["sharing_mode"], mode.as_str());
+    }
+    assert!(probe.names().is_empty(), "{:?}", probe.names());
+
+    // Unconfirmed, the switch to All is refused before the probe runs.
+    let error = uploader
+        .sharing_set(SharingMode::All, false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.message, REPLAY_UNCONFIRMED);
+    assert!(probe.names().is_empty(), "{:?}", probe.names());
+
+    // Narrowing to New, and choosing New again, need no confirmation.
+    for _ in 0..2 {
+        let changed = uploader.sharing_set(SharingMode::New, false).await.unwrap();
+        assert_eq!(changed["replays_history"], false);
+    }
+    // New to All, confirmed, is applied and says it re-sends the history.
+    let changed = uploader.sharing_set(SharingMode::All, true).await.unwrap();
+    assert_eq!(changed["replays_history"], true);
+    assert_eq!(probe.names(), ["sharing set", "sharing set", "sharing set"]);
+    assert_eq!(
+        uploader.install().unwrap().sharing_mode,
+        Some(SharingMode::All)
+    );
 }

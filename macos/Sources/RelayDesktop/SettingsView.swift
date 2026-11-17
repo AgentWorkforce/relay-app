@@ -866,24 +866,34 @@ struct SettingsDivider: View {
 
 struct SharingConfirmationSheet: View {
     var mode: SharingMode
+    /// The core says the switch re-sends the whole local history: ask about
+    /// that instead.
+    var replaysHistory = false
     var onCancel: () -> Void
     var onConfirm: (SharingMode) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(mode.confirmationTitle)
-                .zoomFont(.headline)
-            Text(mode.explanation)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Changing this rebuilds the upload queue and can take a few minutes. Previously uploaded data is not deleted.")
-                .zoomFont(.footnote)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if replaysHistory {
+                Text(SharingMode.replayConfirmationTitle)
+                    .zoomFont(.headline)
+                Text(SharingMode.replayConfirmationDetail)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(mode.confirmationTitle)
+                    .zoomFont(.headline)
+                Text(mode.explanation)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Changing this rebuilds the upload queue and can take a few minutes. Previously uploaded data is not deleted.")
+                    .zoomFont(.footnote)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button(mode.confirmationAction) {
+                Button(replaysHistory ? SharingMode.replayConfirmationAction : mode.confirmationAction) {
                     onConfirm(mode)
                 }
                 .keyboardShortcut(.defaultAction)
