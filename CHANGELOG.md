@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Spawn failures say why, and settings know the organization's policy.** On macOS, Linux and Windows, an agent whose harness never started now fails with "spawn failed" and the reason (no relay-ready session record appeared) instead of "harness unavailable". The core also reports which settings the organization locked, set as defaults, or would set on an enrolled computer, which repositories it joins agents to by itself, and whether it holds Claude delivery for approval, so Settings can label them; this release only carries the data.
 - **macOS: Renamed Copilot chats reply with their current identity.** Native Relay tools sync the renamed identity before sending, so replies stay in the conversation that received the message. Calls waiting for approval are refused if the chat is renamed before dispatch.
 - **macOS: GitHub Copilot desktop connects to Relay.** Provider setup detects the standalone Copilot app, uses its native chat hooks for registration and messages, and shows its existing Copilot logo and history alongside VS Code sessions. On macOS, Linux and Windows, the provider is now named GitHub Copilot.
 - **macOS: Copilot can read Relay tool responses.** The native MCP bridge preserves inbox, messaging and other tool results, uses compatible protocol negotiation, and advertises only the notification capabilities its transport supports, so Copilot can finish tool setup and read responses.
