@@ -35,15 +35,12 @@ gtk = ["dep:gtk4", "dep:ksni"]
 [workspace]
 
 [dependencies]
-# Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main bbf04c6d, after 18.7.3: #2180 (public Connect invites from site builds),
-# #2173, #2188 (DM history reads), #2189 (socket reconnect backoff), #2193
-# (agents register through relaygate on gate-only installs), #2195 (message as
-# yourself through relaygate), #2196 (gate aliases, refused-send retry), #2197
-# (spawn through Control's node bridge) and #2201 (agents spawned on a gate-only
-# install get their own gate credential). Move it in desktop-core and gtk
-# together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "2577c9c81730b773fd9cb4a4cae99f215a54b34d", default-features = false }
+# Relay's public core (AgentWorkforce/relay crates/relay-node). Field-test pin
+# at the head of PR #2215 (a brand-new Cursor chat's first identity call claims
+# its window), on relay main 0cabdd7 with #2207-#2210 (fleet stack). A PR head
+# never lands on main; the main pin follows the merge. Move it in desktop-core
+# and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "26a41f5c68e31d7693903a12354cdf020526c0a4", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
