@@ -48,7 +48,24 @@ enum SessionFork {
         !agent.isHuman && agent.source != .channel && !agent.name.isEmpty
     }
 
-    static func availability(for agent: RelayAgent, nodes: [RelaySpawnNode]) -> Availability {
+    /// Whether `agent` still runs on its computer, judged from the current
+    /// roster and the nodes' live-agent lists, never from the copy a row or
+    /// an open conversation was built from: a registration that stood down
+    /// is not a fork source, and its computer would answer
+    /// `spawn_fork_not_found`.
+    static func isLive(_ agent: RelayAgent, roster: [RelayAgent], fleet: [RelayAgent], at now: Date = Date()) -> Bool {
+        if fleet.contains(where: { $0.name == agent.name && $0.attachable && (agent.node.isEmpty || $0.node == agent.node) }) {
+            return true
+        }
+        guard agent.source != .drive, let current = roster.first(where: { $0.name == agent.name }) else { return false }
+        return current.isReachable(at: now)
+    }
+
+    /// `live`: `isLive(_:roster:fleet:at:)` for `agent`.
+    static func availability(for agent: RelayAgent, nodes: [RelaySpawnNode], live: Bool) -> Availability {
+        guard live else {
+            return .unavailable("\(agent.name) is no longer running. Only active agents can be forked.")
+        }
         guard let harness = harness(for: agent) else {
             return .unavailable("Only Claude and Codex sessions can be forked.")
         }
@@ -105,6 +122,6 @@ enum SessionFork {
     /// the same machine (a computer can run more than one Agent Relay).
     static func triesNextNode(after error: Error) -> Bool {
         let detail = ((error as? RelayAPIError)?.message ?? error.localizedDescription).lowercased()
-        return detail.contains("spawn_fork_not_found")
+        return SpawnFailure.isForkNotFound(detail)
     }
 }
