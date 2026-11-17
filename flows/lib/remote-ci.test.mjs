@@ -7,7 +7,10 @@ import test from "node:test";
 
 import { parse } from "yaml";
 
-import { AGENT_CI_PREFIXES, DEFERRED_LANES, latestRuns, mobilePrefixes, refuseToPublish, snapshot, staleSnapshots, touches, verdict } from "./remote-ci.mjs";
+import {
+  AGENT_CI_PREFIXES, DEFERRED_LANES, gateVerdicts, latestRuns, MACOS_COMPLETION, mobilePrefixes, OTHER_COMPLETION, refuseToPublish, settled,
+  snapshot, staleSnapshots, touches, verdict,
+} from "./remote-ci.mjs";
 
 test("Mobile CI's path filter is read from its workflow, so an iOS-only change dispatches it", () => {
   const prefixes = mobilePrefixes(readFileSync(new URL("../../.github/workflows/mobile-ci.yml", import.meta.url), "utf8"));
@@ -199,4 +202,99 @@ test("the deferred lanes are the x64 rows of Desktop CI's macOS lane jobs", () =
   assert.deepEqual([...x64].sort(), [...DEFERRED_LANES].sort());
   assert.equal(jobs.macos.name, "macOS ${{ matrix.arch }}");
   assert.deepEqual(jobs.macos.needs, ["changes", "macos-package", "macos-swift-tests", "macos-core-tests"]);
+  assert.deepEqual(MACOS_COMPLETION, jobs.macos.strategy.matrix.arch.map((arch) => `macOS ${arch}`));
+  // The gate stops waiting once these are listed and finished, so between
+  // them they must need every lane that counts.
+  const others = ["windows", "linux"].flatMap((id) => jobs[id].strategy.matrix.arch.map((arch) => jobs[id].name.replace("${{ matrix.arch }}", arch)));
+  assert.deepEqual(OTHER_COMPLETION, others);
+  assert.equal(jobs["snapshot-evidence"].name, "Record successful snapshot gate");
+});
+
+test("a macOS completion gate is excused only when the x64 rows alone can have turned it red", () => {
+  const lanes = (arm64, x64) => [
+    { name: "macOS package (arm64)", conclusion: arm64 }, { name: "macOS Swift tests (arm64)", conclusion: arm64 },
+    { name: "macOS core tests (arm64)", conclusion: arm64 },
+    { name: "macOS package (x64)", conclusion: x64 }, { name: "macOS Swift tests (x64)", conclusion: x64 },
+    { name: "macOS core tests (x64)", conclusion: x64 },
+  ];
+  const gates = MACOS_COMPLETION.map((name) => ({ name, conclusion: "failure" }));
+  const base = [{ name: "changes", conclusion: "success" }, { name: "Windows x64", conclusion: "success" }];
+  assert.equal(verdict(desktop("failure"), [...base, ...lanes("success", "failure"), ...gates]).pass, true);
+  // Red while every arm64 row and every x64 row is green: the gate failed its
+  // own selection check.
+  assert.equal(verdict(desktop("failure"), [...base, ...lanes("success", "success"), gates[0]]).pass, false);
+  // An arm64 row skipped while its x64 row ran is a selection the gates refuse.
+  const skipped = lanes("success", "failure").map((job) => job.name === "macOS core tests (arm64)" ? { ...job, conclusion: "skipped" } : job);
+  assert.equal(verdict(desktop("failure"), [...base, ...skipped, ...gates]).pass, false);
+  // Packaging without the Swift tests is one too, whatever the x64 rows did.
+  const noSwift = lanes("success", "failure").map((job) => job.name.startsWith("macOS Swift") ? { ...job, conclusion: "skipped" } : job);
+  assert.equal(verdict(desktop("failure"), [...base, ...noSwift, ...gates]).pass, false);
+  // A lane not selected at all skips both rows.
+  const noCore = lanes("success", "failure").map((job) => job.name.startsWith("macOS core") ? { ...job, conclusion: "skipped" } : job);
+  assert.equal(verdict(desktop("failure"), [...base, ...noCore, ...gates]).pass, true);
+});
+
+// A Desktop CI run whose x64 lanes are still queued or running.
+const running = { workflowName: "Desktop CI", status: "in_progress", conclusion: "", databaseId: 7, url: "u7" };
+const done = (name, conclusion = "success") => ({ name, status: "completed", conclusion });
+const counted = [
+  done("changes"), done("Probe"), done("macOS package (arm64)"), done("macOS Swift tests (arm64)"), done("macOS core tests (arm64)"),
+  ...OTHER_COMPLETION.map((name) => done(name)),
+];
+const waiting = [
+  { name: "macOS package (x64)", status: "queued", conclusion: null },
+  { name: "macOS Swift tests (x64)", status: "in_progress", conclusion: null },
+  done("macOS core tests (x64)", "failure"),
+  ...MACOS_COMPLETION.map((name) => ({ name, status: "pending", conclusion: null })),
+  { name: "Record successful snapshot gate", status: "pending", conclusion: null },
+];
+
+test("the gate stops waiting once only the x64 lanes and the jobs after them are still running", () => {
+  assert.equal(settled([...counted, ...waiting]), true);
+  // A lane that counts is still running.
+  assert.equal(settled([...counted.slice(1), { name: "changes", status: "in_progress", conclusion: null }, ...waiting]), false);
+  // The Windows and Linux lanes may not even be listed yet.
+  assert.equal(settled([...counted.filter((job) => job.name !== "Linux x64"), ...waiting]), false);
+  // Every x64 lane finished: the run ends soon, so wait for its own verdict.
+  assert.equal(settled([...counted, ...DEFERRED_LANES.map((name) => done(name)), ...waiting.slice(3)]), false);
+});
+
+test("the gate's verdicts list jobs only for a failed or running Desktop CI run and fall back when the listing fails", () => {
+  const listed = [];
+  const lister = (jobs) => (id) => {
+    listed.push(id);
+    return jobs;
+  };
+  const mobile = { workflowName: "Mobile CI", status: "completed", conclusion: "success", databaseId: 1, url: "u1" };
+  const failed = { workflowName: "Desktop CI", status: "completed", conclusion: "failure", databaseId: 2, url: "u2" };
+  const passed = { ...failed, conclusion: "success" };
+  const x64Red = [
+    ...counted, done("macOS Swift tests (x64)", "failure"),
+    ...MACOS_COMPLETION.map((name) => done(name, "failure")), done("Record successful snapshot gate", "skipped"),
+  ];
+
+  // All green: nothing is listed.
+  assert.deepEqual(gateVerdicts([mobile, passed], lister([])), [{ pass: true, note: "" }, { pass: true, note: "" }]);
+  assert.deepEqual(listed, []);
+  // Only x64 lanes red: passes with the note.
+  assert.deepEqual(gateVerdicts([mobile, failed], lister(x64Red)), [{ pass: true, note: "" }, { pass: true, note: " (macOS x64 lanes deferred)" }]);
+  assert.deepEqual(listed, [2]);
+  // A lane that counts red fails, and so does a Mobile CI failure.
+  const armRed = x64Red.map((job) => job.name === "macOS core tests (arm64)" ? done(job.name, "failure") : job);
+  assert.deepEqual(gateVerdicts([failed], lister(armRed)).map((v) => v.pass), [false]);
+  assert.deepEqual(gateVerdicts([{ ...mobile, conclusion: "failure" }], lister(x64Red)).map((v) => v.pass), [false]);
+  // The run the gate stopped waiting for passes while its x64 lanes run, and
+  // fails if a lane that counts went red.
+  assert.deepEqual(gateVerdicts([running], lister([...counted, ...waiting])), [{ pass: true, note: " (macOS x64 lanes deferred)" }]);
+  const probeRed = [...counted.map((job) => job.name === "Probe" ? done("Probe", "failure") : job), ...waiting];
+  assert.deepEqual(gateVerdicts([running], lister(probeRed)).map((v) => v.pass), [false]);
+  // The listing failing falls back to the run alone, which fails it, and says so.
+  const logged = [];
+  const broken = () => {
+    throw new Error("HTTP 502");
+  };
+  assert.deepEqual(gateVerdicts([mobile, failed, running], broken, (line) => logged.push(line)), [
+    { pass: true, note: "" }, { pass: false, note: "" }, { pass: false, note: "" },
+  ]);
+  assert.deepEqual(logged, ["could not list the jobs of u2: HTTP 502", "could not list the jobs of u7: HTTP 502"]);
 });
