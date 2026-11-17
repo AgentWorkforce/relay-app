@@ -142,6 +142,19 @@ impl Identities {
             return;
         }
         let generation = self.plugins.cloud.identity_sync_generation();
+        // Cloud replaces the installation's attestation key with each sync's,
+        // so a body built before the capability is known (the first sync
+        // after launch) would delete the key until the next pass. Read the
+        // capability first; a failed read still lets the sync go as before,
+        // since identities must not wait on it.
+        if !self.state.capability_known(&account, generation) {
+            self.read_capability_locked(&account, generation).await;
+            if self.plugins.cloud.account().as_ref() != Some(&account)
+                || self.plugins.cloud.identity_sync_generation() != generation
+            {
+                return;
+            }
+        }
         // Agent tokens go only with a session confirmed as this person's.
         let (support, attestation_key) = self.native_support(&account, generation);
         let active_workspace = self.workspace();
@@ -281,16 +294,30 @@ impl Identities {
         // account generation's capability is known, nothing is read until
         // an agent joins or the account changes.
         let known = self.state.capability_known(&account, generation);
-        let source_id = self.store.read(|store| {
-            let present = store
+        let present = self.store.read(|store| {
+            store
                 .registrations
                 .iter()
-                .any(|registration| registration.missing_since.is_none());
+                .any(|registration| registration.missing_since.is_none())
+        });
+        if present || !known {
+            self.read_capability_locked(&account, generation).await;
+        }
+    }
+
+    /// The identity read behind [`Self::refresh_mcp_links`] and the first
+    /// sync of an account generation: records the native capability and
+    /// hosted MCP links Cloud reports for this desktop source. The caller
+    /// holds `state.lock`. Nothing is read without a source bound to the
+    /// account's workspace, and the read sends no agent tokens. A failed
+    /// read, or one answered for an account generation no longer current,
+    /// changes nothing.
+    async fn read_capability_locked(&self, account: &CloudAccount, generation: u64) {
+        let source_id = self.store.read(|store| {
             let cloud = store.cloud.as_ref()?;
-            ((present || !known)
-                && cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
-            .then(|| store.desktop_sync_source_id.clone())
-            .flatten()
+            (cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
+                .then(|| store.desktop_sync_source_id.clone())
+                .flatten()
         });
         let Some(source_id) = source_id else { return };
         let path = format!(
@@ -300,12 +327,12 @@ impl Identities {
         );
         let clears = self.queued_identity_clears();
         if let Ok(response) = self.plugins.cloud.request("GET", path, None).await {
-            if self.plugins.cloud.account().as_ref() != Some(&account)
+            if self.plugins.cloud.account().as_ref() != Some(account)
                 || self.plugins.cloud.identity_sync_generation() != generation
             {
                 return;
             }
-            self.record_native_capability(&account, generation, &response);
+            self.record_native_capability(account, generation, &response);
             self.apply_mcp_links(&account.workspace_id, &clears, &response);
         }
     }
@@ -617,6 +644,19 @@ mod tests {
         site: Mutex<Option<String>>,
     }
 
+    impl FakeCloud {
+        /// The requests that change Cloud's identities (syncs and clears),
+        /// without the capability read before a generation's first sync.
+        fn writes(&self) -> Vec<(String, String, Option<Value>)> {
+            let calls = self.calls.lock().unwrap();
+            calls
+                .iter()
+                .filter(|(m, _, _)| m != "GET")
+                .cloned()
+                .collect()
+        }
+    }
+
     impl CloudAccess for FakeCloud {
         fn identity_sync_generation(&self) -> u64 {
             self.identity_sync_generation.load(Ordering::SeqCst)
@@ -663,6 +703,16 @@ mod tests {
     }
 
     fn core() -> (tempfile::TempDir, Identities, Arc<FakeCloud>) {
+        core_with(false)
+    }
+
+    /// A core with the account plugin, and so this installation's
+    /// attestation key.
+    fn core_with_account() -> (tempfile::TempDir, Identities, Arc<FakeCloud>) {
+        core_with(true)
+    }
+
+    fn core_with(account: bool) -> (tempfile::TempDir, Identities, Arc<FakeCloud>) {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let config = Config {
@@ -677,8 +727,16 @@ mod tests {
             delivery_timing: DeliveryTiming::default(),
         };
         let cloud = Arc::new(FakeCloud::default());
+        let account = account.then(|| {
+            let runner = crate::history::uploader::ProcessRunner::new(home.join("no-probe"));
+            let uploader = crate::history::uploader::Uploader::new(Arc::new(runner));
+            let account =
+                Account::new(&BTreeMap::new(), &home.join("app-data"), Arc::new(uploader));
+            Arc::new(account).into_plugin()
+        });
         let plugins = Plugins {
             cloud: cloud.clone(),
+            account,
             ..Plugins::default()
         };
         let (core, _) = Core::with_plugins(config, plugins);
@@ -887,7 +945,7 @@ mod tests {
 
         core.sync_desktop_identities().await;
 
-        let calls = cloud.calls.lock().unwrap();
+        let calls = cloud.writes();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "PUT");
         assert_eq!(calls[0].1, path(WORKSPACE));
@@ -938,7 +996,7 @@ mod tests {
 
         core.sync_desktop_identities().await;
 
-        let calls = cloud.calls.lock().unwrap();
+        let calls = cloud.writes();
         let identities = &calls[0].2.as_ref().unwrap()["identities"];
         assert_eq!(identities[0]["name"], "web");
         assert_eq!(identities[0]["web_session_id"], "cse_01AbCdEfGhIjKlMn");
@@ -962,7 +1020,7 @@ mod tests {
 
         core.sync_desktop_identities().await;
 
-        let calls = cloud.calls.lock().unwrap();
+        let calls = cloud.writes();
         assert_eq!(calls.len(), 1);
         let names: Vec<&str> = calls[0].2.as_ref().unwrap()["identities"]
             .as_array()
@@ -1000,7 +1058,7 @@ mod tests {
 
         core.sync_desktop_identities().await;
 
-        let calls = cloud.calls.lock().unwrap();
+        let calls = cloud.writes();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].2.as_ref().unwrap()["identities"],
@@ -1039,7 +1097,7 @@ mod tests {
 
         core.sync_desktop_identities().await;
 
-        let calls = cloud.calls.lock().unwrap();
+        let calls = cloud.writes();
         let names: Vec<&str> = calls[0].2.as_ref().unwrap()["identities"]
             .as_array()
             .unwrap()
@@ -1083,7 +1141,7 @@ mod tests {
             ["Desktop identity sync failed (HTTP 403): Desktop identity @first could not be verified in this workspace."]
         );
         assert!(!reported[0].contains("one"));
-        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+        assert_eq!(cloud.writes().len(), 1);
 
         *cloud.failure.lock().unwrap() = None;
         core.store
@@ -1092,7 +1150,7 @@ mod tests {
             })
             .unwrap();
         core.sync_desktop_identities().await;
-        assert_eq!(cloud.calls.lock().unwrap().len(), 2);
+        assert_eq!(cloud.writes().len(), 2);
     }
 
     #[test]
@@ -1187,11 +1245,7 @@ mod tests {
                 "Desktop identity sync is not available on https://gcp-proof.example; this computer's agents are not linked to hosted MCP sessions.".to_string()
             )]
         );
-        assert_eq!(
-            cloud.calls.lock().unwrap().len(),
-            1,
-            "backed off like a refusal"
-        );
+        assert_eq!(cloud.writes().len(), 1, "backed off like a refusal");
     }
 
     #[tokio::test]
@@ -1205,11 +1259,7 @@ mod tests {
             .unwrap();
         core.sync_desktop_identities().await;
         core.sync_desktop_identities().await;
-        assert_eq!(
-            cloud.calls.lock().unwrap().len(),
-            1,
-            "Cloud already holds it"
-        );
+        assert_eq!(cloud.writes().len(), 1, "Cloud already holds it");
 
         // A changed set is sent at once.
         core.store
@@ -1218,14 +1268,14 @@ mod tests {
             })
             .unwrap();
         core.sync_desktop_identities().await;
-        assert_eq!(cloud.calls.lock().unwrap().len(), 2);
+        assert_eq!(cloud.writes().len(), 2);
 
         // So is the same set after a new sign-in.
         cloud
             .identity_sync_generation
             .fetch_add(1, Ordering::SeqCst);
         core.sync_desktop_identities().await;
-        assert_eq!(cloud.calls.lock().unwrap().len(), 3);
+        assert_eq!(cloud.writes().len(), 3);
     }
 
     #[tokio::test]
@@ -1243,7 +1293,7 @@ mod tests {
             .unwrap();
         core.sync_desktop_identities().await;
         core.sync_desktop_identities().await;
-        assert_eq!(cloud.calls.lock().unwrap().len(), 1, "a 200 is a sync");
+        assert_eq!(cloud.writes().len(), 1, "a 200 is a sync");
     }
 
     #[tokio::test]
@@ -1268,11 +1318,7 @@ mod tests {
         core.sync_desktop_identities().await;
         *cloud.failure.lock().unwrap() = None;
         core.sync_desktop_identities().await;
-        assert_eq!(
-            cloud.calls.lock().unwrap().len(),
-            3,
-            "the failed set is sent again"
-        );
+        assert_eq!(cloud.writes().len(), 3, "the failed set is sent again");
     }
 
     #[tokio::test]
@@ -1291,11 +1337,7 @@ mod tests {
         let mut events = core.hub.subscribe();
         core.sync_desktop_identities().await;
         core.sync_desktop_identities().await;
-        assert_eq!(
-            cloud.calls.lock().unwrap().len(),
-            1,
-            "not sent again every pass"
-        );
+        assert_eq!(cloud.writes().len(), 1, "not sent again every pass");
         let reported = std::iter::from_fn(|| events.try_recv().ok())
             .filter(|event| event.topic == agent_relay_node::relay::protocol::Topic::Activity)
             .count();
@@ -1316,7 +1358,7 @@ mod tests {
             })
             .unwrap();
         core.sync_desktop_identities().await;
-        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+        assert_eq!(cloud.writes().len(), 1);
 
         *cloud.failure.lock().unwrap() = None;
         cloud
@@ -1324,7 +1366,7 @@ mod tests {
             .fetch_add(1, Ordering::SeqCst);
         core.sync_desktop_identities().await;
 
-        assert_eq!(cloud.calls.lock().unwrap().len(), 2);
+        assert_eq!(cloud.writes().len(), 2);
     }
 
     #[test]
@@ -1391,7 +1433,7 @@ mod tests {
 
         core.sync_desktop_identities().await;
 
-        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+        assert_eq!(cloud.writes().len(), 1);
         assert_eq!(
             core.store
                 .read(|store| store.desktop_identity_clears_pending.as_ref().map(Vec::len)),
@@ -1502,7 +1544,7 @@ mod tests {
             })
             .unwrap();
         core.sync_desktop_identities().await;
-        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+        assert_eq!(cloud.writes().len(), 1);
 
         // A clear for this source, left by an earlier sign-in, finishes now
         // and empties what Cloud holds from it.
@@ -1525,7 +1567,7 @@ mod tests {
             .unwrap();
         core.sync_desktop_identities().await;
 
-        let calls = cloud.calls.lock().unwrap();
+        let calls = cloud.writes();
         assert_eq!(calls.len(), 3, "the clear, then the unchanged set again");
         let (_, _, body) = calls.last().unwrap();
         assert_eq!(
@@ -1711,6 +1753,100 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "GET");
         assert!(calls[0].2.is_none(), "discovery sends no agent tokens");
+    }
+
+    /// Cloud replaces the registered attestation key with each sync's: the
+    /// first sync after launch must not go before the capability is known.
+    #[tokio::test]
+    async fn the_first_sync_reads_the_capability_and_sends_the_attestation_key() {
+        let (_temp, core, cloud) = core_with_account();
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("chat", "agent-1", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        *cloud.response.lock().unwrap() = Some(json!({
+            "synced": 1,
+            "identities": [],
+            "capabilities": {"claude_session_attestation": 1}
+        }));
+        assert!(!core.claude_attestation_verified());
+
+        core.sync_desktop_identities().await;
+
+        assert!(core.claude_attestation_verified());
+        let key = core.account.as_ref().unwrap();
+        let key = key.attestation_key.get(&core.config.app_data_dir).unwrap();
+        let calls = cloud.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "GET");
+        assert!(calls[0].2.is_none(), "the capability read sends no tokens");
+        assert_eq!(calls[1].0, "PUT");
+        assert_eq!(
+            calls[1].2.as_ref().unwrap()["attestation_key"],
+            key.registration()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sync_with_the_capability_known_reads_nothing_first() {
+        let (_temp, core, cloud) = core_with_account();
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("chat", "agent-1", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        *cloud.response.lock().unwrap() = Some(json!({
+            "synced": 1,
+            "identities": [],
+            "capabilities": {"cursor_session_attestation": 1}
+        }));
+        core.refresh_mcp_links().await;
+        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+
+        core.sync_desktop_identities().await;
+
+        let calls = cloud.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "only the PUT follows the read");
+        assert_eq!(calls[1].0, "PUT");
+        assert!(calls[1]
+            .2
+            .as_ref()
+            .unwrap()
+            .get("attestation_key")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_capability_read_does_not_hold_the_sync_back() {
+        let (_temp, core, cloud) = core_with_account();
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("chat", "agent-1", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        let weak = Arc::downgrade(&cloud);
+        *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+            let cloud = weak.upgrade().unwrap();
+            let first = cloud.calls.lock().unwrap().len() == 1;
+            *cloud.failure.lock().unwrap() = first.then_some(CloudError::Unreachable);
+        }));
+
+        core.sync_desktop_identities().await;
+
+        let calls = cloud.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "GET");
+        assert_eq!(calls[1].0, "PUT");
+        assert!(calls[1]
+            .2
+            .as_ref()
+            .unwrap()
+            .get("attestation_key")
+            .is_none());
     }
 
     #[tokio::test]
