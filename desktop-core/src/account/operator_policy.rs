@@ -132,6 +132,12 @@ impl Account {
         }
     }
 
+    /// The organization's workspace policy (v2) for `workspace_id`, as last
+    /// read with the capture policy; unset when none was read.
+    pub fn workspace_policy(&self, workspace_id: &str) -> crate::workspace_policy::WorkspacePolicy {
+        self.operator_policy.workspace_policy(workspace_id)
+    }
+
     /// A workspace refresh reads the attached workspace's policy again.
     pub(super) async fn refresh_attached_operator_policy(&self) {
         if let Some(workspace) = self.uploader.target().and_then(|t| t.workspace_id) {

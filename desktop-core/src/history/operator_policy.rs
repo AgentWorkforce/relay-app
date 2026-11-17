@@ -30,8 +30,13 @@
 //! - Sign-out keeps the cache; it applies again on the next sign-in.
 //!
 //! The desktop only applies the policy; Cloud's ingest is the backstop.
+//!
+//! The same `access/me` answer carries the organization's workspace policy
+//! (v2, `crate::workspace_policy`): each read here also feeds its cache, so
+//! both are read with one request, on the same triggers and cadence.
 
 use crate::contract::account::SharingMode;
+use crate::workspace_policy::{self, WorkspacePolicies, WorkspacePolicy};
 use agent_relay_node::relay::cloud_session::{segment, CloudAccess, CloudError};
 use agent_relay_node::relay::protocol::{ErrorKind, RpcError};
 use serde::{Deserialize, Serialize};
@@ -373,6 +378,8 @@ pub struct OperatorPolicy {
     /// What a signed-in workspace is under until its policy is read, in
     /// place of withholding: the build's [`compiled_defaults`].
     defaults: Option<BTreeMap<String, Value>>,
+    /// The workspace policy (v2) each read also finds.
+    workspace: WorkspacePolicies,
 }
 
 impl OperatorPolicy {
@@ -405,6 +412,7 @@ impl OperatorPolicy {
             reading: tokio::sync::Mutex::new(()),
             unreadable: std::sync::atomic::AtomicBool::new(unreadable),
             defaults,
+            workspace: WorkspacePolicies::new(app_data_dir),
         }
     }
 
@@ -601,21 +609,27 @@ impl OperatorPolicy {
     /// applies now.
     pub async fn refresh(&self, cloud: &dyn CloudAccess, workspace_id: &str) -> Standing {
         let _one = self.reading.lock().await;
-        let fetched = match self.environment.as_deref() {
-            Some(value) => from_environment(value),
+        let (fetched, workspace) = match self.environment.as_deref() {
+            Some(value) => (
+                from_environment(value),
+                workspace_policy::from_environment(value),
+            ),
             None => match cloud
                 .request("GET", access_me_path(workspace_id), None)
                 .await
             {
-                Ok(me) => parse_access_me(&me),
+                Ok(me) => (parse_access_me(&me), workspace_policy::parse_access_me(&me)),
                 // Cloud does not serve the access routes yet: no policy.
-                Err(CloudError::Status {
-                    status: 404 | 405 | 501,
-                    ..
-                }) => Fetched::Absent,
-                Err(_) => Fetched::Failed,
+                Err(
+                    error @ CloudError::Status {
+                        status: 404 | 405 | 501,
+                        ..
+                    },
+                ) => (Fetched::Absent, workspace_policy::from_error(&error)),
+                Err(error) => (Fetched::Failed, workspace_policy::from_error(&error)),
             },
         };
+        self.workspace.record(workspace_id, workspace);
         *self.last_read.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((workspace_id.to_string(), Instant::now()));
         if fetched != Fetched::Failed {
@@ -628,6 +642,12 @@ impl OperatorPolicy {
             });
         }
         self.standing(Some(workspace_id))
+    }
+
+    /// The workspace policy (v2) cached for `workspace_id`; unset when none
+    /// was read.
+    pub fn workspace_policy(&self, workspace_id: &str) -> WorkspacePolicy {
+        self.workspace.policy(workspace_id)
     }
 
     /// Keeps `value` as the person's own `key` while it is enforced over,

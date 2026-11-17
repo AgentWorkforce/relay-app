@@ -35,6 +35,7 @@ mod provider_methods;
 mod relay_build;
 pub mod relay_node_token;
 pub mod teammate_context;
+pub mod workspace_policy;
 pub mod telemetry;
 pub mod session_locations;
 pub mod site_build;
