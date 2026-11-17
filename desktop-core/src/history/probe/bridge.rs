@@ -2973,6 +2973,34 @@ mod tests {
         assert_eq!(fresh.acknowledged_cursor, 0);
     }
     #[test]
+    fn reapplying_all_with_cloud_deleted_sessions_is_not_already_applied() {
+        let (dir, config) = fixture(SharingMode::All);
+        let applied = || {
+            let requested = Some(SharingMode::All);
+            sharing_plan::already_applied(dir.path(), &config, &[], &[], requested, true).unwrap()
+        };
+        assert!(applied(), "nothing waits to be restored");
+        let deleted = HashMap::from([(
+            "codex:gone".to_string(),
+            vec![parse_key("codex:gone").unwrap()],
+        )]);
+        save_json(&dir.path().join("deleted-uploads.json"), &deleted).unwrap();
+        assert!(!applied(), "the restore needs the normal path");
+    }
+    #[test]
+    fn reapplying_the_mode_of_a_cancelled_job_creates_a_new_job() {
+        let (dir, config) = fixture(SharingMode::New);
+        let conn = db(dir.path()).unwrap();
+        delivery::cancel_job(&conn, &config.job_id).unwrap();
+        change(dir.path(), Some(SharingMode::New), &[], true).unwrap();
+        let after = read_config(dir.path()).unwrap();
+        assert_ne!(after.job_id, config.job_id);
+        assert_eq!(
+            delivery::status(&conn, &after.job_id).unwrap().state,
+            "active"
+        );
+    }
+    #[test]
     fn interrupted_regeneration_replays_without_widening_selection() {
         let (dir, config) = fixture(SharingMode::All);
         let conn = db(dir.path()).unwrap();
