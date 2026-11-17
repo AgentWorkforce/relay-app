@@ -471,6 +471,7 @@ struct RelayWorkspaceView: View {
             openURL(result.sessionURL)
             return
         }
+        client.noteSummarySearchResult(result)
         page = agent.source == .conversation ? .messages : .agents
         search = ""
         showSummarySearch = false
@@ -1212,6 +1213,9 @@ struct RelayWorkspaceView: View {
             if !collapsed, let problem = overview?.error {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
+            if !collapsed {
+                sessionSummarySection(for: agent)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1221,6 +1225,35 @@ struct RelayWorkspaceView: View {
         }
         .task(id: "\(agent.id):\(agent.sessionID):\(client.canLoadSummaries):goal") {
             await client.loadGoal(for: agent)
+        }
+        .task(id: "\(agent.id):\(agent.sessionID):\(client.canLoadSummaries):\(client.sessionSources[agent.sessionID] ?? ""):session-summary") {
+            await client.loadSessionSummary(for: agent)
+        }
+    }
+    /// The hosted session summary. Nothing shows while it loads: most
+    /// sessions have none yet, and the card must never spin.
+    @ViewBuilder private func sessionSummarySection(for agent: RelayAgent) -> some View {
+        switch client.sessionSummaryState(for: agent.sessionID) {
+        case .ready(let text, let isShort):
+            Text("Session summary").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
+                .lineLimit(isShort ? 4 : 12)
+                .accessibilityIdentifier("Session summary")
+            if isShort {
+                Text("Short summary").font(.caption2).foregroundStyle(.tertiary)
+            }
+        case .empty:
+            Text("No summary yet").font(.caption).foregroundStyle(.secondary)
+        case .unavailable:
+            HStack(spacing: 8) {
+                Text("Summary unavailable").font(.caption).foregroundStyle(.secondary)
+                Button("Retry") {
+                    Task { await client.loadSessionSummary(for: agent, force: true) }
+                }
+                .font(.caption).buttonStyle(.borderless)
+            }
+        case .hidden, nil:
+            EmptyView()
         }
     }
     private var screenHistoryView: some View {
