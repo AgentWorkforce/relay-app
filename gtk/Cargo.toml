@@ -40,7 +40,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 # its window), on relay main 0cabdd7 with #2207-#2210 (fleet stack). A PR head
 # never lands on main; the main pin follows the merge. Move it in desktop-core
 # and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "26a41f5c68e31d7693903a12354cdf020526c0a4", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "e374bcdd14ee6ea09e31efcf0d557c5538771ab4", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
