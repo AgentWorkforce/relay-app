@@ -39,6 +39,17 @@ final class OrganizationPolicyCopyTests: XCTestCase {
         XCTAssertTrue(OrganizationPolicyCopy.isLocked(policy, any: ["x", "spawn_max_agents"]))
     }
 
+    func testApprovalsReadAsTheOrganizationHolds() {
+        let held = OrganizationPolicyCopy.approvals(organizationHold: true)
+        XCTAssertEqual(held.title, "Message approvals")
+        XCTAssertEqual(held.note, OrganizationPolicyCopy.held)
+        XCTAssertFalse(held.alwaysAllow)
+        let open = OrganizationPolicyCopy.approvals(organizationHold: false)
+        XCTAssertEqual(open.title, "Claude Code message approvals")
+        XCTAssertNil(open.note)
+        XCTAssertTrue(open.alwaysAllow)
+    }
+
     func testTheRepositoriesListReadsAsOneLine() {
         XCTAssertEqual(OrganizationPolicyCopy.repositories(["acme/web", "tools/*"]), "acme/web, tools/*")
         XCTAssertEqual(OrganizationPolicyCopy.repositories([]), "None")

@@ -804,7 +804,7 @@ private struct SettingsToggleRow: View {
 }
 
 /// What the organization's workspace policy says about a setting, under its
-/// row (Linux's `widgets::organization_note`).
+/// row (Linux's `settings_organization::organization_note_widget`).
 struct OrganizationNote: View {
     let text: String
 
@@ -1925,15 +1925,17 @@ struct ClaudeDeliverySettings: View {
 
     /// The organization holds messages from senders who are not its admins,
     /// in every harness: each is approved once, never allowed for good.
-    private var organizationHold: Bool { delivery.status?.organizationHold == true }
+    private var approvals: OrganizationPolicyCopy.Approvals {
+        OrganizationPolicyCopy.approvals(organizationHold: delivery.status?.organizationHold == true)
+    }
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Choose which Claude Code sessions and workspace members may receive messages directly. Ask first holds each message in Agent Relay for your approval.")
                     .zoomFont(.footnote)
-                if organizationHold {
-                    OrganizationNote(text: OrganizationPolicyCopy.held)
+                if let note = approvals.note {
+                    OrganizationNote(text: note)
                 }
                 Toggle("Only allowed members may deliver directly", isOn: Binding(
                     get: { delivery.status?.restricted ?? false },
@@ -1975,8 +1977,8 @@ struct ClaudeDeliverySettings: View {
                             Button("Approve once") { Task { await delivery.approve(message.id) } }
                             if !message.sender.isEmpty {
                                 Button("Always allow") { Task { await delivery.alwaysAllow(message) } }
-                                    .disabled(organizationHold)
-                                    .help(organizationHold ? OrganizationPolicyCopy.held : "")
+                                    .disabled(!approvals.alwaysAllow)
+                                    .help(approvals.note ?? "")
                             }
                             Button("Dismiss") { Task { await delivery.dismiss(message.id) } }
                         }
@@ -1993,7 +1995,7 @@ struct ClaudeDeliverySettings: View {
                     .strokeBorder(CloudTheme.border)
             }
         } label: {
-            Text(organizationHold ? OrganizationPolicyCopy.approvalsTitle : "Claude Code message approvals")
+            Text(approvals.title)
                 .zoomFont(size: 13, weight: .semibold)
                 .accessibilityAddTraits(.isHeader)
         }

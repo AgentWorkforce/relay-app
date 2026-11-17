@@ -4318,6 +4318,75 @@ async fn a_sign_in_applies_the_workspace_policy_to_settings() {
     harness.stop().await;
 }
 
+/// A lock already held stays while the policy cannot be read, and goes
+/// once a read finds no policy: the person can change the setting again.
+#[tokio::test]
+async fn a_held_lock_stays_offline_and_lifts_when_the_policy_is_gone() {
+    let mut policy = enforcing("all", 3);
+    policy["workspace_policy"] = json!({
+        "version": 2, "revision": 5, "managed": false, "consent": [],
+        "sections": { "spawn": { "locked": { "spawn_max_agents": 4 }, "defaults": {} } }
+    });
+    let harness = with_operator_policy(Some(policy)).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+    eventually("locked", || {
+        harness.core.settings()["spawn_max_agents"] == 4
+    })
+    .await;
+    // The policy cannot be read: the lock stays.
+    std::fs::remove_file(harness.home.join("operator.json")).unwrap();
+    client
+        .ok(
+            "account.connect_workspace",
+            json!({"workspace_id": WORKSPACE}),
+        )
+        .await;
+    let refused = client
+        .error("settings.set", json!({"spawn_max_agents": 6}))
+        .await;
+    assert_eq!(refused.1, "This setting is set by your organization.");
+    // A read finds no workspace policy: the lock is lifted.
+    harness.set_operator_policy(enforcing("all", 3));
+    client
+        .ok(
+            "account.connect_workspace",
+            json!({"workspace_id": WORKSPACE}),
+        )
+        .await;
+    eventually("lifted", || {
+        harness.core.settings().get("organization_policy").is_none()
+    })
+    .await;
+    client
+        .ok("settings.set", json!({"spawn_max_agents": 6}))
+        .await;
+    harness.stop().await;
+}
+
+/// Signing out lifts the organization's settings policy.
+#[tokio::test]
+async fn signing_out_lifts_the_organizations_settings_policy() {
+    let mut policy = enforcing("all", 3);
+    policy["workspace_policy"] = json!({
+        "version": 2, "revision": 5, "managed": false, "consent": [],
+        "sections": { "spawn": { "locked": { "spawn_max_agents": 4 }, "defaults": {} } }
+    });
+    let harness = with_operator_policy(Some(policy)).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+    eventually("locked", || {
+        harness.core.settings()["spawn_max_agents"] == 4
+    })
+    .await;
+    client.ok("account.sign_out", json!({})).await;
+    assert!(harness.core.settings().get("organization_policy").is_none());
+    client
+        .ok("settings.set", json!({"spawn_max_agents": 6}))
+        .await;
+    harness.stop().await;
+}
+
 /// A policy that arrives while signed in switches the install to the
 /// enforced mode, refuses the person's changes, and gives their mode back
 /// once lifted.
