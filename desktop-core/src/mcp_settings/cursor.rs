@@ -75,9 +75,9 @@ impl Installer {
         } else if matches!(state, "configured" | "installed") {
             format!("{detail} Cursor messaging hooks are installed, and Cursor reaches Agent Relay's MCP through agent-relay-probe, which attests each call per chat once Agent Relay Cloud supports it. Each new Cursor chat is also told the agent-relay-probe commands for its relay identity. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks. {}", crate::cursor_guide::LOCAL_ONLY_NOTE)
         } else if state == "action_required" && selected && !self.cursor_hooks_ready() {
-            format!("{detail} Cursor messaging hooks are off or could not be installed. Repair reconnects the hooks and Agent Relay MCP configuration.")
+            format!("{detail} Cursor messaging hooks are off or could not be installed. Repair reconnects the hooks and Agent Relay MCP configuration. {}", crate::cursor_guide::LOCAL_ONLY_NOTE)
         } else {
-            detail
+            format!("{detail} {}", crate::cursor_guide::LOCAL_ONLY_NOTE)
         }
     }
 
@@ -230,6 +230,32 @@ mod tests {
             account_id: "alice".into(),
         };
         (app, binding)
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cursor_detail_shows_the_local_only_note_in_every_state() {
+        let root = tempfile::tempdir().unwrap();
+        let (app, _) = fixture(root.path());
+        for (state, selected) in [
+            ("installed", true),
+            ("configured", true),
+            ("action_required", true),
+            ("action_required", false),
+            ("available", false),
+            ("unconfigured", true),
+        ] {
+            let detail = app.cursor_detail("cursor", state, selected, "Base.".into());
+            assert!(
+                detail.starts_with("Base.")
+                    && detail.contains(crate::cursor_guide::LOCAL_ONLY_NOTE),
+                "{state} selected={selected}: {detail}"
+            );
+        }
+        assert_eq!(
+            app.cursor_detail("codex", "available", false, "Base.".into()),
+            "Base."
+        );
     }
 
     #[test]
