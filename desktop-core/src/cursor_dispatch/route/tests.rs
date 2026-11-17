@@ -112,6 +112,7 @@ fn announce(f: &Fixture, tool: &str, arguments: &Value) {
         "tool_use_id": TUID, "tool_name": tool, "tool_input": arguments.to_string(),
     });
     account(f)
+        .copilot_dispatch
         .cursor_intents
         .register(announced(&input, generation).unwrap(), Instant::now())
         .unwrap();
@@ -359,7 +360,7 @@ async fn the_intent_route_reports_status_and_verifies_the_announcing_hook() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "caller_unverified");
-    assert_eq!(account(&f).cursor_intents.len(), 0);
+    assert_eq!(account(&f).copilot_dispatch.cursor_intents.len(), 0);
 }
 
 #[test]

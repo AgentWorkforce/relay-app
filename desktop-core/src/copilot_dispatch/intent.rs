@@ -73,6 +73,8 @@ pub(crate) struct Registry {
     entries: Mutex<BTreeMap<String, Entry>>,
     pub(super) verifier: Arc<dyn super::peer::Verifier>,
     http: Arc<AtomicUsize>,
+    /// Cursor's announced calls, which its `cursor-mcp` helper consumes.
+    pub(crate) cursor_intents: crate::cursor_dispatch::Intents,
 }
 
 impl Default for Registry {
@@ -81,6 +83,7 @@ impl Default for Registry {
             entries: Default::default(),
             verifier: Arc::new(super::peer::Kernel),
             http: Default::default(),
+            cursor_intents: Default::default(),
         }
     }
 }
@@ -110,6 +113,7 @@ impl Registry {
             entries: Default::default(),
             verifier,
             http: Default::default(),
+            cursor_intents: Default::default(),
         }
     }
     pub(super) fn http_permit(&self) -> Result<Permit, &'static str> {

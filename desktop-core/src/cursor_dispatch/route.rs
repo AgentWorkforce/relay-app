@@ -136,6 +136,7 @@ pub(crate) async fn intent(
         return Err(refused("account_changed"));
     }
     account
+        .copilot_dispatch
         .cursor_intents
         .register(intent, Instant::now())
         .map_err(refused)?;
@@ -312,7 +313,7 @@ impl Dispatch {
             return Ok(());
         }
         let identity = IDENTITY_TOOLS.contains(&tool.as_str());
-        let intent = match self.account.cursor_intents.take(
+        let intent = match self.account.copilot_dispatch.cursor_intents.take(
             &tool,
             &canonical,
             self.generation,

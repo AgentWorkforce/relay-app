@@ -3,8 +3,63 @@ use super::*;
 use agent_relay_node::relay::agents::SettingsExtension;
 use agent_relay_node::relay::cursor_cli::{CursorConfig, CursorSettings};
 use cursor_guide::GuideHooks;
+use providers::{HostedConfig, Provider, ProviderFile};
 
 impl Installer {
+    /// Cursor's hosted configuration while Cursor is selected and its
+    /// `mcp.json` entry is this build's: what the `cursor-mcp` route
+    /// forwards with. The grant never leaves Core.
+    pub(crate) fn cursor_dispatch_hosted(&self, binding: Option<&Binding>) -> Option<HostedConfig> {
+        if !self
+            .selection()
+            .ok()
+            .flatten()?
+            .iter()
+            .any(|id| id == "cursor")
+        {
+            return None;
+        }
+        let config = self.hosted("cursor", binding)?;
+        let file = self.native_files("cursor").ok()?.into_iter().next()?;
+        file.inspect(Some(&config))
+            .ok()?
+            .configured
+            .then_some(config)
+    }
+
+    /// Whether Cursor's calls reach the hosted MCP through this build's
+    /// `cursor-mcp` helper with the hooks that announce each chat's call in
+    /// place: never on Windows, where Cursor's hooks are unavailable.
+    pub(crate) fn cursor_attested_transport(&self) -> bool {
+        !cfg!(windows)
+            && self
+                .cursor_dispatch_hosted(None)
+                .is_some_and(|config| config.cursor_stdio.is_some())
+            && self.cursor_hooks_ready()
+    }
+
+    /// Cursor's `mcp.json`, whose Agent Relay entry may be this build's
+    /// helper command.
+    pub(super) fn cursor_file(&self) -> ProviderFile {
+        ProviderFile::new(Provider::Cursor, self.native.locations.cursor.clone())
+            .with_copilot_helper(self.cursor_helper())
+    }
+
+    /// The helper entry Cursor runs instead of holding the grant: Core
+    /// forwards its calls and signs each one a chat's hook announced.
+    /// Windows keeps the URL entry: Cursor's hooks, which name the chat,
+    /// are unavailable there.
+    pub(super) fn cursor_stdio(&self, pinned: &Binding) -> Option<providers::CopilotStdio> {
+        (!cfg!(windows)).then(|| providers::CopilotStdio {
+            command: self.cursor_helper(),
+            args: crate::cursor_dispatch::arguments(
+                pinned,
+                self.cursor_development(),
+                self.cursor_session_socket().as_deref(),
+            ),
+        })
+    }
+
     pub(super) fn cursor_detail(
         &self,
         id: &str,
