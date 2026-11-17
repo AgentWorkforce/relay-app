@@ -6,12 +6,12 @@
 
 use super::app::App;
 use super::settings_page::SettingRow;
-use super::widgets::{button, notice, settings_divider, settings_row, Tone};
+use super::widgets::{button, notice, settings_divider, settings_row, text, LabelStyle, Tone};
 use crate::models::{
-    CURSOR_HOOKS_OFF_DETAIL, CURSOR_HOOKS_ON_DETAIL, CURSOR_HOOKS_TITLE,
-    CURSOR_HOOKS_TURN_OFF_HELP, CURSOR_HOOKS_TURN_ON_HELP, SHOW_RELAY_MESSAGES_DETAIL,
-    SHOW_RELAY_MESSAGES_SHOWN_DETAIL, SHOW_RELAY_MESSAGES_TITLE, SHOW_RELAY_MESSAGES_TURN_OFF_HELP,
-    SHOW_RELAY_MESSAGES_TURN_ON_HELP,
+    CURSOR_HOOKS_LOCAL_ONLY_NOTE, CURSOR_HOOKS_OFF_DETAIL, CURSOR_HOOKS_ON_DETAIL,
+    CURSOR_HOOKS_TITLE, CURSOR_HOOKS_TURN_OFF_HELP, CURSOR_HOOKS_TURN_ON_HELP,
+    SHOW_RELAY_MESSAGES_DETAIL, SHOW_RELAY_MESSAGES_SHOWN_DETAIL, SHOW_RELAY_MESSAGES_TITLE,
+    SHOW_RELAY_MESSAGES_TURN_OFF_HELP, SHOW_RELAY_MESSAGES_TURN_ON_HELP,
 };
 use agent_relay_node::relay::contract::agents::SettingsChange;
 use gtk::prelude::*;
@@ -106,9 +106,9 @@ impl App {
             on.set_tooltip_text(Some(CURSOR_HOOKS_TURN_ON_HELP));
             (CURSOR_HOOKS_OFF_DETAIL, on)
         };
-        let extra: Vec<gtk::Widget> = error
-            .iter()
-            .map(|error| notice(error, Tone::Error))
+        let note = text(CURSOR_HOOKS_LOCAL_ONLY_NOTE, &["settings-row-detail"]).wrapped();
+        let extra: Vec<gtk::Widget> = std::iter::once(note.upcast())
+            .chain(error.iter().map(|error| notice(error, Tone::Error)))
             .collect();
         settings_row(
             CURSOR_HOOKS_TITLE,
