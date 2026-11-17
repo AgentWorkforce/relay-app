@@ -1,15 +1,15 @@
 import XCTest
 @testable import AgentRelayiPad
 
-/// The launch-timeout alert: requests that crossed a suspension, were
-/// superseded or were cancelled stay out of the alert; a service that is
-/// really unreachable still raises it.
+/// Failed automatic reads: requests that crossed a suspension, were
+/// superseded or were cancelled are not reported; a service that is really
+/// unreachable still is, in the app's words.
 final class ConnectionErrorReportsTests: XCTestCase {
     private let timedOut = URLError(.timedOut)
 
     /// The reported case: a refresh left in flight when iOS suspended the app
     /// fails with "The request timed out." when it comes back, while the
-    /// refresh started on returning is slow but succeeds. No alert.
+    /// refresh started on returning is slow but succeeds. Not reported.
     func testSlowButSuccessfulStartupAfterSuspensionShowsNoTimeout() {
         var reports = ConnectionErrorReports()
         let beforeSuspension = reports.begin(.presence)
@@ -22,7 +22,7 @@ final class ConnectionErrorReportsTests: XCTestCase {
     }
 
     /// The order can also be the other way round: the old request fails
-    /// before the slow foreground refresh has answered. Still no alert.
+    /// before the slow foreground refresh has answered. Still not reported.
     func testSuspendedRequestFailingBeforeTheForegroundRefreshAnswersShowsNoTimeout() {
         var reports = ConnectionErrorReports()
         let beforeSuspension = reports.begin(.history)
@@ -61,12 +61,12 @@ final class ConnectionErrorReportsTests: XCTestCase {
     }
 
     /// A service that does not answer within the request timeout, with the
-    /// app on screen the whole time, still raises the alert.
+    /// app on screen the whole time, is still reported.
     func testUnreachableServiceStillShowsTheTimeout() {
         var reports = ConnectionErrorReports()
         let ticket = reports.begin(.presence)
 
-        XCTAssertEqual(reports.decision(for: timedOut, from: ticket), .show(timedOut.localizedDescription))
+        XCTAssertEqual(reports.decision(for: timedOut, from: ticket), .show(UserFacingError.unreachable))
     }
 
     func testOfflineAfterReturningStillShowsTheError() {
@@ -76,7 +76,7 @@ final class ConnectionErrorReportsTests: XCTestCase {
         let onReturn = reports.begin(.presence)
         let offline = URLError(.notConnectedToInternet)
 
-        XCTAssertEqual(reports.decision(for: offline, from: onReturn), .show(offline.localizedDescription))
+        XCTAssertEqual(reports.decision(for: offline, from: onReturn), .show(UserFacingError.unreachable))
     }
 
     /// A success of the other operation does not hide a presence failure.
@@ -86,7 +86,7 @@ final class ConnectionErrorReportsTests: XCTestCase {
         let history = reports.begin(.history)
         reports.succeeded(history)
 
-        XCTAssertEqual(reports.decision(for: timedOut, from: presence), .show(timedOut.localizedDescription))
+        XCTAssertEqual(reports.decision(for: timedOut, from: presence), .show(UserFacingError.unreachable))
     }
 
     /// A server answer is not a transport failure: it is shown even when a
@@ -95,9 +95,22 @@ final class ConnectionErrorReportsTests: XCTestCase {
         var reports = ConnectionErrorReports()
         let older = reports.begin(.presence)
         reports.succeeded(reports.begin(.presence))
-        let failure = RelayAPIError(message: "Unauthorized", status: 401, code: "unauthorized")
+        let failure = RelayAPIError(message: "Unauthorized", status: 401, code: "unauthorized", fromServer: true)
 
-        XCTAssertEqual(reports.decision(for: failure, from: older), .show(failure.localizedDescription))
+        XCTAssertEqual(reports.decision(for: failure, from: older), .show(UserFacingError.signIn))
+    }
+
+    /// The reported case (TestFlight build 56): Relaycast sheds the DM read
+    /// with its own backoff sentence. The decision carries the app's words,
+    /// never the server's.
+    func testServerBackoffIsShownInTheAppsWords() {
+        var reports = ConnectionErrorReports()
+        let ticket = reports.begin(.history)
+        let backoff = RelayAPIError(
+            message: "DM reads for this agent are backing off after repeated failures. Retry after the interval in the Retry-After header.",
+            status: 503, code: "dm_unavailable", retryAfterSeconds: 30, fromServer: true)
+
+        XCTAssertEqual(reports.decision(for: backoff, from: ticket), .show(UserFacingError.busyRetrying))
     }
 
     /// Control Center and the app switcher make the scene inactive, not
@@ -107,7 +120,7 @@ final class ConnectionErrorReportsTests: XCTestCase {
         let ticket = reports.begin(.presence)
         reports.sceneChanged(foreground: true)
 
-        XCTAssertEqual(reports.decision(for: timedOut, from: ticket), .show(timedOut.localizedDescription))
+        XCTAssertEqual(reports.decision(for: timedOut, from: ticket), .show(UserFacingError.unreachable))
     }
 
     func testDiagnosticNamesCodesOnly() {
