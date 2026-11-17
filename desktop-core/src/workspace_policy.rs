@@ -457,6 +457,9 @@ pub struct WorkspacePolicies {
     /// The last failure to hand the settings policy to the core, so it is
     /// reported once rather than on every tick.
     settings_failure: Mutex<Option<String>>,
+    /// The policy an enrollment key's exchange answered with, and the sign-in
+    /// attempt it belongs to, until that attempt connects a workspace.
+    enrollment_seed: Mutex<Option<(u64, WorkspacePolicy)>>,
 }
 
 impl WorkspacePolicies {
@@ -474,6 +477,33 @@ impl WorkspacePolicies {
             saved: Mutex::new(saved),
             applied_settings: Mutex::new(None),
             settings_failure: Mutex::new(None),
+            enrollment_seed: Mutex::new(None),
+        }
+    }
+
+    /// Keeps the policy sign-in `attempt`'s enrollment key answered with
+    /// (`None`: it answered with none) for the workspace it connects to.
+    pub fn hold_seed(&self, attempt: u64, policy: Option<WorkspacePolicy>) {
+        *self
+            .enrollment_seed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = policy.map(|policy| (attempt, policy));
+    }
+
+    /// Caches the held policy for `workspace_id`, the workspace sign-in
+    /// attempt `current` connects to, as a read would cache it (a lower
+    /// revision than the cached one is refused, and the read that follows
+    /// replaces it). A policy held for an earlier attempt is dropped.
+    pub fn take_seed(&self, current: u64, workspace_id: &str) {
+        let seed = self
+            .enrollment_seed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some((attempt, policy)) = seed {
+            if attempt == current && !workspace_id.is_empty() {
+                self.record(workspace_id, Fetched::Policy(Box::new(policy)));
+            }
         }
     }
 
