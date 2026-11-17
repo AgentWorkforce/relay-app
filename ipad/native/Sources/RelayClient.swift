@@ -35,11 +35,13 @@ private func cliInName(_ value: String) -> String {
     }
     return ""
 }
+/// The harness a record states in a structured field, never guessed from a name.
+private func cliStated(in hints: [String]) -> String {
+    hints.lazy.map(cliInName).first { !$0.isEmpty } ?? ""
+}
 private func agentCLI(structured: [String], name: String, persona: String = "") -> String {
-    for hint in structured {
-        let cli = cliInName(hint)
-        if !cli.isEmpty { return cli }
-    }
+    let stated = cliStated(in: structured)
+    if !stated.isEmpty { return stated }
     let named = cliInName(name)
     if !named.isEmpty { return named }
     let description = persona.lowercased()
@@ -71,6 +73,9 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
     var mobileNativeContinuationEnabled = false
     var mobileNativeCommandFileApprovals = false
     let cli: String
+    /// `cli` only when a structured field of the record states it, not when
+    /// it is inferred from the name or persona. A fork must not guess.
+    var statedCLI = ""
     let subtitle: String
     let status: String
     let attachable: Bool
@@ -130,10 +135,10 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         let seen = string(data["last_seen"])
         lastSeen = (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(seen))
             ?? (try? Date.ISO8601FormatStyle().parse(seen))
-        cli = agentCLI(structured: [string(metadata["session_kind"]), string(metadata["cli"]),
-                                    string(metadata["tool"]), string(metadata["harness"]),
-                                    string(metadata["provider"])],
-                       name: name, persona: string(data["persona"]))
+        let hints = [string(metadata["session_kind"]), string(metadata["cli"]), string(metadata["tool"]),
+                     string(metadata["harness"]), string(metadata["provider"])]
+        cli = agentCLI(structured: hints, name: name, persona: string(data["persona"]))
+        statedCLI = cliStated(in: hints)
         // Gateway registrations name an agent (for example OpenClaw's `main`),
         // not any one of its conversations. Never request a brief for that ID.
         let gateway = string(metadata["session_scope"]) == "agent" ||
@@ -163,8 +168,9 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         sessionID = string(data["session_id"])
         objective = (string(data["objective"]).isEmpty ? string(data["description"]) : string(data["objective"]))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        cli = agentCLI(structured: [string(data["cli"]), string(data["harness"]),
-                                    string(data["providerLabel"]), string(data["cliModel"])], name: name)
+        let hints = [string(data["cli"]), string(data["harness"]), string(data["providerLabel"]), string(data["cliModel"])]
+        cli = agentCLI(structured: hints, name: name)
+        statedCLI = cliStated(in: hints)
         subtitle = [node, string(data["cliModel"]).isEmpty ? string(data["providerLabel"]) : string(data["cliModel"])].filter { !$0.isEmpty }.joined(separator: " · ")
         let state = string(data["workerLiveness"])
         status = state.isEmpty ? string(data["state"]) : state
@@ -190,6 +196,8 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         mobileNativeCommandFileApprovals = data["mobile_native_continuation_approvals"] as? String == "command_file"
         isDesktopRegistration = data["desktop_registration"] as? Bool ?? false
         cli = isHuman ? "" : agentCLI(structured: [string(peer?["cli"]), string(data["cli"])], name: name)
+        // `data["cli"]` is copied from a roster entry and may be a guess.
+        statedCLI = isHuman ? "" : cliStated(in: [string(peer?["cli"])])
         subtitle = string(object(data["last_message"])["text"])
         status = string(data["status"])
         attachable = false
@@ -367,6 +375,9 @@ private enum SecureStore {
     /// so the lists say they are loading instead of being empty.
     @Published var rosterLoaded = false
     @Published var fleetAgents: [RelayAgent] = []
+    /// Agents the online nodes report having spawned, by name, with the harness
+    /// they run: every reporting node, in node order.
+    @Published var spawnedSessions: [String: [SessionFork.Spawned]] = [:]
     @Published var spawnNodes: [RelaySpawnNode] = []
     /// Every online node that accepts forks, including a machine's second installation.
     @Published var forkNodes: [RelaySpawnNode] = []
@@ -1052,6 +1063,7 @@ private enum SecureStore {
         relayAgents = []
         rosterLoaded = false
         fleetAgents = []
+        spawnedSessions = [:]
         spawnNodes = []
         forkNodes = []
         conversations = []
@@ -1176,10 +1188,12 @@ private enum SecureStore {
             forkNodes = availableNodes.filter { !$0.forkHarnesses.isEmpty }
             let sessionIDs = Dictionary(relayAgents.map { ($0.name, $0.sessionID) }, uniquingKeysWith: { first, _ in first })
             var live: [RelayAgent] = []
+            var reporting: [(name: String, capabilities: [JSONObject])] = []
             for node in nodes where string(node["status"]) == "online" &&
                 node["live"] as? Bool != false && node["handlers_live"] as? Bool != false &&
                 !(node["tags"] as? [String] ?? []).contains("direct") {
                 let nodeName = string(node["name"])
+                reporting.append((name: nodeName, capabilities: objects(node["capabilities"])))
                 for capability in objects(node["capabilities"]) where string(capability["name"]) == "relay:live-agents:v1" {
                     for name in object(capability["metadata"])["names"] as? [String] ?? [] {
                         live.append(RelayAgent(fleet: ["name": name, "node": nodeName,
@@ -1188,6 +1202,7 @@ private enum SecureStore {
                 }
             }
             fleetAgents = live
+            spawnedSessions = SessionFork.spawned(nodes: reporting)
             connected = true
             error = nil
             connectionReports.succeeded(ticket)
@@ -2041,11 +2056,24 @@ private enum SecureStore {
         if fleetAgents.contains(where: { $0.name == name && $0.node == node.name }) { return .running }
         return .unconfirmed
     }
+    /// Whether `agent` runs on its computer now, by the latest roster and node
+    /// lists. Fork and Call are offered only for live agents.
+    func isLive(_ agent: RelayAgent) -> Bool {
+        SessionFork.isLive(agent, roster: relayAgents, fleet: fleetAgents)
+    }
+    func forkAvailability(for agent: RelayAgent) -> SessionFork.Availability {
+        SessionFork.availability(for: agent, nodes: forkNodes, live: isLive(agent),
+                                 roster: relayAgents, spawned: spawnedSessions)
+    }
+    /// The harness an agent's icon shows (`SessionFork.displayCLI`).
+    func displayCLI(for agent: RelayAgent) -> String {
+        SessionFork.displayCLI(for: agent, roster: relayAgents, fleet: fleetAgents, spawned: spawnedSessions)
+    }
     /// Starts `name` on the agent's own computer as a copy of its session.
     /// A node that doesn't hold the agent sends the request to the next
     /// installation on that machine; any other failure ends the attempt.
     func forkAgent(_ source: RelayAgent, name: String, task: String) async throws -> (SpawnOutcome, RelaySpawnNode) {
-        guard case let .available(harness, nodes) = SessionFork.availability(for: source, nodes: forkNodes) else {
+        guard case let .available(harness, nodes) = forkAvailability(for: source) else {
             throw RelayAPIError(message: "This session can't be forked right now. Refresh and try again.")
         }
         var lastError: Error?
@@ -2202,3 +2230,42 @@ private enum SecureStore {
     }
 }
 
+extension SessionFork {
+    /// The agents a node spawned and the harness each runs, from its
+    /// `release` capability (`metadata.live.agents[]`: `name`, `harness`).
+    /// A spawned agent's own roster record states no harness.
+    static func spawned(node: String, capabilities: [JSONObject]) -> [String: Spawned] {
+        var spawned: [String: Spawned] = [:]
+        for capability in capabilities where string(capability["name"]) == "release" {
+            for entry in objects(object(object(capability["metadata"])["live"])["agents"]) {
+                let name = string(entry["name"]), harness = string(entry["harness"])
+                guard !name.isEmpty, !harness.isEmpty, spawned[name] == nil else { continue }
+                spawned[name] = Spawned(node: node, harness: harness)
+            }
+        }
+        return spawned
+    }
+
+    /// Every node's spawned agents by name, in node order. A name that more
+    /// than one node reports keeps every node, since one entry may be stale.
+    static func spawned(nodes: [(name: String, capabilities: [JSONObject])]) -> [String: [Spawned]] {
+        var all: [String: [Spawned]] = [:]
+        for node in nodes {
+            for (name, entry) in spawned(node: node.name, capabilities: node.capabilities) {
+                all[name, default: []].append(entry)
+            }
+        }
+        return all
+    }
+
+    /// The harness an agent's icon shows: the statement the fork decides from
+    /// (`statedHarness(for:roster:spawned:)`), in the same order, then a
+    /// name or persona guess from its records.
+    static func displayCLI(for agent: RelayAgent, roster: [RelayAgent], fleet: [RelayAgent],
+                           spawned: [String: [Spawned]]) -> String {
+        let stated = cliInName(statedHarness(for: agent, roster: roster, spawned: spawned))
+        if !stated.isEmpty { return stated }
+        let known = [agent] + roster.filter { $0.name == agent.name } + fleet.filter { $0.name == agent.name }
+        return known.first { !$0.cli.isEmpty }?.cli ?? ""
+    }
+}
