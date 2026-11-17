@@ -11,13 +11,21 @@
 //! A keychain that fails is reported once and tried again with the same
 //! backoff: it may be locked, or its daemon restarting.
 //!
+//! Sign-out always takes the token's secret out of the keychain. A token
+//! Control did not confirm gone leaves only its id behind, as a pending
+//! revoke, and the next mint deletes each pending id with its own bearer
+//! before it mints, best effort; an id whose `DELETE` fails again is kept
+//! in the new token's entry. A pending id is never handed to the node.
+//!
 //! Sign-out waits for a mint in flight (`Mint::wait_for_sign_out`), so the
-//! token it mints is kept and revoked with the rest. Lock order:
-//! `relay_node_mint` before `refreshing`. The mint takes `refreshing`
-//! (renewing the session) while it holds `relay_node_mint`, and sign-out
-//! takes them in the same order; nothing holding `refreshing` waits for
-//! `relay_node_mint` (sign-out's own `forget_relay_node_token` is handed the
-//! guard it already holds).
+//! token it mints is kept and revoked with the rest, and a mint that sees a
+//! sign-out begin returns without a word.
+//!
+//! Lock order: `provider_credentials`, `relay_node_mint`, then `refreshing`.
+//! Sign-out takes them in that order; the mint takes `refreshing` (renewing
+//! the session) while it holds `relay_node_mint`; nothing holding
+//! `refreshing` waits for `relay_node_mint` (sign-out's own
+//! `forget_relay_node_token` is handed the guard it already holds).
 //!
 //! The token loaded or minted, or the reason there is none, is what the
 //! node's `relay_node_credential` hook answers (`relay_node_credential`).
@@ -134,6 +142,9 @@ impl Account {
         let Ok(mut progress) = self.relay_node_mint.progress.try_lock() else {
             return;
         };
+        // Read before anything awaits: a sign-out that begins from here on,
+        // even while the keychain is read, cuts a wait in place short.
+        let sign_outs = self.relay_node_mint.sign_outs.load(Ordering::SeqCst);
         let Some(core) = self.core() else { return };
         let Some(workspace) = gate_only_workspace(&core) else {
             // Not gate-only (any more): the node has no credential of ours,
@@ -178,31 +189,48 @@ impl Account {
         }
         let site = self.relay_node_site();
         let entry = keychain::entry(&site, &workspace);
-        match self.keychain(move |k| keychain::load(k, &entry)).await {
-            Ok(Some(kept)) if !kept.expired(agent_relay_node::relay::state::now_ms()) => {
-                progress.kept = settled;
+        let pending = match self.keychain(move |k| keychain::load(k, &entry)).await {
+            Ok(held) => {
                 progress.keychain_failing = false;
-                let credential = node_credential(&site, &kept);
-                return self.hold_relay_node_credential(&core, epoch, &workspace, credential);
+                match held.kept {
+                    Some(kept) if !kept.expired(agent_relay_node::relay::state::now_ms()) => {
+                        progress.kept = settled;
+                        let credential = node_credential(&site, &kept);
+                        return self
+                            .hold_relay_node_credential(&core, epoch, &workspace, credential);
+                    }
+                    _ => held.pending_revoke,
+                }
             }
-            Ok(_) => progress.keychain_failing = false,
             Err(error) => {
                 return self.keychain_failed(&core, &mut progress, epoch, &workspace, &error)
             }
-        }
+        };
         let node_name = agent_relay_node::relay::spawn::node_name(&core.machine_prefix);
-        let Some((site, bearer, minted)) = self
-            .mint_relay_node_token(epoch, &workspace, &node_name)
+        let Some(Minted {
+            site,
+            bearer,
+            answer,
+            pending,
+        }) = self
+            .mint_relay_node_token(epoch, sign_outs, &workspace, &node_name, pending)
             .await
         else {
             return;
         };
-        // Signed out while it was minted: nobody keeps it, and nothing is
-        // reported for a sign-in that is over.
-        let signed_out = || self.epoch.load(Ordering::SeqCst) != epoch;
-        let token = match minted {
+        // Signed out, or signing out, while it was minted: nobody keeps it,
+        // and nothing is reported for a sign-in that is over.
+        let signed_out = || {
+            self.epoch.load(Ordering::SeqCst) != epoch
+                || self.relay_node_mint.sign_outs.load(Ordering::SeqCst) != sign_outs
+        };
+        let token = match answer {
             Ok(token) if signed_out() => {
-                self_tokens::delete(&site, &bearer, &workspace, &token.id).await;
+                if !self_tokens::delete(&site, &bearer, &workspace, &token.id).await {
+                    let _ = self
+                        .add_relay_node_revokes(&workspace, vec![token.id])
+                        .await;
+                }
                 return;
             }
             Ok(token) => token,
@@ -231,9 +259,14 @@ impl Account {
             expires_at: token.expires_at,
             token: token.token,
         };
-        let (entry, value) = (keychain::entry(&site, &workspace), kept.clone());
+        // The ids whose DELETE failed again ride along in the new entry.
+        let held = keychain::Entry {
+            kept: Some(kept.clone()),
+            pending_revoke: pending,
+        };
+        let entry = keychain::entry(&site, &workspace);
         if let Err(error) = self
-            .keychain(move |k| keychain::store(k, &entry, &value))
+            .keychain(move |k| keychain::store(k, &entry, &held))
             .await
         {
             self_tokens::delete(&site, &bearer, &workspace, &kept.id).await;
@@ -242,11 +275,17 @@ impl Account {
             }
             return self.keychain_failed(&core, &mut progress, epoch, &workspace, &error);
         }
-        // Signed out while it was kept: sign-out found nothing to take, so
-        // it goes now, before another sign-in could load it.
+        // Signed out, or signing out, while it was kept: its secret leaves
+        // the keychain now, and it is deleted with the bearer it was minted
+        // with, before another sign-in could load it.
         if signed_out() {
-            self.unkeep_relay_node_token(&workspace, &kept.id).await;
-            self_tokens::delete(&site, &bearer, &workspace, &kept.id).await;
+            if let Ok(ids) = self
+                .retire_relay_node_tokens(&workspace, Some(kept.id))
+                .await
+            {
+                self.revoke_relay_node_tokens(&site, &bearer, &workspace, ids)
+                    .await;
+            }
             return;
         }
         progress.retry = Retry::default();
@@ -256,26 +295,40 @@ impl Account {
         self.hold_relay_node_credential(&core, epoch, &workspace, credential);
     }
 
-    /// Mints `node_name`'s token in `workspace`: a short `Retry-After` is
-    /// waited out in place, a few times, unless a sign-out begins, and a
-    /// session Control refuses is renewed once. The site and bearer it went
-    /// out with, and Control's answer; `None` when signed out meanwhile.
+    /// Mints `node_name`'s token in `workspace`: first the `pending`
+    /// revokes left by a sign-out are deleted with the same bearer, best
+    /// effort, then a short `Retry-After` is waited out in place, a few
+    /// times, unless a sign-out begins (or began since `sign_outs` was
+    /// read), and a session Control refuses is renewed once. `None` when
+    /// there is no session, or when signed out meanwhile.
     async fn mint_relay_node_token(
         &self,
         epoch: u64,
+        sign_outs: u64,
         workspace: &str,
         node_name: &str,
-    ) -> Option<(String, Secret, Result<self_tokens::SelfToken, MintError>)> {
-        let sign_outs = self.relay_node_mint.sign_outs.load(Ordering::SeqCst);
+        pending: Vec<String>,
+    ) -> Option<Minted> {
         let (mut site, mut bearer) = self.pinned_credential(None).await?;
+        let pending = self
+            .revoke_relay_node_tokens(&site, &bearer, workspace, pending)
+            .await;
         let (mut attempt, mut renewed) = (1, false);
+        let minted = |site, bearer, answer| {
+            Some(Minted {
+                site,
+                bearer,
+                answer,
+                pending: pending.clone(),
+            })
+        };
         loop {
             match self_tokens::mint(&site, &bearer, workspace, node_name).await {
                 Err(MintError::RateLimited(wait))
                     if attempt < MINT_ATTEMPTS && wait <= LONGEST_WAIT_IN_PLACE =>
                 {
                     if !self.relay_node_mint.wait_in_place(wait, sign_outs).await {
-                        return Some((site, bearer, Err(MintError::RateLimited(wait))));
+                        return minted(site, bearer, Err(MintError::RateLimited(wait)));
                     }
                     attempt += 1;
                 }
@@ -283,10 +336,10 @@ impl Account {
                     renewed = true;
                     match self.pinned_credential(Some(bearer.clone())).await {
                         Some(credential) => (site, bearer) = credential,
-                        None => return Some((site, bearer, Err(MintError::Unauthorized))),
+                        None => return minted(site, bearer, Err(MintError::Unauthorized)),
                     }
                 }
-                other => return Some((site, bearer, other)),
+                other => return minted(site, bearer, other),
             }
             if self.epoch.load(Ordering::SeqCst) != epoch {
                 return None;
@@ -294,17 +347,83 @@ impl Account {
         }
     }
 
-    /// Takes the token `id` out of `workspace`'s keychain entry, if that
-    /// entry still holds it.
-    pub(super) async fn unkeep_relay_node_token(&self, workspace: &str, id: &str) {
+    /// Takes the live token's secret out of `workspace`'s keychain entry,
+    /// keeping its id as a pending revoke; with `only`, just when the entry
+    /// still holds that token. Should the entry not be written, it is
+    /// removed: the secret never stays behind. The ids left to revoke, or
+    /// the keychain's error when it could not be read.
+    async fn retire_relay_node_tokens(
+        &self,
+        workspace: &str,
+        only: Option<String>,
+    ) -> Result<Vec<String>, String> {
         let entry = keychain::entry(&self.relay_node_site(), workspace);
-        let id = id.to_string();
-        let _ = self
-            .keychain(move |k| match keychain::load(k, &entry)? {
-                Some(kept) if kept.id == id => k.delete(&entry),
-                _ => Ok(()),
-            })
-            .await;
+        self.keychain(move |k| {
+            let mut held = keychain::load(k, &entry)?;
+            let live = held.kept.as_ref().map(|kept| kept.id.clone());
+            if only.is_some() && live != only {
+                return Ok(Vec::new());
+            }
+            if held.retire() && keychain::store(k, &entry, &held).is_err() {
+                let _ = k.delete(&entry);
+            }
+            Ok(held.pending_revoke)
+        })
+        .await
+    }
+
+    /// Keeps `ids` as pending revokes in `workspace`'s keychain entry, for
+    /// the next mint to delete.
+    async fn add_relay_node_revokes(
+        &self,
+        workspace: &str,
+        ids: Vec<String>,
+    ) -> Result<(), String> {
+        let entry = keychain::entry(&self.relay_node_site(), workspace);
+        self.keychain(move |k| {
+            let mut held = keychain::load(k, &entry)?;
+            for id in ids {
+                if !held.pending_revoke.contains(&id) {
+                    held.pending_revoke.push(id);
+                }
+            }
+            keychain::store(k, &entry, &held)
+        })
+        .await
+    }
+
+    /// Deletes the tokens `ids` in `workspace` at Control with `bearer`,
+    /// best effort, each bounded by its timeout, and drops from the keychain
+    /// entry those Control answers are gone (2xx or 404). The ids still to
+    /// revoke.
+    pub(super) async fn revoke_relay_node_tokens(
+        &self,
+        site: &str,
+        bearer: &Secret,
+        workspace: &str,
+        ids: Vec<String>,
+    ) -> Vec<String> {
+        let (mut gone, mut pending) = (Vec::new(), Vec::new());
+        for id in ids {
+            if self_tokens::delete(site, bearer, workspace, &id).await {
+                gone.push(id);
+            } else {
+                pending.push(id);
+            }
+        }
+        if !gone.is_empty() {
+            let entry = keychain::entry(&self.relay_node_site(), workspace);
+            let _ = self
+                .keychain(move |k| {
+                    let mut held = keychain::load(k, &entry)?;
+                    if held.settle(&gone) {
+                        keychain::store(k, &entry, &held)?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+        pending
     }
 
     /// The keychain could not be read or written: spawning is unavailable
@@ -343,49 +462,50 @@ impl Account {
         self.hold_relay_node_credential(core, epoch, workspace, Err(bare_reason(reason)));
     }
 
-    /// Looks up this sign-in's relay-node tokens for sign-out, with the
-    /// mint's `progress` sign-out holds: each one's workspace and token
-    /// id, which its `DELETE` takes. The keychain entry stays until Control
-    /// answers that the token is gone (`unkeep_relay_node_token`).
-    /// Only a gate-only workspace, or one whose token this sign-in held, is
-    /// looked for: other installs never wait on the keychain.
+    /// Takes this sign-in's relay-node tokens out of the keychain for
+    /// sign-out, with the mint's `progress` sign-out holds: each workspace
+    /// with the token ids its `DELETE`s take, pending revokes from earlier
+    /// sign-outs included. The secret always leaves the keychain; each id
+    /// stays in the entry as a pending revoke until Control answers that
+    /// its token is gone (`revoke_relay_node_tokens`), or the next mint
+    /// deletes it. Only a gate-only workspace, or one whose token this
+    /// sign-in held, is looked for: other installs never wait on the
+    /// keychain.
     pub(super) async fn forget_relay_node_token(
         &self,
         progress: &mut MintProgress,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, Vec<String>)> {
         *progress = MintProgress::default();
         let core = self.core();
         let mut workspaces = self.take_kept_relay_node_workspaces();
         self.drop_relay_node_credential(core.as_deref(), true);
         workspaces.extend(core.as_deref().and_then(gate_only_workspace));
-        let site = self.relay_node_site();
         let mut forgotten = Vec::new();
         for workspace in workspaces {
-            let entry = keychain::entry(&site, &workspace);
             // A keychain that fails or does not answer holds sign-out up
-            // no longer: that workspace's token is left as it is.
-            if let Ok(Some(kept)) = self.keychain(move |k| keychain::load(k, &entry)).await {
-                forgotten.push((workspace, kept.id));
+            // no longer: that workspace's entry is left as it is.
+            if let Ok(ids) = self.retire_relay_node_tokens(&workspace, None).await {
+                if !ids.is_empty() {
+                    forgotten.push((workspace, ids));
+                }
             }
         }
         forgotten
     }
 
     /// Takes `workspace`'s relay-node token out of the keychain and deletes
-    /// it at Control, best effort.
+    /// it at Control, best effort: with no session, or should Control not
+    /// answer it gone, its id is left for the next mint to delete.
     async fn discard_relay_node_token(&self, workspace: &str) {
-        let entry = keychain::entry(&self.relay_node_site(), workspace);
-        let kept = self
-            .keychain(move |k| {
-                let kept = keychain::load(k, &entry);
-                let _ = k.delete(&entry);
-                kept
-            })
-            .await;
-        if let Ok(Some(kept)) = kept {
-            if let Some((site, bearer)) = self.pinned_credential(None).await {
-                self_tokens::delete(&site, &bearer, workspace, &kept.id).await;
-            }
+        let Ok(ids) = self.retire_relay_node_tokens(workspace, None).await else {
+            return;
+        };
+        if ids.is_empty() {
+            return;
+        }
+        if let Some((site, bearer)) = self.pinned_credential(None).await {
+            self.revoke_relay_node_tokens(&site, &bearer, workspace, ids)
+                .await;
         }
     }
 
@@ -398,6 +518,15 @@ impl Account {
             .await
             .unwrap_or_else(|_| Err("The keychain did not answer.".into()))
     }
+}
+
+/// A mint's outcome: the site and bearer it went out with, Control's
+/// answer, and the pending revokes whose `DELETE` failed again.
+struct Minted {
+    site: String,
+    bearer: Secret,
+    answer: Result<self_tokens::SelfToken, MintError>,
+    pending: Vec<String>,
 }
 
 /// Counts a transient failure and sets when the next mint may run.
