@@ -1,8 +1,9 @@
 //! Core's two Cursor routes on the peer-authenticated session socket: the
 //! hook's announcement of a call ([`intent`]) and the helper's MCP request
 //! ([`route`]). The grant, the key and the proof stay in Core.
-use super::intents::Intent;
+use super::intents::{Intent, Intents};
 use super::proof;
+use super::ANNOUNCE_BUDGET;
 use crate::account::Account;
 use crate::claude_attestation::FIELD;
 use crate::copilot_dispatch::{
@@ -112,6 +113,7 @@ pub(crate) async fn intent(
     uid: u32,
     request: &Request,
 ) -> Result<Value, OutboundError> {
+    let started = Instant::now();
     if uid != agent_relay_node::relay::peer::current_uid() {
         return Err(refused("caller_unverified"));
     }
@@ -135,12 +137,30 @@ pub(crate) async fn intent(
     if core.plugins.cloud.identity_sync_generation() != generation {
         return Err(refused("account_changed"));
     }
-    account
-        .copilot_dispatch
-        .cursor_intents
-        .register(intent, Instant::now())
-        .map_err(refused)?;
+    keep(
+        &account.copilot_dispatch.cursor_intents,
+        intent,
+        started,
+        Instant::now(),
+    )
+    .map_err(refused)?;
     Ok(json!({"accepted": true}))
+}
+
+/// Keeps `intent`, announced by a request that arrived at `started`, unless
+/// the announce budget ran out: the hook may then have given up and denied
+/// the call, and a kept intent would sign a retry with the wrong
+/// `tool_use_id` or make another chat's identical call ambiguous.
+fn keep(
+    intents: &Intents,
+    intent: Intent,
+    started: Instant,
+    now: Instant,
+) -> Result<(), &'static str> {
+    if now.saturating_duration_since(started) >= ANNOUNCE_BUDGET {
+        return Err("deadline_expired");
+    }
+    intents.register(intent, now)
 }
 
 /// [`super::STATUS_ROUTE`]: whether Cursor's calls are attested now, which
@@ -297,7 +317,8 @@ impl Dispatch {
 
     /// Strips any caller-supplied proof from a `tools/call` and, for a call
     /// a chat's hook announced, signs that chat's proof into it. An identity
-    /// tool no hook announced is refused while Cursor's calls are attested.
+    /// tool without exactly one chat's announcement is refused while
+    /// Cursor's calls are attested; any other tool then goes out unsigned.
     fn attest(&mut self, attesting: bool) -> Result<(), &'static str> {
         let request = &mut self.envelope.request;
         if request["method"] != "tools/call" {
@@ -320,7 +341,7 @@ impl Dispatch {
             Instant::now(),
         ) {
             Ok(Some(intent)) => intent,
-            Ok(None) if !identity => return Ok(()),
+            Ok(None) | Err(_) if !identity => return Ok(()),
             Ok(None) => return Err("cursor_intent_missing"),
             Err(class) => return Err(class),
         };

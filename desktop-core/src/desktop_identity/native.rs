@@ -161,9 +161,26 @@ impl Identities {
             providers: sync.native_providers_supported(account, generation),
             claude: key.is_some() && sync.claude_attestation_supported(account, generation),
             copilot: key.is_some() && copilot,
-            cursor: key.is_some() && cursor,
+            cursor: key.is_some() && cursor && self.cursor_transport_attested(),
         };
         (support, key)
+    }
+
+    /// Cursor's calls reach the hosted MCP through this build's helper,
+    /// with the hooks that announce each chat's call: Cursor chats are
+    /// named as such only while their calls are actually attested.
+    #[cfg(not(windows))]
+    fn cursor_transport_attested(&self) -> bool {
+        self.account
+            .as_ref()
+            .and_then(|account| account.mcp_config.get())
+            .is_some_and(|installer| installer.cursor_attested_transport())
+    }
+
+    /// Windows has no Cursor hooks, so Cursor's calls are never attested.
+    #[cfg(windows)]
+    fn cursor_transport_attested(&self) -> bool {
+        false
     }
 
     /// Cloud verifies Claude chat proofs for the account signed in now and

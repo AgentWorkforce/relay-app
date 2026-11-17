@@ -253,7 +253,7 @@ impl Relay for SessionSocket {
         self.ask(
             crate::cursor_dispatch::INTENT_ROUTE,
             call.to_string().as_bytes(),
-            Duration::from_secs(3),
+            crate::cursor_dispatch::ANNOUNCE_TIMEOUT,
         )
         .is_some_and(|data| data["accepted"] == true)
     }

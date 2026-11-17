@@ -200,6 +200,54 @@ pub(crate) async fn registered_cursor() -> anyhow::Result<Fixture> {
         .await;
     Ok(f)
 }
+#[tokio::test]
+async fn cursor_chats_are_named_as_cursor_only_while_their_calls_are_attested() -> anyhow::Result<()>
+{
+    let f = registered_cursor().await?;
+    let kind = |f: &Fixture| {
+        f.last_put()["identities"]
+            .as_array()
+            .and_then(|identities| {
+                identities
+                    .iter()
+                    .find(|i| i["name"] == "cursor-chat")
+                    .cloned()
+            })
+            .map(|identity| identity["native_session"]["kind"].clone())
+    };
+    // Cloud verifies Cursor proofs, but Cursor runs no helper or hooks.
+    crate::desktop_identity::Identities::new(f.core.clone())
+        .sync_desktop_identities()
+        .await;
+    assert!(!f.installer.cursor_attested_transport());
+    assert_eq!(kind(&f), Some(Value::Null));
+    let binding = crate::mcp_settings::Binding {
+        site_url: "https://agentrelay.com".into(),
+        workspace_id: WORKSPACE.into(),
+        account_id: "user-1".into(),
+    };
+    f.installer
+        .select(vec!["cursor".into()], Some(&binding), None)
+        .unwrap();
+    f.installer.set_provider_credentials(
+        &binding,
+        std::collections::BTreeMap::from([("cursor".into(), "synthetic-cursor-grant".into())]),
+    );
+    f.installer.refresh(Some(&binding));
+    crate::desktop_identity::Identities::new(f.core.clone())
+        .sync_desktop_identities()
+        .await;
+    // Windows has no Cursor hooks, so its Cursor chats are never named.
+    let attested = !cfg!(windows);
+    assert_eq!(f.installer.cursor_attested_transport(), attested);
+    let expected = if attested {
+        json!("cursor")
+    } else {
+        Value::Null
+    };
+    assert_eq!(kind(&f), Some(expected));
+    Ok(())
+}
 pub(crate) fn hook_request(tool: &str, args: Value) -> anyhow::Result<Request> {
     Ok(Request {
         method: "POST".into(),

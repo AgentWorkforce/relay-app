@@ -390,3 +390,5 @@ fn cursor_routes_ride_on_the_hook_paths_the_pinned_core_forwards() {
         assert_eq!(which(&request(method, route)), None, "{method} {route}");
     }
 }
+
+mod routes;

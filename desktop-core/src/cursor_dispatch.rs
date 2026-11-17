@@ -29,6 +29,7 @@ pub(crate) use route::{intent, route, status};
 use crate::mcp_settings::Binding;
 use agent_relay_node::relay::outbound::Request;
 use std::path::Path;
+use std::time::Duration;
 
 /// The helper's subcommand, which Cursor's `mcp.json` entry runs.
 pub const SUBCOMMAND: &str = "cursor-mcp";
@@ -38,6 +39,14 @@ pub const SUBCOMMAND: &str = "cursor-mcp";
 const QUERY: &str = "cursor";
 /// Where the hook announces a call.
 pub(crate) const INTENT_ROUTE: &str = "/copilot/hook?cursor=intent";
+/// How long the hook waits for Core to keep an announced call before it
+/// gives up, and denies an identity call.
+pub(crate) const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long Core may take to keep an announced call: well inside the hook's
+/// wait, so Core never keeps a call the hook already gave up on, which a
+/// retry or another chat's identical call would then take.
+pub(crate) const ANNOUNCE_BUDGET: Duration =
+    ANNOUNCE_TIMEOUT.saturating_sub(Duration::from_secs(1));
 /// Where the hook asks whether Cursor's calls are attested.
 pub(crate) const STATUS_ROUTE: &str = "/copilot/hook?cursor=status";
 /// Where the helper hands Core a request.
