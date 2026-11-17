@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { EC2_USER_DATA_ENCODED_LIMIT, RELAY_SESSIONS_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64 } from "@agentworkforce/layered-agent";
+import { EC2_USER_DATA_ENCODED_LIMIT, ISSUE_WATCH_KIT_FILES, RELAY_SESSIONS_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64 } from "@agentworkforce/layered-agent";
 import agent from "../agent.config.ts";
 import { LANE_SCRIPTS, LANE_SCRIPTS_SHA_FILE, laneScriptsSha } from "../lane-scripts.ts";
 
@@ -30,8 +30,8 @@ test("user data: under EC2's limit, every kit and lane file, no secret values", 
   const script = gunzipSync(Buffer.from(encoded, "base64")).toString("utf8");
   // Since 0.1.10 the optional kit files travel over SSM after first boot, not in
   // user data; skip exactly the ones the kit's OPTIONAL_KIT_FILES (src/spec.ts) lists.
-  // 0.1.13 adds headless.py and delegation.md to it but does not export the constant.
-  const optional: readonly string[] = ["headless.py", "delegation.md", ...WORKER_KIT_FILES, ...RELAY_SESSIONS_KIT_FILES];
+  // 0.1.25 lists headless.py, delegation.md, orchestration.md and the issue-watch files too, but still does not export the constant.
+  const optional: readonly string[] = ["headless.py", "delegation.md", "orchestration.md", ...WORKER_KIT_FILES, ...RELAY_SESSIONS_KIT_FILES, ...ISSUE_WATCH_KIT_FILES];
   for (const f of agent.files) {
     const shipped = script.includes(`cat > /opt/agent-host/${f.name} <<'`);
     if (f.source === "kit" && optional.includes(f.name)) assert.ok(!shipped, `${f.name} is not in user data`);
