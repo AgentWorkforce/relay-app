@@ -759,7 +759,7 @@ impl Account {
         flow: Flow,
         provider: Option<crate::contract::account::SignInProvider>,
     ) -> Result<SignInReport, RpcError> {
-        login_start::refuse_renewal()?;
+        self.refuse_renewal()?;
         let site = install.target.site_url.clone();
         let attempt = {
             let mut current = self.attempt.lock().unwrap();
