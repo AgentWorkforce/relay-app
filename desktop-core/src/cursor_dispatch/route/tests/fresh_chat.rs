@@ -39,7 +39,8 @@ impl SessionDirectory for Discovery {
 }
 
 /// Relaycast as registration sees it: `POST /v1/agents` creates the agent,
-/// anything else is not found. Every request line is recorded.
+/// after `delay`, and anything else is not found. Every request line is
+/// recorded.
 struct Relaycast {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
@@ -54,6 +55,10 @@ impl Drop for Relaycast {
 
 impl Relaycast {
     async fn start() -> Relaycast {
+        Relaycast::slow(Duration::ZERO).await
+    }
+
+    async fn slow(delay: Duration) -> Relaycast {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -87,6 +92,7 @@ impl Relaycast {
                     let request = request.join(" ");
                     recorded.lock().unwrap().push(request.clone());
                     let (status, reply) = if request == "POST /v1/agents" {
+                        tokio::time::sleep(delay).await;
                         let asked: Value = serde_json::from_slice(&body).unwrap();
                         (
                             "201 Created",
@@ -128,7 +134,10 @@ impl Relaycast {
 /// Cursor attested, the workspace on `relaycast`, and Core's discovery
 /// listing `FRESH` live when `listed`. Nothing has registered `FRESH`.
 async fn fresh(listed: bool) -> (Fixture, Relaycast) {
-    let relaycast = Relaycast::start().await;
+    fresh_on(listed, Relaycast::start().await).await
+}
+
+async fn fresh_on(listed: bool, relaycast: Relaycast) -> (Fixture, Relaycast) {
     let f = fixture_with(|_| Arc::new(Discovery(listed)));
     let url = relaycast.url.clone();
     f.core
@@ -271,4 +280,56 @@ async fn a_chat_discovery_does_not_list_or_another_workspace_holds_stays_unknown
     assert_eq!(registered.len(), 1);
     assert_eq!(registered[0].base_url, CAST);
     assert_eq!(relaycast.registrations(), 0);
+}
+
+/// The announce budget before a new chat's first call waited for its
+/// registration and identity sync: the field's registration took longer.
+const OLD_BUDGET: Duration = Duration::from_secs(2);
+
+/// An announcement that arrived `ago`, whose chat Relaycast takes `slow` to
+/// create, admitted by the deadline `budget` gives it, then kept.
+async fn announce_slowly(
+    budget: Duration,
+    ago: Duration,
+    slow: Duration,
+) -> (Result<(), &'static str>, Relaycast) {
+    let (f, relaycast) = fresh_on(true, Relaycast::slow(slow).await).await;
+    let started = Instant::now() - ago;
+    let deadline = started + budget.saturating_sub(REGISTER_MARGIN);
+    let table = Arc::new(holding(&f, FRESH));
+    let admitted = admitted(&account(&f), &f.core, HOOK_PID, FRESH, table, deadline).await;
+    let input = json!({
+        "conversation_id": FRESH, "tool_use_id": TUID,
+        "tool_name": "send_relay_message", "tool_input": "{}",
+    });
+    let generation = f.cloud.generation.load(std::sync::atomic::Ordering::SeqCst);
+    let intents = &account(&f).copilot_dispatch.cursor_intents;
+    let kept = admitted.and_then(|()| {
+        let intent = announced(&input, generation).unwrap();
+        keep(intents, intent, started, Instant::now())
+    });
+    if kept.is_ok() {
+        assert_eq!(intents.len(), 1);
+        assert!(super::super::registered(&f.core, FRESH).is_some());
+    }
+    (kept, relaycast)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registration_slower_than_the_old_budget_still_admits_the_call() {
+    // The announcement arrived 1.6 s ago and Relaycast takes 0.5 s more to
+    // create the agent: past the old budget, well inside the current one.
+    let (ago, slow) = (Duration::from_millis(1600), Duration::from_millis(500));
+    assert!(ago + slow > OLD_BUDGET);
+    assert!(ago + slow < crate::cursor_dispatch::ANNOUNCE_BUDGET - REGISTER_MARGIN);
+
+    let budget = crate::cursor_dispatch::ANNOUNCE_BUDGET;
+    let (kept, relaycast) = announce_slowly(budget, ago, slow).await;
+    assert_eq!(kept, Ok(()));
+    assert_eq!(relaycast.registrations(), 1);
+
+    // The old budget gave up on the same registration and refused the call.
+    let (kept, relaycast) = announce_slowly(OLD_BUDGET, ago, slow).await;
+    assert_eq!(kept, Err("cursor_chat_unknown"));
+    assert_eq!(relaycast.registrations(), 1);
 }

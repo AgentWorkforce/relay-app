@@ -19,8 +19,11 @@ use agent_relay_node::relay::claude_settings::{resolve_symlinks, write_keeping_f
 use agent_relay_node::relay::cursor_cli::CursorConfig;
 use serde_json::Map;
 
-/// Seconds Cursor waits for the hook, which only reads a pointer file.
-const TIMEOUT_SECS: u64 = 5;
+/// Seconds Cursor waits for the hook: above the hook's own budget for asking
+/// Core, which covers a new chat's first identity call waiting for Core to
+/// put the chat on the relay. `sessionStart` answers within seconds.
+const TIMEOUT_SECS: u64 = 20;
+const _: () = assert!(TIMEOUT_SECS > crate::cursor_guide::BUDGET.as_secs());
 
 /// The hook's shell command for `executable`; `--socket` names a site
 /// profile build's own session socket, and `--dev` asks Agent Relay Dev.
@@ -82,12 +85,14 @@ impl GuideHooks {
         })
     }
 
-    /// Whether `entries` hold exactly this build's current entry.
+    /// Whether `entries` hold exactly this build's current entry: its
+    /// command, with the current timeout. An entry with an older timeout is
+    /// rewritten, so an existing install gets the current one.
     fn current(&self, entries: &[Value]) -> bool {
         let mut ours = entries.iter().filter(|entry| self.ours(entry));
-        ours.next()
-            .is_some_and(|entry| entry["command"] == self.command.as_str())
-            && ours.next().is_none()
+        ours.next().is_some_and(|entry| {
+            entry["command"] == self.command.as_str() && entry["timeout"] == TIMEOUT_SECS
+        }) && ours.next().is_none()
     }
 
     fn read(&self) -> Result<Map<String, Value>, String> {
@@ -294,6 +299,37 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn an_entry_with_an_older_timeout_is_rewritten_with_the_current_one() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".cursor/hooks.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = json!({"version": 1, "hooks": {
+            "sessionStart": [{"command": "other-start", "timeout": 5},
+                {"command": OURS, "timeout": 5}],
+            "beforeMCPExecution": [{"command": OURS, "timeout": 5}],
+        }});
+        fs::write(&path, old.to_string()).unwrap();
+        let guide = hooks(root.path(), None).unwrap();
+        assert!(!guide.ready(), "the old timeout is not current");
+        guide.set(true).unwrap();
+        assert!(guide.ready());
+        let object = file(root.path()).unwrap();
+        for event in EVENTS {
+            let entries = object["hooks"][event].as_array().unwrap();
+            let ours: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry["command"] == OURS)
+                .collect();
+            assert_eq!(ours, [&json!({"command": OURS, "timeout": TIMEOUT_SECS})]);
+        }
+        assert_eq!(
+            object["hooks"]["sessionStart"][0],
+            json!({"command": "other-start", "timeout": 5}),
+            "another entry keeps its timeout"
         );
     }
 

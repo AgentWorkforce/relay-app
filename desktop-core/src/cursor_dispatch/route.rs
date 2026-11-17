@@ -259,8 +259,10 @@ async fn admitted(
 /// Cursor's `beforeSubmitPrompt` hook records an editor conversation, and
 /// `cursor-agent` holds a CLI chat's store. Registering creates the agent
 /// on Relaycast, so it is one Relaycast request, a store write and, after
-/// it, one identity sync to Cloud. Both run on as their own tasks past
-/// `deadline`, so a slow registration still finishes for the next call.
+/// it, one identity sync to Cloud; the announce budget leaves room for both
+/// (they have taken around 10 s together). Both run on as their own tasks
+/// past `deadline`, so a slow registration still finishes for the next call.
+/// What happened goes to `core.log`, without the chat.
 async fn register(core: &Arc<Core>, sid: &str, deadline: Instant) -> Result<(), &'static str> {
     let started = Instant::now();
     let registering = {
@@ -270,15 +272,17 @@ async fn register(core: &Arc<Core>, sid: &str, deadline: Instant) -> Result<(), 
     match tokio::time::timeout_at(deadline.into(), registering).await {
         Ok(Ok(Ok(_))) => {}
         Ok(Ok(Err(error))) => {
-            eprintln!(
+            agent_relay_node::relay::diagnostics::write(format_args!(
                 "[cursor-dispatch] could not put a chat on the relay: {}",
                 error.message
-            );
+            ));
             return Err("cursor_chat_unknown");
         }
         Ok(Err(_)) => return Err("cursor_chat_unknown"),
         Err(_) => {
-            eprintln!("[cursor-dispatch] putting a chat on the relay outlasted the hook");
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "[cursor-dispatch] putting a chat on the relay outlasted the hook"
+            ));
             return Err("cursor_chat_unknown");
         }
     }
@@ -295,10 +299,10 @@ async fn register(core: &Arc<Core>, sid: &str, deadline: Instant) -> Result<(), 
     let synced = tokio::time::timeout_at(deadline.into(), syncing)
         .await
         .is_ok();
-    eprintln!(
+    agent_relay_node::relay::diagnostics::write(format_args!(
         "[cursor-dispatch] put a chat on the relay in {} ms (identity synced: {synced})",
         started.elapsed().as_millis()
-    );
+    ));
     Ok(())
 }
 
