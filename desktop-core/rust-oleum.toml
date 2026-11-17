@@ -27,7 +27,7 @@ rust_roots = ["src"]
 [baseline]
 
 [baseline.file_loc]
-"src/account.rs" = 1687
+"src/account.rs" = 1625
 "src/cloud_chat.rs" = 1307
 "src/contractor_access.rs" = 916
 "src/history/cloud.rs" = 802
@@ -126,6 +126,12 @@ rust_roots = ["src"]
 "src/onboarding/auth/enrollment_key/stdin_copy.rs::ignored" = 1
 "src/onboarding/auth/enrollment_key/stdin_copy.rs::watch" = 1
 "src/history/uploader.rs::signal" = 1
+# The relay-node token's Credential Manager entry: windows-sys binds
+# CredReadW, CredWriteW and CredDeleteW only as raw FFI, so each sits in a
+# function of its own behind a safe signature (windows_credentials::ffi).
+"src/relay_node_token.rs::windows_credentials::ffi::read" = 1
+"src/relay_node_token.rs::windows_credentials::ffi::write" = 1
+"src/relay_node_token.rs::windows_credentials::ffi::delete" = 1
 "src/install/windows.rs::registry::key_exists" = 2
 "src/install/windows.rs::registry::read_dword" = 1
 "src/install/windows.rs::registry::read_string" = 2
@@ -135,7 +141,6 @@ rust_roots = ["src"]
 "src/telemetry.rs::windows_version" = 2
 
 [baseline.panic]
-"src/account.rs::Account::account" = 1
 "src/account.rs::Account::adopt_workspace" = 1
 "src/account.rs::Account::announce" = 1
 "src/account.rs::Account::browser_bearer" = 4
@@ -211,7 +216,6 @@ rust_roots = ["src"]
 [baseline.allow]
 
 [baseline.bare_panic]
-"src/account.rs::Account::account" = 1
 "src/account.rs::Account::adopt_workspace" = 1
 "src/account.rs::Account::announce" = 1
 "src/account.rs::Account::browser_bearer" = 4

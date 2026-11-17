@@ -15,6 +15,14 @@ impl Account {
             // A refresh in flight finishes first, then sees the new epoch.
             let _one = self.refreshing.lock().await;
             self.epoch.fetch_add(1, Ordering::SeqCst);
+            // After the bump, so a mint in flight loses its epoch check and
+            // cannot keep a token again: a gate-only install's relay-node
+            // tokens leave the keychain and are deleted at Control with the
+            // session's bearer. Awaited before the session leaves the store:
+            // from then on the queued identity clear, or the revoke below,
+            // revokes it, and a DELETE after that would be refused, leaving
+            // the token live. Each DELETE is bounded by its timeout.
+            self.delete_relay_node_tokens().await;
             // The latest saved session: another process may have rotated it.
             let outcome = match self.core() {
                 Some(core) => core
@@ -33,6 +41,8 @@ impl Account {
         };
         // Including a setup's `cloud install`, which has no install yet.
         let _ = self.uploader.runner().cancel_all().await;
+        // Revoked by the identity clear when one was queued; the relay-node
+        // tokens' DELETEs have already been answered either way.
         if let Some(session) = session.filter(|_| !clear_queued) {
             tokio::spawn(async move { crate::cloud_api::revoke(&session).await });
         }
@@ -62,5 +72,31 @@ impl Account {
         }
         forgotten.map_err(|message| RpcError::new(ErrorKind::StoreFailed, message))?;
         self.finish_pending_disconnect().await
+    }
+
+    /// Takes this sign-in's relay-node tokens out of the keychain and
+    /// deletes each at Control with the latest saved session's bearer, best
+    /// effort. With no token nothing is sent; with no session, no `DELETE`.
+    async fn delete_relay_node_tokens(&self) {
+        let node_tokens = self.forget_relay_node_token().await;
+        if node_tokens.is_empty() {
+            return;
+        }
+        let session = self.core().and_then(|core| {
+            let _ = core.store.reload();
+            core.store.read(|s| s.cloud_session.clone())
+        });
+        let Some(session) = session else {
+            return;
+        };
+        for (workspace, id) in node_tokens {
+            crate::cloud_api::self_tokens::delete(
+                &session.site_url,
+                &session.access_token,
+                &workspace,
+                &id,
+            )
+            .await;
+        }
     }
 }

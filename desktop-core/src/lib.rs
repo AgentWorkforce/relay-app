@@ -31,6 +31,7 @@ pub mod probe_copy;
 pub mod storage_format;
 mod provider_methods;
 mod relay_build;
+pub mod relay_node_token;
 pub mod teammate_context;
 pub mod telemetry;
 pub mod session_locations;
