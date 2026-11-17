@@ -90,6 +90,7 @@ impl State {
         // for falls back to the last confirmed state.
         self.sharing_mode_wanted.clear();
         self.sharing_replay_confirmed = None;
+        self.sharing_previewing = false;
         self.paused_wanted.clear();
         self.pending_upload_action = None;
         self.pending_settings.clear();
