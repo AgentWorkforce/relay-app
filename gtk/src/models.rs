@@ -18,6 +18,7 @@
 //! | `history_retention` | How long local session history is kept, and the warning a short choice gets |
 //! | `agent_settings` | New agents joining #general; the settings agents changed |
 //! | `plan` | The workspace's plan line, a cap that was reached, humans at their cap, history retention left out |
+//! | `organization_policy` | The notes on settings the organization's workspace policy decides, and its hold on messages |
 //! | `settings` | Sign-in wording, Claude Code direct delivery, the SessionStart hook, workspace labels, diagnostics |
 //! | `spawn` | Spawned agents: the spawn node's status line and each harness's full-access row, from the core's descriptors |
 //! | `spawn_handover` | Joining a spawned agent (its live transcript and message box) and taking it over |
@@ -36,6 +37,7 @@ mod mobile_native_continuation;
 mod openclaw_tools;
 mod optimistic;
 pub use optimistic::ClaudeDeliveryStatusOptimistic;
+mod organization_policy;
 mod overview;
 mod pending;
 mod pending_session_resumes;
@@ -71,6 +73,7 @@ pub use menu_summary::*;
 pub use messages::*;
 pub use mobile_native_continuation::*;
 pub use openclaw_tools::*;
+pub use organization_policy::*;
 pub use overview::*;
 pub use pending::*;
 pub use pending_session_resumes::*;

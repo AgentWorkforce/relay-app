@@ -2,7 +2,8 @@
 //! computer (`relay::spawn`).
 
 use super::app::App;
-use super::settings_page::{pending_toggle_row, switch_accessory, SettingRow};
+use super::settings_organization::{organization_note_widget, organization_toggle_row};
+use super::settings_page::{switch_accessory, SettingRow};
 use super::state::{Page, Pane};
 use super::widgets::{self, notice, settings_divider, settings_row, settings_section, Tone};
 use crate::models::{
@@ -41,9 +42,11 @@ impl App {
         });
         let accepts = accepts?;
         let (section, group) = settings_section(SPAWN_TITLE, Some(SPAWN_DESCRIPTION));
+        let (accept_note, accept_locked) = self.organization("accept_spawns");
         let switch = gtk::Switch::new();
         crate::ui::widgets::action_cursor(&switch);
         switch.set_active(accepts);
+        switch.set_sensitive(!accept_locked);
         switch.set_valign(gtk::Align::Center);
         widgets::name(&switch, SPAWN_ACCEPT_TITLE);
         let weak = self.downgrade();
@@ -65,6 +68,7 @@ impl App {
                 extra.push(notice(&line, if healthy { Tone::Ok } else { Tone::Warn }));
             }
         }
+        extra.extend(accept_note.map(organization_note_widget));
         group.append(
             &settings_row(
                 SPAWN_ACCEPT_TITLE,
@@ -85,7 +89,7 @@ impl App {
         group.append(&self.spawn_teammates_row(settings.as_ref(), spawn.as_ref()));
         settings_divider(&group, 62);
         let weak = self.downgrade();
-        group.append(&pending_toggle_row(
+        group.append(&organization_toggle_row(
             SPAWN_NATIVE_INPUT_TITLE,
             SPAWN_NATIVE_INPUT_DETAIL,
             "mail-unread-symbolic",
@@ -93,8 +97,8 @@ impl App {
                 .as_ref()
                 .and_then(|settings| settings.spawn_native_input)
                 .unwrap_or(true),
-            true,
             self.with_state(|state| state.setting_pending("spawn_native_input")),
+            self.organization("spawn_native_input"),
             move |enabled| {
                 if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
                     app.set_setting(
@@ -114,7 +118,7 @@ impl App {
         if native_input {
             settings_divider(&group, 62);
             let weak = self.downgrade();
-            group.append(&pending_toggle_row(
+            group.append(&organization_toggle_row(
                 SPAWN_REQUESTER_APPROVALS_TITLE,
                 SPAWN_REQUESTER_APPROVALS_DETAIL,
                 "security-high-symbolic",
@@ -122,8 +126,8 @@ impl App {
                     .as_ref()
                     .and_then(|settings| settings.spawn_requester_approvals)
                     .unwrap_or(false),
-                true,
                 self.with_state(|state| state.setting_pending("spawn_requester_approvals")),
+                self.organization("spawn_requester_approvals"),
                 move |enabled| {
                     if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
                         app.set_setting(
@@ -175,13 +179,14 @@ impl App {
             let weak = self.downgrade();
             let id = harness.id.clone();
             let (section, group) = settings_section("Spawned agents", None);
-            group.append(&pending_toggle_row(
+            let key = format!("spawn_full_access_{}", harness.id);
+            group.append(&organization_toggle_row(
                 &spawn_full_access_title(&harness),
                 &spawn_full_access_detail(&harness),
                 "changes-allow-symbolic",
                 spawn_full_access(settings.as_ref(), &harness),
-                true,
                 self.with_state(|state| state.setting_pending("spawn_harnesses")),
+                self.organization(&key),
                 move |enabled| {
                     if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
                         app.set_setting(spawn_full_access_change(&id, enabled), SettingRow::Pane);
@@ -207,6 +212,8 @@ impl App {
                 .unwrap_or(false),
         );
         switch.set_valign(gtk::Align::Center);
+        let (teammates_note, teammates_locked) = self.organization("spawn_allow_teammates");
+        switch.set_sensitive(!teammates_locked);
         widgets::name(&switch, SPAWN_TEAMMATES_TITLE);
         let weak = self.downgrade();
         switch.connect_active_notify(move |switch| {
@@ -235,6 +242,7 @@ impl App {
             retry.set_halign(gtk::Align::Start);
             extra.push(retry.upcast());
         }
+        extra.extend(teammates_note.map(organization_note_widget));
         settings_row(
             SPAWN_TEAMMATES_TITLE,
             SPAWN_TEAMMATES_DETAIL,
@@ -316,7 +324,8 @@ impl App {
             }
         });
         entry.set_valign(gtk::Align::Center);
-        entry.set_sensitive(!edit.saving);
+        let (cap_note, cap_locked) = self.organization("spawn_max_agents");
+        entry.set_sensitive(!edit.saving && !cap_locked);
         self.keep_spawn_cap_focus(&entry, edit.focused && !edit.saving);
         widgets::name(&entry, SPAWN_MAX_AGENTS_TITLE);
         let weak = self.downgrade();
@@ -354,16 +363,17 @@ impl App {
         // change may destroy a focused entry while its text is incomplete.
         let entry_for_save = entry.clone();
         let save = widgets::button("Save", &["primary"], move || commit(&entry_for_save));
-        save.set_sensitive(!edit.saving);
+        save.set_sensitive(!edit.saving && !cap_locked);
         let controls = widgets::hbox(8, &[]);
         controls.append(&entry);
         controls.append(&save);
+        let extra: Vec<gtk::Widget> = cap_note.map(organization_note_widget).into_iter().collect();
         settings_row(
             SPAWN_MAX_AGENTS_TITLE,
             SPAWN_MAX_AGENTS_DETAIL,
             "view-grid-symbolic",
             Some(controls.upcast_ref()),
-            &[],
+            &extra,
         )
         .0
     }
