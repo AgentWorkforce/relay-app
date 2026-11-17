@@ -4488,6 +4488,44 @@ fn sharing_all_sessions_says_it_re_sends_the_history_and_cancel_keeps_the_policy
     );
 }
 
+fn a_failed_sharing_preview_shows_and_only_an_older_core_gets_the_usual_question(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.go(Page::Settings(Pane::Sharing));
+    // A preview that fails shows why and switches nothing.
+    case.core.answer(
+        "uploader.sharing.preview",
+        Answer::fail(ErrorKind::Internal, "The uploader could not answer."),
+    );
+    case.app.change_sharing(SharingMode::All);
+    case.pump(|case| case.app.with_state(|s| s.settings_error.is_some()));
+    assert_eq!(
+        case.app.with_state(|s| s.settings_error.clone()).as_deref(),
+        Some("The uploader could not answer.")
+    );
+    case.settle();
+    assert!(case.desktop.asked.borrow().is_empty());
+    assert!(case.called("uploader.sharing.set").is_empty());
+
+    // A core without the preview gets the usual question.
+    case.core.answer(
+        "uploader.sharing.preview",
+        Answer::fail(ErrorKind::MethodNotFound, "No method uploader.sharing.preview."),
+    );
+    case.app.change_sharing(SharingMode::New);
+    case.pump(|case| !case.called("uploader.sharing.set").is_empty());
+    assert_eq!(
+        case.called("uploader.sharing.set")[0],
+        json!({"mode": "new", "replay_confirmed": false})
+    );
+    assert_eq!(
+        case.desktop.asked.borrow()[0].title,
+        "Automatically upload new sessions?"
+    );
+}
+
 fn the_account_pane_names_who_is_signed_in(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -5940,6 +5978,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "sharing_all_sessions_says_it_re_sends_the_history_and_cancel_keeps_the_policy",
         sharing_all_sessions_says_it_re_sends_the_history_and_cancel_keeps_the_policy,
+    ),
+    (
+        "a_failed_sharing_preview_shows_and_only_an_older_core_gets_the_usual_question",
+        a_failed_sharing_preview_shows_and_only_an_older_core_gets_the_usual_question,
     ),
     (
         "the_account_pane_names_who_is_signed_in",
