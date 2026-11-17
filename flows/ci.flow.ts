@@ -19,6 +19,9 @@
 //    would pick; this repo opens none) on every architecture, as main's own
 //    run does, and Mobile CI when its paths changed, waits (about half an
 //    hour for a change that selects every lane), and deletes the branch.
+//    The macOS x64 lanes' results are reported but do not block landing:
+//    main's push CI and the release candidate still require them, so a red
+//    x64 lane is fixed forward before the next release.
 //
 // Result: .relayflow/ci/report.md (under $RELAYFLOW_STATE_DIR/ci/ when set),
 // a pass/fail line per step with the output tail and failed GitHub job logs
