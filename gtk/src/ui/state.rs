@@ -248,6 +248,8 @@ pub struct State {
     /// The policy the person last agreed to switch to after being told it
     /// re-sends the whole local history.
     pub sharing_replay_confirmed: Option<SharingMode>,
+    /// A policy switch's preview is on its way: another click waits.
+    pub sharing_previewing: bool,
     pub paused_wanted: PendingValue<bool>,
     /// A retry or compact asked for and not yet answered (its stage shows
     /// under way), and one the core never received, with whether to resend.

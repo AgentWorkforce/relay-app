@@ -80,8 +80,14 @@ impl Backend for Fake {
             }
             "uploader.status" => Ok(self.uploader.clone()),
             "uploader.sharing.set" => {
+                // As the core: a switch to All re-sends the whole history and
+                // is refused unless confirmed.
+                let replays = params["mode"] == "all";
+                if replays && params["replay_confirmed"] != true {
+                    return Err(());
+                }
                 self.uploader["sharing_mode"] = params["mode"].clone();
-                Ok(json!({"sharing_mode":params["mode"]}))
+                Ok(json!({"sharing_mode":params["mode"],"replays_history":replays}))
             }
             "settings.get" => Ok(self.settings.clone()),
             "settings.set" => {
@@ -238,6 +244,24 @@ fn explicit_provider_and_upload_choices_are_applied_after_approval() {
         BTreeSet::from(["claude".into(), "codex".into()])
     );
     assert_eq!(core.uploader["sharing_mode"], "new");
+    ui.assert_private();
+}
+#[test]
+fn a_named_switch_to_all_confirms_the_replay_and_says_so() {
+    let mut core = Fake::default();
+    core.uploader["sharing_mode"] = json!("new");
+    let mut ui = Console::default();
+    let opts = options(&["--sharing", "all", "--non-interactive"]);
+    assert_eq!(setup(&mut core, &mut ui, &opts).unwrap(), 0);
+    assert_eq!(core.uploader["sharing_mode"], "all");
+    let (_, params) = core
+        .calls
+        .iter()
+        .find(|(method, _)| *method == "uploader.sharing.set")
+        .unwrap();
+    assert_eq!(params["replay_confirmed"], true);
+    assert!(ui.events.iter().any(|event| event["event"] == "sharing"
+        && event["message"] == crate::history::session_model::SHARING_REPLAY_DETAIL));
     ui.assert_private();
 }
 #[test]
