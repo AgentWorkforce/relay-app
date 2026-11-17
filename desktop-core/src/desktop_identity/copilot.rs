@@ -5,6 +5,7 @@ use agent_relay_node::relay::{
     workspace::Secret,
 };
 use serde_json::{json, Value};
+use std::time::Instant;
 
 pub(super) fn identities(
     registration: &Registration,
@@ -61,8 +62,34 @@ impl Identities {
     pub(crate) async fn sync_copilot_identity(
         &self,
         target: &Target,
+        deadline: Instant,
     ) -> Option<(Registration, String)> {
-        self.sync_desktop_identities().await;
+        if Instant::now() >= deadline {
+            return None;
+        }
+        if let Some(identity) = self.accepted_copilot_identity(target) {
+            return Some(identity);
+        }
+        // Only this caller's wait is bounded. Detaching the task on timeout
+        // keeps its global lock held through the PUT, so an older request
+        // cannot finish after and overwrite a newer sender snapshot.
+        let core = self.core.clone();
+        let sync = tokio::spawn(async move {
+            Identities::new(core).sync_desktop_identities().await;
+        });
+        tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), sync)
+            .await
+            .ok()?
+            .ok()?;
+        self.accepted_copilot_identity(target)
+    }
+
+    /// Read-only sender provenance, also checked again at dispatch. A
+    /// refresh failure alone does not revoke an unchanged accepted row.
+    pub(crate) fn accepted_copilot_identity(
+        &self,
+        target: &Target,
+    ) -> Option<(Registration, String)> {
         let account = self.plugins.cloud.account()?;
         let generation = self.plugins.cloud.identity_sync_generation();
         if target.kind != SessionKind::Copilot || !self.copilot_attestation_verified() {
@@ -87,3 +114,6 @@ impl Identities {
             .then_some((registration, source))
     }
 }
+
+#[cfg(test)]
+mod tests;

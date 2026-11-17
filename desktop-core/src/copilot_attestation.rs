@@ -140,11 +140,6 @@ pub(crate) async fn route_with_presence_budget(
         .account()
         .ok_or_else(unavailable)?;
     let generation = outbound.core.plugins.cloud.identity_sync_generation();
-    if tool == "join_relay" {
-        Identities::new(outbound.core.clone())
-            .sync_desktop_identities()
-            .await;
-    }
     if !Identities::new(outbound.core.clone()).copilot_attestation_verified() {
         return Err(unavailable());
     }
@@ -153,12 +148,13 @@ pub(crate) async fn route_with_presence_budget(
     // Ordinary lifecycle reconciliation may still hold its previous inactive
     // state after a restart. Wait for that existing registration; never create
     // one or clear inactivity ourselves, which would bypass normal eligibility.
+    let deadline = Instant::now() + presence_budget;
     presence::wait_for_active(
         || presence::active_registration(outbound, &target, &account, generation),
-        Instant::now() + presence_budget,
+        deadline,
     ).await?.ok_or_else(OutboundError::not_registered)?;
     let (registration, source) = Identities::new(outbound.core.clone())
-        .sync_copilot_identity(&target).await.ok_or_else(unavailable)?;
+        .sync_copilot_identity(&target, deadline).await.ok_or_else(unavailable)?;
     trace_gate("registration verified");
     // A native join always keeps the already-registered chat identity. It
     // never creates a hosted participant under a model-provided name.

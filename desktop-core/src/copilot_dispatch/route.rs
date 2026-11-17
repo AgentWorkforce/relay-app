@@ -34,30 +34,22 @@ struct Envelope {
     request: Value,
 }
 
-fn owner(core: &Core, sid: &str) -> Option<Owner> {
+fn owner(core: &Arc<Core>, sid: &str) -> Option<Owner> {
     let account = core.plugins.cloud.account()?;
     let workspace = core.workspace()?;
     let target = Target::new(SessionKind::Copilot, sid);
-    let (registration, source) = core.store.read(|store| {
-        let registration = store.registration_for(&target).filter(|r| {
-            r.missing_since.is_none()
-                && r.base_url == workspace.base_url
-                && r.workspace_key
-                    .as_ref()
-                    .is_none_or(|key| key == &workspace.key)
-        })?;
-        Some((
-            super::intent::registration_key(registration),
-            store.desktop_sync_source_id.clone()?,
-        ))
-    })?;
+    let (registration, source) = Identities::new(core.clone()).accepted_copilot_identity(&target)?;
+    if registration.base_url != workspace.base_url
+        || registration.workspace_key.as_ref().is_some_and(|key| key != &workspace.key) {
+        return None;
+    }
     Some(Owner {
         site: account.site_url,
         user: account.user_id?,
         workspace: account.workspace_id,
         generation: core.plugins.cloud.identity_sync_generation(),
         source,
-        registration,
+        registration: super::intent::registration_key(&registration),
     })
 }
 

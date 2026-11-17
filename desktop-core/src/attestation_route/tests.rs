@@ -30,6 +30,8 @@ pub(crate) struct FakeCloud {
     pub(crate) generation: std::sync::atomic::AtomicU64,
     /// Every request fails while set.
     offline: std::sync::atomic::AtomicBool,
+    pub(crate) failure: Mutex<Option<CloudError>>,
+    pub(crate) delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl CloudAccess for FakeCloud {
@@ -59,8 +61,15 @@ impl CloudAccess for FakeCloud {
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Box::pin(async { Err(CloudError::Unreachable) });
         }
+        if let Some(error) = self.failure.lock().unwrap().clone() {
+            return Box::pin(async move { Err(error) });
+        }
+        let delay = self.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
         let capabilities = self.capabilities.lock().unwrap().clone();
-        Box::pin(async move { Ok(json!({"identities": [], "capabilities": capabilities})) })
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            Ok(json!({"identities": [], "capabilities": capabilities}))
+        })
     }
 }
 

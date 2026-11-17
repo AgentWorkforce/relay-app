@@ -36,7 +36,7 @@ impl Identities {
         body: Value,
         error: CloudError,
     ) {
-        self.state.forget_synced();
+        self.state.invalidate_sync_freshness();
         if identity_sync_unsupported(&account.site_url, &error) {
             // The site has no identity route: nothing to sync, said once,
             // then backed off like a refusal; no failure stands against the

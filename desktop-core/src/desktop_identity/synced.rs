@@ -15,6 +15,7 @@ pub(super) struct SyncedSnapshot {
     generation: u64,
     body: Value,
     at: Instant,
+    refresh_needed: bool,
 }
 
 impl DesktopIdentitySync {
@@ -34,7 +35,6 @@ impl DesktopIdentitySync {
             .is_some_and(|snapshot| {
                 snapshot.account == *account
                     && snapshot.generation == generation
-                    && snapshot.at.elapsed() < REFRESH
                     && snapshot.body["source_id"] == source
                     && snapshot.body["identities"]
                         .as_array()
@@ -58,6 +58,7 @@ impl DesktopIdentitySync {
                 snapshot.account == *account
                     && snapshot.generation == generation
                     && snapshot.body == *body
+                    && !snapshot.refresh_needed
                     && snapshot.at.elapsed() < REFRESH
             })
     }
@@ -71,7 +72,21 @@ impl DesktopIdentitySync {
             generation,
             body,
             at: Instant::now(),
+            refresh_needed: false,
         });
+    }
+
+    /// A failed refresh must be retried under the normal backoff, but it
+    /// does not prove that Cloud removed an unchanged, accepted sender.
+    pub(super) fn invalidate_sync_freshness(&self) {
+        if let Some(snapshot) = self
+            .synced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            snapshot.refresh_needed = true;
+        }
     }
 
     pub(super) fn forget_synced(&self) {
