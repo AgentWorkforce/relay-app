@@ -217,7 +217,7 @@ pub struct Account {
     /// OS keychain (`crate::relay_node_token`). Tests put one in memory.
     pub relay_node_keychain: Arc<dyn crate::relay_node_token::Keychain>,
     /// One mint at a time, with its backoff (`relay_node_token`).
-    relay_node_mint: tokio::sync::Mutex<relay_node_token::MintProgress>,
+    relay_node_mint: relay_node_token::Mint,
     /// What the node's `relay_node_credential` hook answers, from memory
     /// (`relay_node_credential`).
     relay_node_held: Mutex<relay_node_credential::Held>,

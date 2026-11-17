@@ -5421,21 +5421,159 @@ async fn a_sign_out_while_the_token_is_kept_revokes_it_and_the_next_sign_in_mint
         harness.keychain.calls().contains(&"write")
     })
     .await;
-    // Sign-out finds nothing in the keychain yet.
+    // Sign-out waits for the mint in flight, so the token it keeps is
+    // revoked with the rest rather than left live.
     let mut client = harness.client().await;
-    client.ok("account.sign_out", json!({})).await;
+    let sign_out = tokio::spawn(async move {
+        client.ok("account.sign_out", json!({})).await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!sign_out.is_finished());
+    assert!(!deleted(&harness, "tok_1"));
     release.send(()).unwrap();
-    eventually("token revoked", || deleted(&harness, "tok_1")).await;
-    eventually("the mint idle", || {
-        !harness.account.relay_node_mint_running()
-    })
-    .await;
+    tokio::time::timeout(Duration::from_secs(20), sign_out)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(deleted(&harness, "tok_1"));
+    assert!(harness.cloud.state.lock().unwrap().self_tokens.is_empty());
     assert!(harness.keychain.kept(&entry).is_none());
     assert_eq!(held(&harness), Err(None));
+    // With the session's bearer, before the session is revoked.
+    let session_revoke = "/cloud/api/v1/auth/token/revoke";
+    eventually("session revoked", || {
+        !harness.cloud.requests(session_revoke).is_empty()
+    })
+    .await;
+    let requests = harness.cloud.state.lock().unwrap().requests.clone();
+    let revoke = format!("{}/tok_1", self_tokens_path());
+    let at = |wanted: &dyn Fn(&support::fake_cloud::Recorded) -> bool| {
+        requests.iter().position(wanted).unwrap()
+    };
+    let delete = at(&|r| r.path == revoke && r.method == "DELETE");
+    assert_eq!(requests[delete].bearer.as_deref(), Some("access-1"));
+    assert!(delete < at(&|r| r.path == session_revoke));
     // The next sign-in finds no token to reuse.
     sign_in(&harness).await;
     eventually("new token", || held(&harness) == Ok("sh_wk_minted2".into())).await;
     assert_eq!(harness.keychain.kept(&entry).unwrap().id, "tok_2");
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn a_sign_out_cuts_a_retry_after_the_mint_waits_out_in_place_short() {
+    let harness = gate_only(|cloud| {
+        let mut state = cloud.state.lock().unwrap();
+        state.retry_after = Some("50".into());
+        for _ in 0..2 {
+            state
+                .self_token_refusals
+                .push_back((429, json!({"error": {"code": "rate_limited"}})));
+        }
+    })
+    .await;
+    sign_in(&harness).await;
+    eventually("one mint", || {
+        harness.cloud.requests(&self_tokens_path()).len() == 1
+    })
+    .await;
+    assert!(harness.account.relay_node_mint_running());
+    let mut client = harness.client().await;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        client.ok("account.sign_out", json!({})),
+    )
+    .await
+    .expect("sign-out waited out the Retry-After");
+    assert_eq!(harness.cloud.requests(&self_tokens_path()).len(), 1);
+    assert_eq!(harness.cloud.state.lock().unwrap().self_tokens_minted, 0);
+    harness.stop().await;
+}
+
+/// Makes the saved session's access token stale, here and at Control.
+fn stale_session(harness: &Harness) {
+    harness.cloud.expire_access();
+    let mut store = harness.store();
+    store["cloudSession"]["accessTokenExpiresAt"] = json!("2000-01-01T00:00:00Z");
+    std::fs::write(
+        harness.home.join("app-data/injectable-agents.json"),
+        store.to_string(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_sign_out_renews_a_stale_session_before_revoking_the_relay_node_token() {
+    let harness = gate_only(|_| {}).await;
+    let entry = node_token::entry(&harness.cloud.site_url, WORKSPACE);
+    sign_in(&harness).await;
+    eventually("token kept", || harness.keychain.kept(&entry).is_some()).await;
+    mint_now(&harness).await;
+    stale_session(&harness);
+    let mut client = harness.client().await;
+    client.ok("account.sign_out", json!({})).await;
+    assert!(!harness
+        .cloud
+        .requests("/cloud/api/v1/auth/token/refresh")
+        .is_empty());
+    let deletes = harness
+        .cloud
+        .requests(&format!("{}/tok_1", self_tokens_path()));
+    assert_eq!(deletes.len(), 1);
+    assert_ne!(deletes[0].bearer.as_deref(), Some("access-1"));
+    assert!(harness.cloud.state.lock().unwrap().self_tokens.is_empty());
+    assert!(harness.keychain.kept(&entry).is_none());
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn a_relay_node_token_control_did_not_revoke_stays_in_the_keychain() {
+    let harness = gate_only(|_| {}).await;
+    let entry = node_token::entry(&harness.cloud.site_url, WORKSPACE);
+    sign_in(&harness).await;
+    eventually("token kept", || harness.keychain.kept(&entry).is_some()).await;
+    mint_now(&harness).await;
+    // The session cannot be renewed: no DELETE goes out with a bearer
+    // Control would refuse, and the token's id is kept.
+    stale_session(&harness);
+    harness.cloud.state.lock().unwrap().refresh_status = Some(503);
+    let mut client = harness.client().await;
+    client.ok("account.sign_out", json!({})).await;
+    assert!(!deleted(&harness, "tok_1"));
+    assert_eq!(harness.keychain.kept(&entry).unwrap().id, "tok_1");
+    assert_eq!(harness.account_state(), "signed_out");
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn a_keychain_that_recovers_gets_the_token_without_a_new_sign_in() {
+    let harness = gate_only(|_| {}).await;
+    *harness.keychain.unavailable.lock().unwrap() =
+        Some("The Secret Service keychain did not answer within 15 seconds.".into());
+    let activity = watch_activity(&harness);
+    sign_in(&harness).await;
+    let warned = || {
+        activity
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("cannot be kept in the keychain"))
+            .count()
+    };
+    eventually("keychain warning", || warned() == 1).await;
+    assert!(matches!(held(&harness), Err(Some(_))));
+    // Still failing: tried again, and not said again.
+    harness.account.relay_node_mint_retry_now().await;
+    mint_now(&harness).await;
+    assert!(harness.keychain.calls().iter().filter(|c| **c == "read").count() >= 2);
+    assert_eq!(warned(), 1);
+    assert!(harness.cloud.requests(&self_tokens_path()).is_empty());
+    // The keychain answers again: the next try mints, with no sign-in.
+    *harness.keychain.unavailable.lock().unwrap() = None;
+    harness.account.relay_node_mint_retry_now().await;
+    mint_now(&harness).await;
+    assert_eq!(held(&harness), Ok("sh_wk_minted1".into()));
+    assert_eq!(harness.account_state(), "signed_in");
     harness.stop().await;
 }
 
