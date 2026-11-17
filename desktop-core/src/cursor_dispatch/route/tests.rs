@@ -39,7 +39,11 @@ fn sid() -> String {
 /// A registered Cursor chat, Cursor selected with this build's helper and
 /// hooks, and Cloud verifying Cursor proofs.
 async fn fixture() -> Fixture {
-    let f = registered_cursor().await.unwrap();
+    cursor_selected(registered_cursor().await.unwrap())
+}
+
+/// `f` with Cursor selected with this build's helper and hooks.
+fn cursor_selected(f: Fixture) -> Fixture {
     let binding = binding();
     f.installer
         .select(vec!["cursor".into()], Some(&binding), None)
@@ -414,4 +418,5 @@ fn cursor_routes_ride_on_the_hook_paths_the_pinned_core_forwards() {
 }
 
 mod control;
+mod fresh_chat;
 mod routes;
