@@ -40,6 +40,22 @@ final class SpawnFailureTests: XCTestCase {
         XCTAssertTrue(message("spawn_agent_name_in_use").hasPrefix("The name helper is already in use"))
     }
 
+    func testForkSourceGoneIsRecognizedWithoutItsCode() {
+        for detail in ["spawn_fork_not_found: @neon-exit-lead is not an agent on this computer",
+                       "[redacted] @neon-exit-lead is not an agent on this computer"] {
+            XCTAssertTrue(message(detail).hasPrefix("test-mini no longer has this agent."), detail)
+        }
+    }
+
+    func testDetailsLineDropsALeakedRedactionMarker() {
+        let text = message("[redacted] @neon-exit-lead is not an agent on this computer")
+        XCTAssertTrue(text.hasSuffix("\nDetails: @neon-exit-lead is not an agent on this computer"), text)
+        XCTAssertFalse(text.contains("[redacted]"))
+        let shown = SpawnFailure.error("[redacted] @neon-exit-lead is not an agent on this computer",
+                                       node: "test-mini", name: "helper", harness: "claude")
+        XCTAssertEqual(shown.localizedDescription, "test-mini no longer has this agent. Refresh Agents and try again.")
+    }
+
     func testEmptyDetail() {
         XCTAssertEqual(message(""), "test-mini did not start helper.")
     }

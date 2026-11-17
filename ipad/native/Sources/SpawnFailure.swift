@@ -17,7 +17,23 @@ enum SpawnFailure {
     static func message(_ detail: String, node: String, name: String, harness: String) -> String {
         let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let summary = Self.summary(detail, node: node, name: name, harness: harness)
-        return detail.isEmpty ? summary : "\(summary)\nDetails: \(detail)"
+        let shown = Self.withoutRedactionMarker(detail)
+        return shown.isEmpty ? summary : "\(summary)\nDetails: \(shown)"
+    }
+
+    /// A scrubber between the node and this app (not the app itself) can
+    /// replace the node's error code with `[redacted]`, as it did with
+    /// `[redacted] @planner is not an agent on this computer`. The marker
+    /// says nothing to a person, so the Details line drops it.
+    static func withoutRedactionMarker(_ detail: String) -> String {
+        detail.replacingOccurrences(of: #"^\[redacted\]:?\s*"#, with: "", options: .regularExpression)
+    }
+
+    /// The node no longer has the fork's source agent: by its code, or by
+    /// the node's sentence when the code was replaced on the way.
+    static func isForkNotFound(_ detail: String) -> Bool {
+        let lower = detail.lowercased()
+        return lower.contains("spawn_fork_not_found") || lower.contains("is not an agent on this computer")
     }
 
     /// The failure as shown: the sentence alone, never a server's or node's
@@ -37,7 +53,7 @@ enum SpawnFailure {
             summary = "Only the owner of \(node) can fork its sessions. Sign in on this device as that person."
         } else if lower.contains("spawn_fork_unavailable") {
             summary = "\(node) can't copy this session. It may have been archived, or it was opened from an app Agent Relay can't resume."
-        } else if lower.contains("spawn_fork_not_found") {
+        } else if isForkNotFound(lower) {
             summary = "\(node) no longer has this agent. Refresh Agents and try again."
         } else if lower.contains("spawn_fork_unsupported") {
             summary = "\(node) can't fork this kind of session yet."
