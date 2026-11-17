@@ -36,8 +36,10 @@ pub(super) fn describe(body: &Value, response: &Value) -> String {
     )
 }
 
+/// To stderr and the core's `core.log`, which launchd does not discard.
 pub(super) fn log(body: &Value, response: &Value) {
-    eprintln!("{}", describe(body, response));
+    let line = describe(body, response);
+    agent_relay_node::relay::diagnostics::write(format_args!("{line}"));
 }
 
 #[cfg(test)]

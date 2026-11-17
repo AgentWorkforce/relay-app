@@ -35,8 +35,12 @@ const _: () = assert!(LOCAL_RESPONSE_BUDGET.as_millis() > DISPATCH_BUDGET.as_mil
 const REFUSED: &str = "Agent Relay could not attest this Cursor call.";
 const UNKNOWN: &str = "The MCP outcome is unknown. Do not repeat an ambiguous send.";
 
+/// The class only, never call data; to stderr and the core's `core.log`.
 fn log_refusal(class: &str) {
-    eprintln!("[cursor-dispatch] refused a call: {}", refusal_class(class));
+    agent_relay_node::relay::diagnostics::write(format_args!(
+        "[cursor-dispatch] refused a call: {}",
+        refusal_class(class)
+    ));
 }
 
 fn refused(class: &'static str) -> OutboundError {
