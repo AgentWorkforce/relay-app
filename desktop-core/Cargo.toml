@@ -34,7 +34,7 @@ service-callers-dev-attest = []
 # themselves, non-admin senders' messages held when the organization says so)
 # and #2215 (a brand-new Cursor chat's first prompt puts it on its window).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "499f1b2de05769f708df1346b04b3758587df9f3", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "ed9bfee5e1ccbf9cfa98ff347a814747367836d6", default-features = false }
 # relayhistory 0.60.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.

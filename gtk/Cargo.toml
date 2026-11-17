@@ -41,7 +41,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 # themselves, non-admin senders' messages held when the organization says so)
 # and #2215 (a brand-new Cursor chat's first prompt puts it on its window).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "499f1b2de05769f708df1346b04b3758587df9f3", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "ed9bfee5e1ccbf9cfa98ff347a814747367836d6", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
