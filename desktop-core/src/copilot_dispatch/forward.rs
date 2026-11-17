@@ -14,6 +14,7 @@ const MAX_REQUEST_BYTES: usize = 128 << 10;
 const MAX_DNS_WORKERS: usize = 8;
 static DNS_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const IN_DOUBT: &str = "dispatch_in_doubt_do_not_repeat";
+pub(crate) mod debug;
 mod sse;
 
 fn in_doubt(phase: &'static str) -> &'static str {
@@ -138,14 +139,24 @@ fn post_with_resolver(
         .try_proxy_from_env(false)
         .resolver(resolver)
         .build();
-    let response = match agent
-        .post(endpoint)
-        .set("Authorization", &format!("Bearer {bearer}"))
-        .set("Accept", "application/json, text/event-stream")
-        .set("Content-Type", "application/json")
-        .set("MCP-Protocol-Version", "2025-06-18")
-        .send_bytes(&bytes)
-    {
+    let headers = [
+        ("Authorization", format!("Bearer {bearer}")),
+        ("Accept", "application/json, text/event-stream".to_owned()),
+        ("Content-Type", "application/json".to_owned()),
+        ("MCP-Protocol-Version", "2025-06-18".to_owned()),
+    ];
+    let capture = debug::file();
+    let captured = |status: u16, reply: &[u8]| {
+        if let Some(path) = &capture {
+            debug::append(path, debug::record(endpoint, &headers, body, status, reply));
+        }
+    };
+    let request = headers
+        .iter()
+        .fold(agent.post(endpoint), |request, (name, value)| {
+            request.set(name, value)
+        });
+    let response = match request.send_bytes(&bytes) {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => response,
         Err(_) => return Err(in_doubt("request send")),
@@ -163,14 +174,27 @@ fn post_with_resolver(
     #[cfg(debug_assertions)]
     eprintln!("[copilot-dispatch] HTTP response: status={status}, json={json}, sse={stream}");
     if !(200..300).contains(&status) {
-        // Do not read/echo an upstream error body, even if it contains a proof.
+        // Do not read/echo an upstream error body, even if it contains a proof;
+        // only an opted-in capture reads it, into its own file.
+        if capture.is_some() {
+            let mut reply = Vec::new();
+            let _ = response
+                .into_reader()
+                .take(MAX_REPLY_BYTES)
+                .read_to_end(&mut reply);
+            captured(status, &reply);
+        }
         let attested = body["params"]["arguments"]
             .get(crate::claude_attestation::FIELD)
             .is_some();
         return status_error(client, status, &body["id"], attested);
     }
     if body.get("id").is_some() && stream {
-        return sse::receive(response.into_reader(), &body["id"], deadline);
+        let reply = sse::receive(response.into_reader(), &body["id"], deadline);
+        if let Ok(value) = &reply {
+            captured(status, value.to_string().as_bytes());
+        }
+        return reply;
     }
     let mut bytes = Vec::new();
     response
@@ -181,6 +205,7 @@ fn post_with_resolver(
     if bytes.len() as u64 > MAX_REPLY_BYTES {
         return Err(in_doubt("response size"));
     }
+    captured(status, &bytes);
     if body.get("id").is_none() {
         return if status == 202 && bytes.is_empty() {
             Ok(Value::Null)

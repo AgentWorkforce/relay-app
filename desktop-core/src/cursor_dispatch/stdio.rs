@@ -1,6 +1,7 @@
 //! The `cursor-mcp` helper Cursor runs: the Copilot helper's stdio framing,
 //! with JSON-RPC batches refused, handing every request to Core's
 //! [`super::ROUTE`]. No token, key or proof crosses this process.
+use crate::copilot_dispatch::forward::debug;
 use crate::copilot_dispatch::stdio::{binding_with, reply_as, serve_with};
 use agent_relay_node::relay::cli::{session_hook_socket, socket_response};
 use agent_relay_node::relay::outbound::shell_quote;
@@ -76,7 +77,13 @@ pub(super) fn run(args: &[String]) -> i32 {
             super::route::LOCAL_RESPONSE_BUDGET,
         );
         let message = |class: &str| message(class, &probe, named.as_deref());
-        with_class(reply_as(&request["id"], answer, &message), &message)
+        let reply = with_class(reply_as(&request["id"], answer, &message), &message);
+        // The proof is added in Core: its own capture holds the signed body.
+        if let Some(path) = debug::file() {
+            let exchange = json!({"to": super::ROUTE, "request": request, "reply": &reply});
+            debug::append(&path, exchange);
+        }
+        reply
     });
     match serve_with(std::io::stdin().lock(), std::io::stdout(), dispatch, true) {
         Ok(()) => 0,
