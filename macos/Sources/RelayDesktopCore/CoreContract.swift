@@ -83,6 +83,7 @@ public enum CoreMethod {
     public static let uploaderCompact = "uploader.compact"
     public static let uploaderDisconnect = "uploader.disconnect"
     public static let uploaderSharingSet = "uploader.sharing.set"
+    public static let uploaderSharingPreview = "uploader.sharing.preview"
     public static let uploaderSessionsList = "uploader.sessions.list"
     public static let uploaderSessionsFacets = "uploader.sessions.facets"
     public static let uploaderSessionsQuery = "uploader.sessions.query"
@@ -9953,23 +9954,31 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
 }
 
 public struct SharingChanged: Codable, Equatable, Hashable, Sendable {
+    /// Whether the switch to `sharing_mode` re-sends the whole local
+    /// history to Agent Relay Cloud: it starts a new delivery from the
+    /// beginning, which can take hours while new sessions wait behind it.
+    public let replaysHistory: Bool
     public let sharingMode: SharingMode
 
-    public init(sharingMode: SharingMode) {
+    public init(replaysHistory: Bool = false, sharingMode: SharingMode) {
+        self.replaysHistory = replaysHistory
         self.sharingMode = sharingMode
     }
 
     enum CodingKeys: String, CodingKey {
+        case replaysHistory = "replays_history"
         case sharingMode = "sharing_mode"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.replaysHistory = try c.decodeIfPresent(Bool.self, forKey: .replaysHistory) ?? false
         self.sharingMode = try c.decode(SharingMode.self, forKey: .sharingMode)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.replaysHistory, forKey: .replaysHistory)
         try c.encode(self.sharingMode, forKey: .sharingMode)
     }
 }
@@ -9988,23 +9997,32 @@ public enum SharingMode: String, Codable, CaseIterable, Hashable, Sendable {
 
 public struct SharingParams: Codable, Equatable, Hashable, Sendable {
     public let mode: SharingMode
+    /// The person was told that the switch re-sends the whole local history
+    /// (`uploader.sharing.preview`'s `replays_history`) and agreed.
+    /// `uploader.sharing.set` refuses such a switch without it; the preview
+    /// ignores it.
+    public let replayConfirmed: Bool
 
-    public init(mode: SharingMode) {
+    public init(mode: SharingMode, replayConfirmed: Bool = false) {
         self.mode = mode
+        self.replayConfirmed = replayConfirmed
     }
 
     enum CodingKeys: String, CodingKey {
         case mode
+        case replayConfirmed = "replay_confirmed"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.mode = try c.decode(SharingMode.self, forKey: .mode)
+        self.replayConfirmed = try c.decodeIfPresent(Bool.self, forKey: .replayConfirmed) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.mode, forKey: .mode)
+        try c.encode(self.replayConfirmed, forKey: .replayConfirmed)
     }
 }
 
@@ -13046,6 +13064,12 @@ extension CoreClient {
     @discardableResult
     public func uploaderSharingSet(_ params: SharingParams) async throws -> SharingChanged {
         try await call(CoreMethod.uploaderSharingSet, params)
+    }
+
+    /// `uploader.sharing.preview`; only a core built with an account answers it.
+    @discardableResult
+    public func uploaderSharingPreview(_ params: SharingParams) async throws -> SharingChanged {
+        try await call(CoreMethod.uploaderSharingPreview, params)
     }
 
     /// `uploader.sessions.list`; only a core built with an account answers it.

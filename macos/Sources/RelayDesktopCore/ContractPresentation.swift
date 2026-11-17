@@ -269,6 +269,13 @@ extension SharingMode {
         case .all: return "Upload all past and future sessions"
         }
     }
+
+    /// Asked instead of the above before a switch the core says re-sends
+    /// the whole local history (`uploader.sharing.preview`). GTK says the
+    /// same (`SHARING_REPLAY_*` in desktop-core's session model).
+    public static let replayConfirmationTitle = "Share all sessions?"
+    public static let replayConfirmationDetail = "Sharing all sessions re-sends your whole local history to Agent Relay Cloud. That can take hours, and new sessions wait behind it."
+    public static let replayConfirmationAction = "Share all sessions"
 }
 
 extension UploadSession: Identifiable {

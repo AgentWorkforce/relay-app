@@ -216,7 +216,20 @@ fn configure_sharing(
         }
     }
     if let Some(sharing) = chosen.filter(|sharing| *sharing != current) {
-        call(core, "uploader.sharing.set", json!({"mode":sharing.name()}))?;
+        // Named on the command line or typed at the prompt: the person's
+        // own choice, so a switch that re-sends the history is confirmed,
+        // and said.
+        let changed = call(
+            core,
+            "uploader.sharing.set",
+            json!({"mode":sharing.name(),"replay_confirmed":true}),
+        )?;
+        if changed["replays_history"] == true {
+            ui.event(
+                "sharing",
+                json!({"message":crate::history::session_model::SHARING_REPLAY_DETAIL}),
+            );
+        }
     }
     Ok(())
 }
