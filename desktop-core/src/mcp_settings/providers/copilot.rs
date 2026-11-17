@@ -45,6 +45,54 @@ pub(super) fn managed_stdio(entry: &Value, endpoint: Option<&str>, helper: Optio
         .is_some_and(|url| endpoint.is_none_or(|expected| expected == url))
 }
 
+/// Cursor's `cursor-mcp` entry: exactly a known helper and its arguments,
+/// `cursor-mcp --site <s> --workspace <w> --account <a>`, then optionally
+/// `--socket <path>` (a site profile build's) and `--dev`, in that order.
+pub(super) fn managed_cursor_stdio(
+    entry: &Value,
+    endpoint: Option<&str>,
+    helper: Option<&Path>,
+) -> bool {
+    if entry.as_object().is_none_or(|object| {
+        object.len() != 2 || !object.contains_key("command") || !object.contains_key("args")
+    }) || !entry["command"]
+        .as_str()
+        .is_some_and(|p| known_helper(Path::new(p), helper))
+    {
+        return false;
+    }
+    let Some(args) = entry["args"]
+        .as_array()
+        .and_then(|a| a.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
+    else {
+        return false;
+    };
+    if args.len() < 7
+        || args[0] != "cursor-mcp"
+        || args[1] != "--site"
+        || args[3] != "--workspace"
+        || args[5] != "--account"
+    {
+        return false;
+    }
+    let rest = &args[7..];
+    let rest = match rest {
+        ["--socket", socket, rest @ ..] if Path::new(socket).is_absolute() => rest,
+        _ => rest,
+    };
+    if !matches!(rest, [] | ["--dev"]) {
+        return false;
+    }
+    let binding = super::super::Binding {
+        site_url: args[2].into(),
+        workspace_id: args[4].into(),
+        account_id: args[6].into(),
+    };
+    binding
+        .endpoint()
+        .is_some_and(|url| endpoint.is_none_or(|expected| expected == url))
+}
+
 fn known_helper(path: &Path, current: Option<&Path>) -> bool {
     path.is_absolute()
         && (current == Some(path)
@@ -63,13 +111,11 @@ fn known_helper(path: &Path, current: Option<&Path>) -> bool {
 }
 
 /// Only the executable spelling may vary; all other managed entry fields
-/// still have to match, including the binding and every argument.
+/// still have to match, including the binding and every argument. Copilot's
+/// helper entry and Cursor's (which has no `type`) both compare this way.
 pub(super) fn entry_matches(actual: &Value, expected: &Value) -> bool {
     if actual == expected {
         return true;
-    }
-    if actual["type"] != "stdio" || expected["type"] != "stdio" {
-        return false;
     }
     let (Some(actual_path), Some(expected_path)) =
         (actual["command"].as_str(), expected["command"].as_str())

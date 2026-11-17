@@ -15,7 +15,7 @@ use agent_relay_node::relay::{
     process::ProcessInfo,
     store::{SessionKind, Target},
 };
-mod protocol;
+pub(crate) mod protocol;
 use protocol::request_valid;
 #[cfg(any(debug_assertions, test))]
 use protocol::request_shape;
@@ -69,7 +69,8 @@ fn current(core: &Arc<Core>, call: &Call, binding: &Binding) -> bool {
         && Identities::new(core.clone()).copilot_attestation_verified()
 }
 
-fn binding_current(core: &Core, binding: &Binding) -> bool {
+/// The signed-in account is still the one `binding` names.
+pub(crate) fn binding_current(core: &Core, binding: &Binding) -> bool {
     core.plugins.cloud.account().is_some_and(|account| {
         account.site_url == binding.site_url
             && account.workspace_id == binding.workspace_id

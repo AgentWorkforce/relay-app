@@ -1,9 +1,9 @@
 //! Copilot's local exact-call intents and dispatch-time hosted MCP transport.
 //! A pending intent is not a Cloud proof or a replacement for native ownership.
 mod control;
-mod forward;
+pub(crate) mod forward;
 pub mod observer;
-mod stdio;
+pub(crate) mod stdio;
 
 pub(crate) const ROUTE: &str = "/copilot/mcp";
 
@@ -134,6 +134,15 @@ pub(crate) const REFUSAL_CLASSES: &[&str] = &[
     "already_dispatched_result_unavailable",
     "dispatch_in_doubt_do_not_repeat",
     "intent_rejected",
+    // Cursor's attested transport (`cursor_dispatch`).
+    "cursor_attestation_unavailable",
+    "cursor_chat_unknown",
+    "cursor_hook_unverified",
+    "cursor_intent_missing",
+    "cursor_intent_ambiguous",
+    "cursor_intent_capacity",
+    "cursor_args_too_large",
+    "cursor_call_invalid",
 ];
 
 /// A diagnostic refusal class: a member of [`REFUSAL_CLASSES`]. Anything else
@@ -170,7 +179,7 @@ pub(crate) fn classified(mut reply: serde_json::Value, class: &str) -> serde_jso
 }
 
 mod route;
-pub(crate) use route::route;
+pub(crate) use route::{binding_current, protocol, route};
 
 #[cfg(test)]
 mod refusal_class_tests {

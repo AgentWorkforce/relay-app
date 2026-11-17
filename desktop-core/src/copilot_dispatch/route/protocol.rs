@@ -1,7 +1,7 @@
 //! MCP protocol validation, value-free diagnostics and client-facing replies.
 use serde_json::{json, Value};
 
-pub(super) fn request_valid(request: &Value) -> bool {
+pub(crate) fn request_valid(request: &Value) -> bool {
     let Some(object) = request.as_object() else {
         return false;
     };
@@ -125,7 +125,7 @@ pub(super) fn catalog(reply: &mut Value) {
     }
 }
 
-pub(super) fn transport_capabilities(reply: &mut Value) {
+pub(crate) fn transport_capabilities(reply: &mut Value) {
     // This one-response bridge does not carry the hosted server's unsolicited
     // notifications or subscription streams. Advertising them can make a
     // client fail setup while trying to subscribe to changes it cannot see.

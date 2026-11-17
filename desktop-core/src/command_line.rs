@@ -39,6 +39,7 @@ const DESKTOP_COMMANDS: &[(&str, &str)] = &[
     ("claude-attestation-hook", "Agent Relay's Claude Code tool-call proof hook"),
     ("teammate-context-hook", "Retired Claude Code SessionStart hook; prints nothing"),
     ("cursor-guide-hook", "Agent Relay's Cursor hook naming a chat's relay commands"),
+    ("cursor-mcp", "Agent Relay's attested Cursor MCP transport"),
 ];
 
 /// Every command the helper answers, for `--help`.

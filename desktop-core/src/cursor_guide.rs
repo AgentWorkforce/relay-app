@@ -10,6 +10,20 @@
 //! - `beforeMCPExecution` denies an identity tool of Agent Relay's MCP entry
 //!   with the one command that does the same, if there is one.
 //!
+//! Where Cursor reaches the hosted MCP through Agent Relay's `cursor-mcp`
+//! helper and Cloud verifies Cursor chat proofs (`cursor_dispatch`), the
+//! chat does have its relay identity through MCP: `beforeMCPExecution`
+//! announces each identity tool call of Agent Relay's server to Core, which
+//! signs that chat's proof into the call, and `sessionStart` says the
+//! identity tools work. Any other call of the server carries no proof, so
+//! it is neither announced nor signed. An identity call Core did not keep
+//! is still left to Cursor while Cursor's calls are attested: the helper
+//! then refuses it with Core's reason, which the chat sees as the call's
+//! error. It is denied with its command only when they are not attested,
+//! as the refusal's class says or, when the class cannot tell, Core's
+//! status. The hook writes the class of every refusal to its standard
+//! error.
+//!
 //! Every other call, of any server, gets `{}`: the hook is registered for
 //! every MCP call, so it gives no opinion on them and leaves them to Cursor's
 //! and the user's own approval. Unknown events and unreadable input get `{}`
@@ -18,6 +32,7 @@ use agent_relay_node::relay::outbound::shell_quote;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The subcommand the hook runs; also how its `hooks.json` entries are
 /// recognized.
@@ -56,6 +71,22 @@ impl Commands {
     /// `'<probe>' <subcommand> --socket '<sock>'<rest>`.
     fn line(&self, socket: &str, subcommand: &str, rest: &str) -> String {
         format!("{} {subcommand} --socket {socket}{rest}", self.probe)
+    }
+
+    /// The sessionStart context while Cursor's calls are attested per chat.
+    pub fn attested_guidance(&self) -> String {
+        let head = "Agent Relay: this Cursor chat has its own relay identity through the Agent \
+                    Relay MCP server: its relay identity tools (send_relay_message, \
+                    post_relay_channel, check_relay_inbox and the like) act as this chat. Relay \
+                    messages for this chat arrive in the chat through Agent Relay's Cursor hooks.";
+        match self.socket.as_deref() {
+            Some(socket) => format!(
+                "{head} If such a call is refused because the chat is not on the relay, run {} \
+                 from this chat's shell, then retry.",
+                self.line(socket, "whoami", "")
+            ),
+            None => head.to_string(),
+        }
     }
 
     /// The sessionStart context.
@@ -137,26 +168,150 @@ impl Commands {
     }
 }
 
-/// Whether a beforeMCPExecution call is an identity tool of `server`.
-fn identity_call(input: &Value, server: &str) -> Option<String> {
+/// What the hook asks Agent Relay's core.
+pub trait Relay {
+    /// Whether Cursor's calls of Agent Relay's server are attested per chat.
+    fn attesting(&self) -> bool;
+    /// Announces a `beforeMCPExecution` call of one of Agent Relay's
+    /// identity tools: `Ok`
+    /// when Core kept it, to sign the matching call as this chat, else the
+    /// class of Core's refusal (`core_unreachable` without an answer).
+    fn announce(&self, call: &Value) -> Result<(), String>;
+}
+
+/// Whether Cursor's calls are attested, as far as refusal `class` of an
+/// announcement says: Core refuses with `cursor_attestation_unavailable`
+/// when they are not, and checks that before the chat, the hook process,
+/// the account and the deadline. Any other class leaves it unknown.
+fn attesting_after(class: &str) -> Option<bool> {
+    match class {
+        "cursor_attestation_unavailable" => Some(false),
+        "cursor_chat_unknown"
+        | "cursor_hook_unverified"
+        | "account_changed"
+        | "deadline_expired"
+        | "cursor_intent_capacity" => Some(true),
+        _ => None,
+    }
+}
+
+/// Whether a beforeMCPExecution call is an identity tool.
+fn identity_call(input: &Value) -> Option<String> {
     let tool = input["tool_name"].as_str()?;
-    (input["mcp_server_name"].as_str() == Some(server) && IDENTITY_TOOLS.contains(&tool))
-        .then(|| tool.to_string())
+    IDENTITY_TOOLS.contains(&tool).then(|| tool.to_string())
+}
+
+/// The members of a `beforeMCPExecution` payload Core reads.
+fn announcement(input: &Value) -> Value {
+    let mut call = serde_json::Map::new();
+    for name in [
+        "conversation_id",
+        "generation_id",
+        "tool_use_id",
+        "tool_name",
+        "tool_input",
+    ] {
+        if let Some(value) = input.get(name) {
+            call.insert(name.into(), value.clone());
+        }
+    }
+    Value::Object(call)
 }
 
 /// The hook's answer to `input` for `server`, Agent Relay's MCP entry.
-/// `commands` is asked only for an event that names them.
-pub fn answer(input: &[u8], server: &str, commands: impl FnOnce() -> Commands) -> Value {
+/// `relay` is asked only about session starts and Agent Relay's own
+/// identity tools;
+/// `commands` only for an event that names them.
+pub fn answer(
+    input: &[u8],
+    server: &str,
+    relay: &dyn Relay,
+    commands: impl FnOnce() -> Commands,
+) -> Value {
     let Ok(input) = serde_json::from_slice::<Value>(input) else {
         return json!({});
     };
     match input["hook_event_name"].as_str() {
+        Some("sessionStart") if relay.attesting() => {
+            json!({"additional_context": commands().attested_guidance()})
+        }
         Some("sessionStart") => json!({"additional_context": commands().guidance()}),
-        Some("beforeMCPExecution") => match identity_call(&input, server) {
-            Some(tool) => json!({"permission": "deny", "agent_message": commands().denial(&tool)}),
-            None => json!({}),
-        },
+        Some("beforeMCPExecution") if input["mcp_server_name"].as_str() == Some(server) => {
+            // Only an identity tool carries a proof: any other call of the
+            // server goes out unsigned and needs no announcement.
+            let Some(tool) = identity_call(&input) else {
+                return json!({});
+            };
+            let Err(class) = relay.announce(&announcement(&input)) else {
+                return json!({});
+            };
+            eprintln!("[cursor-guide-hook] Agent Relay refused to attest the call: {class}");
+            // While Cursor's calls are attested, the helper refuses this
+            // call with Core's reason; the probe command is only for a chat
+            // whose MCP calls carry no identity.
+            if attesting_after(&class).unwrap_or_else(|| relay.attesting()) {
+                return json!({});
+            }
+            let message = format!(
+                "{} (Agent Relay refused the call: {class}.)",
+                commands().denial(&tool)
+            );
+            json!({"permission": "deny", "agent_message": message})
+        }
         _ => json!({}),
+    }
+}
+
+/// How long one run of the hook may spend asking Core, inside the timeout
+/// its `hooks.json` entries give Cursor.
+const BUDGET: Duration = Duration::from_secs(4);
+
+/// Agent Relay's core on this build's session socket, asked from `started`.
+struct SessionSocket {
+    socket: Option<PathBuf>,
+    started: std::time::Instant,
+}
+
+impl SessionSocket {
+    /// Core's `data`, or the class of its refusal.
+    fn ask(&self, route: &str, body: &[u8], timeout: Duration) -> Result<Value, String> {
+        let unreachable = || "core_unreachable".to_string();
+        let socket = self.socket.as_deref().ok_or_else(unreachable)?;
+        let timeout = timeout.min(BUDGET.saturating_sub(self.started.elapsed()));
+        if timeout.is_zero() {
+            return Err(unreachable());
+        }
+        let (status, bytes) =
+            agent_relay_node::relay::cli::socket_response(socket, "POST", route, body, timeout)
+                .map_err(|_| unreachable())?;
+        let reply: Value = serde_json::from_slice(&bytes).map_err(|_| "core_refused")?;
+        if status == 200 && reply["ok"] == true {
+            return Ok(reply["data"].clone());
+        }
+        let code = reply["error"]["code"].as_str().unwrap_or("core_refused");
+        Err(crate::copilot_dispatch::refusal_class(code).to_string())
+    }
+}
+
+impl Relay for SessionSocket {
+    fn attesting(&self) -> bool {
+        self.ask(
+            crate::cursor_dispatch::STATUS_ROUTE,
+            b"{}",
+            Duration::from_secs(2),
+        )
+        .is_ok_and(|data| data["attesting"] == true)
+    }
+
+    fn announce(&self, call: &Value) -> Result<(), String> {
+        let data = self.ask(
+            crate::cursor_dispatch::INTENT_ROUTE,
+            call.to_string().as_bytes(),
+            crate::cursor_dispatch::ANNOUNCE_TIMEOUT,
+        )?;
+        (data["accepted"] == true)
+            .then_some(())
+            .ok_or_else(|| "core_refused".to_string())
     }
 }
 
@@ -182,9 +337,14 @@ fn session_socket(arguments: &[String]) -> Option<PathBuf> {
 pub fn main(arguments: &[String]) -> i32 {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
-    let output = answer(&input, crate::mcp_settings::NAME, || {
+    let socket = session_socket(arguments);
+    let relay = SessionSocket {
+        socket: socket.clone(),
+        started: std::time::Instant::now(),
+    };
+    let output = answer(&input, crate::mcp_settings::NAME, &relay, || {
         let probe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe"));
-        Commands::new(&probe, session_socket(arguments).as_deref())
+        Commands::new(&probe, socket.as_deref())
     });
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(output.to_string().as_bytes());
@@ -197,6 +357,49 @@ mod tests {
     use super::*;
 
     const SERVER: &str = "agent-relay";
+
+    /// Core's answers, and how often it was asked.
+    struct Fake {
+        attesting: bool,
+        /// `None` when Core keeps an announcement, else its refusal class.
+        refusal: Option<&'static str>,
+        announced: std::cell::RefCell<Vec<Value>>,
+        status_asked: std::cell::Cell<u32>,
+    }
+
+    impl Fake {
+        fn off() -> Self {
+            Fake::refusing(false, "cursor_attestation_unavailable")
+        }
+
+        fn new(attesting: bool, accepts: bool) -> Self {
+            Fake::with(attesting, (!accepts).then_some("core_refused"))
+        }
+
+        fn refusing(attesting: bool, class: &'static str) -> Self {
+            Fake::with(attesting, Some(class))
+        }
+
+        fn with(attesting: bool, refusal: Option<&'static str>) -> Self {
+            Fake {
+                attesting,
+                refusal,
+                announced: std::cell::RefCell::new(Vec::new()),
+                status_asked: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl Relay for Fake {
+        fn attesting(&self) -> bool {
+            self.status_asked.set(self.status_asked.get() + 1);
+            self.attesting
+        }
+        fn announce(&self, call: &Value) -> Result<(), String> {
+            self.announced.borrow_mut().push(call.clone());
+            self.refusal.map_or(Ok(()), |class| Err(class.to_string()))
+        }
+    }
 
     fn commands(socket: Option<&str>) -> impl FnOnce() -> Commands + '_ {
         move || {
@@ -224,7 +427,12 @@ mod tests {
     fn session_start_names_the_probe_and_the_socket() {
         let input =
             br#"{"hook_event_name":"sessionStart","conversation_id":"c1","workspace_roots":[]}"#;
-        let output = answer(input, SERVER, commands(Some("/tmp/profile run/relay.sock")));
+        let output = answer(
+            input,
+            SERVER,
+            &Fake::off(),
+            commands(Some("/tmp/profile run/relay.sock")),
+        );
         let context = output["additional_context"].as_str().unwrap();
         assert_eq!(output.as_object().unwrap().len(), 1);
         for command in [
@@ -245,6 +453,7 @@ mod tests {
         let output = answer(
             br#"{"hook_event_name":"sessionStart"}"#,
             SERVER,
+            &Fake::off(),
             commands(None),
         );
         let context = output["additional_context"].as_str().unwrap();
@@ -261,6 +470,7 @@ mod tests {
             let output = answer(
                 &mcp_call(SERVER, tool),
                 SERVER,
+                &Fake::off(),
                 commands(Some("/tmp/r s.sock")),
             );
             assert_eq!(output["permission"], "deny", "{tool}");
@@ -275,6 +485,7 @@ mod tests {
         let send = answer(
             &mcp_call(SERVER, "send_relay_message"),
             SERVER,
+            &Fake::off(),
             commands(Some("/tmp/r s.sock")),
         );
         assert!(send["agent_message"].as_str().unwrap().contains(
@@ -283,6 +494,7 @@ mod tests {
         let leave = answer(
             &mcp_call(SERVER, "unsubscribe_relay_channel"),
             SERVER,
+            &Fake::off(),
             commands(Some("/tmp/r s.sock")),
         );
         assert!(leave["agent_message"]
@@ -292,6 +504,7 @@ mod tests {
         let join = answer(
             &mcp_call(SERVER, "join_relay"),
             SERVER,
+            &Fake::off(),
             commands(Some("/tmp/r s.sock")),
         );
         assert!(join["agent_message"].as_str().unwrap().contains(
@@ -305,6 +518,7 @@ mod tests {
             let output = answer(
                 &mcp_call(SERVER, "set_relay_agent_card"),
                 SERVER,
+                &Fake::off(),
                 commands(socket),
             );
             assert_eq!(output["permission"], "deny");
@@ -326,7 +540,7 @@ mod tests {
             mcp_call(SERVER, "search_shared_sessions"),
             br#"{"hook_event_name":"beforeMCPExecution"}"#.to_vec(),
         ] {
-            assert_eq!(answer(&input, SERVER, never), json!({}));
+            assert_eq!(answer(&input, SERVER, &Fake::off(), never), json!({}));
         }
     }
 
@@ -340,8 +554,141 @@ mod tests {
             b"",
             b"[1,2]",
         ] {
-            assert_eq!(answer(input, SERVER, never), json!({}));
+            assert_eq!(answer(input, SERVER, &Fake::off(), never), json!({}));
         }
+    }
+
+    #[test]
+    fn a_call_core_kept_is_left_to_cursor_and_announced_with_its_chat() {
+        let relay = Fake::new(true, true);
+        let never = || -> Commands { panic!("a kept call names no commands") };
+        let mut input: Value =
+            serde_json::from_slice(&mcp_call(SERVER, "send_relay_message")).unwrap();
+        input["tool_use_id"] = json!("toolu_1");
+        input["generation_id"] = json!("g1");
+        let output = answer(input.to_string().as_bytes(), SERVER, &relay, never);
+        assert_eq!(output, json!({}));
+        assert_eq!(
+            relay.announced.borrow().as_slice(),
+            [json!({
+                "conversation_id": "c1",
+                "generation_id": "g1",
+                "tool_use_id": "toolu_1",
+                "tool_name": "send_relay_message",
+                "tool_input": "{}",
+            })]
+        );
+    }
+
+    #[test]
+    fn a_call_core_refused_keeps_the_identity_tool_denial_only_while_not_attested() {
+        // Core cannot say why (an unclassified refusal): its status decides.
+        let relay = Fake::new(false, false);
+        let output = answer(
+            &mcp_call(SERVER, "send_relay_message"),
+            SERVER,
+            &relay,
+            commands(Some("/tmp/r.sock")),
+        );
+        assert_eq!(output["permission"], "deny");
+        let message = output["agent_message"].as_str().unwrap();
+        assert!(message.contains("core_refused"), "{message}");
+        assert_eq!(relay.status_asked.get(), 1);
+        let attesting = Fake::new(true, false);
+        let never = || -> Commands { panic!("an attested call names no commands") };
+        let output = answer(
+            &mcp_call(SERVER, "send_relay_message"),
+            SERVER,
+            &attesting,
+            never,
+        );
+        assert_eq!(output, json!({}));
+        let other = answer(
+            &mcp_call("other-server", "send_relay_message"),
+            SERVER,
+            &relay,
+            commands(None),
+        );
+        assert_eq!(other, json!({}));
+        assert_eq!(
+            relay.announced.borrow().len(),
+            1,
+            "another server's call is never announced"
+        );
+    }
+
+    #[test]
+    fn a_refused_identity_call_is_left_to_the_helper_while_attesting() {
+        let never = || -> Commands { panic!("an attested call names no commands") };
+        for class in [
+            "cursor_chat_unknown",
+            "cursor_hook_unverified",
+            "deadline_expired",
+        ] {
+            let relay = Fake::refusing(false, class);
+            let output = answer(
+                &mcp_call(SERVER, "send_relay_message"),
+                SERVER,
+                &relay,
+                never,
+            );
+            assert_eq!(output, json!({}), "{class}");
+            assert_eq!(relay.status_asked.get(), 0, "{class} says Core attests");
+        }
+    }
+
+    #[test]
+    fn a_refused_identity_call_is_denied_with_its_command_when_not_attesting() {
+        let relay = Fake::refusing(true, "cursor_attestation_unavailable");
+        let output = answer(
+            &mcp_call(SERVER, "send_relay_message"),
+            SERVER,
+            &relay,
+            commands(Some("/tmp/r.sock")),
+        );
+        assert_eq!(output["permission"], "deny");
+        let message = output["agent_message"].as_str().unwrap();
+        assert!(
+            message.contains("/opt/relay/agent-relay-probe send --socket /tmp/r.sock"),
+            "{message}"
+        );
+        assert!(
+            message.contains("cursor_attestation_unavailable"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_read_call_is_left_to_cursor_without_asking_core() {
+        let relay = Fake::new(true, true);
+        let never = || -> Commands { panic!("a read names no commands") };
+        for tool in [
+            "list_relay_agents",
+            "describe_capabilities",
+            "list_relay_channels",
+        ] {
+            assert_eq!(
+                answer(&mcp_call(SERVER, tool), SERVER, &relay, never),
+                json!({})
+            );
+        }
+        assert!(relay.announced.borrow().is_empty());
+        assert_eq!(relay.status_asked.get(), 0);
+    }
+
+    #[test]
+    fn session_start_while_attested_says_the_identity_tools_work() {
+        let relay = Fake::new(true, false);
+        let output = answer(
+            br#"{"hook_event_name":"sessionStart"}"#,
+            SERVER,
+            &relay,
+            commands(Some("/tmp/r.sock")),
+        );
+        let context = output["additional_context"].as_str().unwrap();
+        assert!(context.contains("has its own relay identity through the Agent Relay MCP server"));
+        assert!(context.contains("/opt/relay/agent-relay-probe whoami --socket /tmp/r.sock"));
+        assert!(!context.contains("do not work here"));
     }
 
     #[test]

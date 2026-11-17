@@ -16,6 +16,7 @@ fn config(helper: PathBuf) -> HostedConfig {
             command: helper,
             args: crate::copilot_dispatch::peer::arguments(&binding, false),
         }),
+        cursor_stdio: None,
     }
 }
 #[test]
@@ -102,4 +103,48 @@ fn current_and_deleted_old_managed_helpers_migrate_remove_and_rollback_without_f
     let result: Value = serde_json::from_str(&fs::read_to_string(&file.path).unwrap()).unwrap();
     assert_eq!(result["mcpServers"]["concurrent-foreign"], foreign);
     assert!(result["mcpServers"].get("agent-relay").is_none());
+}
+
+#[test]
+fn cursor_helper_entries_are_managed_only_in_their_exact_shape() {
+    let home = tempfile::tempdir().unwrap();
+    let helper = home.path().join("helper");
+    fs::write(&helper, "synthetic helper").unwrap();
+    let binding = crate::mcp_settings::Binding {
+        site_url: "https://agentrelay.com".into(),
+        workspace_id: "synthetic-workspace".into(),
+        account_id: "synthetic-user".into(),
+    };
+    let endpoint = binding.endpoint().unwrap();
+    let socket = home.path().join("relay.sock");
+    let entry = |args: Vec<String>| json!({"command": helper, "args": args});
+    let managed = |entry: &Value| managed_cursor_stdio(entry, Some(&endpoint), Some(&helper));
+    let plain = crate::cursor_dispatch::arguments(&binding, false, None);
+    assert!(managed(&entry(plain.clone())));
+    assert!(managed(&entry(crate::cursor_dispatch::arguments(
+        &binding,
+        true,
+        Some(&socket)
+    ))));
+    assert!(!managed_cursor_stdio(
+        &entry(plain.clone()),
+        Some("https://agentrelay.com/elsewhere"),
+        Some(&helper)
+    ));
+    let mut typed = entry(plain.clone());
+    typed["type"] = json!("stdio");
+    assert!(!managed(&typed), "Cursor's entry has no other members");
+    let mut relative = plain.clone();
+    relative.extend(["--socket".into(), "relay.sock".into()]);
+    assert!(!managed(&entry(relative)));
+    let mut reordered = plain.clone();
+    reordered.swap(1, 3);
+    reordered.swap(2, 4);
+    assert!(!managed(&entry(reordered)));
+    let mut extra = plain;
+    extra.push("--verbose".into());
+    assert!(!managed(&entry(extra)));
+    assert!(!managed(
+        &json!({"command": "helper", "args": crate::cursor_dispatch::arguments(&binding, false, None)})
+    ));
 }

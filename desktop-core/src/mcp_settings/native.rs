@@ -223,7 +223,7 @@ impl Installer {
         configured && (!Self::credential_provider(id) || self.native_binding_matches(binding))
     }
 
-    fn hosted(&self, id: &str, binding: Option<&Binding>) -> Option<HostedConfig> {
+    pub(super) fn hosted(&self, id: &str, binding: Option<&Binding>) -> Option<HostedConfig> {
         let lock = self
             .native
             .credentials
@@ -256,6 +256,7 @@ impl Installer {
                     ),
                 }
             }),
+            cursor_stdio: (id == "cursor").then(|| self.cursor_stdio(pinned)).flatten(),
         })
     }
 
@@ -438,11 +439,11 @@ impl Installer {
         self.native.executables.resolve(id).is_some()
     }
 
-    fn native_files(&self, id: &str) -> Result<Vec<ProviderFile>, String> {
+    pub(super) fn native_files(&self, id: &str) -> Result<Vec<ProviderFile>, String> {
         let locations = &self.native.locations;
         let file = |kind, path: &PathBuf| ProviderFile::new(kind, path.clone());
         let files = match id {
-            "cursor" => vec![file(Provider::Cursor, &locations.cursor)],
+            "cursor" => vec![self.cursor_file()],
             "copilot" => self.copilot_files(),
             "grok" => vec![file(Provider::Grok, &locations.grok)],
             "muse" => vec![file(Provider::Muse, &locations.muse)],

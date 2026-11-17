@@ -17,6 +17,7 @@ pub(super) struct Capability {
     provider_supported: bool,
     claude_attestation: bool,
     copilot_attestation: bool,
+    cursor_attestation: bool,
 }
 /// Which native session kinds Cloud accepts for this account generation.
 #[derive(Clone, Copy, Default)]
@@ -26,6 +27,8 @@ pub(super) struct Support {
     /// Claude Code chats, whose calls carry this installation's proof.
     pub(super) claude: bool,
     pub(super) copilot: bool,
+    /// Cursor chats, named by their conversation id.
+    pub(super) cursor: bool,
 }
 impl DesktopIdentitySync {
     pub(super) fn native_providers_supported(
@@ -69,6 +72,20 @@ impl DesktopIdentitySync {
                 c.account == *account && c.generation == generation && c.copilot_attestation
             })
     }
+    /// Cloud verifies Cursor chat proofs for this exact account generation.
+    pub(crate) fn cursor_attestation_supported(
+        &self,
+        account: &CloudAccount,
+        generation: u64,
+    ) -> bool {
+        self.native_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|c| {
+                c.account == *account && c.generation == generation && c.cursor_attestation
+            })
+    }
     pub(super) fn native_supported(&self, account: &CloudAccount, generation: u64) -> bool {
         self.native_capability
             .lock()
@@ -102,6 +119,8 @@ impl DesktopIdentitySync {
                 == Some(1),
             claude_attestation: response["capabilities"]["claude_session_attestation"].as_u64()
                 == Some(1),
+            cursor_attestation: response["capabilities"]["cursor_session_attestation"].as_u64()
+                == Some(1),
         });
         let mut capability = self
             .native_capability
@@ -124,7 +143,7 @@ impl Identities {
     }
 
     /// The native kinds Cloud accepts for this account generation, and the
-    /// attestation key it verifies Claude and Copilot proofs with. Those chats
+    /// attestation key it verifies Claude, Copilot and Cursor proofs with. Those chats
     /// are named only together with that key.
     pub(super) fn native_support(
         &self,
@@ -133,7 +152,8 @@ impl Identities {
     ) -> (Support, Option<Value>) {
         let sync = &self.state;
         let copilot = sync.copilot_attestation_supported(account, generation);
-        let key = (sync.claude_attestation_supported(account, generation) || copilot)
+        let cursor = sync.cursor_attestation_supported(account, generation);
+        let key = (sync.claude_attestation_supported(account, generation) || copilot || cursor)
             .then(|| self.attestation_registration())
             .flatten();
         let support = Support {
@@ -141,8 +161,26 @@ impl Identities {
             providers: sync.native_providers_supported(account, generation),
             claude: key.is_some() && sync.claude_attestation_supported(account, generation),
             copilot: key.is_some() && copilot,
+            cursor: key.is_some() && cursor && self.cursor_transport_attested(),
         };
         (support, key)
+    }
+
+    /// Cursor's calls reach the hosted MCP through this build's helper,
+    /// with the hooks that announce each chat's call: Cursor chats are
+    /// named as such only while their calls are actually attested.
+    #[cfg(not(windows))]
+    fn cursor_transport_attested(&self) -> bool {
+        self.account
+            .as_ref()
+            .and_then(|account| account.mcp_config.get())
+            .is_some_and(|installer| installer.cursor_attested_transport())
+    }
+
+    /// Windows has no Cursor hooks, so Cursor's calls are never attested.
+    #[cfg(windows)]
+    fn cursor_transport_attested(&self) -> bool {
+        false
     }
 
     /// Cloud verifies Claude chat proofs for the account signed in now and
@@ -163,6 +201,15 @@ impl Identities {
         cloud.account().is_some_and(|account| {
             self.state
                 .copilot_attestation_supported(&account, cloud.identity_sync_generation())
+        })
+    }
+
+    /// Cursor proofs are enabled only for the current account generation.
+    pub fn cursor_attestation_verified(&self) -> bool {
+        let cloud = &self.plugins.cloud;
+        cloud.account().is_some_and(|account| {
+            self.state
+                .cursor_attestation_supported(&account, cloud.identity_sync_generation())
         })
     }
 
@@ -199,6 +246,7 @@ pub(super) fn attach(identity: &mut Value, target: &Target, support: Support) {
         SessionKind::Codex if support.codex => Some("codex"),
         SessionKind::ClaudeTerminal if support.claude => Some("claude"),
         SessionKind::Copilot if support.copilot => Some("copilot"),
+        SessionKind::CursorCli if support.cursor => Some("cursor"),
         SessionKind::Pi if support.providers => Some("pi"),
         SessionKind::Grok | SessionKind::GrokOpen if support.providers => Some("grok"),
         SessionKind::OpenCode | SessionKind::OpenCodeOpen if support.providers => Some("opencode"),
@@ -227,6 +275,7 @@ mod tests {
             providers,
             claude: false,
             copilot: false,
+            cursor: false,
         }
     }
     #[test]
@@ -276,7 +325,18 @@ mod tests {
         assert!(!sync.copilot_attestation_supported(&account, 7));
         assert!(!sync.claude_attestation_supported(&account, 8));
         assert!(!sync.native_supported(&account, 7));
+        assert!(!sync.cursor_attestation_supported(&account, 7));
+        sync.record_native_capability(
+            &account,
+            7,
+            &json!({"capabilities":{"cursor_session_attestation":1}}),
+        );
+        assert!(sync.cursor_attestation_supported(&account, 7));
+        assert!(!sync.claude_attestation_supported(&account, 7));
+        assert!(!sync.copilot_attestation_supported(&account, 7));
+        assert!(!sync.cursor_attestation_supported(&account, 8));
         sync.record_native_capability(&account, 7, &json!({"identities":[]}));
+        assert!(!sync.cursor_attestation_supported(&account, 7));
         assert!(!sync.native_supported(&account, 7));
         assert!(!sync.native_providers_supported(&account, 7));
         assert!(!sync.claude_attestation_supported(&account, 7));
@@ -347,6 +407,37 @@ mod tests {
         assert_eq!(
             identity["native_session"],
             json!({"kind":"copilot","id":target.id})
+        );
+    }
+
+    #[test]
+    fn cursor_native_identity_requires_its_own_attestation_capability() {
+        let target = Target::new(
+            SessionKind::CursorCli,
+            "5e0a3d8c-1b2f-4c6d-9e7a-0f1b2c3d4e5f",
+        );
+        let mut identity = json!({});
+        attach(
+            &mut identity,
+            &target,
+            Support {
+                copilot: true,
+                claude: true,
+                ..support(true, true)
+            },
+        );
+        assert!(identity.get("native_session").is_none());
+        attach(
+            &mut identity,
+            &target,
+            Support {
+                cursor: true,
+                ..support(false, false)
+            },
+        );
+        assert_eq!(
+            identity["native_session"],
+            json!({"kind":"cursor","id":target.id})
         );
     }
 

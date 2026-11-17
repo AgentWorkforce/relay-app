@@ -14,6 +14,7 @@ const MAX_REQUEST_BYTES: usize = 128 << 10;
 const MAX_DNS_WORKERS: usize = 8;
 static DNS_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const IN_DOUBT: &str = "dispatch_in_doubt_do_not_repeat";
+pub(crate) mod debug;
 mod sse;
 
 fn in_doubt(phase: &'static str) -> &'static str {
@@ -24,7 +25,15 @@ fn in_doubt(phase: &'static str) -> &'static str {
     IN_DOUBT
 }
 
-pub(super) fn error(id: &Value, code: i32, message: &'static str) -> Value {
+/// Which native client the hosted reply goes back to; it names the
+/// connection to repair in a refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Client {
+    Copilot,
+    Cursor,
+}
+
+pub(crate) fn error(id: &Value, code: i32, message: &'static str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
@@ -34,24 +43,44 @@ pub(super) fn post_before(
     body: &Value,
     deadline: Instant,
 ) -> Result<Value, &'static str> {
+    post_for(Client::Copilot, binding, bearer, body, deadline)
+}
+
+/// [`post_before`] for `client`: the same bounded POST, with refusals that
+/// name `client`'s connection.
+pub(crate) fn post_for(
+    client: Client,
+    binding: &Binding,
+    bearer: &str,
+    body: &Value,
+    deadline: Instant,
+) -> Result<Value, &'static str> {
     // The caller captures this deadline before queueing; never rebase it here.
     // Binding validates the selected origin. Loopback HTTP is retained for
     // owned dev sites; remote sites require normal verified HTTPS.
     let endpoint = binding.endpoint().ok_or("hosted_endpoint_unavailable")?;
-    post_endpoint_before(&endpoint, bearer, body, deadline)
+    post_endpoint_before(client, &endpoint, bearer, body, deadline)
 }
 
 fn post_endpoint_before(
+    client: Client,
     endpoint: &str,
     bearer: &str,
     body: &Value,
     deadline: Instant,
 ) -> Result<Value, &'static str> {
-    post_with_resolver(endpoint, bearer, body, deadline, move |host: &str| {
-        resolve_until(host, deadline, |host| {
-            host.to_socket_addrs().map(Iterator::collect)
-        })
-    })
+    post_with_resolver(
+        client,
+        endpoint,
+        bearer,
+        body,
+        deadline,
+        move |host: &str| {
+            resolve_until(host, deadline, |host| {
+                host.to_socket_addrs().map(Iterator::collect)
+            })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -71,10 +100,17 @@ fn post_at(
     body: &Value,
     timeout: Duration,
 ) -> Result<Value, &'static str> {
-    post_endpoint_before(endpoint, bearer, body, Instant::now() + timeout)
+    post_endpoint_before(
+        Client::Copilot,
+        endpoint,
+        bearer,
+        body,
+        Instant::now() + timeout,
+    )
 }
 
 fn post_with_resolver(
+    client: Client,
     endpoint: &str,
     bearer: &str,
     body: &Value,
@@ -91,7 +127,8 @@ fn post_with_resolver(
     #[cfg(debug_assertions)]
     eprintln!(
         "[copilot-dispatch] HTTP start: bytes={}, budget_ms={}",
-        bytes.len(), remaining.as_millis()
+        bytes.len(),
+        remaining.as_millis()
     );
     // Fresh agent + POST/nonempty body: neither recycled-connection retry path
     // in ureq2's Unit::is_retryable applies. No outer retry or auth refresh.
@@ -102,14 +139,24 @@ fn post_with_resolver(
         .try_proxy_from_env(false)
         .resolver(resolver)
         .build();
-    let response = match agent
-        .post(endpoint)
-        .set("Authorization", &format!("Bearer {bearer}"))
-        .set("Accept", "application/json, text/event-stream")
-        .set("Content-Type", "application/json")
-        .set("MCP-Protocol-Version", "2025-06-18")
-        .send_bytes(&bytes)
-    {
+    let headers = [
+        ("Authorization", format!("Bearer {bearer}")),
+        ("Accept", "application/json, text/event-stream".to_owned()),
+        ("Content-Type", "application/json".to_owned()),
+        ("MCP-Protocol-Version", "2025-06-18".to_owned()),
+    ];
+    let capture = debug::file();
+    let captured = |status: u16, reply: &[u8]| {
+        if let Some(path) = &capture {
+            debug::append(path, debug::record(endpoint, &headers, body, status, reply));
+        }
+    };
+    let request = headers
+        .iter()
+        .fold(agent.post(endpoint), |request, (name, value)| {
+            request.set(name, value)
+        });
+    let response = match request.send_bytes(&bytes) {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => response,
         Err(_) => return Err(in_doubt("request send")),
@@ -127,11 +174,27 @@ fn post_with_resolver(
     #[cfg(debug_assertions)]
     eprintln!("[copilot-dispatch] HTTP response: status={status}, json={json}, sse={stream}");
     if !(200..300).contains(&status) {
-        // Do not read/echo an upstream error body, even if it contains a proof.
-        return status_error(status, &body["id"]);
+        // Do not read/echo an upstream error body, even if it contains a proof;
+        // only an opted-in capture reads it, into its own file.
+        if capture.is_some() {
+            let mut reply = Vec::new();
+            let _ = response
+                .into_reader()
+                .take(MAX_REPLY_BYTES)
+                .read_to_end(&mut reply);
+            captured(status, &reply);
+        }
+        let attested = body["params"]["arguments"]
+            .get(crate::claude_attestation::FIELD)
+            .is_some();
+        return status_error(client, status, &body["id"], attested);
     }
     if body.get("id").is_some() && stream {
-        return sse::receive(response.into_reader(), &body["id"], deadline);
+        let reply = sse::receive(response.into_reader(), &body["id"], deadline);
+        if let Ok(value) = &reply {
+            captured(status, value.to_string().as_bytes());
+        }
+        return reply;
     }
     let mut bytes = Vec::new();
     response
@@ -142,6 +205,7 @@ fn post_with_resolver(
     if bytes.len() as u64 > MAX_REPLY_BYTES {
         return Err(in_doubt("response size"));
     }
+    captured(status, &bytes);
     if body.get("id").is_none() {
         return if status == 202 && bytes.is_empty() {
             Ok(Value::Null)
@@ -155,10 +219,31 @@ fn post_with_resolver(
     response_value(&bytes, &body["id"])
 }
 
-fn status_error(status: u16, id: &Value) -> Result<Value, &'static str> {
-    let message = match status {
-        401 | 403 => "Agent Relay authentication changed. Repair this Copilot connection.",
-        400 => "Agent Relay rejected this native call. Reconnect Copilot before another call.",
+/// The error a non-success `status` gives the chat. `attested` says the
+/// call carried a chat proof: Cloud answers 400 to a proof it cannot verify.
+fn status_error(
+    client: Client,
+    status: u16,
+    id: &Value,
+    attested: bool,
+) -> Result<Value, &'static str> {
+    let message = match (client, status) {
+        (Client::Cursor, 400) if attested => {
+            "Agent Relay Cloud could not verify this Cursor chat's attestation, so the call was \
+             not run. Retry once; if it fails again, run whoami from this chat's shell."
+        }
+        (Client::Copilot, 401 | 403) => {
+            "Agent Relay authentication changed. Repair this Copilot connection."
+        }
+        (Client::Copilot, 400) => {
+            "Agent Relay rejected this native call. Reconnect Copilot before another call."
+        }
+        (Client::Cursor, 401 | 403) => {
+            "Agent Relay authentication changed. Repair Cursor in Agent Relay's tool integrations."
+        }
+        (Client::Cursor, 400) => {
+            "Agent Relay rejected this MCP call. Repair Cursor in Agent Relay's tool integrations before another call."
+        }
         _ => return Err(IN_DOUBT),
     };
     Ok(error(id, -32602, message))

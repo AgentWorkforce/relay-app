@@ -260,6 +260,15 @@ impl Helper {
             super::cursor_guide::command(&self.path, self.development_scope(), socket)?;
         Some((command, socket))
     }
+    /// The probe executable, which Cursor's MCP entry runs as its helper.
+    pub(super) fn probe(&self) -> &Path {
+        &self.path
+    }
+    /// A site profile build's session socket, which its Cursor helper and
+    /// hook name; `None` for Agent Relay's own builds.
+    pub(super) fn session_socket(&self) -> Option<&Path> {
+        self.session.as_deref()
+    }
     pub fn usable(&self) -> bool {
         self.ready.load(Ordering::Acquire)
             && agent_relay_node::platform::exe::is_executable(&self.path)

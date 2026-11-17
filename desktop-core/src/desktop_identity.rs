@@ -19,6 +19,7 @@ use std::time::Duration;
 
 mod failure;
 mod native;
+mod outcome;
 mod refusal;
 mod synced;
 
@@ -256,6 +257,7 @@ impl Identities {
                 {
                     return;
                 }
+                outcome::log(&body, &response);
                 self.state.forget_refusal();
                 self.state
                     .remember_synced(account.clone(), generation, body);
@@ -1229,6 +1231,24 @@ mod tests {
             .fetch_add(1, Ordering::SeqCst);
         core.sync_desktop_identities().await;
         assert_eq!(cloud.calls.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_sync_cloud_answers_with_every_identity_skipped_completes() {
+        let (_temp, core, cloud) = core();
+        *cloud.response.lock().unwrap() = Some(json!({
+            "synced": 0,
+            "skipped": [{"agent_id": "agent-1", "reason": "unverified"}],
+        }));
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("first", "agent-1", KEY), Secret::new("one")));
+            })
+            .unwrap();
+        core.sync_desktop_identities().await;
+        core.sync_desktop_identities().await;
+        assert_eq!(cloud.calls.lock().unwrap().len(), 1, "a 200 is a sync");
     }
 
     #[tokio::test]
