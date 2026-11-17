@@ -1781,7 +1781,10 @@ async fn an_existing_connection_is_found_at_start_and_the_uploader_answers() {
     let sharing = client
         .ok("uploader.sharing.set", json!({"mode": "selected"}))
         .await;
-    assert_eq!(sharing, json!({"sharing_mode": "selected"}));
+    assert_eq!(
+        sharing,
+        json!({"sharing_mode": "selected", "replays_history": false})
+    );
     let sessions = client.ok("uploader.sessions.list", json!({})).await;
     assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
     let updated = client
@@ -1802,6 +1805,58 @@ async fn an_existing_connection_is_found_at_start_and_the_uploader_answers() {
         .error("uploader.sharing.set", json!({"mode": "everything"}))
         .await;
     assert_eq!(kind, "invalid_params");
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn a_switch_that_re_sends_the_history_is_previewed_and_needs_confirming() {
+    let harness = Harness::start_with(|cloud, setup| {
+        let mut state = setup.probe.state.lock().unwrap();
+        state.installs = vec![FakeProbe::connected(&cloud.site_url)];
+        state.status = json!({"running": true, "paused": false, "sharing_mode": "new",
+            "delivery": {"bootstrap_complete": true, "pending_records": 0}, "sessions": {"shared": 0, "total": 0}});
+    })
+    .await;
+    eventually("discovered", || harness.account_state() == "signed_in").await;
+    let mut client = harness.client().await;
+    // The preview says what a switch would do and changes nothing.
+    let preview = client
+        .ok("uploader.sharing.preview", json!({"mode": "all"}))
+        .await;
+    assert_eq!(
+        preview,
+        json!({"sharing_mode": "all", "replays_history": true})
+    );
+    let preview = client
+        .ok("uploader.sharing.preview", json!({"mode": "selected"}))
+        .await;
+    assert_eq!(
+        preview,
+        json!({"sharing_mode": "selected", "replays_history": false})
+    );
+    assert!(harness.probe.calls("sharing").is_empty());
+    // Unconfirmed, the switch to All is refused before the probe runs.
+    let (kind, message) = client
+        .error("uploader.sharing.set", json!({"mode": "all"}))
+        .await;
+    assert_eq!(kind, "refused");
+    assert_eq!(
+        message,
+        "Sharing all sessions re-sends your whole local history to Agent Relay Cloud. Confirm the change to go ahead."
+    );
+    assert!(harness.probe.calls("sharing").is_empty());
+    // Confirmed, it is applied and says it re-sends the history.
+    let sharing = client
+        .ok(
+            "uploader.sharing.set",
+            json!({"mode": "all", "replay_confirmed": true}),
+        )
+        .await;
+    assert_eq!(
+        sharing,
+        json!({"sharing_mode": "all", "replays_history": true})
+    );
+    assert_eq!(harness.probe.calls("sharing").len(), 1);
     harness.stop().await;
 }
 

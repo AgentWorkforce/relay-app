@@ -66,8 +66,8 @@ struct GlobalSessionSharingSettings: View {
             ) {
                 guard mode != model.sharingMode else { return }
                 Task {
-                    let replays = await model.sharingReplaysHistory(mode)
-                    guard mode != model.sharingMode else { return }
+                    guard let replays = await model.sharingReplaysHistory(mode),
+                          mode != model.sharingMode else { return }
                     pendingReplays = replays
                     pendingMode = mode
                 }
