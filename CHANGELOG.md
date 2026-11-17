@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Choosing the history sharing mode you already have no longer restarts the upload.** Re-applying the current sharing mode, by you or by your workspace's policy, keeps the upload where it was instead of sending all your local history again from the beginning. Changing the mode, for example from new sessions to all sessions, still starts over so every session it now covers is considered.
 - **macOS: Renamed Copilot chats reply with their current identity.** Native Relay tools sync the renamed identity before sending, so replies stay in the conversation that received the message. Calls waiting for approval are refused if the chat is renamed before dispatch.
 - **macOS: Copilot waits for Relay's native verification to finish.** Managed standalone Copilot connections allow three minutes for MCP requests, preventing the client's default one-minute timeout from interrupting verified tool setup and calls.
 - **macOS: GitHub Copilot desktop connects to Relay.** Provider setup detects the standalone Copilot app, uses its native chat hooks for registration and messages, and shows its existing Copilot logo and history alongside VS Code sessions. On macOS, Linux and Windows, the provider is now named GitHub Copilot.

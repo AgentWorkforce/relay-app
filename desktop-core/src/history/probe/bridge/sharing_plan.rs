@@ -72,6 +72,46 @@ pub(super) fn make_plan(
     })
 }
 
+/// Whether the install already carries this request, which then replies
+/// without a new delivery generation. A new generation restarts the upload
+/// from the first revision, so re-applying the mode the install already
+/// shares keeps its job, as does a broad-mode include already accepted. A
+/// pending change, a missing or cancelled job, or sessions deleted from Cloud
+/// that the request restores still take the normal path.
+pub(super) fn already_applied(
+    directory: &Path,
+    config: &Config,
+    keys: &[String],
+    identities: &[SessionIdentity],
+    requested: Option<SharingMode>,
+    include: bool,
+) -> Result<bool> {
+    let deleted = deleted_uploads(directory)?;
+    if directory.join("sharing-change.json").exists() {
+        return Ok(false);
+    }
+    let conn = read_db(directory)?;
+    let Some(requested) = requested else {
+        if keys.iter().any(|key| deleted.contains_key(key))
+            || !selection_validation::mutations_unchanged(
+                &conn, directory, config, identities, include,
+            )?
+        {
+            return Ok(false);
+        }
+        let side = if include { "included" } else { "excluded" };
+        emit(json!({side: keys, "regenerated": false}));
+        return Ok(true);
+    };
+    let kept = mode(config) == requested
+        && (requested != SharingMode::All || deleted.is_empty())
+        && delivery::status(&conn, &config.job_id).is_ok_and(|job| job.state != "cancelled");
+    if kept {
+        emit(json!({"sharing_mode": requested, "regenerated": false}));
+    }
+    Ok(kept)
+}
+
 /// The replayed intent records whether an exclusion was automatic or explicit.
 pub(super) fn apply_exclusions(conn: &Connection, plan: &ChangePlan) -> Result<()> {
     let mut wanted: HashSet<_> = plan.excluded.iter().cloned().collect();
