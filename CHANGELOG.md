@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **macOS: identity sync results and Cursor call refusals reach `core.log`.** The core wrote them only to its error output, which the background core discards, so `~/Library/Logs/Agent Relay/core.log` stayed empty; both now go through the core's diagnostics log as well.
 - **macOS: Renamed Copilot chats reply with their current identity.** Native Relay tools sync the renamed identity before sending, so replies stay in the conversation that received the message. Calls waiting for approval are refused if the chat is renamed before dispatch.
 - **macOS: GitHub Copilot desktop connects to Relay.** Provider setup detects the standalone Copilot app, uses its native chat hooks for registration and messages, and shows its existing Copilot logo and history alongside VS Code sessions. On macOS, Linux and Windows, the provider is now named GitHub Copilot.
 - **macOS: Copilot can read Relay tool responses.** The native MCP bridge preserves inbox, messaging and other tool results, uses compatible protocol negotiation, and advertises only the notification capabilities its transport supports, so Copilot can finish tool setup and read responses.
