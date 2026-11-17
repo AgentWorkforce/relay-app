@@ -99,9 +99,8 @@ enum Start {
 
 mod enrollment_key;
 mod login_failure;
-mod login_start;
+pub(crate) mod login_start;
 mod session_refresh;
-pub(crate) use login_start::{TLS_ROOTS_REFUSED, TLS_ROOTS_REFUSED_MESSAGE};
 
 /// The kept session for a site.
 enum Kept {
@@ -684,23 +683,7 @@ impl Account {
                 ..AccountStatus::default()
             }
         });
-        // Before any flow, the default and a reused login included.
-        self.refuse_certificate_overrides(attempt)?;
-        // Default setup reuses an eligible login before opening Google. An
-        // explicit browser request (Use another account) chooses an account.
-        let reusable = if request.flow == Some(Flow::Device) {
-            self.reusable_session(&site).await
-        } else {
-            None
-        };
-        let start = if request.flow.is_none() {
-            Start::Continue
-        } else if let Some(session) = reusable {
-            Start::Reused(session)
-        } else {
-            let file = request.enrollment_key_file.as_deref();
-            self.begin_login(attempt, &site, flow, file).await?
-        };
+        let start = self.start_login(attempt, &site, &request, flow).await?;
         let (phase, link, reused) = match &start {
             Start::Continue => ("checking_existing_login", None, None),
             Start::Reused(..) => ("reusing_existing_login", None, Some(true)),
@@ -760,6 +743,7 @@ impl Account {
         flow: Flow,
         provider: Option<crate::contract::account::SignInProvider>,
     ) -> Result<SignInReport, RpcError> {
+        login_start::refuse_renewal()?;
         let site = install.target.site_url.clone();
         let attempt = {
             let mut current = self.attempt.lock().unwrap();
@@ -774,23 +758,7 @@ impl Account {
             current.link = None;
             current.id
         };
-        let (start, phase, link) = match flow {
-            Flow::Device => {
-                let login = DeviceLogin::begin(&site, Some(&self.desktop_host()?))
-                    .await
-                    .map_err(|error| failed(error.message))?;
-                let link = login.public();
-                (Start::Device(login), "waiting_for_device_approval", link)
-            }
-            Flow::Browser => {
-                let login = self.desktop_browser_login().await?;
-                let workspace = install.target.workspace_id.as_deref();
-                let link =
-                    login_start::browser_start_link(&login, &site, true, workspace, provider)?;
-                (Start::Browser(login), "waiting_for_browser", link)
-            }
-            Flow::EnrollmentKey => return Err(enrollment_key::renewal_refused()),
-        };
+        let (start, phase, link) = self.renewal_start(&install, flow, provider).await?;
         self.set_link(attempt, Some(link));
         self.set(attempt, |account| {
             account.state = SignInState::PendingApproval;
