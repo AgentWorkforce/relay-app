@@ -35,15 +35,6 @@ fn certificate_overrides_refused() -> bool {
     true
 }
 
-/// A renewal under a certificate-file override: refused for the same
-/// reason, before any Cloud call, leaving the signed-in state alone.
-pub(super) fn refuse_renewal() -> Result<(), RpcError> {
-    if certificate_overrides_refused() {
-        return Err(refused());
-    }
-    Ok(())
-}
-
 fn refused() -> RpcError {
     RpcError::new(ErrorKind::Refused, TLS_ROOTS_REFUSED_MESSAGE)
 }
@@ -149,6 +140,21 @@ impl Account {
         Err(refused())
     }
 
+    /// A renewal under a certificate-file override: refused for the same
+    /// reason, before any attempt change or Cloud call. The computer stays
+    /// signed in; only the status's phase and error say why, so headless
+    /// setup reads the stable reason instead of the RPC's text.
+    pub(super) fn refuse_renewal(&self) -> Result<(), RpcError> {
+        if !certificate_overrides_refused() {
+            return Ok(());
+        }
+        self.update(|account| {
+            account.phase = Some(TLS_ROOTS_REFUSED.into());
+            account.error = Some(TLS_ROOTS_REFUSED_MESSAGE.into());
+        });
+        Err(refused())
+    }
+
     /// How `account.sign_in` starts `attempt`, after refusing a
     /// certificate-file override: the default sign-in continues in the
     /// background, a device request reuses an eligible login, and any other
@@ -223,7 +229,7 @@ impl Account {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::contract::account::{Flow, SharingMode};
     use agent_relay_node::relay::daemon::{Config, Core};
@@ -234,13 +240,18 @@ mod tests {
     const CHILD: &str = "RELAY_SIGN_IN_TLS_CHILD";
     const PRIVATE_ROOTS: &str = "unused-test-root-path";
 
-    /// Run in a child process the parent test starts with the environment
-    /// it names, so no test here mutates this process's environment.
-    #[test]
-    fn certificate_override_child() {
-        let Ok(mode) = std::env::var(CHILD) else {
-            return;
-        };
+    /// A signed-out account on a fresh core whose site is a closed local
+    /// port, so no call leaves this computer. The fields keep it alive.
+    pub(crate) struct TestAccount {
+        pub(crate) account: Arc<Account>,
+        pub(crate) runtime: tokio::runtime::Runtime,
+        pub(crate) site: String,
+        _core: Arc<Core>,
+        _signals: tokio::sync::mpsc::UnboundedReceiver<agent_relay_node::relay::push::PushSignal>,
+        _dir: tempfile::TempDir,
+    }
+
+    pub(crate) fn test_account() -> TestAccount {
         let dir = tempfile::tempdir().unwrap();
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let site = format!("http://127.0.0.1:{}", closed.local_addr().unwrap().port());
@@ -260,7 +271,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (core, _signals) = runtime.block_on(async {
+        let (core, signals) = runtime.block_on(async {
             Core::new(Config {
                 paths: CorePaths::for_socket(dir.path().join("core.sock")).unwrap(),
                 home: dir.path().into(),
@@ -274,6 +285,46 @@ mod tests {
             })
         });
         account.attach(&core);
+        TestAccount {
+            account,
+            runtime,
+            site,
+            _core: core,
+            _signals: signals,
+            _dir: dir,
+        }
+    }
+
+    impl TestAccount {
+        /// Signs the account in to workspace-a with Cloud asking this
+        /// computer to approve again, so `account.sign_in` renews.
+        pub(crate) fn needing_renewal(&self) -> AccountStatus {
+            let install = Install::from_json(
+                &serde_json::json!({"site_url": self.site, "workspace_id": "workspace-a"}),
+            )
+            .unwrap();
+            self.account.uploader.attach(Some(install));
+            self.account.update(|status| {
+                *status = AccountStatus {
+                    state: SignInState::SignedIn,
+                    site_url: Some(self.site.clone()),
+                    workspace_id: Some("workspace-a".into()),
+                    auth_health: Some("sign_in_required".into()),
+                    ..AccountStatus::default()
+                }
+            })
+        }
+    }
+
+    /// Run in a child process the parent test starts with the environment
+    /// it names, so no test here mutates this process's environment.
+    #[test]
+    fn certificate_override_child() {
+        let Ok(mode) = std::env::var(CHILD) else {
+            return;
+        };
+        let test = test_account();
+        let (account, runtime, site) = (&test.account, &test.runtime, &test.site);
         for flow in [
             Some(Flow::Device),
             None,
@@ -321,7 +372,19 @@ mod tests {
                 let error = renewed.unwrap_err();
                 assert_eq!(error.data.kind, ErrorKind::Refused);
                 assert_eq!(error.message, TLS_ROOTS_REFUSED_MESSAGE);
-                assert_eq!(account.status(), signed_in);
+                // Still signed in, as before; only the reason is added.
+                let status = account.status();
+                assert_eq!(status.state, SignInState::SignedIn);
+                assert_eq!(status.phase.as_deref(), Some(TLS_ROOTS_REFUSED));
+                assert_eq!(status.error.as_deref(), Some(TLS_ROOTS_REFUSED_MESSAGE));
+                assert_eq!(
+                    AccountStatus {
+                        phase: None,
+                        error: None,
+                        ..status
+                    },
+                    signed_in
+                );
             } else if let Err(error) = renewed {
                 assert_ne!(error.message, TLS_ROOTS_REFUSED_MESSAGE);
             }
