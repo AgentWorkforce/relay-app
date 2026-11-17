@@ -337,7 +337,15 @@ fn answer(core: &FakeCore) {
     );
     core.answer(
         "uploader.sharing.set",
-        Answer::with(|params| async move { Ok(json!({"sharing_mode": params["mode"]})) }),
+        Answer::with(|params| async move {
+            Ok(json!({"sharing_mode": params["mode"], "replays_history": params["mode"] == "all"}))
+        }),
+    );
+    core.answer(
+        "uploader.sharing.preview",
+        Answer::with(|params| async move {
+            Ok(json!({"sharing_mode": params["mode"], "replays_history": params["mode"] == "all"}))
+        }),
     );
     core.answer("uploader.pause", json!({"paused": true}));
     core.answer("uploader.resume", json!({"paused": false}));
@@ -4430,13 +4438,54 @@ fn changing_the_sharing_policy_is_confirmed(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
     case.app.go(Page::Settings(Pane::Sharing));
+    case.app.change_sharing(SharingMode::New);
+    case.pump(|case| !case.called("uploader.sharing.set").is_empty());
+    assert_eq!(
+        case.called("uploader.sharing.set")[0],
+        json!({"mode": "new", "replay_confirmed": false})
+    );
+    let asked = case.desktop.asked.borrow();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].title, "Automatically upload new sessions?");
+}
+
+fn sharing_all_sessions_says_it_re_sends_the_history_and_cancel_keeps_the_policy(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.go(Page::Settings(Pane::Sharing));
+    case.desktop.answer.set(false);
+    case.app.change_sharing(SharingMode::All);
+    case.pump(|case| !case.desktop.asked.borrow().is_empty());
+    {
+        let asked = case.desktop.asked.borrow();
+        assert_eq!(asked[0].title, "Share all sessions?");
+        assert_eq!(
+            asked[0].detail,
+            "Sharing all sessions re-sends your whole local history to Agent Relay Cloud. That can take hours, and new sessions wait behind it."
+        );
+        assert_eq!(asked[0].action, "Share all sessions");
+    }
+    assert_eq!(
+        case.called("uploader.sharing.preview"),
+        vec![json!({"mode": "all", "replay_confirmed": false})]
+    );
+    // Cancel: nothing is sent and the policy stays as it was.
+    case.settle();
+    assert!(case.called("uploader.sharing.set").is_empty());
+    assert!(case
+        .app
+        .with_state(|state| state.sharing_mode() == Some(SharingMode::Selected)));
+
+    // Agreeing sends the switch with the agreement.
+    case.desktop.answer.set(true);
     case.app.change_sharing(SharingMode::All);
     case.pump(|case| !case.called("uploader.sharing.set").is_empty());
     assert_eq!(
         case.called("uploader.sharing.set")[0],
-        json!({"mode": "all"})
+        json!({"mode": "all", "replay_confirmed": true})
     );
-    assert_eq!(case.desktop.asked.borrow().len(), 1);
 }
 
 fn the_account_pane_names_who_is_signed_in(runtime: &tokio::runtime::Runtime) {
@@ -5887,6 +5936,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "changing_the_sharing_policy_is_confirmed",
         changing_the_sharing_policy_is_confirmed,
+    ),
+    (
+        "sharing_all_sessions_says_it_re_sends_the_history_and_cancel_keeps_the_policy",
+        sharing_all_sessions_says_it_re_sends_the_history_and_cancel_keeps_the_policy,
     ),
     (
         "the_account_pane_names_who_is_signed_in",
