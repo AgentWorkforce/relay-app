@@ -22,6 +22,9 @@ struct SummarySearchResult: Identifiable, Equatable {
     let title: String
     let agentName: String
     let summarySnippet: String
+    /// The session's content revision as the list reports it, for caching
+    /// its hosted summary.
+    let revision: String?
     let createdAt: Date?
     let lastTimestamp: Date?
     let sessionURL: URL
@@ -49,6 +52,7 @@ struct SummarySearchResult: Identifiable, Equatable {
             ? (reportedSnippet.isEmpty ? "Session summary unavailable" : reportedSnippet)
             : reportedTitle
         summarySnippet = reportedSnippet.isEmpty ? title : reportedSnippet
+        revision = data["lastTs"] as? String
         createdAt = date(data["createdAt"])
         lastTimestamp = date(data["lastTs"])
         let rawURL = data["sessionURL"] as? String ?? ""

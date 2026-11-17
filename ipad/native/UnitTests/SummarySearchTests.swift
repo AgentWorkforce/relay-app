@@ -10,6 +10,11 @@ final class SummarySearchTests: XCTestCase {
         XCTAssertFalse(SummarySearchFeature.enabled(in: [SummarySearchFeature.infoKey: "NO"]))
     }
 
+    func testSearchIsOnInTheBuiltApp() {
+        // The test host is the Debug app, where project.yml turns search on.
+        XCTAssertTrue(SummarySearchFeature.isEnabled)
+    }
+
     func testQueryNormalizationTrimsAndCollapsesWhitespace() {
         XCTAssertEqual(SummarySearchQuery.normalize("  release\n  checklist  "), "release checklist")
         XCTAssertEqual(SummarySearchQuery.minimumLength, 2)
@@ -58,6 +63,44 @@ final class SummarySearchTests: XCTestCase {
         XCTAssertEqual(results[0].agent.cli, "codex")
         XCTAssertEqual(results[3].title, "Matched archived deployment notes")
         XCTAssertEqual(results[3].summarySnippet, "Matched archived deployment notes")
+    }
+
+    func testTheRevisionIsTheRowsLastTimestamp() throws {
+        let page = SummarySearchPage(["items": [
+            ["sessionId": "summary", "source": "codex", "summary": "  Fixed the login redirect.\n",
+             "search": ["snippet": "Matched the redirect", "matchedBy": ["keyword"]],
+             "shortSummary": "Not guaranteed", "lastTs": "2026-11-17T08:59:00Z",
+             "sessionURL": "https://agentrelay.com/sessions/summary"],
+            ["sessionId": "snippet", "source": "codex", "summary": NSNull(),
+             "search": ["snippet": "  Matched archived deployment notes ", "matchedBy": ["semantic"]],
+             "sessionURL": "https://agentrelay.com/sessions/snippet"],
+            ["sessionId": "neither", "source": "codex", "summary": "   ",
+             "search": ["snippet": NSNull(), "matchedBy": []], "shortSummary": "Not guaranteed",
+             "sessionURL": "https://agentrelay.com/sessions/neither"],
+            ["sessionId": "bare", "source": "codex",
+             "sessionURL": "https://agentrelay.com/sessions/bare"],
+        ] as [JSONObject]])
+        let rows = page.results
+        XCTAssertEqual(rows.map(\.sessionID), ["summary", "snippet", "neither", "bare"])
+        XCTAssertEqual(rows[0].revision, "2026-11-17T08:59:00Z")
+        XCTAssertNil(rows[1].revision)
+        for row in rows.dropFirst(2) {
+            XCTAssertNil(row.revision)
+        }
+    }
+
+    func testRequestTrimsAndBoundsTheQueryToTwoThroughFiveHundredCharacters() throws {
+        let workspace = "70A31BA9-5E75-4904-B452-9EA67AE376B8"
+        XCTAssertNil(SummarySearchRequest.path(workspaceID: workspace, query: "   ", cursor: nil))
+        XCTAssertNil(SummarySearchRequest.path(workspaceID: workspace, query: "  a  ", cursor: nil))
+        XCTAssertNotNil(SummarySearchRequest.path(workspaceID: workspace, query: "  ab  ", cursor: nil))
+        let longest = String(repeating: "x", count: 500)
+        let path = try XCTUnwrap(SummarySearchRequest.path(workspaceID: workspace, query: "  \(longest)\n", cursor: nil))
+        XCTAssertTrue(path.contains("q=\(longest)&"))
+        XCTAssertTrue(path.contains("ranking=hybrid"))
+        XCTAssertNil(SummarySearchRequest.path(workspaceID: workspace, query: longest + "x", cursor: nil))
+        XCTAssertNil(SummarySearchRequest.path(workspaceID: workspace, query: "search", cursor: nil, limit: 0))
+        XCTAssertNil(SummarySearchRequest.path(workspaceID: workspace, query: "search", cursor: nil, limit: 26))
     }
 
     func testRequestUsesAgreedPathAndPercentEncodesQueryAndCursor() throws {

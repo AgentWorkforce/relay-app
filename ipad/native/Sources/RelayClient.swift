@@ -384,6 +384,16 @@ private enum SecureStore {
     @Published private var workspacePeople = WorkspacePeopleDirectory()
     @Published var summaries: [String: SessionOverview] = [:]
     @Published var goals: [String: String] = [:]
+    /// Hosted session summaries (`GET /sessions/:id/summary`), by session ID.
+    @Published var sessionSummaries: [String: SessionSummaryCacheEntry] = [:]
+    /// The summary load running for each session; later callers await it.
+    private let sessionSummaryLoads = SessionSummaryLoads()
+    /// The content revision the summary list last reported for each session.
+    @Published private(set) var sessionRevisions: [String: String] = [:]
+    /// The canonical stored source the summary list reported for each
+    /// session, for `GET /sessions/:id/summary`. A session the list never
+    /// returned has none, and its summary section stays hidden.
+    @Published private(set) var sessionSources: [String: String] = [:]
     /// Session IDs Cloud History has no copy of (a 404 for their analysis).
     @Published var sessionsMissingFromHistory: Set<String> = []
     /// Outgoing messages Relaycast reports as read by someone other than the
@@ -921,6 +931,9 @@ private enum SecureStore {
         if previousKey != key {
             summaries = [:]
             goals = [:]
+            sessionSummaries = [:]
+            sessionRevisions = [:]
+            sessionSources = [:]
             sessionsMissingFromHistory = []
         }
         let accountUser = object(identity["user"])
@@ -1059,6 +1072,9 @@ private enum SecureStore {
         deliveredMessageIDs = []
         summaries = [:]
         goals = [:]
+        sessionSummaries = [:]
+        sessionRevisions = [:]
+        sessionSources = [:]
         sessionsMissingFromHistory = []
         summaryCredentialReady = false
         conversationAgentMetadata = [:]
@@ -1545,7 +1561,7 @@ private enum SecureStore {
             throw RelayAPIError(message: "Sign in again to search session summaries.")
         }
         guard let path = SummarySearchRequest.path(workspaceID: workspaceID, query: normalized, cursor: cursor) else {
-            throw RelayAPIError(message: "Search must be between 1 and 500 characters.")
+            throw RelayAPIError(message: "Search must be between 2 and 500 characters.")
         }
         let response = try await authorizedCloudCall(path)
         return SummarySearchPage(response)
@@ -1601,6 +1617,64 @@ private enum SecureStore {
         } catch {
             summaries[id] = SessionOverview(status: .failed, title: previous?.title ?? "",
                                             description: previous?.description ?? "", error: UserFacingError.message(for: error))
+        }
+    }
+    /// Keeps what the summary list reported for a session: its revision and
+    /// its canonical stored source.
+    func noteSummarySearchResult(_ result: SummarySearchResult) {
+        let id = result.sessionID
+        guard !id.isEmpty else { return }
+        if let revision = result.revision, !revision.isEmpty { sessionRevisions[id] = revision }
+        sessionSources[id] = SessionSummaryRequest.usableSource(result.source)
+    }
+    /// The hosted summary to show; nil (section hidden) while it loads or
+    /// when the session has no source.
+    func sessionSummaryState(for sessionID: String) -> SessionSummaryState? {
+        sessionSources[sessionID] == nil ? nil : sessionSummaries[sessionID]?.state
+    }
+    /// Loads the session's hosted summary unless the cached copy is still
+    /// current. Asks for the long summary and falls back to the short one.
+    /// Without a source from the summary list nothing is fetched and the
+    /// section stays hidden.
+    func loadSessionSummary(for agent: RelayAgent, force: Bool = false) async {
+        let id = agent.sessionID
+        guard !id.isEmpty, canLoadSummaries, let workspaceID = cloudWorkspaceID,
+              let source = sessionSources[id] else { return }
+        let revision = sessionRevisions[id]
+        if !force, sessionSummaries[id]?.isFresh(revision: revision) == true { return }
+        // A load already running for the session is awaited, not turned
+        // away, and it stores its result even if this caller is cancelled.
+        await sessionSummaryLoads.run(id) { [weak self] in
+            guard let self else { return }
+            let state = await self.fetchSessionSummary(id, workspaceID: workspaceID, source: source)
+            guard self.cloudWorkspaceID == workspaceID else { return }
+            self.sessionSummaries[id] = SessionSummaryCacheEntry(state: state, revision: revision, fetchedAt: Date())
+        }
+    }
+    private func fetchSessionSummary(_ id: String, workspaceID: String, source: String) async -> SessionSummaryState {
+        var kind = SessionSummary.Kind.long
+        var backoffSeconds = 1
+        while true {
+            guard let path = SessionSummaryRequest.path(sessionID: id, workspaceID: workspaceID,
+                                                        source: source, kind: kind) else { return .hidden }
+            do {
+                return SessionSummaryState(try SessionSummary(try await authorizedCloudCall(path)))
+            } catch let failure as RelayAPIError {
+                guard let state = SessionSummaryState.afterFailure(status: failure.status, code: failure.code,
+                                                                   requested: kind) else {
+                    kind = .short
+                    continue
+                }
+                if SessionSummaryState.retriesAutomatically(status: failure.status), backoffSeconds <= 4 {
+                    try? await Task.sleep(for: .seconds(backoffSeconds))
+                    if Task.isCancelled { return state }
+                    backoffSeconds *= 2
+                    continue
+                }
+                return state
+            } catch {
+                return .unavailable
+            }
         }
     }
     func requestSummary(for agent: RelayAgent) async {
