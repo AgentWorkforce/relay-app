@@ -2155,6 +2155,47 @@ signing out keeps.
 
 Cloud does not enforce the policy on uploads yet; that is a Cloud follow-up.
 
+### Workspace policy (v2)
+
+Cloud also serves the organization's workspace policy, the desktop settings
+an owner or admin sets for every member (capture, spawning, auto-join,
+inbound delivery and analytics), in the `workspace_policy` field of the same
+`access/me` answer:
+`{"version":2,"revision":N,"managed":false,"consent":[...],"sections":{"capture":{"locked":{},"defaults":{}},...}}`.
+`locked` values are the operator's and the person cannot change them;
+`defaults` are initial values the person may change; an absent key leaves the
+desktop's own behaviour. This step only reads the document; no setting is
+enforced yet.
+
+- The core (`desktop-core/src/workspace_policy.rs`) has no request of its own:
+  each read of the operator upload policy above parses both fields of the one
+  answer, so the workspace policy is read on the same triggers and cadence
+  (sign-in, workspace refresh, every 15 minutes) and through the same
+  `RELAY_DESKTOP_OPERATOR_POLICY` stand-in, whose document may carry a
+  `workspace_policy` object beside its own fields (test and debug builds
+  only).
+- The last document per workspace is kept in `workspace-policy.json` in the
+  app data directory, beside `policy.json`, and signing out keeps it.
+  `Account::workspace_policy` answers it (the unset policy when nothing was
+  read).
+- The key allowlist is pinned in `desktop-core/src/workspace_policy/keys.rs`
+  (section, key, values, the tiers it may appear in, and whether it is
+  person-only). An unknown section, tier or key, a key in a tier it may not
+  appear in (capture keys and the server-computed `admin_senders` are locked
+  only), a key both locked and defaulted (the locked value stays), and a value
+  of the wrong type or range are each dropped and logged by name, never value;
+  the rest applies. `consent` keeps only person-only keys.
+  `auto_join_repositories` keeps its `owner/name` and `owner/*` entries
+  lower-cased without duplicates, and drops the others one by one. Unknown
+  top-level fields are ignored.
+- A document that is not version 2, or whose `revision`, `managed`, `consent`
+  or `sections` is malformed, is a failed read and keeps the cached document.
+  A successful read without the field, or a 404, 405 or 501, is the unset
+  policy (`{version: 2, revision: 1, managed: false}`, no consent, every tier
+  empty). A revision older than the cached one is ignored.
+- Its `revision` is its own counter. Uploads still send the capture policy's
+  revision in `X-Agent-Relay-Capture-Policy-Revision`.
+
 Providers also includes Conductor, Paseo, Capy and Replicas. Claude cloud-session
 sharing is part of the Claude Code page, with no separate Claude cloud provider.
 Capy appears in the sidebar when its connector directory exists, or its app is

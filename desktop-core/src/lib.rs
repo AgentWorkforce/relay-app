@@ -32,6 +32,7 @@ pub mod storage_format;
 mod provider_methods;
 mod relay_build;
 pub mod teammate_context;
+pub mod workspace_policy;
 pub mod telemetry;
 pub mod session_locations;
 pub mod site_build;

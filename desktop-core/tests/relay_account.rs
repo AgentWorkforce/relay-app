@@ -4209,6 +4209,61 @@ async fn a_sign_in_under_an_enforced_mode_gives_the_persons_mode_back_when_lifte
     harness.stop().await;
 }
 
+/// The operator policy's read also caches the organization's workspace
+/// policy (v2) in its own file, keeping only the keys this build allows;
+/// a read without it clears it, and the capture policy is untouched.
+#[tokio::test]
+async fn a_sign_in_caches_the_workspace_policy_beside_the_capture_policy() {
+    let mut policy = enforcing("all", 3);
+    policy["workspace_policy"] = json!({
+        "version": 2,
+        "revision": 7,
+        "managed": false,
+        "consent": ["accept_spawns", "spawn_max_agents"],
+        "sections": {
+            "spawn": {
+                "locked": { "spawn_max_agents": 4, "spawn_unknown": true },
+                "defaults": { "accept_spawns": true }
+            }
+        }
+    });
+    let harness = with_operator_policy(Some(policy)).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+
+    let read = |harness: &Harness| -> Value {
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(harness.home.join("app-data/workspace-policy.json")).unwrap(),
+        )
+        .unwrap();
+        saved["workspaces"][WORKSPACE].clone()
+    };
+    let cached = read(&harness);
+    assert_eq!(cached["revision"], 7);
+    assert_eq!(cached["policy"]["consent"], json!(["accept_spawns"]));
+    assert_eq!(
+        cached["policy"]["sections"]["spawn"],
+        json!({ "locked": { "spawn_max_agents": 4 }, "defaults": { "accept_spawns": true } })
+    );
+    assert_eq!(cached["policy"]["sections"]["capture"]["locked"], json!({}));
+    assert_eq!(harness.cached_policy()["revision"], 3);
+
+    harness.set_operator_policy(enforcing("all", 3));
+    client
+        .ok(
+            "account.connect_workspace",
+            json!({"workspace_id": WORKSPACE}),
+        )
+        .await;
+    let cached = read(&harness);
+    assert_eq!(cached["revision"], 7);
+    assert_eq!(cached["policy"]["revision"], 1);
+    assert_eq!(cached["policy"]["sections"]["spawn"]["locked"], json!({}));
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["enforced_settings"], json!({"sharing_mode": "all"}));
+    harness.stop().await;
+}
+
 /// A policy that arrives while signed in switches the install to the
 /// enforced mode, refuses the person's changes, and gives their mode back
 /// once lifted.
