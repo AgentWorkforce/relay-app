@@ -348,7 +348,7 @@ fn a_refused_certificate_override_says_how_to_fix_it() {
         let mut ui = Console::default();
         let failure = setup(&mut core, &mut ui, &options(args)).unwrap_err();
         assert_eq!(failure.code, "tls_roots_refused", "{args:?}");
-        assert_eq!(failure.message, crate::account::TLS_ROOTS_REFUSED_MESSAGE);
+        assert_eq!(failure.message, crate::account::login_start::TLS_ROOTS_REFUSED_MESSAGE);
         assert!(failure.message.contains("SSL_CERT_FILE"));
         assert!(!failure.message.contains("SECRET"));
         ui.assert_private();
