@@ -12,7 +12,14 @@
 //!   keychain is unavailable and no token is minted.
 //!
 //! The entry holds `{"id", "nodeName", "expiresAt", "token"}`: the token, and
-//! the id its sign-out `DELETE` takes. Errors never carry the value.
+//! the id its sign-out `DELETE` takes. It may also hold `"pendingRevoke"`,
+//! the ids of tokens a sign-out took out of the keychain but Control did not
+//! confirm gone (no usable session, or a `DELETE` answered other than 2xx or
+//! 404). Sign-out always takes the token's secret out: an entry it leaves
+//! holds those ids alone, `{"pendingRevoke": [...]}`, which the next mint
+//! deletes at Control before it mints. A pending id is never a [`Kept`]
+//! token, so it can never be handed to the node. An entry written before
+//! `pendingRevoke` existed reads as before. Errors never carry the value.
 
 use agent_relay_node::relay::workspace::Secret;
 use serde_json::{json, Value};
@@ -30,16 +37,9 @@ pub struct Kept {
 }
 
 impl Kept {
-    fn encode(&self) -> Secret {
-        Secret::new(
-            json!({"id": self.id, "nodeName": self.node_name, "expiresAt": self.expires_at,
-                   "token": self.token.expose()})
-            .to_string(),
-        )
-    }
-
-    fn decode(value: &Secret) -> Option<Kept> {
-        let value: Value = serde_json::from_str(value.expose()).ok()?;
+    /// The token in `value`, an entry's JSON: `None` without an id and a
+    /// token, as in an entry that holds pending revokes alone.
+    fn decode(value: &Value) -> Option<Kept> {
         let text = |key: &str| {
             value[key]
                 .as_str()
@@ -64,6 +64,89 @@ impl Kept {
     }
 }
 
+/// What one workspace's keychain entry holds: the live token, if any, and
+/// the ids of tokens still to be revoked at Control, which carry no secret.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Entry {
+    pub kept: Option<Kept>,
+    /// Tokens a sign-out took out of the keychain whose `DELETE` Control did
+    /// not confirm: only their ids, never their secrets.
+    pub pending_revoke: Vec<String>,
+}
+
+impl Entry {
+    /// An entry holding the live token `kept` alone.
+    pub fn live(kept: Kept) -> Entry {
+        Entry {
+            kept: Some(kept),
+            pending_revoke: Vec::new(),
+        }
+    }
+
+    /// Whether it holds nothing, so the keychain keeps no entry for it.
+    pub fn is_empty(&self) -> bool {
+        self.kept.is_none() && self.pending_revoke.is_empty()
+    }
+
+    /// Takes the live token's secret out, keeping its id as a pending
+    /// revoke: whether there was one to take.
+    pub fn retire(&mut self) -> bool {
+        let Some(kept) = self.kept.take() else {
+            return false;
+        };
+        if !self.pending_revoke.contains(&kept.id) {
+            self.pending_revoke.push(kept.id);
+        }
+        true
+    }
+
+    /// Drops the tokens Control confirmed `gone`, the live one included
+    /// when its id is among them: whether anything was dropped.
+    pub fn settle(&mut self, gone: &[String]) -> bool {
+        let before = self.pending_revoke.len();
+        self.pending_revoke.retain(|id| !gone.contains(id));
+        let live_gone = self
+            .kept
+            .as_ref()
+            .is_some_and(|kept| gone.contains(&kept.id));
+        if live_gone {
+            self.kept = None;
+        }
+        live_gone || self.pending_revoke.len() != before
+    }
+
+    fn encode(&self) -> Secret {
+        let mut value = match &self.kept {
+            Some(kept) => json!({"id": kept.id, "nodeName": kept.node_name,
+                                 "expiresAt": kept.expires_at, "token": kept.token.expose()}),
+            None => json!({}),
+        };
+        if !self.pending_revoke.is_empty() {
+            value["pendingRevoke"] = json!(self.pending_revoke);
+        }
+        Secret::new(value.to_string())
+    }
+
+    /// The entry `value` holds; one that cannot be read as ours is empty.
+    fn decode(value: &Secret) -> Entry {
+        let Ok(value) = serde_json::from_str::<Value>(value.expose()) else {
+            return Entry::default();
+        };
+        let mut pending_revoke: Vec<String> = Vec::new();
+        for id in value["pendingRevoke"].as_array().into_iter().flatten() {
+            if let Some(id) = id.as_str().filter(|id| !id.is_empty()) {
+                if !pending_revoke.iter().any(|kept| kept == id) {
+                    pending_revoke.push(id.to_string());
+                }
+            }
+        }
+        Entry {
+            kept: Kept::decode(&value),
+            pending_revoke,
+        }
+    }
+}
+
 /// The entry's account for `workspace_id` on `site`.
 pub fn entry(site: &str, workspace_id: &str) -> String {
     format!(
@@ -81,14 +164,24 @@ pub trait Keychain: Send + Sync {
     fn delete(&self, account: &str) -> Result<(), String>;
 }
 
-/// The token kept for `account`. An entry that cannot be read as one is
-/// treated as absent.
-pub fn load(keychain: &dyn Keychain, account: &str) -> Result<Option<Kept>, String> {
-    Ok(keychain.read(account)?.as_ref().and_then(Kept::decode))
+/// The entry kept for `account`: empty when there is none, or when it
+/// cannot be read as one of ours. Only `Entry::kept` is a token; its
+/// pending revokes are ids alone.
+pub fn load(keychain: &dyn Keychain, account: &str) -> Result<Entry, String> {
+    Ok(keychain
+        .read(account)?
+        .as_ref()
+        .map(Entry::decode)
+        .unwrap_or_default())
 }
 
-pub fn store(keychain: &dyn Keychain, account: &str, kept: &Kept) -> Result<(), String> {
-    keychain.write(account, &kept.encode())
+/// Keeps `held` for `account`, or removes the entry when it holds nothing.
+pub fn store(keychain: &dyn Keychain, account: &str, held: &Entry) -> Result<(), String> {
+    if held.is_empty() {
+        keychain.delete(account)
+    } else {
+        keychain.write(account, &held.encode())
+    }
 }
 
 /// This platform's keychain: Keychain on macOS, Credential Manager on
@@ -412,6 +505,8 @@ pub struct MemoryKeychain {
     pub write_fails: std::sync::Mutex<Option<String>>,
     /// The next write waits for a message on this before it lands.
     pub write_paused: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// The next read waits for a message on this before it answers.
+    pub read_paused: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     /// Each call so far, in order: `read`, `write` or `delete`.
     pub calls: std::sync::Mutex<Vec<&'static str>>,
 }
@@ -424,13 +519,41 @@ impl MemoryKeychain {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The token kept for `account`, if any.
+    /// The live token kept for `account`, if any.
     pub fn kept(&self, account: &str) -> Option<Kept> {
-        self.held().get(account).and_then(Kept::decode)
+        self.held().get(account).map(Entry::decode)?.kept
+    }
+
+    /// The ids `account`'s entry holds as pending revokes.
+    pub fn pending(&self, account: &str) -> Vec<String> {
+        self.held()
+            .get(account)
+            .map(Entry::decode)
+            .unwrap_or_default()
+            .pending_revoke
+    }
+
+    /// Whether `account`'s entry holds any token's secret: a test looks for
+    /// the fake Control's `sh_wk_` prefix in the stored value.
+    pub fn holds_secret(&self, account: &str) -> bool {
+        self.held()
+            .get(account)
+            .is_some_and(|value| value.expose().contains("sh_wk_"))
     }
 
     pub fn keep(&self, account: &str, kept: &Kept) {
-        self.held().insert(account.to_string(), kept.encode());
+        self.held()
+            .insert(account.to_string(), Entry::live(kept.clone()).encode());
+    }
+
+    fn pause(&self, switch: &std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>) {
+        let paused = switch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(paused) = paused {
+            let _ = paused.recv();
+        }
     }
 
     /// The calls so far, in order.
@@ -464,19 +587,13 @@ impl MemoryKeychain {
 impl Keychain for MemoryKeychain {
     fn read(&self, account: &str) -> Result<Option<Secret>, String> {
         self.call("read");
+        self.pause(&self.read_paused);
         self.check(&self.unavailable)?;
         Ok(self.held().get(account).cloned())
     }
     fn write(&self, account: &str, value: &Secret) -> Result<(), String> {
         self.call("write");
-        let paused = self
-            .write_paused
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(paused) = paused {
-            let _ = paused.recv();
-        }
+        self.pause(&self.write_paused);
         self.check(&self.unavailable)?;
         self.check(&self.write_fails)?;
         self.held().insert(account.to_string(), value.clone());
@@ -510,15 +627,71 @@ mod tests {
             expires_at: Some("2027-02-14T00:00:00Z".into()),
             token: Secret::new("sh_wk_fixture1234"),
         };
-        store(&keychain, &account, &kept).unwrap();
-        assert_eq!(load(&keychain, &account).unwrap(), Some(kept.clone()));
+        store(&keychain, &account, &Entry::live(kept.clone())).unwrap();
+        assert_eq!(load(&keychain, &account).unwrap().kept, Some(kept.clone()));
         assert!(!kept.expired(0));
         assert!(kept.expired(i64::MAX));
         keychain.delete(&account).unwrap();
-        assert_eq!(load(&keychain, &account).unwrap(), None);
+        assert_eq!(load(&keychain, &account).unwrap(), Entry::default());
         // An entry that is not one of ours is absent.
         keychain.write(&account, &Secret::new("not json")).unwrap();
-        assert_eq!(load(&keychain, &account).unwrap(), None);
+        assert_eq!(load(&keychain, &account).unwrap(), Entry::default());
+        // An empty entry is not kept at all.
+        store(&keychain, &account, &Entry::default()).unwrap();
+        assert!(keychain.entries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_entry_kept_before_pending_revokes_reads_as_its_token() {
+        let keychain = MemoryKeychain::default();
+        let old = r#"{"id":"tok_1","nodeName":"desk-desktop","expiresAt":null,"token":"sh_wk_a"}"#;
+        keychain.write("a", &Secret::new(old)).unwrap();
+        let held = load(&keychain, "a").unwrap();
+        assert_eq!(held.kept.unwrap().token.expose(), "sh_wk_a");
+        assert!(held.pending_revoke.is_empty());
+        // A live entry without pending revokes is written as before.
+        let kept = Kept {
+            id: "tok_1".into(),
+            node_name: "desk-desktop".into(),
+            expires_at: None,
+            token: Secret::new("sh_wk_a"),
+        };
+        let written: Value = serde_json::from_str(Entry::live(kept).encode().expose()).unwrap();
+        assert_eq!(written, serde_json::from_str::<Value>(old).unwrap());
+    }
+
+    #[test]
+    fn a_retired_token_leaves_its_id_and_never_its_secret() {
+        let keychain = MemoryKeychain::default();
+        let mut held = Entry::live(Kept {
+            id: "tok_2".into(),
+            node_name: "n".into(),
+            expires_at: None,
+            token: Secret::new("sh_wk_fixture1234"),
+        });
+        held.pending_revoke.push("tok_1".into());
+        assert!(held.retire());
+        assert!(!held.retire());
+        assert_eq!(held.pending_revoke, ["tok_1", "tok_2"]);
+        store(&keychain, "a", &held).unwrap();
+        assert!(!keychain.holds_secret("a"));
+        let loaded = load(&keychain, "a").unwrap();
+        // A pending id is never a token the node could be handed.
+        assert_eq!(loaded.kept, None);
+        assert_eq!(keychain.pending("a"), ["tok_1", "tok_2"]);
+        // An id with no token, as an older reader might see, is no token.
+        keychain
+            .write(
+                "b",
+                &Secret::new(r#"{"id":"tok_3","pendingRevoke":["tok_3"]}"#),
+            )
+            .unwrap();
+        assert_eq!(load(&keychain, "b").unwrap().kept, None);
+        // Once Control confirms them gone, nothing is left.
+        let mut settled = loaded;
+        assert!(settled.settle(&["tok_1".into(), "tok_2".into()]));
+        assert!(settled.is_empty());
+        assert!(!settled.settle(&["tok_1".into()]));
     }
 
     /// A child that never answers is killed at the deadline and reported
@@ -561,6 +734,6 @@ mod tests {
             token: Secret::new("sh_wk_fixture1234"),
         };
         assert!(!format!("{kept:?}").contains("fixture1234"));
-        assert!(!format!("{:?}", kept.encode()).contains("fixture1234"));
+        assert!(!format!("{:?}", Entry::live(kept).encode()).contains("fixture1234"));
     }
 }

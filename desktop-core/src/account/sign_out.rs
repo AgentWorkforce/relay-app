@@ -11,20 +11,22 @@ impl Account {
         self.prepare_sign_out();
         let _providers = self.provider_credentials.lock().await;
         self.revoke_provider_credentials().await;
-        // Lock order: provider_credentials, then relay_node_mint, then
+        // Lock order: provider_credentials, relay_node_mint, then
         // refreshing. A relay-node mint in flight takes refreshing (to renew
         // the session) while it holds relay_node_mint, so sign-out waits for
         // it here first, cutting a Retry-After it waits out short: the token
-        // it mints is then in the keychain, and revoked below. Nothing that
+        // it mints is then in the keychain, and taken out below. Nothing that
         // holds refreshing waits for relay_node_mint.
         let mut mint = self.relay_node_mint.wait_for_sign_out().await;
         let (session, clear_queued, forgotten) = {
             // A refresh in flight finishes first, then sees the new epoch.
             let _one = self.refreshing.lock().await;
             self.epoch.fetch_add(1, Ordering::SeqCst);
-            // A gate-only install's relay-node tokens are deleted at Control
-            // with the session's bearer, renewed first when stale, and leave
-            // the keychain once Control answers. Awaited before the session
+            // A gate-only install's relay-node tokens always leave the
+            // keychain, their secrets first: each is then deleted at Control
+            // with the session's bearer, renewed first when stale, and its id
+            // stays behind as a pending revoke, for the next sign-in's mint,
+            // until Control answers it gone. Awaited before the session
             // leaves the store: from then on the queued identity clear, or
             // the revoke below, revokes it, and a DELETE after that would be
             // refused, leaving the token live. Each DELETE is bounded by its
@@ -82,12 +84,14 @@ impl Account {
         self.finish_pending_disconnect().await
     }
 
-    /// Deletes this sign-in's relay-node tokens at Control with the latest
-    /// saved session's bearer, renewed first when it is stale (sign-out
-    /// already holds `refreshing`), best effort. A token leaves the keychain
-    /// once Control answers it is gone (2xx or 404); otherwise its id stays
-    /// there. With no token nothing is sent; with no usable session, no
-    /// `DELETE`.
+    /// Takes this sign-in's relay-node tokens out of the keychain, then
+    /// deletes them at Control with the latest saved session's bearer,
+    /// renewed first when it is stale (sign-out already holds
+    /// `refreshing`), best effort. The secret always leaves the keychain;
+    /// a token's id stays there as a pending revoke until Control answers
+    /// it is gone (2xx or 404), and the next sign-in's mint deletes the ids
+    /// left with its own bearer. With no token nothing is sent; with no
+    /// usable session, no `DELETE`.
     async fn delete_relay_node_tokens(&self, mint: &mut relay_node_token::MintProgress) {
         let node_tokens = self.forget_relay_node_token(mint).await;
         if node_tokens.is_empty() {
@@ -97,17 +101,14 @@ impl Account {
         let Kept::Usable(session) = self.kept_session_for_sign_out(&site).await else {
             return;
         };
-        for (workspace, id) in node_tokens {
-            let gone = crate::cloud_api::self_tokens::delete(
+        for (workspace, ids) in node_tokens {
+            self.revoke_relay_node_tokens(
                 &session.site_url,
                 &session.access_token,
                 &workspace,
-                &id,
+                ids,
             )
             .await;
-            if gone {
-                self.unkeep_relay_node_token(&workspace, &id).await;
-            }
         }
     }
 }
