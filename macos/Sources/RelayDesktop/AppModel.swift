@@ -2136,11 +2136,17 @@ final class AppModel {
     }
 
     /// Whether switching to `mode` re-sends the whole local history, by the
-    /// core's preview. A core that cannot tell (an older one still running)
-    /// gets the usual question and applies the switch as it always did.
-    func sharingReplaysHistory(_ mode: SharingMode) async -> Bool {
-        let preview = try? await client.uploaderSharingPreview(SharingParams(mode: mode, replayConfirmed: false))
-        return preview?.replaysHistory ?? false
+    /// core's preview. A core that cannot preview (an older one still
+    /// running) gets the usual question and applies the switch as it always
+    /// did; any other failure shows and is nil, so nothing is switched.
+    func sharingReplaysHistory(_ mode: SharingMode) async -> Bool? {
+        do {
+            return try await client.uploaderSharingPreview(SharingParams(mode: mode, replayConfirmed: false)).replaysHistory
+        } catch {
+            if (error as? CoreError)?.kind == ErrorKind.methodNotFound.rawValue { return false }
+            sessionActionError = error.localizedDescription
+            return nil
+        }
     }
 
     /// The chosen policy shows at once; the uploader is asked until it

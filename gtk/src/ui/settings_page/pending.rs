@@ -1,7 +1,10 @@
 //! Settings controls whose change shows before the core answers: the
 //! upload policy, launch at login, and the switch rows' pending spinner.
 use super::*;
+use crate::bridge::CoreError;
 use crate::models::{SHARING_REPLAY_ACTION, SHARING_REPLAY_DETAIL, SHARING_REPLAY_TITLE};
+use agent_relay_desktop_core::contract::account::SharingChanged;
+use agent_relay_node::relay::protocol::ErrorKind;
 
 /// A switch row whose change may be on its way to the core: the switch
 /// holds the position asked for, with a spinner beside it, until the
@@ -54,22 +57,51 @@ impl App {
     /// the core says re-sends the whole local history asks about that
     /// instead.
     pub fn change_sharing(&self, mode: SharingMode) {
-        let current = self.with_state(|state| state.sharing_mode());
-        if current.is_none_or(|current| current == mode) {
+        // One preview at a time: a second click while the core answers
+        // would stack another question.
+        let asks = self.update_state(|state| {
+            let current = state.sharing_mode();
+            if state.sharing_previewing || current.is_none_or(|current| current == mode) {
+                return false;
+            }
+            state.sharing_previewing = true;
+            true
+        });
+        if !asks {
             return;
         }
-        // A core that cannot preview (an older one still running) gets the
-        // usual question; it applies the switch as it always did.
-        self.call::<agent_relay_desktop_core::contract::method::UploaderSharingPreview>(
+        self.view_call::<agent_relay_desktop_core::contract::method::UploaderSharingPreview>(
             SharingParams {
                 mode,
                 replay_confirmed: false,
             },
             move |app, preview| {
-                let replays = preview.is_ok_and(|preview| preview.replays_history);
-                app.confirm_sharing(mode, replays);
+                app.update_state(|state| state.sharing_previewing = false);
+                app.previewed_sharing(mode, preview);
             },
         );
+    }
+
+    /// Asks about the switch to `mode` the core previewed, unless the
+    /// policy changed meanwhile so there is no switch to make. A core that
+    /// cannot preview (an older one still running) gets the usual question
+    /// and applies the switch as it always did; any other failure shows and
+    /// switches nothing.
+    fn previewed_sharing(&self, mode: SharingMode, preview: Result<SharingChanged, CoreError>) {
+        let current = self.with_state(|state| state.sharing_mode());
+        if current.is_none_or(|current| current == mode) {
+            return;
+        }
+        let replays = match preview {
+            Ok(preview) => preview.replays_history,
+            Err(error) if error.kind() == Some(ErrorKind::MethodNotFound) => false,
+            Err(error) => {
+                self.update_state(|state| state.settings_error = Some(error.message));
+                self.render_settings();
+                return;
+            }
+        };
+        self.confirm_sharing(mode, replays);
     }
 
     fn confirm_sharing(&self, mode: SharingMode, replays: bool) {
