@@ -987,6 +987,8 @@ struct RelayWorkspaceView: View {
             }
             .buttonStyle(.bordered)
             .fixedSize()
+            // A stood-down agent would never answer.
+            .disabled(!client.isLive(agent))
             .accessibilityIdentifier("Voice call")
         }
     }
@@ -1002,6 +1004,7 @@ struct RelayWorkspaceView: View {
             }
             .buttonStyle(.bordered)
             .fixedSize()
+            .disabled(!client.isLive(agent))
             .accessibilityLabel("Fork session")
             .accessibilityIdentifier("Fork session")
         }
@@ -1011,6 +1014,7 @@ struct RelayWorkspaceView: View {
         if SessionFork.offered(for: agent) {
             Menu {
                 Button { openFork(agent) } label: { Label("Fork session", systemImage: "arrow.triangle.branch") }
+                    .disabled(!client.isLive(agent))
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 17))
             }
@@ -1020,14 +1024,14 @@ struct RelayWorkspaceView: View {
     }
     @ViewBuilder
     private func forkSwipeAction(_ agent: RelayAgent) -> some View {
-        if SessionFork.Placement.current == .row, page == .agents, SessionFork.offered(for: agent) {
+        if SessionFork.Placement.current == .row, page == .agents, SessionFork.offered(for: agent), client.isLive(agent) {
             Button { openFork(agent) } label: { Label("Fork", systemImage: "arrow.triangle.branch") }
                 .tint(accent)
         }
     }
     @ViewBuilder
     private func forkContextMenu(_ agent: RelayAgent) -> some View {
-        if SessionFork.Placement.current == .row, page == .agents, SessionFork.offered(for: agent) {
+        if SessionFork.Placement.current == .row, page == .agents, SessionFork.offered(for: agent), client.isLive(agent) {
             Button { openFork(agent) } label: { Label("Fork session", systemImage: "arrow.triangle.branch") }
         }
     }
@@ -1065,7 +1069,9 @@ struct RelayWorkspaceView: View {
                             .buttonStyle(.bordered).accessibilityIdentifier("Join channel")
                     }
                 } else {
-                    Text(agent.status.isEmpty ? "Agent" : agent.status.capitalized)
+                    // An open conversation keeps a stood-down agent's history; say it is offline.
+                    Text(!agent.isHuman && !client.isLive(agent) ? "Offline"
+                         : agent.status.isEmpty ? "Agent" : agent.status.capitalized)
                         .font(.caption).foregroundStyle(.secondary)
                     callButton(agent)
                 }

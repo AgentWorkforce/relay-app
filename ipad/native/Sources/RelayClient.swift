@@ -2041,11 +2041,19 @@ private enum SecureStore {
         if fleetAgents.contains(where: { $0.name == name && $0.node == node.name }) { return .running }
         return .unconfirmed
     }
+    /// Whether `agent` runs on its computer now, by the latest roster and node
+    /// lists. Fork and Call are offered only for live agents.
+    func isLive(_ agent: RelayAgent) -> Bool {
+        SessionFork.isLive(agent, roster: relayAgents, fleet: fleetAgents)
+    }
+    func forkAvailability(for agent: RelayAgent) -> SessionFork.Availability {
+        SessionFork.availability(for: agent, nodes: forkNodes, live: isLive(agent))
+    }
     /// Starts `name` on the agent's own computer as a copy of its session.
     /// A node that doesn't hold the agent sends the request to the next
     /// installation on that machine; any other failure ends the attempt.
     func forkAgent(_ source: RelayAgent, name: String, task: String) async throws -> (SpawnOutcome, RelaySpawnNode) {
-        guard case let .available(harness, nodes) = SessionFork.availability(for: source, nodes: forkNodes) else {
+        guard case let .available(harness, nodes) = forkAvailability(for: source) else {
             throw RelayAPIError(message: "This session can't be forked right now. Refresh and try again.")
         }
         var lastError: Error?
