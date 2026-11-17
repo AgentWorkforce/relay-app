@@ -61,9 +61,9 @@ final class SessionForkTests: XCTestCase {
     }
 
     func testAHeadlessClaudeSpawnForksWithClaudeOnItsNode() {
-        let spawned = SessionFork.spawned(node: "lab-desktop",
-                                          capabilities: labCapabilities([("events-shim-merge", "claude")]))
-        XCTAssertEqual(spawned, ["events-shim-merge": SessionFork.Spawned(node: "lab-desktop", harness: "claude")])
+        let spawned = SessionFork.spawned(nodes: [(name: "lab-desktop",
+                                                   capabilities: labCapabilities([("events-shim-merge", "claude")]))])
+        XCTAssertEqual(spawned, ["events-shim-merge": [SessionFork.Spawned(node: "lab-desktop", harness: "claude")]])
         let agent = spawnedRecord("events-shim-merge")
         XCTAssertEqual(agent.statedCLI, "")
         XCTAssertEqual(SessionFork.harness(for: agent, spawned: spawned), "claude")
@@ -87,8 +87,8 @@ final class SessionForkTests: XCTestCase {
         let renamed = agent("codex-review", kind: "claude-terminal")
         XCTAssertEqual(SessionFork.harness(for: renamed, roster: [renamed]), "claude")
         // Spawned on Claude, described as a Codex worker.
-        let spawned = SessionFork.spawned(node: "lab-desktop",
-                                          capabilities: labCapabilities([("shim", "claude")]))
+        let spawned = SessionFork.spawned(nodes: [(name: "lab-desktop",
+                                                   capabilities: labCapabilities([("shim", "claude")]))])
         let described = spawnedRecord("shim", persona: "a codex worker")
         XCTAssertEqual(described.cli, "codex")
         XCTAssertEqual(SessionFork.harness(for: described, roster: [described], spawned: spawned), "claude")
@@ -104,6 +104,70 @@ final class SessionForkTests: XCTestCase {
             return XCTFail("a live Claude session on a forking computer is forkable")
         }
         XCTAssertEqual(harness, "claude")
+    }
+
+    private let annex = RelaySpawnNode(name: "annex-desktop", harnesses: ["claude", "codex"],
+                                       forkHarnesses: ["claude", "codex"], machine: "annex")
+
+    func testANameTwoNodesReportForksOnEachInNodeOrder() {
+        // The entry on lab-desktop is stale; annex-desktop runs the agent.
+        let spawned = SessionFork.spawned(nodes: [
+            (name: "lab-desktop", capabilities: labCapabilities([("shim", "claude")])),
+            (name: "annex-desktop", capabilities: labCapabilities([("shim", "claude")])),
+        ])
+        XCTAssertEqual(spawned, ["shim": [SessionFork.Spawned(node: "lab-desktop", harness: "claude"),
+                                          SessionFork.Spawned(node: "annex-desktop", harness: "claude")]])
+        let agent = spawnedRecord("shim")
+        XCTAssertEqual(SessionFork.availability(for: agent, nodes: [annex, studio, lab], live: true, spawned: spawned),
+                       .available(harness: "claude", nodes: [lab, annex]))
+    }
+
+    func testNodesThatDisagreeOnTheHarnessStateNone() {
+        let spawned = SessionFork.spawned(nodes: [
+            (name: "lab-desktop", capabilities: labCapabilities([("shim", "claude")])),
+            (name: "annex-desktop", capabilities: labCapabilities([("shim", "codex")])),
+        ])
+        let record = spawnedRecord("shim")
+        XCTAssertEqual(SessionFork.statedHarness(for: record, roster: [record], spawned: spawned), "")
+        XCTAssertNil(SessionFork.harness(for: record, roster: [record], spawned: spawned))
+        XCTAssertEqual(SessionFork.availability(for: record, nodes: [lab, annex], live: true, roster: [record],
+                                                spawned: spawned),
+                       .unavailable("Only Claude and Codex sessions can be forked."))
+        // The roster's statement then decides, and both nodes stay candidates.
+        let current = agent("shim", kind: "claude-terminal")
+        XCTAssertEqual(SessionFork.availability(for: record, nodes: [lab, annex], live: true, roster: [current],
+                                                spawned: spawned),
+                       .available(harness: "claude", nodes: [lab, annex]))
+        // A node of its own picks that node's entry alone.
+        let pinned = RelayAgent(fleet: ["name": "shim", "node": "annex-desktop", "workerLiveness": "live"])
+        XCTAssertEqual(SessionFork.harness(for: pinned, spawned: spawned), "codex")
+    }
+
+    func testTheIconShowsTheHarnessTheForkUses() {
+        let spawned = SessionFork.spawned(nodes: [(name: "lab-desktop",
+                                                   capabilities: labCapabilities([("shim", "claude")]))])
+        // The copy at hand states Codex; the node and the roster state Claude.
+        let copy = RelayAgent(conversation: ["participants": [["agent_name": "shim", "cli": "codex"]],
+                                             "status": "active", "cli": "codex"])
+        XCTAssertEqual(copy.statedCLI, "codex")
+        let current = agent("shim", kind: "claude")
+        let cases: [(roster: [RelayAgent], spawned: [String: [SessionFork.Spawned]])] = [
+            (roster: [], spawned: spawned),
+            (roster: [current], spawned: [:]),
+            (roster: [current], spawned: spawned),
+            (roster: [], spawned: [:]),
+        ]
+        for inputs in cases {
+            let harness = SessionFork.harness(for: copy, roster: inputs.roster, spawned: inputs.spawned)
+            XCTAssertEqual(SessionFork.displayCLI(for: copy, roster: inputs.roster, fleet: [], spawned: inputs.spawned),
+                           harness)
+        }
+        XCTAssertEqual(SessionFork.displayCLI(for: copy, roster: [current], fleet: [], spawned: [:]), "claude")
+        XCTAssertEqual(SessionFork.displayCLI(for: copy, roster: [], fleet: [], spawned: [:]), "codex")
+        // With nothing stated, the icon still guesses from the name; the fork does not.
+        let named = RelayAgent(relay: ["name": "codex-helper", "status": "active"])
+        XCTAssertNil(SessionFork.harness(for: named, roster: [named]))
+        XCTAssertEqual(SessionFork.displayCLI(for: named, roster: [named], fleet: [], spawned: [:]), "codex")
     }
 
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
