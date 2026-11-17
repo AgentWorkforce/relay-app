@@ -114,6 +114,12 @@ struct LocalSessionSidebar: View {
                                     .disabled(renaming || relay.busyTargets.contains(agent.target.key) || requestedName.isEmpty || requestedName == agent.displayName)
                             }
                             if let renameStatus { Text(renameStatus).textSelection(.enabled) }
+                            if let repository = agent.repository {
+                                Text(OrganizationPolicyCopy.repository(repository))
+                                    .zoomFont(.caption)
+                                    .foregroundStyle(CloudTheme.secondary)
+                                    .textSelection(.enabled)
+                            }
                         }.zoomPadding(.top, 4)
                     }
                 }

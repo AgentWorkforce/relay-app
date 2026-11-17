@@ -1,7 +1,7 @@
 //! General: startup, privacy and how long session history is kept. The
 //! Mac's `SettingsPaneView.general` and `HistoryRetentionRow` match it.
 
-use super::{pending_toggle_row, toggle_row, SettingRow};
+use super::{toggle_row, SettingRow};
 use crate::models::{
     history_retention_choices, history_retention_warning, HISTORY_RETENTION_DETAIL,
     HISTORY_RETENTION_SECTION, HISTORY_RETENTION_TITLE,
@@ -73,13 +73,13 @@ impl App {
         self.tagged_uploads(column);
         let (section, group) = settings_section("Privacy", None);
         let weak = self.downgrade();
-        group.append(&pending_toggle_row(
+        group.append(&crate::ui::settings_organization::organization_toggle_row(
             "Share diagnostics",
             "Send feature usage and error categories, linked to your Agent Relay account after sign-in. They never contain message or session text, searches, paths, URLs, credentials or raw errors. Turning this off stops all of it.",
             "utilities-system-monitor-symbolic",
             analytics,
-            true,
             analytics_pending,
+            self.organization("analytics_enabled"),
             move |enabled| {
                 if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
                     app.set_setting(
