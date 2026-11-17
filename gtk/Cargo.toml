@@ -36,9 +36,10 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 499f1b2d, after 0cabdd76: #2207 (spawn failures say why; Claude ready
+# main ed9bfee5, after 0cabdd76: #2207 (spawn failures say why; Claude ready
 # timeout), #2208-#2210 (organization workspace policy: repositories join by
-# themselves, non-admin senders' messages held when the organization says so)
+# themselves, non-admin senders' messages held when the organization says so),
+# #2212 (a spawned agent takes its spawning chat's messages as native input)
 # and #2215 (a brand-new Cursor chat's first prompt puts it on its window).
 # Move it in desktop-core and gtk together.
 agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "ed9bfee5e1ccbf9cfa98ff347a814747367836d6", default-features = false }

@@ -987,6 +987,7 @@ mod tests {
                     invocation_id: "invocation-1".into(),
                     harness: "claude".into(),
                     requester: None,
+                    launcher: None,
                     process: None,
                     worker_cwd: None,
                     owner: None,

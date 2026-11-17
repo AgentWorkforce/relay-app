@@ -5,11 +5,11 @@ import Foundation
 /// Linux app's `models::optimistic` matches these.
 public extension ClaudeDeliveryStatus {
     func restricting(_ restricted: Bool) -> ClaudeDeliveryStatus {
-        ClaudeDeliveryStatus(allowedSenders: allowedSenders, held: held, restricted: restricted, sessions: sessions)
+        ClaudeDeliveryStatus(allowedSenders: allowedSenders, held: held, organizationHold: organizationHold, restricted: restricted, sessions: sessions)
     }
 
     func withSession(_ id: String, direct: Bool) -> ClaudeDeliveryStatus {
-        ClaudeDeliveryStatus(allowedSenders: allowedSenders, held: held, restricted: restricted, sessions: sessions.map { session in
+        ClaudeDeliveryStatus(allowedSenders: allowedSenders, held: held, organizationHold: organizationHold, restricted: restricted, sessions: sessions.map { session in
             session.id == id
                 ? ClaudeDeliverySession(agent: session.agent, direct: direct, id: session.id, title: session.title)
                 : session
@@ -17,19 +17,19 @@ public extension ClaudeDeliveryStatus {
     }
 
     func withoutSender(_ address: String) -> ClaudeDeliveryStatus {
-        ClaudeDeliveryStatus(allowedSenders: allowedSenders.filter { $0.address != address }, held: held,
+        ClaudeDeliveryStatus(allowedSenders: allowedSenders.filter { $0.address != address }, held: held, organizationHold: organizationHold,
                              restricted: restricted, sessions: sessions)
     }
 
     /// With `sender` allowed, once; a sender already allowed is kept as is.
     func allowing(_ sender: ClaudeSender) -> ClaudeDeliveryStatus {
         guard !allowedSenders.contains(where: { $0.address == sender.address }) else { return self }
-        return ClaudeDeliveryStatus(allowedSenders: allowedSenders + [sender], held: held, restricted: restricted, sessions: sessions)
+        return ClaudeDeliveryStatus(allowedSenders: allowedSenders + [sender], held: held, organizationHold: organizationHold, restricted: restricted, sessions: sessions)
     }
 
     /// Without the held message `id`: approved or dismissed.
     func withoutHeld(_ id: String) -> ClaudeDeliveryStatus {
-        ClaudeDeliveryStatus(allowedSenders: allowedSenders, held: held.filter { $0.id != id }, restricted: restricted, sessions: sessions)
+        ClaudeDeliveryStatus(allowedSenders: allowedSenders, held: held.filter { $0.id != id }, organizationHold: organizationHold, restricted: restricted, sessions: sessions)
     }
 }
 
@@ -39,7 +39,7 @@ public extension LocalAgent {
     func withAlias(_ alias: String?) -> LocalAgent {
         LocalAgent(addedBySession: addedBySession, address: address, alias: alias, deliveryError: deliveryError,
                    inboxStall: inboxStall, integrations: integrations, name: name, push: push, registeredAt: registeredAt,
-                   replyWithFinalAnswer: replyWithFinalAnswer, spawn: spawn, target: target, title: title, webhook: webhook)
+                   replyWithFinalAnswer: replyWithFinalAnswer, repository: repository, spawn: spawn, target: target, title: title, webhook: webhook)
     }
 }
 
