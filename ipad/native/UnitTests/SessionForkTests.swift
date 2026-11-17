@@ -37,6 +37,75 @@ final class SessionForkTests: XCTestCase {
                        .unavailable("Only Claude and Codex sessions can be forked."))
     }
 
+    private let lab = RelaySpawnNode(name: "lab-desktop", harnesses: ["claude", "codex"],
+                                     forkHarnesses: ["claude", "codex"], machine: "lab")
+
+    /// A headless agent the node spawned, as Relaycast lists it: the node's
+    /// `agent.register` stamps only `metadata.fleet`; nothing names Claude.
+    private func spawnedRecord(_ name: String, persona: String? = nil) -> RelayAgent {
+        var data: JSONObject = ["name": name, "status": "active", "address": "\(name)@lab-desktop",
+                                "metadata": ["fleet": ["node_id": "node_lab", "invocation_id": "inv_1"],
+                                             "renamed_to": "", "session_title": ""] as JSONObject]
+        if let persona { data["persona"] = persona }
+        return RelayAgent(relay: data)
+    }
+
+    /// The node's `release` capability, as `relay-node` advertises it.
+    private func labCapabilities(_ agents: [(String, String)]) -> [JSONObject] {
+        [["name": "spawn:claude", "kind": "capacity"],
+         ["name": "release", "kind": "capacity",
+          "metadata": ["live": ["observed_at": "2026-11-17T09:00:00Z",
+                                "agents": agents.map { ["name": $0.0, "agent_id": "a_\($0.0)", "harness": $0.1,
+                                                        "holds_slot": true] as JSONObject },
+                                "reclaimed": [JSONObject]()] as JSONObject] as JSONObject]]
+    }
+
+    func testAHeadlessClaudeSpawnForksWithClaudeOnItsNode() {
+        let spawned = SessionFork.spawned(node: "lab-desktop",
+                                          capabilities: labCapabilities([("events-shim-merge", "claude")]))
+        XCTAssertEqual(spawned, ["events-shim-merge": SessionFork.Spawned(node: "lab-desktop", harness: "claude")])
+        let agent = spawnedRecord("events-shim-merge")
+        XCTAssertEqual(agent.statedCLI, "")
+        XCTAssertEqual(SessionFork.harness(for: agent, spawned: spawned), "claude")
+        XCTAssertEqual(SessionFork.availability(for: agent, nodes: [studio, lab], live: true, spawned: spawned),
+                       .available(harness: "claude", nodes: [lab]))
+    }
+
+    func testAnAgentWithNoStatedHarnessIsStillRefused() {
+        let agent = spawnedRecord("events-shim-merge")
+        XCTAssertNil(SessionFork.harness(for: agent, roster: [agent]))
+        XCTAssertEqual(SessionFork.availability(for: agent, nodes: [lab], live: true, roster: [agent]),
+                       .unavailable("Only Claude and Codex sessions can be forked."))
+        // A name is not evidence of the harness either.
+        let named = RelayAgent(relay: ["name": "claude-helper", "status": "active"])
+        XCTAssertEqual(named.cli, "claude")
+        XCTAssertNil(SessionFork.harness(for: named, roster: [named]))
+    }
+
+    func testAClaudeSessionNeverForksOnCodex() {
+        // Named for Codex, registered as a Claude Code session.
+        let renamed = agent("codex-review", kind: "claude-terminal")
+        XCTAssertEqual(SessionFork.harness(for: renamed, roster: [renamed]), "claude")
+        // Spawned on Claude, described as a Codex worker.
+        let spawned = SessionFork.spawned(node: "lab-desktop",
+                                          capabilities: labCapabilities([("shim", "claude")]))
+        let described = spawnedRecord("shim", persona: "a codex worker")
+        XCTAssertEqual(described.cli, "codex")
+        XCTAssertEqual(SessionFork.harness(for: described, roster: [described], spawned: spawned), "claude")
+        // A conversation copy saying Codex yields to the current registration.
+        let opened = RelayAgent(conversation: ["participants": [["agent_name": "neon-exit-lead", "cli": "codex"]],
+                                               "status": "active", "cli": "codex"])
+        let current = agent("neon-exit-lead", kind: "claude-terminal")
+        XCTAssertEqual(SessionFork.harness(for: opened, roster: [current]), "claude")
+        XCTAssertEqual(SessionFork.availability(for: opened, nodes: [studio], live: true, roster: [current]),
+                       .unavailable("This agent's computer isn't online with a version of Agent Relay that can fork sessions. Update Agent Relay on it, then try again."))
+        guard case let .available(harness, _) = SessionFork.availability(for: current, nodes: [studio], live: true,
+                                                                          roster: [current]) else {
+            return XCTFail("a live Claude session on a forking computer is forkable")
+        }
+        XCTAssertEqual(harness, "claude")
+    }
+
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     private func registration(_ name: String, status: String = "active", seen: Date?) -> RelayAgent {

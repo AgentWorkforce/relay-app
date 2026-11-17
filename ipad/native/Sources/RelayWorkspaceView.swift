@@ -914,10 +914,7 @@ struct RelayWorkspaceView: View {
         }
     }
     private func agentAvatar(_ agent: RelayAgent, size: CGFloat) -> some View {
-        let cli = agent.cli.isEmpty
-            ? (client.relayAgents.first { $0.name == agent.name }?.cli
-               ?? client.fleetAgents.first { $0.name == agent.name }?.cli ?? "")
-            : agent.cli
+        let cli = client.displayCLI(for: agent)
         let artwork = artworkName(for: cli)
         return Group {
             if artwork.isEmpty {
