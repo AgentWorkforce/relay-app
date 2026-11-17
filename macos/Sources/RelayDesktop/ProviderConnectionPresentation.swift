@@ -21,7 +21,9 @@ struct ProviderConnectionPresentation {
     let action: Action?
     let actionTitle: String?
 
-    init(_ provider: ToolIntegration, health: String?) {
+    /// `workspaceError` is the report's reason this computer could not join
+    /// the account's workspace, shown when `health` is `workspace_unavailable`.
+    init(_ provider: ToolIntegration, health: String?, workspaceError: String? = nil) {
         if ["capy", "grok-bot", "dot"].contains(provider.id) || provider.selected,
            ["capy", "grok-bot", "dot", "conductor", "paseo"].contains(provider.id), provider.state == "configured" {
             status = health == "ready" ? "Connected" : "Connection not verified"
@@ -66,6 +68,10 @@ struct ProviderConnectionPresentation {
         } else if provider.selected && health == "offline" {
             status = "Can’t verify connection"
             summary = "Check your internet connection, then try again."
+            next = .check
+        } else if provider.selected && health == "workspace_unavailable" {
+            status = "Workspace not available"
+            summary = AccountHealthPresentation.workspaceUnavailableDetail(workspaceError)
             next = .check
         } else if !provider.selected && provider.state == "action_required" {
             status = "Needs attention"

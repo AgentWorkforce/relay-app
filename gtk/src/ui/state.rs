@@ -6,7 +6,7 @@
 use super::widgets::Color;
 
 mod account_health;
-pub use account_health::{account_health, Connection};
+pub use account_health::{account_health, workspace_unavailable_detail, Connection};
 mod connection;
 mod diagnostics;
 mod initialization;

@@ -21,6 +21,24 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
+/// Saves a binding a sign-in or a workspace connect resolved. Any change of
+/// account workspace, including a first binding, queues a clear of the
+/// desktop identities made for the one before.
+pub(super) fn save_signed_in_binding(
+    store: &mut agent_relay_node::relay::store::Store,
+    resolved: agent_relay_node::relay::store::CloudWorkspace,
+) {
+    let changed_workspace = store
+        .cloud
+        .as_ref()
+        .and_then(|cloud| cloud.account_workspace_id.as_deref())
+        != resolved.account_workspace_id.as_deref();
+    if changed_workspace {
+        store.queue_desktop_identity_clear(false);
+    }
+    store.cloud = Some(resolved);
+}
+
 /// Whether this desktop's agents can reach Cloud's identity sync, and if not,
 /// why. `setup/status` reports it as `cloud_identity_sync`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,6 +413,9 @@ impl Account {
         let unchanged = self.generation(bearer) == generation
             && !self.signing_in()
             && CloudAccess::account(self).as_ref() == Some(account);
+        if unchanged {
+            self.note_workspace_resolve(generation.0, &account.workspace_id, &resolved);
+        }
         let saved = match resolved {
             Ok(resolved) if unchanged => core
                 .store

@@ -29,6 +29,10 @@ final class SettingsLayoutTests: XCTestCase {
         XCTAssertEqual(try health("sign_in_required").label, "Sign in required")
         XCTAssertFalse(try health("offline").isHealthy)
         XCTAssertEqual(try health("offline", error: "Network unavailable").detail, "Network unavailable")
+        XCTAssertEqual(try health("workspace_unavailable", error: "No workspace key").label, "Workspace not available")
+        XCTAssertEqual(try health("workspace_unavailable", error: "No workspace key").detail,
+                       "This computer couldn’t join your Agent Relay workspace: No workspace key")
+        XCTAssertFalse(try health("workspace_unavailable").isHealthy)
         XCTAssertFalse(try health("future_state").isHealthy)
     }
 

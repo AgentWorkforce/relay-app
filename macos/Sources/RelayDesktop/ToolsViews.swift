@@ -136,6 +136,7 @@ enum ToolsCopy {
         case "ready": return "Verified"
         case "sign_in_required": return "Sign in required"
         case "offline": return "Cannot verify sign-in"
+        case "workspace_unavailable": return "Workspace not available"
         case "checking": return "Checking sign-in"
         default: return "Not checked"
         }

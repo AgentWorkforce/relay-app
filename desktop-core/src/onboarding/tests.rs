@@ -471,6 +471,27 @@ fn unhealthy_results_require_action_without_private_error_details() {
 }
 
 #[test]
+fn an_unavailable_workspace_asks_to_check_the_account_and_workspace_access() {
+    let mut core = Fake::default();
+    core.tools["account_health"] = json!("workspace_unavailable");
+    let mut ui = Console::default();
+    assert_eq!(setup(&mut core, &mut ui, &options(&["--json"])).unwrap(), 2);
+    let result = ui.result();
+    assert_eq!(result["status"], "action_required");
+    assert_eq!(result["health"]["account"], "workspace_unavailable");
+    let actions = result["actions"].as_array().unwrap();
+    let action = actions
+        .iter()
+        .find(|action| action["action"] == "check_account")
+        .expect("check_account action");
+    assert_eq!(
+        action["message"],
+        "This computer couldn't join the account's workspace. Check the account and workspace access, then retry setup."
+    );
+    ui.assert_private();
+}
+
+#[test]
 fn workspace_mismatch_and_missing_service_do_not_mutate_preferences() {
     let mut core = Fake::default();
     let mut ui = Console::default();

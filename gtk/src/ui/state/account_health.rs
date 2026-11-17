@@ -22,6 +22,15 @@ impl State {
     }
 }
 
+/// Why this computer is not in the account's workspace, in the same words
+/// on every platform.
+pub fn workspace_unavailable_detail(error: Option<&str>) -> String {
+    match error.map(str::trim).filter(|error| !error.is_empty()) {
+        Some(error) => format!("This computer couldn’t join your Agent Relay workspace: {error}"),
+        None => "This computer couldn’t join your Agent Relay workspace.".into(),
+    }
+}
+
 /// Shared account health wording for the header and Account settings.
 pub fn account_health(account: &AccountStatus) -> (&'static str, String, bool) {
     let (label, detail, healthy) = match account.auth_health.as_deref() {
@@ -40,6 +49,11 @@ pub fn account_health(account: &AccountStatus) -> (&'static str, String, bool) {
             "Cannot reach Agent Relay. Sign-in will be checked again automatically.",
             false,
         ),
+        Some("workspace_unavailable") => (
+            "Workspace not available",
+            "This computer couldn’t join your Agent Relay workspace.",
+            false,
+        ),
         _ => (
             "Checking sign-in",
             "Checking your account and workspace access.",
@@ -48,7 +62,9 @@ pub fn account_health(account: &AccountStatus) -> (&'static str, String, bool) {
     };
     (
         label,
-        if matches!(
+        if account.auth_health.as_deref() == Some("workspace_unavailable") {
+            workspace_unavailable_detail(account.auth_error.as_deref())
+        } else if matches!(
             account.auth_health.as_deref(),
             Some("sign_in_required" | "offline")
         ) {
@@ -81,6 +97,14 @@ mod account_health_tests {
         account.auth_health = Some("offline".into());
         account.auth_error = Some("Network unavailable".into());
         assert_eq!(account_health(&account).1, "Network unavailable");
+        assert!(!account_health(&account).2);
+        account.auth_health = Some("workspace_unavailable".into());
+        account.auth_error = Some("No workspace key".into());
+        assert_eq!(account_health(&account).0, "Workspace not available");
+        assert_eq!(
+            account_health(&account).1,
+            "This computer couldn’t join your Agent Relay workspace: No workspace key"
+        );
         assert!(!account_health(&account).2);
         account.auth_health = Some("future_state".into());
         assert!(!account_health(&account).2);

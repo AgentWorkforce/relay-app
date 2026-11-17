@@ -8,7 +8,8 @@ struct ProviderConnectionView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let presentation = ProviderConnectionPresentation(provider, health: tools.report?.accountHealth)
+        let presentation = ProviderConnectionPresentation(provider, health: tools.report?.accountHealth,
+                                                          workspaceError: tools.report?.workspaceError)
         let state = ProviderConnectionState(provider, accountHealth: tools.report?.accountHealth)
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 12) {

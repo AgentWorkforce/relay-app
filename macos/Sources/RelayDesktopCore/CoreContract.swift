@@ -11429,17 +11429,23 @@ public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
     public let accountHealth: String?
     public let onboardingComplete: Bool
     public let tools: [ToolIntegration]
+    /// Why this computer could not join the account's Agent Relay workspace,
+    /// in words for the person, when `account_health` is
+    /// `workspace_unavailable`.
+    public let workspaceError: String?
 
-    public init(accountHealth: String? = nil, onboardingComplete: Bool, tools: [ToolIntegration]) {
+    public init(accountHealth: String? = nil, onboardingComplete: Bool, tools: [ToolIntegration], workspaceError: String? = nil) {
         self.accountHealth = accountHealth
         self.onboardingComplete = onboardingComplete
         self.tools = tools
+        self.workspaceError = workspaceError
     }
 
     enum CodingKeys: String, CodingKey {
         case accountHealth = "account_health"
         case onboardingComplete = "onboarding_complete"
         case tools
+        case workspaceError = "workspace_error"
     }
 
     public init(from decoder: Decoder) throws {
@@ -11447,6 +11453,7 @@ public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
         self.accountHealth = try c.decodeIfPresent(String.self, forKey: .accountHealth)
         self.onboardingComplete = try c.decode(Bool.self, forKey: .onboardingComplete)
         self.tools = try c.decode([ToolIntegration].self, forKey: .tools)
+        self.workspaceError = try c.decodeIfPresent(String.self, forKey: .workspaceError)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -11454,6 +11461,7 @@ public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.accountHealth, forKey: .accountHealth)
         try c.encode(self.onboardingComplete, forKey: .onboardingComplete)
         try c.encode(self.tools, forKey: .tools)
+        try c.encodeIfPresent(self.workspaceError, forKey: .workspaceError)
     }
 }
 

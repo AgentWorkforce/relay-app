@@ -1,6 +1,7 @@
 //! Concise provider setup guidance, separate from technical connection evidence.
 //! The summary appears only when the status and action leave something unsaid.
 use super::external::{is_external, AMP_CONNECTED, AMP_CONNECTS};
+use crate::ui::state::workspace_unavailable_detail;
 use agent_relay_desktop_core::contract::tool_integrations::ToolIntegration;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NextAction {
@@ -30,7 +31,17 @@ pub(super) struct Presentation {
     label: Option<String>,
 }
 impl Presentation {
+    #[cfg(test)]
     pub fn new(tool: &ToolIntegration, health: Option<&str>) -> Self {
+        Self::with_workspace_error(tool, health, None)
+    }
+    /// `workspace_error` is the report's reason this computer could not join
+    /// the account's workspace, shown when `health` is `workspace_unavailable`.
+    pub fn with_workspace_error(
+        tool: &ToolIntegration,
+        health: Option<&str>,
+        workspace_error: Option<&str>,
+    ) -> Self {
         if let Some(presentation) = Self::connection_override(tool, health) {
             return presentation;
         }
@@ -48,16 +59,8 @@ impl Presentation {
                 Some("Agent Relay is checking setup. This will finish automatically.".into()),
                 None,
             )
-        } else if tool.selected
-            && (tool.state == "signed_out" || health == Some("sign_in_required"))
-        {
-            ("Sign in required", None, Some(NextAction::Account))
-        } else if tool.selected && health == Some("offline") {
-            (
-                "Can’t verify connection",
-                Some("Check your internet connection, then try again.".into()),
-                Some(NextAction::Check),
-            )
+        } else if let Some(shown) = Self::account_health(tool, health, workspace_error) {
+            shown
         } else if !tool.selected && tool.state == "action_required" {
             (
                 "Needs attention",
@@ -97,6 +100,33 @@ impl Presentation {
             summary,
             action,
             label,
+        }
+    }
+    /// An account problem that stops a connected provider: signing in,
+    /// verifying the connection, or joining the workspace.
+    fn account_health(
+        tool: &ToolIntegration,
+        health: Option<&str>,
+        workspace_error: Option<&str>,
+    ) -> Option<(&'static str, Option<String>, Option<NextAction>)> {
+        if !tool.selected {
+            return None;
+        }
+        if tool.state == "signed_out" || health == Some("sign_in_required") {
+            return Some(("Sign in required", None, Some(NextAction::Account)));
+        }
+        match health {
+            Some("offline") => Some((
+                "Can’t verify connection",
+                Some("Check your internet connection, then try again.".into()),
+                Some(NextAction::Check),
+            )),
+            Some("workspace_unavailable") => Some((
+                "Workspace not available",
+                Some(workspace_unavailable_detail(workspace_error)),
+                Some(NextAction::Check),
+            )),
+            _ => None,
         }
     }
     /// Remote connection proofs and provider-specific availability are authoritative.
@@ -381,6 +411,35 @@ mod tests {
             Presentation::new(&tool, Some("ready")).summary.as_deref(),
             Some("Install Codex on this computer to connect it.")
         );
+    }
+    #[test]
+    fn a_workspace_this_computer_could_not_join_is_named_instead_of_the_connection() {
+        let mut tool = provider();
+        let error = "Agent Relay Cloud did not return a workspace key for this computer.";
+        let shown =
+            Presentation::with_workspace_error(&tool, Some("workspace_unavailable"), Some(error));
+        assert_eq!(shown.status, "Workspace not available");
+        assert_eq!(
+            shown.summary.as_deref(),
+            Some("This computer couldn’t join your Agent Relay workspace: Agent Relay Cloud did not return a workspace key for this computer.")
+        );
+        assert_eq!(shown.action_label(), Some("Check connection"));
+        assert_eq!(
+            Presentation::new(&tool, Some("workspace_unavailable"))
+                .summary
+                .as_deref(),
+            Some("This computer couldn’t join your Agent Relay workspace.")
+        );
+        assert_eq!(
+            Presentation::with_workspace_error(&tool, Some("offline"), Some(error)).status,
+            "Can’t verify connection"
+        );
+        tool.selected = false;
+        tool.can_install = true;
+        let off =
+            Presentation::with_workspace_error(&tool, Some("workspace_unavailable"), Some(error));
+        assert_eq!(off.status, "Not connected");
+        assert_eq!(off.action_label(), Some("Connect Codex"));
     }
     #[test]
     fn pending_helper_verification_is_neutral_without_a_repair_action() {

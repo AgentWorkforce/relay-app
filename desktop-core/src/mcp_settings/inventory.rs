@@ -33,6 +33,7 @@ impl Installer {
         ToolsReport {
             onboarding_complete: choices.as_ref().is_ok_and(Option::is_some),
             account_health: health,
+            workspace_error: None,
             tools,
         }
     }

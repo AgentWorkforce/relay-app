@@ -3438,6 +3438,70 @@ async fn auth_health_refreshes_revoked_access_and_reports_missing_or_unreachable
 }
 
 #[tokio::test]
+async fn auth_health_names_a_workspace_this_computer_could_not_join() {
+    // Cloud signs the person in but shares no workspace key: the network is
+    // fine, so health names the workspace, not the connection.
+    let harness = Harness::start_with(|cloud, _| {
+        let mut state = cloud.state.lock().unwrap();
+        state.relaycast_url = Some(cloud.site_url.clone());
+        state.relaycast_key = String::new();
+    })
+    .await;
+    let mut client = harness.client().await;
+    client
+        .ok(
+            "account.sign_in",
+            json!({"sharing": "new", "flow": "device"}),
+        )
+        .await;
+    eventually("signed in", || harness.account_state() == "signed_in").await;
+    assert!(harness.store()["cloud"].is_null());
+    harness.account.recheck_auth_health().await;
+    let account = harness.core.status().account;
+    assert_eq!(
+        account.auth_health.as_deref(),
+        Some("workspace_unavailable")
+    );
+    assert_eq!(
+        account.auth_error,
+        Some(agent_relay_desktop_core::cloud_api::ResolveError::NoKey.to_string())
+    );
+
+    // A resolve that fails on the network is a connection failure again.
+    harness.cloud.state.lock().unwrap().resolve_status = 503;
+    client
+        .error(
+            "account.connect_workspace",
+            json!({"workspace_id": WORKSPACE}),
+        )
+        .await;
+    harness.account.recheck_auth_health().await;
+    assert_eq!(
+        harness.core.status().account.auth_health.as_deref(),
+        Some("offline")
+    );
+
+    // Once the workspace shares its key, the connection is ready.
+    {
+        let mut cloud = harness.cloud.state.lock().unwrap();
+        cloud.resolve_status = 200;
+        cloud.relaycast_key = ACCOUNT_KEY.into();
+    }
+    client
+        .ok(
+            "account.connect_workspace",
+            json!({"workspace_id": WORKSPACE}),
+        )
+        .await;
+    harness.account.recheck_auth_health().await;
+    assert_eq!(
+        harness.core.status().account.auth_health.as_deref(),
+        Some("ready")
+    );
+    harness.stop().await;
+}
+
+#[tokio::test]
 async fn auth_health_repairs_a_rejected_account_key_but_preserves_it_on_transient_failure() {
     let harness = Harness::start_with(|cloud, _| {
         cloud.state.lock().unwrap().relaycast_url = Some(cloud.site_url.clone());

@@ -24,6 +24,7 @@ fn safe_state(value: &Value) -> &str {
         "signed_out",
         "sign_in_required",
         "offline",
+        "workspace_unavailable",
         "not_installed",
         "unavailable",
         "onboarding_needed",
@@ -288,11 +289,14 @@ fn health_actions(workspace: &Value, tools: &Value, actions: &mut Vec<Value>) {
     ) {
         actions.push(json!({"action":"verify_workspace", "message":"Workspace verification needs attention. Check the account and network, then retry setup."}));
     }
-    if matches!(
-        tools["account_health"].as_str(),
-        Some("sign_in_required" | "signed_out" | "offline" | "unavailable")
-    ) {
-        actions.push(json!({"action":"check_account", "message":"Account connectivity needs attention. Check the account and network, then retry setup."}));
+    match tools["account_health"].as_str() {
+        Some("workspace_unavailable") => {
+            actions.push(json!({"action":"check_account", "message":"This computer couldn't join the account's workspace. Check the account and workspace access, then retry setup."}));
+        }
+        Some("sign_in_required" | "signed_out" | "offline" | "unavailable") => {
+            actions.push(json!({"action":"check_account", "message":"Account connectivity needs attention. Check the account and network, then retry setup."}));
+        }
+        _ => {}
     }
     for tool in tools["tools"]
         .as_array()

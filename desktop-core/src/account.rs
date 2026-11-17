@@ -207,6 +207,9 @@ pub struct Account {
     /// When supervision may next refresh the session for blocked uploads.
     upload_auth_retry: Mutex<Retry>,
     workspace_name_retry: Mutex<Retry>,
+    /// The last workspace resolve's refusal, when Cloud answered but would
+    /// not give this computer the workspace (`health::WorkspaceUnavailable`).
+    workspace_unavailable: Mutex<Option<health::WorkspaceUnavailable>>,
 }
 
 /// Backoff for a Cloud call supervision repeats.
@@ -268,6 +271,7 @@ impl Account {
             wake: tokio::sync::Notify::new(),
             upload_auth_retry: Mutex::default(),
             workspace_name_retry: Mutex::default(),
+            workspace_unavailable: Mutex::default(),
         }
     }
 
@@ -1486,7 +1490,9 @@ impl Account {
             return;
         }
         let epoch = self.epoch.load(Ordering::SeqCst);
-        match crate::cloud_api::resolve_workspace(site, bearer, workspace).await {
+        let resolved = crate::cloud_api::resolve_workspace(site, bearer, workspace).await;
+        self.note_attempt_resolve(epoch, attempt, workspace, &resolved);
+        match resolved {
             Ok(resolved) => {
                 if self.epoch.load(Ordering::SeqCst) != epoch {
                     return;
@@ -1502,17 +1508,10 @@ impl Account {
                         let before_clears = core
                             .store
                             .read(|s| s.desktop_identity_clears_pending.clone());
-                        if let Err(error) = core.store.update(|s| {
-                            let changed_workspace = s
-                                .cloud
-                                .as_ref()
-                                .and_then(|cloud| cloud.account_workspace_id.as_deref())
-                                != resolved.account_workspace_id.as_deref();
-                            if changed_workspace {
-                                s.queue_desktop_identity_clear(false);
-                            }
-                            s.cloud = Some(resolved);
-                        }) {
+                        if let Err(error) = core
+                            .store
+                            .update(|s| cloud_binding::save_signed_in_binding(s, resolved))
+                        {
                             core.hub.activity(Level::Warning, error.to_string());
                             return;
                         }
@@ -1692,25 +1691,15 @@ impl Account {
         let core = self.core().ok_or_else(|| {
             RpcError::new(ErrorKind::ShuttingDown, "Agent Relay core is stopping.")
         })?;
-        let resolved = crate::cloud_api::resolve_workspace(&site, &bearer, workspace_id)
-            .await
-            .map_err(|error| match error {
-                crate::cloud_api::ResolveError::Cloud(error) => RpcError::cloud(&error),
-                other => failed(other.to_string()),
-            })?;
+        let resolved = crate::cloud_api::resolve_workspace(&site, &bearer, workspace_id).await;
+        self.note_workspace_resolve(epoch, workspace_id, &resolved);
+        let resolved = resolved.map_err(|error| match error {
+            crate::cloud_api::ResolveError::Cloud(error) => RpcError::cloud(&error),
+            other => failed(other.to_string()),
+        })?;
         let name = resolved.name.clone();
         core.store
-            .update(|s| {
-                let changed_workspace = s
-                    .cloud
-                    .as_ref()
-                    .and_then(|cloud| cloud.account_workspace_id.as_deref())
-                    != resolved.account_workspace_id.as_deref();
-                if changed_workspace {
-                    s.queue_desktop_identity_clear(false);
-                }
-                s.cloud = Some(resolved);
-            })
+            .update(|s| cloud_binding::save_signed_in_binding(s, resolved))
             .map_err(|error| RpcError::store(&error))?;
         self.update(|account| {
             if account.workspace_id.as_deref() == Some(workspace_id) {

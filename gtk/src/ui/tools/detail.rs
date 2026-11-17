@@ -21,7 +21,11 @@ impl App {
             .report
             .as_ref()
             .and_then(|report| report.account_health.as_deref());
-        let presentation = Presentation::new(tool, health);
+        let workspace_error = ui
+            .report
+            .as_ref()
+            .and_then(|report| report.workspace_error.as_deref());
+        let presentation = Presentation::with_workspace_error(tool, health, workspace_error);
         let connection = ProviderStatus::for_tool(tool, health);
         let heading = hbox(12, &[]);
         heading.append(&widgets::agent_badge(&tool.id, 32));

@@ -256,6 +256,7 @@ pub(super) fn account_health_label(health: Option<&str>) -> &'static str {
         Some("ready") => "Verified",
         Some("sign_in_required") => "Sign in required",
         Some("offline") => "Cannot verify sign-in",
+        Some("workspace_unavailable") => "Workspace not available",
         Some("checking") => "Checking sign-in",
         _ => "Not checked",
     }
@@ -556,7 +557,7 @@ mod tests {
         absent.state = "configured".into();
         let mut ui = ToolsUi::default();
         ui.read(ToolsReport { onboarding_complete: false, account_health: None,
-            tools: vec![hidden, absent, tool("codex", true, true, true)] });
+            tools: vec![hidden, absent, tool("codex", true, true, true)], workspace_error: None });
         assert_eq!(ui.selected, BTreeSet::from(["codex".into()]));
         ui.choose("amp", true);
         assert_eq!(ui.selection_to_save(), vec!["capy", "codex"]);
@@ -576,6 +577,7 @@ mod tests {
                 tool("claude", true, false, true),
                 tool("absent", false, true, true),
             ],
+            workspace_error: None,
         });
         assert_eq!(
             ui.selected.iter().cloned().collect::<Vec<_>>(),
@@ -639,6 +641,7 @@ mod tests {
                 tool("codex", true, true, true),
                 tool("claude", true, false, false),
             ],
+            workspace_error: None,
         };
         ui.read(report.clone());
         ui.provider_id = Some("claude".into());

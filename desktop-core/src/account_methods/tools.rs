@@ -62,6 +62,7 @@ pub(super) async fn run(
         return Ok(ToolsReport {
             onboarding_complete: true,
             account_health: Some("unavailable".into()),
+            workspace_error: None,
             tools: Vec::new(),
         });
     };
@@ -76,6 +77,10 @@ pub(super) async fn run(
     }
     let status = Some(account.status());
     let health = status.as_ref().and_then(|s| s.auth_health.clone());
+    let workspace_error = status
+        .as_ref()
+        .filter(|s| s.auth_health.as_deref() == Some("workspace_unavailable"))
+        .and_then(|s| s.auth_error.clone());
     let binding = status.and_then(|s| {
         if s.state != agent_relay_node::relay::state::SignInState::SignedIn {
             return None;
@@ -118,6 +123,7 @@ pub(super) async fn run(
     account.verify_external_connections(&mut report, binding_for_external.as_ref(), force_external).await;
     account.verify_native_connections(&mut report, binding_for_external.as_ref(), force_external).await;
     crate::mcp_settings::derive_host_connections(&mut report.tools, report.account_health.as_deref());
+    report.workspace_error = workspace_error;
     Ok(report)
 }
 

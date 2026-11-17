@@ -1433,5 +1433,10 @@ forces a check for the app's **Check health** action. Renewable Cloud access
 and rejected account-owned Relaycast keys are repaired automatically. Network
 failures retain credentials. The app shows **Connected** only for a completed
 healthy check; revocation requiring browser approval is shown as **Sign in
-required**. This checks account access, not whether every client has loaded its
+required**. When Cloud answered a workspace resolve but would not give this
+computer the workspace (no key, an invalid relaygate address, and so on),
+`auth_health` is `workspace_unavailable` and `auth_error` carries the reason;
+`tools.status` repeats it as `workspace_error`, and the app shows **Workspace
+not available** instead of blaming the connection. `offline` stays for network
+failures. This checks account access, not whether every client has loaded its
 MCP configuration.

@@ -187,6 +187,23 @@ final class ProvidersTests: XCTestCase {
         XCTAssertEqual(SettingsPane.tools.subtitle, "", "Provider pages name themselves")
     }
 
+    func testAWorkspaceThisComputerCouldNotJoinIsNamedInsteadOfTheConnection() {
+        let error = "Agent Relay Cloud did not return a workspace key for this computer."
+        let shown = ProviderConnectionPresentation(provider("codex"), health: "workspace_unavailable", workspaceError: error)
+        XCTAssertEqual(shown.status, "Workspace not available")
+        XCTAssertEqual(shown.summary,
+                       "This computer couldn’t join your Agent Relay workspace: Agent Relay Cloud did not return a workspace key for this computer.")
+        XCTAssertEqual(shown.actionTitle, "Check connection")
+        XCTAssertEqual(ProviderConnectionPresentation(provider("codex"), health: "workspace_unavailable").summary,
+                       "This computer couldn’t join your Agent Relay workspace.")
+        XCTAssertEqual(ProviderConnectionPresentation(provider("codex"), health: "offline", workspaceError: error).status,
+                       "Can’t verify connection")
+        let off = ProviderConnectionPresentation(provider("codex", selected: false), health: "workspace_unavailable", workspaceError: error)
+        XCTAssertEqual(off.status, "Not connected")
+        XCTAssertEqual(off.actionTitle, "Connect Codex")
+        XCTAssertEqual(ToolsCopy.accountHealth("workspace_unavailable"), "Workspace not available")
+    }
+
     func testFolderDisclosureSummarizesSharing() throws {
         func folders(_ shared: [Bool]) throws -> [ClaudeConfigDir] {
             let items = shared.enumerated().map { #"{"path":"/f\#($0.offset)","origin":"default","shared":\#($0.element)}"# }

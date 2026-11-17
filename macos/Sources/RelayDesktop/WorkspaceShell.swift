@@ -456,9 +456,20 @@ struct AccountHealthPresentation {
         case "offline":
             label = "Cannot verify sign-in"
             detail = account.authError ?? "Cannot reach Agent Relay. Sign-in will be checked again automatically."
+        case "workspace_unavailable":
+            label = "Workspace not available"
+            detail = Self.workspaceUnavailableDetail(account.authError)
         default:
             label = "Checking sign-in"
             detail = "Checking your account and workspace access."
         }
+    }
+
+    /// Why this computer is not in the account's workspace, in the same words
+    /// on every platform.
+    static func workspaceUnavailableDetail(_ error: String?) -> String {
+        let reason = error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if reason.isEmpty { return "This computer couldn’t join your Agent Relay workspace." }
+        return "This computer couldn’t join your Agent Relay workspace: \(reason)"
     }
 }

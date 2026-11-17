@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 pub struct ToolsReport {
     pub onboarding_complete: bool,
     pub account_health: Option<String>,
+    /// Why this computer could not join the account's Agent Relay workspace,
+    /// in words for the person, when `account_health` is
+    /// `workspace_unavailable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_error: Option<String>,
     pub tools: Vec<ToolIntegration>,
 }
 
