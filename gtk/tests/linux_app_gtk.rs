@@ -4321,6 +4321,7 @@ fn relay_settings_deliver_directly(runtime: &tokio::runtime::Runtime) {
     tools::open_session_provider(&case, "cursor");
     assert!(case.settings_labels().contains(&agent_relay_app::models::CURSOR_HOOKS_TITLE.into()));
     assert!(case.settings_labels().contains(&agent_relay_app::models::CURSOR_HOOKS_OFF_DETAIL.into()));
+    assert!(case.settings_labels().contains(&agent_relay_app::models::CURSOR_HOOKS_LOCAL_ONLY_NOTE.into()));
     case.app.set_setting(
         SettingsChange {
             cursor_direct_delivery: Some(true),
