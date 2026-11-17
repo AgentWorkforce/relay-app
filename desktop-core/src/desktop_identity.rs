@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod capability_retry;
 mod failure;
 mod copilot;
 mod native;
@@ -35,6 +36,7 @@ pub struct DesktopIdentitySync {
     refused: Mutex<Option<refusal::RefusedSnapshot>>,
     synced: Mutex<Option<synced::SyncedSnapshot>>,
     native_capability: Mutex<Option<native::Capability>>,
+    capability_read_failed: Mutex<Option<capability_retry::FailedRead>>,
 }
 
 /// Link times by agent id, for the account workspace that reported them
@@ -142,24 +144,56 @@ impl Identities {
             return;
         }
         let generation = self.plugins.cloud.identity_sync_generation();
-        // Cloud replaces the installation's attestation key with each sync's,
-        // so a body built before the capability is known (the first sync
-        // after launch) would delete the key until the next pass. Read the
-        // capability first; a failed read still lets the sync go as before,
-        // since identities must not wait on it.
-        if !self.state.capability_known(&account, generation) {
-            self.read_capability_locked(&account, generation).await;
-            if self.plugins.cloud.account().as_ref() != Some(&account)
-                || self.plugins.cloud.identity_sync_generation() != generation
-            {
-                return;
-            }
+        if !self.read_capability_before_sync(&account, generation).await {
+            return;
         }
+        let Some(body) = self.sync_body(&account, generation) else {
+            return;
+        };
+        if self.state.already_synced(&account, generation, &body) {
+            return;
+        }
+        if let Some(unsupported) = self
+            .state
+            .wait_for_refusal_retry(&account, generation, &body)
+        {
+            // A site without the identity route is no failed sync on a
+            // backoff pass either (`failure::identity_sync_unsupported`).
+            self.note_identity_sync(if unsupported { None } else { Some(false) });
+            return;
+        }
+        let clears = self.queued_identity_clears();
+        match self
+            .plugins
+            .cloud
+            .request("PUT", path(&account.workspace_id), Some(body.clone()))
+            .await
+        {
+            Ok(response) => {
+                if self.plugins.cloud.account().as_ref() != Some(&account)
+                    || self.plugins.cloud.identity_sync_generation() != generation
+                {
+                    return;
+                }
+                outcome::log(&body, &response);
+                self.state.forget_refusal();
+                self.state
+                    .remember_synced(account.clone(), generation, body);
+                self.note_identity_sync(Some(true));
+                self.apply_mcp_links(&account.workspace_id, &clears, &response);
+            }
+            Err(error) => self.sync_failed(account, generation, body, error),
+        }
+    }
+
+    /// The complete identity set this desktop syncs for the account, or
+    /// `None` when there is nothing it may send now.
+    fn sync_body(&self, account: &CloudAccount, generation: u64) -> Option<Value> {
         // Agent tokens go only with a session confirmed as this person's.
-        let (support, attestation_key) = self.native_support(&account, generation);
+        let (support, attestation_key) = self.native_support(account, generation);
         let active_workspace = self.workspace();
         let active_status = self.status().workspace;
-        let body = self.store.read(|store| {
+        self.store.read(|store| {
             let source_id = store.desktop_sync_source_id.clone()?;
             let cloud = store.cloud.as_ref()?;
             if cloud.account_workspace_id.as_deref() != Some(account.workspace_id.as_str()) {
@@ -212,7 +246,7 @@ impl Identities {
                     store
                         .agent_owners
                         .get(&registration.agent_id)
-                        .is_none_or(|owner| owner_matches(owner, &account))
+                        .is_none_or(|owner| owner_matches(owner, account))
                 })
                 // Native spawns are Cloud-created worker identities, not
                 // desktop-session identities. Their Relaycast metadata and
@@ -238,42 +272,7 @@ impl Identities {
                 .collect();
             let body = json!({"source_id": source_id, "identities": identities});
             Some(native::with_attestation_key(body, attestation_key.as_ref()))
-        });
-        let Some(body) = body else { return };
-        if self.state.already_synced(&account, generation, &body) {
-            return;
-        }
-        if let Some(unsupported) = self
-            .state
-            .wait_for_refusal_retry(&account, generation, &body)
-        {
-            // A site without the identity route is no failed sync on a
-            // backoff pass either (`failure::identity_sync_unsupported`).
-            self.note_identity_sync(if unsupported { None } else { Some(false) });
-            return;
-        }
-        let clears = self.queued_identity_clears();
-        match self
-            .plugins
-            .cloud
-            .request("PUT", path(&account.workspace_id), Some(body.clone()))
-            .await
-        {
-            Ok(response) => {
-                if self.plugins.cloud.account().as_ref() != Some(&account)
-                    || self.plugins.cloud.identity_sync_generation() != generation
-                {
-                    return;
-                }
-                outcome::log(&body, &response);
-                self.state.forget_refusal();
-                self.state
-                    .remember_synced(account.clone(), generation, body);
-                self.note_identity_sync(Some(true));
-                self.apply_mcp_links(&account.workspace_id, &clears, &response);
-            }
-            Err(error) => self.sync_failed(account, generation, body, error),
-        }
+        })
     }
 
     /// Reads which of this desktop's synced identities a hosted MCP session
@@ -311,30 +310,39 @@ impl Identities {
     /// holds `state.lock`. Nothing is read without a source bound to the
     /// account's workspace, and the read sends no agent tokens. A failed
     /// read, or one answered for an account generation no longer current,
-    /// changes nothing.
-    async fn read_capability_locked(&self, account: &CloudAccount, generation: u64) {
+    /// changes nothing. False only when a read was sent and failed.
+    pub(super) async fn read_capability_locked(
+        &self,
+        account: &CloudAccount,
+        generation: u64,
+    ) -> bool {
         let source_id = self.store.read(|store| {
             let cloud = store.cloud.as_ref()?;
             (cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
                 .then(|| store.desktop_sync_source_id.clone())
                 .flatten()
         });
-        let Some(source_id) = source_id else { return };
+        let Some(source_id) = source_id else {
+            return true;
+        };
         let path = format!(
             "{}?source_id={}",
             path(&account.workspace_id),
             segment(&source_id)
         );
         let clears = self.queued_identity_clears();
-        if let Ok(response) = self.plugins.cloud.request("GET", path, None).await {
-            if self.plugins.cloud.account().as_ref() != Some(account)
-                || self.plugins.cloud.identity_sync_generation() != generation
-            {
-                return;
-            }
-            self.record_native_capability(account, generation, &response);
-            self.apply_mcp_links(&account.workspace_id, &clears, &response);
+        let Ok(response) = self.plugins.cloud.request("GET", path, None).await else {
+            return false;
+        };
+        self.state.forget_failed_capability_read();
+        if self.plugins.cloud.account().as_ref() != Some(account)
+            || self.plugins.cloud.identity_sync_generation() != generation
+        {
+            return true;
         }
+        self.record_native_capability(account, generation, &response);
+        self.apply_mcp_links(&account.workspace_id, &clears, &response);
+        true
     }
 
     fn mcp_links(&self) -> std::sync::MutexGuard<'_, McpLinks> {
@@ -1847,6 +1855,83 @@ mod tests {
             .unwrap()
             .get("attestation_key")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_change_during_the_capability_read_sends_no_sync() {
+        let (_temp, core, cloud) = core_with_account();
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("chat", "agent-1", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        let weak = Arc::downgrade(&cloud);
+        *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+            let cloud = weak.upgrade().unwrap();
+            if cloud.calls.lock().unwrap().last().unwrap().0 == "GET" {
+                cloud.identity_sync_generation.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+
+        core.sync_desktop_identities().await;
+
+        let calls = cloud.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "no PUT follows the read");
+        assert_eq!(calls[0].0, "GET");
+    }
+
+    #[tokio::test]
+    async fn a_failed_capability_read_backs_off_without_holding_syncs_back() {
+        let (_temp, core, cloud) = core_with_account();
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("chat", "agent-1", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        let weak = Arc::downgrade(&cloud);
+        *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+            let cloud = weak.upgrade().unwrap();
+            let get = cloud.calls.lock().unwrap().last().unwrap().0 == "GET";
+            *cloud.failure.lock().unwrap() = get.then_some(CloudError::Unreachable);
+        }));
+        let methods = |cloud: &FakeCloud| -> Vec<String> {
+            let calls = cloud.calls.lock().unwrap();
+            calls.iter().map(|(method, _, _)| method.clone()).collect()
+        };
+
+        core.sync_desktop_identities().await;
+        assert_eq!(methods(&cloud), ["GET", "PUT"]);
+
+        // Within the backoff the read is not sent again; a changed set still
+        // syncs at once.
+        core.store
+            .update(|store| {
+                assert!(store.add(registration("other", "agent-2", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        core.sync_desktop_identities().await;
+        assert_eq!(methods(&cloud), ["GET", "PUT", "PUT"]);
+
+        // Once it has passed, the next sync reads again.
+        core.state
+            .capability_read_failed
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .retry_at = Instant::now();
+        core.sync_desktop_identities().await;
+        assert_eq!(methods(&cloud)[3], "GET");
+
+        // So does the first sync after a new sign-in, backoff or not.
+        cloud
+            .identity_sync_generation
+            .fetch_add(1, Ordering::SeqCst);
+        let before = cloud.calls.lock().unwrap().len();
+        core.sync_desktop_identities().await;
+        assert_eq!(methods(&cloud)[before..], ["GET", "PUT"]);
     }
 
     #[tokio::test]
