@@ -16,7 +16,10 @@ use std::sync::Once;
 pub(crate) const TLS_ROOTS_REFUSED: &str = "tls_roots_refused";
 /// What such a sign-in says. Static: it never names the variables' values.
 /// The variables are the running core's, so they are removed where it runs.
+#[cfg(not(windows))]
 pub(crate) const TLS_ROOTS_REFUSED_MESSAGE: &str = "Agent Relay does not accept SSL_CERT_FILE or SSL_CERT_DIR certificate overrides. Remove them from the environment of the Agent Relay core (or the service that starts it) and restart it, for example `env -u SSL_CERT_FILE -u SSL_CERT_DIR agent-relay-probe serve --headless`, and add your CA to the operating system trust store.";
+#[cfg(windows)]
+pub(crate) const TLS_ROOTS_REFUSED_MESSAGE: &str = "Agent Relay does not accept SSL_CERT_FILE or SSL_CERT_DIR certificate overrides. Remove them from the environment of the Agent Relay core (or the logon task that starts it) and restart it, and add your CA to the operating system trust store.";
 
 /// Whether a certificate-file override would make every Cloud call fail,
 /// as node's `platform_root_environment_is_safe` decides. The first refusal
@@ -354,19 +357,23 @@ pub(crate) mod tests {
             }
         }
         // A signed-in computer renewing its approval keeps its state.
-        let signed_in = account.update(|status| {
-            *status = AccountStatus {
-                state: SignInState::SignedIn,
-                site_url: Some(site.clone()),
-                workspace_id: Some("workspace-a".into()),
-                ..AccountStatus::default()
-            }
-        });
         let install = Install::from_json(
             &serde_json::json!({"site_url": site, "workspace_id": "workspace-a"}),
         )
         .unwrap();
         for flow in [Flow::Device, Flow::Browser] {
+            // Each flow starts from the plain signed-in status, so it proves
+            // its own refusal write.
+            let signed_in = account.update(|status| {
+                *status = AccountStatus {
+                    state: SignInState::SignedIn,
+                    site_url: Some(site.clone()),
+                    workspace_id: Some("workspace-a".into()),
+                    ..AccountStatus::default()
+                }
+            });
+            assert_eq!(account.status().phase, None);
+            assert_eq!(account.status().error, None);
             let renewed = runtime.block_on(account.renew_sign_in(install.clone(), flow, None));
             if mode == "refused" {
                 let error = renewed.unwrap_err();
