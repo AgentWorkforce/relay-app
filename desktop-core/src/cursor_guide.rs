@@ -8,9 +8,12 @@
 //! hook tells it both:
 //! - `sessionStart` adds the commands to the chat's context;
 //! - `beforeMCPExecution` denies an identity tool of Agent Relay's MCP entry
-//!   with the one command that does the same, and allows everything else.
+//!   with the one command that does the same, if there is one.
 //!
-//! It never blocks Cursor: unknown events and unreadable input get `{}`.
+//! Every other call, of any server, gets `{}`: the hook is registered for
+//! every MCP call, so it gives no opinion on them and leaves them to Cursor's
+//! and the user's own approval. Unknown events and unreadable input get `{}`
+//! too, so it never blocks Cursor.
 use agent_relay_node::relay::outbound::shell_quote;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -100,7 +103,11 @@ impl Commands {
                 " '<ref>'",
                 "; relay messages arrive in this chat on their own",
             ),
-            _ => ("whoami", "", " shows this chat's relay identity"),
+            _ => (
+                "whoami",
+                "",
+                " shows the relay identity this chat already has",
+            ),
         };
         format!("{}{note}", self.line(socket, subcommand, rest))
     }
@@ -111,6 +118,12 @@ impl Commands {
             "Agent Relay: a Cursor chat has no relay identity through MCP, so {tool} cannot \
              work here."
         );
+        if tool == "set_relay_agent_card" {
+            return format!(
+                "{head} A Cursor chat's agent card is not set from the chat, and no probe \
+                 command sets it."
+            );
+        }
         match self.socket.as_deref() {
             Some(socket) => format!(
                 "{head} Run this from this chat's shell instead: {}",
@@ -141,7 +154,7 @@ pub fn answer(input: &[u8], server: &str, commands: impl FnOnce() -> Commands) -
         Some("sessionStart") => json!({"additional_context": commands().guidance()}),
         Some("beforeMCPExecution") => match identity_call(&input, server) {
             Some(tool) => json!({"permission": "deny", "agent_message": commands().denial(&tool)}),
-            None => json!({"permission": "allow"}),
+            None => json!({}),
         },
         _ => json!({}),
     }
@@ -241,7 +254,10 @@ mod tests {
 
     #[test]
     fn identity_tools_of_the_relay_server_are_denied_with_their_command() {
-        for tool in IDENTITY_TOOLS {
+        for tool in IDENTITY_TOOLS
+            .into_iter()
+            .filter(|tool| *tool != "set_relay_agent_card")
+        {
             let output = answer(
                 &mcp_call(SERVER, tool),
                 SERVER,
@@ -273,21 +289,44 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("subscribe-channel --socket '/tmp/r s.sock' '<channel>' --remove"));
+        let join = answer(
+            &mcp_call(SERVER, "join_relay"),
+            SERVER,
+            commands(Some("/tmp/r s.sock")),
+        );
+        assert!(join["agent_message"].as_str().unwrap().contains(
+            "whoami --socket '/tmp/r s.sock' shows the relay identity this chat already has"
+        ));
     }
 
     #[test]
-    fn other_servers_and_tools_are_allowed_without_reading_the_socket() {
-        let never = || -> Commands { panic!("an allowed call names no commands") };
+    fn the_agent_card_is_denied_without_naming_a_command() {
+        for socket in [Some("/tmp/r s.sock"), None] {
+            let output = answer(
+                &mcp_call(SERVER, "set_relay_agent_card"),
+                SERVER,
+                commands(socket),
+            );
+            assert_eq!(output["permission"], "deny");
+            let message = output["agent_message"].as_str().unwrap();
+            assert!(message.contains("no probe command sets it"), "{message}");
+            assert!(
+                !message.contains("whoami") && !message.contains("--socket"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_servers_and_tools_get_no_opinion_without_reading_the_socket() {
+        let never = || -> Commands { panic!("a call left to Cursor names no commands") };
         for input in [
             mcp_call("other-server", "send_relay_message"),
             mcp_call(SERVER, "list_relay_agents"),
             mcp_call(SERVER, "search_shared_sessions"),
             br#"{"hook_event_name":"beforeMCPExecution"}"#.to_vec(),
         ] {
-            assert_eq!(
-                answer(&input, SERVER, never),
-                json!({"permission": "allow"})
-            );
+            assert_eq!(answer(&input, SERVER, never), json!({}));
         }
     }
 

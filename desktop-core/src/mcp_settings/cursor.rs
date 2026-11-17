@@ -57,15 +57,15 @@ impl Installer {
     /// Maintenance: where this build's messaging hooks are on, brings its
     /// guide entries up to date, so an install made before them gets them
     /// without a repair. An explicit Off has taken the messaging hooks out,
-    /// so it stays off.
-    pub(super) fn refresh_cursor_guide(&self) {
+    /// so it stays off. The error is why the entries could not be added.
+    pub(super) fn refresh_cursor_guide(&self) -> Result<(), String> {
         if cfg!(windows) || !self.helper.usable() || !self.cursor_delivery_on() {
-            return;
+            return Ok(());
         }
         if self.cursor_guide().is_ok_and(|guide| guide.ready()) {
-            return;
+            return Ok(());
         }
-        let _ = self.set_cursor_hooks(true);
+        self.set_cursor_hooks(true)
     }
 
     pub(super) fn set_cursor_hooks(&self, enabled: bool) -> Result<(), String> {
@@ -284,5 +284,73 @@ mod tests {
             "Bearer cursor-fixture-grant"
         );
         assert_eq!(repaired["mcpServers"]["other"]["command"], "other-server");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn maintenance_adds_the_guide_to_an_install_with_only_the_messaging_hooks() {
+        let root = tempfile::tempdir().unwrap();
+        let (app, binding) = fixture(root.path());
+        app.select(vec!["cursor".into()], Some(&binding), None)
+            .unwrap();
+        app.set_provider_credentials(
+            &binding,
+            BTreeMap::from([("cursor".into(), "cursor-fixture-grant".into())]),
+        );
+        app.refresh(Some(&binding));
+        app.cursor_guide().unwrap().set(false).unwrap();
+        let hooks = hooks_file(root.path());
+        let guide = &crate::cursor_guide::EVENTS;
+        assert!(guide.iter().all(|event| guide_hooks(&hooks, event) == 0));
+        assert!(hooks["hooks"]["stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hook| hook["command"]
+                .as_str()
+                .is_some_and(|s| s.contains(" cursor-hook"))));
+        assert!(!app.cursor_hooks_ready());
+        assert!(app.refresh(Some(&binding)).is_empty());
+        assert!(guide
+            .iter()
+            .all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
+        assert!(app.cursor_hooks_ready());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn maintenance_warns_when_the_guide_cannot_be_added() {
+        let root = tempfile::tempdir().unwrap();
+        let (app, binding) = fixture(root.path());
+        app.select(vec!["cursor".into()], Some(&binding), None)
+            .unwrap();
+        app.set_provider_credentials(
+            &binding,
+            BTreeMap::from([("cursor".into(), "cursor-fixture-grant".into())]),
+        );
+        app.refresh(Some(&binding));
+        let path = root.path().join(".cursor/hooks.json");
+        let mut hooks = hooks_file(root.path());
+        hooks["hooks"]["sessionStart"] = json!({"command": "not a list"});
+        fs::write(&path, serde_json::to_vec(&hooks).unwrap()).unwrap();
+        assert!(!app.cursor_hooks_ready());
+        let warnings = app.refresh(Some(&binding));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.starts_with("cursor: ") && warning.contains("sessionStart")),
+            "{warnings:?}"
+        );
+        let cursor = app
+            .report(Some(&binding), None)
+            .tools
+            .into_iter()
+            .find(|tool| tool.id == "cursor")
+            .unwrap();
+        assert_eq!(cursor.state, "action_required");
+        assert_eq!(
+            hooks_file(root.path())["hooks"]["sessionStart"],
+            json!({"command": "not a list"})
+        );
     }
 }

@@ -134,7 +134,7 @@ fn the_cursor_guide_hook_names_the_commands_and_never_blocks_cursor() {
         .to_string()
     };
     assert_eq!(run(call("agent-relay").as_bytes())["permission"], "deny");
-    assert_eq!(run(call("other").as_bytes())["permission"], "allow");
+    assert_eq!(run(call("other").as_bytes()), serde_json::json!({}));
     assert_eq!(run(b"not json"), serde_json::json!({}));
 }
 
