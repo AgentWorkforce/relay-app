@@ -4423,6 +4423,33 @@ async fn a_held_lock_stays_offline_and_lifts_when_the_policy_is_gone() {
     harness.stop().await;
 }
 
+/// A settings lock the core still holds for a person who is signed out
+/// (a lift at sign-out that failed, or one kept from before) is lifted on
+/// the next supervision tick.
+#[tokio::test]
+async fn a_signed_out_core_lifts_a_lock_it_still_holds() {
+    let harness = Harness::start_with(|_, setup| {
+        *setup.supervise_every.lock().unwrap() = Some(Duration::from_millis(20));
+        std::fs::create_dir_all(setup.home.join("app-data")).unwrap();
+        std::fs::write(
+            setup.home.join("app-data/injectable-agents.json"),
+            json!({"registrations": [], "tokens": {}, "spawnMaxAgents": 4,
+            "organizationPolicy": {
+                "policy": {"locked": {"spawn_max_agents": 4}},
+                "appliedDefaults": {}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+    })
+    .await;
+    eventually("lifted", || {
+        harness.core.settings().get("organization_policy").is_none()
+    })
+    .await;
+    harness.stop().await;
+}
+
 /// Signing out lifts the organization's settings policy.
 #[tokio::test]
 async fn signing_out_lifts_the_organizations_settings_policy() {

@@ -76,7 +76,8 @@ impl Account {
         }
         self.uploader.attach(None);
         self.show_install(None);
-        // The organization's settings policy goes with the account.
+        // The organization's settings policy goes with the account; a lift
+        // that fails here is tried again on each supervision tick.
         self.apply_workspace_settings();
         // Messaging's push channel follows the account.
         if let Some(core) = self.core() {
