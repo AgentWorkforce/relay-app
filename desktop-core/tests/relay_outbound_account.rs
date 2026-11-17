@@ -269,12 +269,14 @@ async fn a_status_read_that_started_before_a_sharing_change_keeps_the_new_mode()
         *probe.reads.lock().unwrap() > reads_before
     })
     .await;
-    // A second change lands while that read is still held.
+    // A second change lands while that read is still held. The setup route
+    // carries no replay confirmation, so it cannot switch to All, which
+    // re-sends the history; New replays nothing.
     let changed = h
-        .call(IN_CLAUDE, "POST", "/setup/sharing", json!({"mode": "all"}))
+        .call(IN_CLAUDE, "POST", "/setup/sharing", json!({"mode": "new"}))
         .await
         .unwrap();
-    assert_eq!(changed, json!({"sharing_mode": "all"}));
+    assert_eq!(changed, json!({"sharing_mode": "new"}));
     let reads_held = *probe.reads.lock().unwrap();
     release.send(true).unwrap();
     eventually("the held uploader read answered", || {
@@ -293,7 +295,7 @@ async fn a_status_read_that_started_before_a_sharing_change_keeps_the_new_mode()
     .await;
     let status = status_promptly(&h).await;
     release.send(true).unwrap();
-    assert_eq!(status["sharing_mode"], "all", "{status}");
+    assert_eq!(status["sharing_mode"], "new", "{status}");
     // Nor may the stale read wipe the cache to a failed read: the uploader
     // is still the running one the earlier reads reported.
     assert_eq!(status["uploader"]["running"], true, "{status}");
