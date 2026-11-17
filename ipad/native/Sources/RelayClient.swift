@@ -386,9 +386,10 @@ private enum SecureStore {
     @Published var goals: [String: String] = [:]
     /// Hosted session summaries (`GET /sessions/:id/summary`), by session ID.
     @Published var sessionSummaries: [String: SessionSummaryCacheEntry] = [:]
-    private var loadingSessionSummaryIDs: Set<String> = []
+    /// The summary load running for each session; later callers await it.
+    private let sessionSummaryLoads = SessionSummaryLoads()
     /// The content revision the summary list last reported for each session.
-    private var sessionRevisions: [String: String] = [:]
+    @Published private(set) var sessionRevisions: [String: String] = [:]
     /// The canonical stored source the summary list reported for each
     /// session, for `GET /sessions/:id/summary`. A session the list never
     /// returned has none, and its summary section stays hidden.
@@ -1638,15 +1639,17 @@ private enum SecureStore {
     func loadSessionSummary(for agent: RelayAgent, force: Bool = false) async {
         let id = agent.sessionID
         guard !id.isEmpty, canLoadSummaries, let workspaceID = cloudWorkspaceID,
-              let source = sessionSources[id],
-              !loadingSessionSummaryIDs.contains(id) else { return }
+              let source = sessionSources[id] else { return }
         let revision = sessionRevisions[id]
         if !force, sessionSummaries[id]?.isFresh(revision: revision) == true { return }
-        loadingSessionSummaryIDs.insert(id)
-        defer { loadingSessionSummaryIDs.remove(id) }
-        let state = await fetchSessionSummary(id, workspaceID: workspaceID, source: source)
-        guard !Task.isCancelled, cloudWorkspaceID == workspaceID else { return }
-        sessionSummaries[id] = SessionSummaryCacheEntry(state: state, revision: revision, fetchedAt: Date())
+        // A load already running for the session is awaited, not turned
+        // away, and it stores its result even if this caller is cancelled.
+        await sessionSummaryLoads.run(id) { [weak self] in
+            guard let self else { return }
+            let state = await self.fetchSessionSummary(id, workspaceID: workspaceID, source: source)
+            guard self.cloudWorkspaceID == workspaceID else { return }
+            self.sessionSummaries[id] = SessionSummaryCacheEntry(state: state, revision: revision, fetchedAt: Date())
+        }
     }
     private func fetchSessionSummary(_ id: String, workspaceID: String, source: String) async -> SessionSummaryState {
         var kind = SessionSummary.Kind.long
