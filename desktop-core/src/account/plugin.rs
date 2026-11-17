@@ -95,6 +95,12 @@ impl Account {
                     crate::desktop_identity::Identities::new(core).copilot_attestation_verified()
                 })
             }));
+            let cursor = core.clone();
+            installer.set_cursor_attestation_source(Arc::new(move || {
+                cursor.upgrade().is_some_and(|core| {
+                    crate::desktop_identity::Identities::new(core).cursor_attestation_verified()
+                })
+            }));
             installer.set_claude_attestation_source(Arc::new(move || {
                 core.upgrade().is_some_and(|core| {
                     crate::desktop_identity::Identities::new(core).claude_attestation_verified()
@@ -277,6 +283,19 @@ impl AccountPlugin for Plugin {
         uid: u32,
         request: &'a Request,
     ) -> Option<BoxFuture<'a, Result<Value, OutboundError>>> {
+        if let Some(cursor) = crate::cursor_dispatch::which(request) {
+            use crate::cursor_dispatch::Route;
+            let account = self.0.clone();
+            return Some(match cursor {
+                Route::Status => Box::pin(crate::cursor_dispatch::status(account, outbound, uid)),
+                Route::Intent => Box::pin(crate::cursor_dispatch::intent(
+                    account, outbound, pid, uid, request,
+                )),
+                Route::Mcp => Box::pin(crate::cursor_dispatch::route(
+                    account, outbound, pid, uid, request,
+                )),
+            });
+        }
         if request.path == "/copilot/hook" {
             let input: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
             if input["relayEvent"] == "before" {
@@ -317,6 +336,13 @@ impl AccountPlugin for Plugin {
 
     fn site_url(&self) -> String {
         Account::site_url(&self.0).to_string()
+    }
+
+    fn cursor_calls_attested(&self) -> bool {
+        self.0
+            .mcp_config
+            .get()
+            .is_some_and(|installer| installer.cursor_calls_attested())
     }
 
     /// Turning Claude Code cloud sessions on here, beside the text that

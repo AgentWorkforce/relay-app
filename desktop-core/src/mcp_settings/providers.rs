@@ -53,6 +53,10 @@ pub(crate) struct HostedConfig {
     pub headers: BTreeMap<String, String>,
     pub bearer_token_file: Option<PathBuf>,
     pub copilot_stdio: Option<CopilotStdio>,
+    /// Cursor's app-owned `cursor-mcp` helper command, which forwards to
+    /// `endpoint` with `headers` held in Core: none of them is written to
+    /// Cursor's `mcp.json`.
+    pub cursor_stdio: Option<CopilotStdio>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -80,6 +84,11 @@ const OWNER: &str = "agent-relay-desktop";
 
 impl HostedConfig {
     fn entry(&self, provider: Provider) -> Value {
+        if provider == Provider::Cursor {
+            if let Some(stdio) = &self.cursor_stdio {
+                return json!({"command":stdio.command,"args":stdio.args});
+            }
+        }
         if provider == Provider::CopilotHarness {
             if let Some(stdio) = &self.copilot_stdio {
                 return json!({"type":"stdio","command":stdio.command,"args":stdio.args,
@@ -168,7 +177,10 @@ impl ProviderFile {
     fn helper_for<'a>(&'a self, hosted: Option<&'a HostedConfig>) -> Option<&'a Path> {
         self.copilot_helper.as_deref().or_else(|| {
             hosted
-                .and_then(|h| h.copilot_stdio.as_ref())
+                .and_then(|h| match self.provider {
+                    Provider::Cursor => h.cursor_stdio.as_ref(),
+                    _ => h.copilot_stdio.as_ref(),
+                })
                 .map(|s| s.command.as_path())
         })
     }
@@ -228,7 +240,7 @@ impl ProviderFile {
                     .get(self.provider.server_name())
                     .is_some_and(|entry| {
                         let expected = h.entry(self.provider);
-                        if self.provider == Provider::CopilotHarness {
+                        if matches!(self.provider, Provider::CopilotHarness | Provider::Cursor) {
                             copilot::entry_matches(entry, &expected)
                         } else {
                             entry == &expected
@@ -385,6 +397,7 @@ fn managed_for(
 
 fn managed_with_helper(entry: &Value, endpoint: Option<&str>, helper: Option<&Path>) -> bool {
     copilot::managed_stdio(entry, endpoint, helper)
+        || copilot::managed_cursor_stdio(entry, endpoint, helper)
         || recognized::json(entry, endpoint, None)
         || owned_http(entry)
 }

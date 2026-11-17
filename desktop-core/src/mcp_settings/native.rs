@@ -71,6 +71,38 @@ impl Installer {
             .configured
             .then_some(config)
     }
+    /// Cursor's hosted configuration while Cursor is selected and its
+    /// `mcp.json` entry is this build's: what the `cursor-mcp` route
+    /// forwards with. The grant never leaves Core.
+    pub(crate) fn cursor_dispatch_hosted(&self, binding: Option<&Binding>) -> Option<HostedConfig> {
+        if !self
+            .selection()
+            .ok()
+            .flatten()?
+            .iter()
+            .any(|id| id == "cursor")
+        {
+            return None;
+        }
+        let config = self.hosted("cursor", binding)?;
+        let file = self.native_files("cursor").ok()?.into_iter().next()?;
+        file.inspect(Some(&config))
+            .ok()?
+            .configured
+            .then_some(config)
+    }
+
+    /// Whether Cursor's calls reach the hosted MCP through this build's
+    /// `cursor-mcp` helper with the hooks that announce each chat's call in
+    /// place: never on Windows, where Cursor's hooks are unavailable.
+    pub(crate) fn cursor_attested_transport(&self) -> bool {
+        !cfg!(windows)
+            && self
+                .cursor_dispatch_hosted(None)
+                .is_some_and(|config| config.cursor_stdio.is_some())
+            && self.cursor_hooks_ready()
+    }
+
     pub fn with_environment(mut self, env: &impl Fn(&str) -> Option<String>) -> Self {
         self.native = Native::new(&self.home, env);
         self.copilot_native = Default::default();
@@ -255,6 +287,18 @@ impl Installer {
                         self.copilot_development(),
                     ),
                 }
+            }),
+            // Cursor runs Agent Relay's helper rather than holding the grant:
+            // Core forwards its calls and signs each one a chat's hook
+            // announced. Windows keeps the URL entry: Cursor's hooks, which
+            // name the chat, are unavailable there.
+            cursor_stdio: (id == "cursor" && !cfg!(windows)).then(|| providers::CopilotStdio {
+                command: self.cursor_helper(),
+                args: crate::cursor_dispatch::arguments(
+                    pinned,
+                    self.cursor_development(),
+                    self.cursor_session_socket().as_deref(),
+                ),
             }),
         })
     }
@@ -441,36 +485,38 @@ impl Installer {
     fn native_files(&self, id: &str) -> Result<Vec<ProviderFile>, String> {
         let locations = &self.native.locations;
         let file = |kind, path: &PathBuf| ProviderFile::new(kind, path.clone());
-        let files = match id {
-            "cursor" => vec![file(Provider::Cursor, &locations.cursor)],
-            "copilot" => self.copilot_files(),
-            "grok" => vec![file(Provider::Grok, &locations.grok)],
-            "muse" => vec![file(Provider::Muse, &locations.muse)],
-            "openclaw" => vec![file(Provider::OpenClaw, &locations.openclaw)],
-            "hermes" => vec![file(Provider::Hermes, &locations.hermes)],
-            "droid" => vec![file(Provider::Droid, &locations.droid)],
-            "opencode" => self.opencode_files()?,
-            "devin" => {
-                let modern = self
-                    .native
-                    .versions
-                    .devin(&self.native.executables.all())
-                    .unwrap_or_else(|| {
-                        locations.devin.exists() || !locations.devin_legacy.exists()
-                    });
-                let (primary, other) = if modern {
-                    (&locations.devin, &locations.devin_legacy)
-                } else {
-                    (&locations.devin_legacy, &locations.devin)
-                };
-                let mut files = vec![file(Provider::Devin, primary)];
-                if other.exists() {
-                    files.push(file(Provider::Devin, other));
+        let files =
+            match id {
+                "cursor" => vec![file(Provider::Cursor, &locations.cursor)
+                    .with_copilot_helper(self.cursor_helper())],
+                "copilot" => self.copilot_files(),
+                "grok" => vec![file(Provider::Grok, &locations.grok)],
+                "muse" => vec![file(Provider::Muse, &locations.muse)],
+                "openclaw" => vec![file(Provider::OpenClaw, &locations.openclaw)],
+                "hermes" => vec![file(Provider::Hermes, &locations.hermes)],
+                "droid" => vec![file(Provider::Droid, &locations.droid)],
+                "opencode" => self.opencode_files()?,
+                "devin" => {
+                    let modern = self
+                        .native
+                        .versions
+                        .devin(&self.native.executables.all())
+                        .unwrap_or_else(|| {
+                            locations.devin.exists() || !locations.devin_legacy.exists()
+                        });
+                    let (primary, other) = if modern {
+                        (&locations.devin, &locations.devin_legacy)
+                    } else {
+                        (&locations.devin_legacy, &locations.devin)
+                    };
+                    let mut files = vec![file(Provider::Devin, primary)];
+                    if other.exists() {
+                        files.push(file(Provider::Devin, other));
+                    }
+                    files
                 }
-                files
-            }
-            _ => Vec::new(),
-        };
+                _ => Vec::new(),
+            };
         if self.helper.development_scope()
             && files.iter().any(|file| {
                 !file

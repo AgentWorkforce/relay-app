@@ -180,6 +180,26 @@ pub(crate) async fn registered_copilot() -> anyhow::Result<Fixture> {
         .await;
     Ok(f)
 }
+/// The fixture with a Cursor chat registered under `REGISTERED` and Cloud
+/// verifying Cursor proofs.
+pub(crate) async fn registered_cursor() -> anyhow::Result<Fixture> {
+    let f = fixture();
+    let added = f.core.store.update(|store| {
+        store.add(
+            registration(
+                "cursor-chat",
+                Target::new(SessionKind::CursorCli, REGISTERED.to_ascii_lowercase()),
+            ),
+            Secret::new("t4"),
+        )
+    })?;
+    anyhow::ensure!(added, "fixture registration already exists");
+    f.core.rediscover_workspace();
+    anyhow::ensure!(f.core.workspace().is_some(), "fixture workspace missing");
+    f.negotiate(json!({"native_session_identity":1,"cursor_session_attestation":1}))
+        .await;
+    Ok(f)
+}
 pub(crate) fn hook_request(tool: &str, args: Value) -> anyhow::Result<Request> {
     Ok(Request {
         method: "POST".into(),

@@ -1,20 +1,38 @@
 //! App-owned stdio framing. No token, key, proof or HTTP response header
-//! crosses this process; only the final MCP response leaves Core.
+//! crosses this process; only the final MCP response leaves Core. Cursor's
+//! helper (`cursor_dispatch`) shares this framing, its argument parser and
+//! its refusal shape.
 use super::forward::error;
 use crate::mcp_settings::Binding;
 use agent_relay_node::relay::cli::{session_hook_socket, socket_response};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::{BufRead, Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 const FRAME: u64 = 1 << 20;
-type Dispatch = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+pub(crate) type Dispatch = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+
+/// What every native call refusal says, whatever its class.
+const REFUSED: &str =
+    "Agent Relay could not verify or complete this native call. Do not repeat an ambiguous send.";
 
 fn binding(args: &[String]) -> Option<(Binding, bool)> {
+    binding_with(args, false).map(|(binding, dev, _)| (binding, dev))
+}
+
+/// The helper's binding, `--dev`, and, only where `socket` allows it (a site
+/// profile build's Cursor helper), the session socket it names. Any other or
+/// repeated argument refuses the whole command line.
+pub(crate) fn binding_with(
+    args: &[String],
+    socket: bool,
+) -> Option<(Binding, bool, Option<PathBuf>)> {
     let mut site = None;
     let mut workspace = None;
     let mut account = None;
+    let mut session = None;
     let mut dev = false;
     let mut i = 0;
     while i < args.len() {
@@ -31,6 +49,7 @@ fn binding(args: &[String]) -> Option<(Binding, bool)> {
             "--site" => &mut site,
             "--workspace" => &mut workspace,
             "--account" => &mut account,
+            "--socket" if socket => &mut session,
             _ => return None,
         };
         if field.replace(value).is_some() {
@@ -44,7 +63,7 @@ fn binding(args: &[String]) -> Option<(Binding, bool)> {
         account_id: account?,
     };
     binding.endpoint()?;
-    Some((binding, dev))
+    Some((binding, dev, session.map(PathBuf::from)))
 }
 
 fn identifier(request: &Value) -> Option<String> {
@@ -97,9 +116,20 @@ fn work(
 }
 
 fn serve(
+    input: impl BufRead,
+    output: impl Write + Send + 'static,
+    dispatch: Dispatch,
+) -> Result<(), ()> {
+    serve_with(input, output, dispatch, false)
+}
+
+/// Serves MCP frames until the input ends. With `refuse_batches` a JSON-RPC
+/// batch is answered with one error and never dispatched.
+pub(crate) fn serve_with(
     mut input: impl BufRead,
     output: impl Write + Send + 'static,
     dispatch: Dispatch,
+    refuse_batches: bool,
 ) -> Result<(), ()> {
     let output = Arc::new(Mutex::new(output));
     let active = Arc::new(Mutex::new(BTreeSet::new()));
@@ -116,6 +146,17 @@ fn serve(
             )?;
             continue;
         };
+        if refuse_batches && request.is_array() {
+            write(
+                &mut *output.lock().map_err(|_| ())?,
+                &error(
+                    &Value::Null,
+                    -32600,
+                    "Batched MCP requests are not supported.",
+                ),
+            )?;
+            continue;
+        }
         let notification = request.get("id").is_none();
         let id = if notification {
             notifications = notifications.checked_add(1).ok_or(())?;
@@ -158,6 +199,16 @@ fn serve(
 
 /// The core's answer, or a refusal carrying only the core's static class.
 fn reply<E>(id: &Value, answer: Result<(u16, Vec<u8>), E>) -> Value {
+    reply_as(id, answer, &|_| REFUSED.to_owned())
+}
+
+/// [`reply`], with the refusal's message chosen by `message` from the class
+/// alone.
+pub(crate) fn reply_as<E>(
+    id: &Value,
+    answer: Result<(u16, Vec<u8>), E>,
+    message: &dyn Fn(&str) -> String,
+) -> Value {
     let class = match answer {
         Ok((status, bytes)) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(value)
@@ -175,12 +226,9 @@ fn reply<E>(id: &Value, answer: Result<(u16, Vec<u8>), E>) -> Value {
         },
         Err(_) => "core_unreachable".to_owned(),
     };
+    let message = message(super::refusal_class(&class));
     super::classified(
-        error(
-            id,
-            -32000,
-            "Agent Relay could not verify or complete this native call. Do not repeat an ambiguous send.",
-        ),
+        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":message}}),
         &class,
     )
 }

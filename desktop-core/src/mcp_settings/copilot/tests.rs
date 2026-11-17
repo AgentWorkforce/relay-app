@@ -201,6 +201,7 @@ fn hosted(binding: &Binding, credential: &str) -> HostedConfig {
         headers: BTreeMap::from([("Authorization".into(), format!("Bearer {credential}"))]),
         bearer_token_file: None,
         copilot_stdio: None,
+        cursor_stdio: None,
     }
 }
 #[test]

@@ -16,9 +16,9 @@ impl Installer {
             return detail;
         }
         if cfg!(windows) {
-            format!("{detail} Cursor MCP setup is available; local Cursor session messaging hooks are unavailable on Windows.")
+            format!("{detail} Cursor MCP setup is available; local Cursor session messaging hooks and per-chat attested MCP calls are unavailable on Windows.")
         } else if matches!(state, "configured" | "installed") {
-            format!("{detail} Cursor messaging hooks are installed, and each new Cursor chat is told the agent-relay-probe commands to use for its relay identity. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks.")
+            format!("{detail} Cursor messaging hooks are installed, and Cursor reaches Agent Relay's MCP through agent-relay-probe, which attests each call per chat once Agent Relay Cloud supports it. Each new Cursor chat is also told the agent-relay-probe commands for its relay identity. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks.")
         } else if state == "action_required" && selected && !self.cursor_hooks_ready() {
             format!("{detail} Cursor messaging hooks are off or could not be installed. Repair reconnects the hooks and Agent Relay MCP configuration.")
         } else {
@@ -26,7 +26,46 @@ impl Installer {
         }
     }
 
-    fn cursor_config(&self) -> CursorConfig {
+    /// The probe, which Cursor's `mcp.json` entry runs as `cursor-mcp`.
+    pub(crate) fn cursor_helper(&self) -> PathBuf {
+        self.helper.probe().to_path_buf()
+    }
+
+    /// The session socket a site profile build's Cursor helper names.
+    pub(crate) fn cursor_session_socket(&self) -> Option<PathBuf> {
+        self.helper.session_socket().map(Path::to_path_buf)
+    }
+
+    /// Where status reads learn whether Cloud verifies Cursor chat proofs.
+    pub fn set_cursor_attestation_source(&self, verified: super::claude_hook::Verified) {
+        *self
+            .cursor_attestation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verified);
+    }
+
+    /// Cloud verifies Cursor chat proofs for the current account; false
+    /// until the core has said where to ask.
+    pub fn cursor_attestation(&self) -> bool {
+        let verified = self
+            .cursor_attestation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        verified.is_some_and(|verified| verified())
+    }
+
+    /// Cursor's chats call the hosted MCP with a signed per-call proof: the
+    /// helper and the hooks are this build's and Cloud verifies the proofs.
+    pub fn cursor_calls_attested(&self) -> bool {
+        self.cursor_attested_transport() && self.cursor_attestation()
+    }
+
+    pub(crate) fn cursor_development(&self) -> bool {
+        self.helper.development_scope()
+    }
+
+    pub(crate) fn cursor_config(&self) -> CursorConfig {
         CursorConfig::from_env(&|_| None, &self.home).development(self.helper.development_scope())
     }
 
@@ -167,14 +206,7 @@ mod tests {
         let mcp: Value = json5::from_str(&installed).unwrap();
         assert!(installed.contains("keep this comment"));
         assert_eq!(mcp["mcpServers"]["other"]["command"], "other-server");
-        assert_eq!(
-            mcp["mcpServers"][NAME]["url"],
-            "https://agentrelay.com/cloud/api/v1/mcp/shared-sessions"
-        );
-        assert_eq!(
-            mcp["mcpServers"][NAME]["headers"]["Authorization"],
-            "Bearer cursor-fixture-grant"
-        );
+        assert_cursor_entry(&app, &binding, &mcp["mcpServers"][NAME]);
         let report = app.report(Some(&binding), Some("ready".into()));
         let cursor = report
             .tools
@@ -214,6 +246,81 @@ mod tests {
         assert!(hooks.contains("other-hook"));
         assert!(!hooks.contains("cursor-hook"));
         assert!(!hooks.contains("cursor-guide-hook"));
+    }
+
+    const ENDPOINT: &str = "https://agentrelay.com/cloud/api/v1/mcp/shared-sessions";
+
+    /// Cursor's entry runs this build's `cursor-mcp` helper and holds no
+    /// grant; Windows, without Cursor's hooks, keeps the URL entry.
+    fn assert_cursor_entry(app: &Installer, binding: &Binding, entry: &Value) {
+        if cfg!(windows) {
+            assert_eq!(entry["url"], ENDPOINT);
+            assert_eq!(
+                entry["headers"]["Authorization"],
+                "Bearer cursor-fixture-grant"
+            );
+            return;
+        }
+        assert_eq!(
+            entry,
+            &json!({
+                "command": app.cursor_helper(),
+                "args": crate::cursor_dispatch::arguments(binding, false, None),
+            })
+        );
+        assert!(!entry.to_string().contains("cursor-fixture-grant"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_url_entry_migrates_to_the_helper_and_the_helper_is_what_forwards() {
+        let root = tempfile::tempdir().unwrap();
+        let (app, binding) = fixture(root.path());
+        let profile = root.path().join(".cursor");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("mcp.json"),
+            json!({"mcpServers": {
+                NAME: {"url": ENDPOINT, "headers": {"Authorization": "Bearer cursor-fixture-grant"}},
+                "other": {"command": "other-server"},
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        app.select(vec!["cursor".into()], Some(&binding), None)
+            .unwrap();
+        app.set_provider_credentials(
+            &binding,
+            BTreeMap::from([("cursor".into(), "cursor-fixture-grant".into())]),
+        );
+        app.refresh(Some(&binding));
+        let mcp_path = profile.join("mcp.json");
+        let migrated: Value = json5::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert_cursor_entry(&app, &binding, &migrated["mcpServers"][NAME]);
+        assert_eq!(migrated["mcpServers"]["other"]["command"], "other-server");
+        let hosted = app.cursor_dispatch_hosted(Some(&binding)).unwrap();
+        assert_eq!(hosted.endpoint, ENDPOINT);
+        assert!(app.cursor_attested_transport());
+        assert!(
+            !app.cursor_calls_attested(),
+            "Cloud has not said it verifies proofs"
+        );
+        app.set_cursor_attestation_source(std::sync::Arc::new(|| true));
+        assert!(app.cursor_calls_attested());
+
+        // A hand-edited entry is no longer this build's: nothing forwards.
+        fs::write(
+            &mcp_path,
+            json!({"mcpServers": {NAME: {
+                "command": app.cursor_helper(),
+                "args": ["cursor-mcp", "--site", "https://agentrelay.com", "--workspace",
+                    "workspace", "--account", "mallory"],
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        assert!(app.cursor_dispatch_hosted(Some(&binding)).is_none());
+        assert!(!app.cursor_calls_attested());
     }
 
     /// How many of this build's guide entries `event` holds.
@@ -275,14 +382,7 @@ mod tests {
         assert!(app.cursor_hooks_ready());
         assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
         let repaired: Value = json5::from_str(&fs::read_to_string(mcp_path).unwrap()).unwrap();
-        assert_eq!(
-            repaired["mcpServers"][NAME]["url"],
-            "https://agentrelay.com/cloud/api/v1/mcp/shared-sessions"
-        );
-        assert_eq!(
-            repaired["mcpServers"][NAME]["headers"]["Authorization"],
-            "Bearer cursor-fixture-grant"
-        );
+        assert_cursor_entry(&app, &binding, &repaired["mcpServers"][NAME]);
         assert_eq!(repaired["mcpServers"]["other"]["command"], "other-server");
     }
 

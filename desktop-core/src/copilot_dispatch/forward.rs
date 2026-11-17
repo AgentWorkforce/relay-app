@@ -24,7 +24,15 @@ fn in_doubt(phase: &'static str) -> &'static str {
     IN_DOUBT
 }
 
-pub(super) fn error(id: &Value, code: i32, message: &'static str) -> Value {
+/// Which native client the hosted reply goes back to; it names the
+/// connection to repair in a refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Client {
+    Copilot,
+    Cursor,
+}
+
+pub(crate) fn error(id: &Value, code: i32, message: &'static str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
@@ -34,24 +42,44 @@ pub(super) fn post_before(
     body: &Value,
     deadline: Instant,
 ) -> Result<Value, &'static str> {
+    post_for(Client::Copilot, binding, bearer, body, deadline)
+}
+
+/// [`post_before`] for `client`: the same bounded POST, with refusals that
+/// name `client`'s connection.
+pub(crate) fn post_for(
+    client: Client,
+    binding: &Binding,
+    bearer: &str,
+    body: &Value,
+    deadline: Instant,
+) -> Result<Value, &'static str> {
     // The caller captures this deadline before queueing; never rebase it here.
     // Binding validates the selected origin. Loopback HTTP is retained for
     // owned dev sites; remote sites require normal verified HTTPS.
     let endpoint = binding.endpoint().ok_or("hosted_endpoint_unavailable")?;
-    post_endpoint_before(&endpoint, bearer, body, deadline)
+    post_endpoint_before(client, &endpoint, bearer, body, deadline)
 }
 
 fn post_endpoint_before(
+    client: Client,
     endpoint: &str,
     bearer: &str,
     body: &Value,
     deadline: Instant,
 ) -> Result<Value, &'static str> {
-    post_with_resolver(endpoint, bearer, body, deadline, move |host: &str| {
-        resolve_until(host, deadline, |host| {
-            host.to_socket_addrs().map(Iterator::collect)
-        })
-    })
+    post_with_resolver(
+        client,
+        endpoint,
+        bearer,
+        body,
+        deadline,
+        move |host: &str| {
+            resolve_until(host, deadline, |host| {
+                host.to_socket_addrs().map(Iterator::collect)
+            })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -71,10 +99,17 @@ fn post_at(
     body: &Value,
     timeout: Duration,
 ) -> Result<Value, &'static str> {
-    post_endpoint_before(endpoint, bearer, body, Instant::now() + timeout)
+    post_endpoint_before(
+        Client::Copilot,
+        endpoint,
+        bearer,
+        body,
+        Instant::now() + timeout,
+    )
 }
 
 fn post_with_resolver(
+    client: Client,
     endpoint: &str,
     bearer: &str,
     body: &Value,
@@ -128,7 +163,7 @@ fn post_with_resolver(
     eprintln!("[copilot-dispatch] HTTP response: status={status}, json={json}, sse={stream}");
     if !(200..300).contains(&status) {
         // Do not read/echo an upstream error body, even if it contains a proof.
-        return status_error(status, &body["id"]);
+        return status_error(client, status, &body["id"]);
     }
     if body.get("id").is_some() && stream {
         return sse::receive(response.into_reader(), &body["id"], deadline);
@@ -155,10 +190,20 @@ fn post_with_resolver(
     response_value(&bytes, &body["id"])
 }
 
-fn status_error(status: u16, id: &Value) -> Result<Value, &'static str> {
-    let message = match status {
-        401 | 403 => "Agent Relay authentication changed. Repair this Copilot connection.",
-        400 => "Agent Relay rejected this native call. Reconnect Copilot before another call.",
+fn status_error(client: Client, status: u16, id: &Value) -> Result<Value, &'static str> {
+    let message = match (client, status) {
+        (Client::Copilot, 401 | 403) => {
+            "Agent Relay authentication changed. Repair this Copilot connection."
+        }
+        (Client::Copilot, 400) => {
+            "Agent Relay rejected this native call. Reconnect Copilot before another call."
+        }
+        (Client::Cursor, 401 | 403) => {
+            "Agent Relay authentication changed. Repair Cursor in Agent Relay's tool integrations."
+        }
+        (Client::Cursor, 400) => {
+            "Agent Relay rejected this MCP call. Repair Cursor in Agent Relay's tool integrations before another call."
+        }
         _ => return Err(IN_DOUBT),
     };
     Ok(error(id, -32602, message))

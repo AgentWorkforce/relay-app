@@ -143,6 +143,7 @@ struct Undo {
 /// The account, the session and the uploader for one daemon.
 pub struct Account {
     pub(crate) copilot_dispatch: Arc<crate::copilot_dispatch::Registry>,
+    pub(crate) cursor_intents: Arc<crate::cursor_dispatch::Intents>,
     core: OnceLock<Weak<Core>>,
     /// The site this build signs in to: the one it was made for
     /// (`links::built_in_site_url`, `AGENT_RELAY_SITE_URL` at build time).
@@ -242,6 +243,7 @@ impl Account {
     ) -> Account {
         Account {
             copilot_dispatch: Default::default(),
+            cursor_intents: Default::default(),
             core: OnceLock::new(),
             site_url: built_in_site_url().to_string(),
             env_token: env

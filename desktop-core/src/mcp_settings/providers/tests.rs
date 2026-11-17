@@ -4,6 +4,7 @@ fn hosted() -> HostedConfig {
     HostedConfig {
         bearer_token_file: None,
         copilot_stdio: None,
+        cursor_stdio: None,
         endpoint: "https://agentrelay.com/cloud/api/v1/mcp/shared-sessions".into(),
         headers: BTreeMap::from([("Authorization".into(), "Bearer fixture-grant".into())]),
     }
