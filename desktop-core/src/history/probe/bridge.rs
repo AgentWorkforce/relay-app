@@ -700,27 +700,17 @@ fn change_with_cloud(
     // under collector.lock after stopping so newly captured sessions are seen.
     let was_running = collector::running(directory)?;
     let config = read_config(directory)?;
-    let deleted = deleted_uploads(directory)?;
     if !delete
-        && !keys.iter().any(|key| deleted.contains_key(key))
-        && requested.is_none()
-        && !directory.join("sharing-change.json").exists()
-    {
-        let conn = read_db(directory)?;
-        if selection_validation::mutations_unchanged(
-            &conn,
+        && sharing_plan::already_applied(
             directory,
             &config,
+            keys,
             &identities_requested,
+            requested,
             include,
-        )? {
-            if include {
-                emit(json!({"included":keys,"regenerated":false}));
-            } else {
-                emit(json!({"excluded":keys,"regenerated":false}));
-            }
-            return Ok(());
-        }
+        )?
+    {
+        return Ok(());
     }
     selection_validation::preflight_plan(
         directory,
@@ -2924,6 +2914,91 @@ mod tests {
         let config = apply(dir.path(), config, Some(SharingMode::All), &[], true);
         assert_eq!(excluded(&db(dir.path()).unwrap()).unwrap(), HashSet::from([parse_key("claude:old").unwrap()]));
         assert_eq!(mode(&config), SharingMode::All);
+    }
+    #[test]
+    fn reapplying_the_current_mode_keeps_the_generation_and_cursor() {
+        let Some(_home) = crate::history::probe::live::tests::isolated_home(
+            "history::probe::bridge::tests::reapplying_the_current_mode_keeps_the_generation_and_cursor",
+        ) else {
+            return;
+        };
+        let (dir, config) = fixture(SharingMode::New);
+        let conn = db(dir.path()).unwrap();
+        // A session that started after the baseline, uploaded in full.
+        delivery::test_evidence(&conn)
+            .execute(
+                "INSERT INTO sessions(source,session_id,first_prompt,last_activity_ms) VALUES ('codex','later','Ship it',30)",
+                [],
+            )
+            .unwrap();
+        acknowledge_everything(&conn, &config.job_id);
+        let caught_up = delivery::status(&conn, &config.job_id).unwrap();
+        assert!(caught_up.acknowledged_cursor > 0, "the job is caught up");
+        let unchanged = |config_before: &[u8]| {
+            let jobs = delivery::list_jobs(&conn).unwrap();
+            assert_eq!(jobs.len(), 1, "no new delivery job");
+            let now = delivery::status(&conn, &config.job_id).unwrap();
+            assert_eq!(now.state, "active");
+            assert_eq!(now.generation, caught_up.generation);
+            assert_eq!(now.journal_cursor, caught_up.journal_cursor);
+            assert_eq!(now.acknowledged_cursor, caught_up.acknowledged_cursor);
+            assert_eq!(
+                fs::read(dir.path().join("config.json")).unwrap(),
+                config_before
+            );
+            assert!(!dir.path().join("sharing-change.json").exists());
+        };
+        let config_before = fs::read(dir.path().join("config.json")).unwrap();
+        // The person choosing New again.
+        change(dir.path(), Some(SharingMode::New), &[], true).unwrap();
+        unchanged(&config_before);
+        // The operator policy enforcing New while its cached mode is None
+        // re-applies it on every tick: `sharing set --mode new` runs this.
+        change(dir.path(), Some(SharingMode::New), &[], true).unwrap();
+        change(dir.path(), Some(SharingMode::New), &[], true).unwrap();
+        unchanged(&config_before);
+
+        // A real widening restarts in a new generation from the first revision.
+        change(dir.path(), Some(SharingMode::All), &[], true).unwrap();
+        let widened = read_config(dir.path()).unwrap();
+        assert_eq!(mode(&widened), SharingMode::All);
+        assert_ne!(widened.job_id, config.job_id);
+        assert_eq!(
+            delivery::status(&conn, &config.job_id).unwrap().state,
+            "cancelled"
+        );
+        let fresh = delivery::status(&conn, &widened.job_id).unwrap();
+        assert_ne!(fresh.generation, caught_up.generation);
+        assert_eq!(fresh.journal_cursor, 0);
+        assert_eq!(fresh.acknowledged_cursor, 0);
+    }
+    #[test]
+    fn reapplying_all_with_cloud_deleted_sessions_is_not_already_applied() {
+        let (dir, config) = fixture(SharingMode::All);
+        let applied = || {
+            let requested = Some(SharingMode::All);
+            sharing_plan::already_applied(dir.path(), &config, &[], &[], requested, true).unwrap()
+        };
+        assert!(applied(), "nothing waits to be restored");
+        let deleted = HashMap::from([(
+            "codex:gone".to_string(),
+            vec![parse_key("codex:gone").unwrap()],
+        )]);
+        save_json(&dir.path().join("deleted-uploads.json"), &deleted).unwrap();
+        assert!(!applied(), "the restore needs the normal path");
+    }
+    #[test]
+    fn reapplying_the_mode_of_a_cancelled_job_creates_a_new_job() {
+        let (dir, config) = fixture(SharingMode::New);
+        let conn = db(dir.path()).unwrap();
+        delivery::cancel_job(&conn, &config.job_id).unwrap();
+        change(dir.path(), Some(SharingMode::New), &[], true).unwrap();
+        let after = read_config(dir.path()).unwrap();
+        assert_ne!(after.job_id, config.job_id);
+        assert_eq!(
+            delivery::status(&conn, &after.job_id).unwrap().state,
+            "active"
+        );
     }
     #[test]
     fn interrupted_regeneration_replays_without_widening_selection() {
