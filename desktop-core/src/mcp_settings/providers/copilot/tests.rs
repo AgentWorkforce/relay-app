@@ -18,6 +18,84 @@ fn config(helper: PathBuf) -> HostedConfig {
         }),
     }
 }
+
+#[test]
+fn native_timeout_outlasts_the_bridge_without_changing_other_transports() {
+    let hosted = config(PathBuf::from("/synthetic/helper"));
+    let native = hosted.entry(Provider::CopilotHarness);
+    assert_eq!(native["timeout"], 180_000);
+    assert!(
+        native["timeout"].as_u64().unwrap() as u128
+            > crate::copilot_dispatch::LOCAL_RESPONSE_BUDGET.as_millis()
+    );
+    assert!(hosted.entry(Provider::Copilot).get("timeout").is_none());
+    let mut http = hosted;
+    http.copilot_stdio = None;
+    assert!(http
+        .entry(Provider::CopilotHarness)
+        .get("timeout")
+        .is_none());
+}
+
+#[test]
+fn legacy_owned_stdio_migrates_timeout_idempotently_and_rolls_back_exactly() {
+    let home = tempfile::tempdir().unwrap();
+    let helper = home.path().join("managed-helper");
+    let hosted = config(helper.clone());
+    let file = ProviderFile::new(Provider::CopilotHarness, home.path().join("config.json"))
+        .with_copilot_helper(helper);
+    let mut legacy = hosted.entry(Provider::CopilotHarness);
+    legacy.as_object_mut().unwrap().remove("timeout");
+    let original = json!({"mcpServers":{"agentrelay":legacy,
+        "other":{"command":"other","timeout":12}},"userSetting":true})
+    .to_string();
+    fs::write(&file.path, &original).unwrap();
+    private_fs::set_mode(&file.path, 0o600).unwrap();
+    let inspection = file.inspect(Some(&hosted)).unwrap();
+    assert!(inspection.present && !inspection.configured);
+    let backup = file.copilot_backup(&hosted).unwrap();
+    file.install(&hosted).unwrap();
+    assert!(file.inspect(Some(&hosted)).unwrap().configured);
+    let installed = fs::read_to_string(&file.path).unwrap();
+    let root: Value = serde_json::from_str(&installed).unwrap();
+    assert_eq!(root["mcpServers"]["agentrelay"]["timeout"], 180_000);
+    assert_eq!(
+        root["mcpServers"]["other"],
+        json!({"command":"other","timeout":12})
+    );
+    assert_eq!(root["userSetting"], true);
+    assert!(private_fs::private_to_owner(
+        &fs::metadata(&file.path).unwrap(),
+        0o077
+    ));
+    file.install(&hosted).unwrap();
+    assert_eq!(fs::read_to_string(&file.path).unwrap(), installed);
+    backup.restore(&hosted).unwrap();
+    assert_eq!(fs::read_to_string(&file.path).unwrap(), original);
+}
+
+#[test]
+fn timeout_is_part_of_exact_entry_verification_not_an_ownership_marker() {
+    let home = tempfile::tempdir().unwrap();
+    let helper = home.path().join("managed-helper");
+    let hosted = config(helper.clone());
+    let expected = hosted.entry(Provider::CopilotHarness);
+    for timeout in [json!(60_000), json!("180000"), Value::Null] {
+        let mut changed = expected.clone();
+        changed["timeout"] = timeout;
+        assert!(!entry_matches(&changed, &expected));
+    }
+    let file = ProviderFile::new(Provider::CopilotHarness, home.path().join("config.json"))
+        .with_copilot_helper(helper);
+    let mut foreign = expected;
+    foreign["command"] = json!(home.path().join("foreign-helper"));
+    foreign.as_object_mut().unwrap().remove("timeout");
+    let original = json!({"mcpServers":{"agentrelay":foreign}}).to_string();
+    fs::write(&file.path, &original).unwrap();
+    assert!(file.install(&hosted).is_err());
+    assert_eq!(fs::read_to_string(&file.path).unwrap(), original);
+}
+
 #[test]
 fn hardlinked_stdio_command_preserves_exact_binding_and_refuses_copies() {
     let home = tempfile::tempdir().unwrap();

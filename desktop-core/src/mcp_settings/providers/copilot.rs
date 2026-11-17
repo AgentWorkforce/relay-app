@@ -2,6 +2,10 @@
 //! written to disk, and concurrent foreign configuration is never overwritten.
 use super::*;
 
+// Copilot's per-server timeout is milliseconds. Leave room for the bridge's
+// bounded 140-second socket response, including live signature verification.
+pub(super) const TIMEOUT_MS: u64 = 180_000;
+
 /// Shipped HTTP entries carry this owner header. A service URL or alias alone
 /// is not permission to migrate a person's hand-written VS Code server.
 pub(super) fn managed_legacy(entry: &Value) -> bool {
