@@ -364,11 +364,16 @@ fn renewal_refused_through_setup_child() {
         return;
     }
     let mut core = Running(crate::account::login_start::tests::test_account());
-    let signed_in = core.0.needing_renewal();
+    let root_path = std::env::var("SSL_CERT_FILE").unwrap();
     for args in [
         &["--json"][..],
         &["--json", "--enrollment-key-file", KEY_FILE],
     ] {
+        // Each flow starts signed in and needing renewal, with no reason yet,
+        // so the refusal below is the one this flow's setup wrote.
+        let signed_in = core.0.needing_renewal();
+        assert_eq!(core.0.account.status().phase, None, "{args:?}");
+        assert_eq!(core.0.account.status().error, None, "{args:?}");
         let mut ui = Console::default();
         let failure = setup(&mut core, &mut ui, &options(args)).unwrap_err();
         assert_eq!(failure.code, "tls_roots_refused", "{args:?}");
@@ -377,6 +382,13 @@ fn renewal_refused_through_setup_child() {
             crate::account::login_start::TLS_ROOTS_REFUSED_MESSAGE
         );
         ui.assert_private();
+        assert!(!failure.message.contains(&root_path), "{args:?}");
+        assert!(
+            !serde_json::to_string(&ui.events)
+                .unwrap()
+                .contains(&root_path),
+            "{args:?}"
+        );
         // Still signed in to the same workspace: only the reason is added.
         let status = core.0.account.status();
         assert_eq!(status.phase.as_deref(), Some("tls_roots_refused"));
