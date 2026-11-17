@@ -143,19 +143,24 @@ impl Account {
     /// defaults its settings by it (`Core::apply_settings_policy`). Nothing is
     /// handed over before the workspace's policy was first read, so a lock the
     /// core keeps is never lifted while offline; a read that found no policy
-    /// lifts it.
+    /// lifts it, and so does signing out: a person who is signed out has no
+    /// organization.
     pub(super) fn apply_workspace_settings(&self) {
         let Some(core) = self.core() else {
             return;
         };
-        let Some(workspace) = self.uploader.target().and_then(|t| t.workspace_id) else {
-            return;
+        let wanted = match self.uploader.target().and_then(|t| t.workspace_id) {
+            Some(workspace) => {
+                let Some(read) = self.operator_policy.workspace_policy_read(&workspace) else {
+                    return;
+                };
+                let policy = crate::workspace_policy::settings::settings_policy(&read);
+                crate::workspace_policy::settings::applies(&policy).then_some(policy)
+            }
+            None if self.env_token.is_none() && self.load_session().is_none() => None,
+            // Signed in with no workspace attached yet: nothing changes.
+            None => return,
         };
-        let Some(read) = self.operator_policy.workspace_policy_read(&workspace) else {
-            return;
-        };
-        let policy = crate::workspace_policy::settings::settings_policy(&read);
-        let wanted = crate::workspace_policy::settings::applies(&policy).then_some(policy);
         let cache = self.operator_policy.workspace_policies();
         if !cache.settings_changed(&wanted) {
             return;
