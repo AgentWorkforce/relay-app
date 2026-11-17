@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Choosing the history sharing mode you already have no longer restarts the upload.** Re-applying the current sharing mode, by you or by your workspace's policy, keeps the upload where it was instead of sending all your local history again from the beginning. Changing the mode, for example from new sessions to all sessions, still starts over so every session it now covers is considered.
 - **macOS: GitHub Copilot desktop connects to Relay.** Provider setup detects the standalone Copilot app, uses its native chat hooks for registration and messages, and shows its existing Copilot logo and history alongside VS Code sessions. On macOS, Linux and Windows, the provider is now named GitHub Copilot.
 - **macOS: Copilot can read Relay tool responses.** The native MCP bridge preserves inbox, messaging and other tool results, uses compatible protocol negotiation, and advertises only the notification capabilities its transport supports, so Copilot can finish tool setup and read responses.
 - **Agent Relay says when this computer couldn’t join your workspace.** When Agent Relay Cloud answers but won’t give this computer your workspace (for example, the workspace shares no Agent Relay key with your account), providers now show "Workspace not available" with the reason, and Connection details read "Agent Relay account: Workspace not available". Before, they showed "Can’t verify connection" and asked you to check your internet connection. The same on macOS, Linux and Windows.
