@@ -144,6 +144,9 @@ final class AppModel {
     private(set) var isWorking = false
     /// The upload policy asked for while `uploader.sharing.set` answers.
     private(set) var sharingModeWanted = PendingValue<SharingMode>()
+    /// The policy the person last agreed to switch to after being told it
+    /// re-sends the whole local history.
+    private var sharingReplayConfirmed: SharingMode?
     /// Paused or resumed, as asked for, while the uploader answers.
     private(set) var pausedWanted = PendingValue<Bool>()
     /// The stage action asked for (retry or compact) until its answer.
@@ -2132,13 +2135,29 @@ final class AppModel {
         return false
     }
 
+    /// Whether switching to `mode` re-sends the whole local history, by the
+    /// core's preview. A core that cannot preview (an older one still
+    /// running) gets the usual question and applies the switch as it always
+    /// did; any other failure shows and is nil, so nothing is switched.
+    func sharingReplaysHistory(_ mode: SharingMode) async -> Bool? {
+        do {
+            return try await client.uploaderSharingPreview(SharingParams(mode: mode, replayConfirmed: false)).replaysHistory
+        } catch {
+            if (error as? CoreError)?.kind == ErrorKind.methodNotFound.rawValue { return false }
+            sessionActionError = error.localizedDescription
+            return nil
+        }
+    }
+
     /// The chosen policy shows at once; the uploader is asked until it
     /// reports the policy last chosen, and the latest request's failure
-    /// reverts to the one it reports.
-    func setSharingMode(_ mode: SharingMode) async {
+    /// reverts to the one it reports. `replayConfirmed`: the person was told
+    /// the switch re-sends the whole local history and agreed.
+    func setSharingMode(_ mode: SharingMode, replayConfirmed: Bool = false) async {
         guard mode != sharingMode else { return }
         sessionActionError = nil
         sharingModeWanted.begin(mode)
+        sharingReplayConfirmed = replayConfirmed ? mode : nil
         guard !drivingSharingMode else { return }
         drivingSharingMode = true
         defer { drivingSharingMode = false }
@@ -2147,7 +2166,7 @@ final class AppModel {
         while let wanted = sharingModeWanted.wanted {
             let token = sharingModeWanted.token
             let failure = await perform("Updating upload selection…") {
-                try await client.uploaderSharingSet(SharingParams(mode: wanted))
+                try await client.uploaderSharingSet(SharingParams(mode: wanted, replayConfirmed: sharingReplayConfirmed == wanted))
                 selectionRevision += 1
             }
             guard revision == connectionRevision else { return }

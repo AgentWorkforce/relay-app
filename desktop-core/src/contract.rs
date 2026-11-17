@@ -73,6 +73,9 @@ methods! {
     UploaderCompact = "uploader.compact", NoParams => JournalCompacted;
     UploaderDisconnect = "uploader.disconnect", NoParams => UploaderDisconnected;
     UploaderSharingSet = "uploader.sharing.set", SharingParams => SharingChanged;
+    // What `uploader.sharing.set` would do, changing nothing: refused as it
+    // would be, else whether the switch re-sends the whole local history.
+    UploaderSharingPreview = "uploader.sharing.preview", SharingParams => SharingChanged;
     UploaderSessionsList = "uploader.sessions.list", LimitParams => UploadSessions;
     UploaderSessionsFacets = "uploader.sessions.facets", SessionFacetParams => SessionFacetsPage;
     UploaderSessionsQuery = "uploader.sessions.query", SessionQueryParams => SessionQueryPage;

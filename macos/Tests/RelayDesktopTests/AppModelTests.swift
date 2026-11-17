@@ -3619,9 +3619,38 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(core.lastParams("uploader.sessions.include")?["session_keys"] as? [String], ["claude:b"])
         await model.setPaused(true)
         XCTAssertEqual(core.callCount("uploader.pause"), 1)
-        await model.setSharingMode(.all)
+        core.on("uploader.sharing.preview") { params in
+            ["sharing_mode": params["mode"] ?? "new", "replays_history": (params["mode"] as? String) == "all"]
+        }
+        let replays = await model.sharingReplaysHistory(.all)
+        XCTAssertEqual(replays, true)
+        XCTAssertEqual(core.callCount("uploader.sharing.set"), 0, "A preview changes nothing")
+        await model.setSharingMode(.all, replayConfirmed: replays == true)
         XCTAssertEqual(core.lastParams("uploader.sharing.set")?["mode"] as? String, "all")
+        XCTAssertEqual(core.lastParams("uploader.sharing.set")?["replay_confirmed"] as? Bool, true)
         model.shutdown()
+    }
+
+    func testAFailedSharingPreviewShowsAndOnlyAnOlderCoreGetsTheUsualQuestion() async {
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        _ = await eventually { model.sessions.count == 2 }
+        // A preview that fails shows why and asks nothing.
+        core.on("uploader.sharing.preview") { _ in
+            throw FakeCore.Failure(kind: "internal", message: "The uploader could not answer.")
+        }
+        let failed = await model.sharingReplaysHistory(.all)
+        XCTAssertNil(failed)
+        XCTAssertEqual(model.sessionActionError, "The uploader could not answer.")
+        // A core without the preview gets the usual question.
+        core.on("uploader.sharing.preview") { _ in
+            throw FakeCore.Failure(kind: "method_not_found", message: "No method uploader.sharing.preview.")
+        }
+        let older = await model.sharingReplaysHistory(.all)
+        XCTAssertEqual(older, false)
+        XCTAssertEqual(core.callCount("uploader.sharing.set"), 0, "A preview changes nothing")
     }
 
     func testNameConflictCanBeRetriedWithAnExplicitName() async {

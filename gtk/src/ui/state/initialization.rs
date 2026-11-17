@@ -53,6 +53,8 @@ impl State {
             upload_action_error: None,
             unsent_upload_action: None,
             sharing_mode_wanted: PendingValue::default(),
+            sharing_replay_confirmed: None,
+            sharing_previewing: false,
             paused_wanted: PendingValue::default(),
             pending_upload_action: None,
             upload_details_open: false,

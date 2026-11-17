@@ -22,6 +22,9 @@ struct GlobalSessionSharingSettings: View {
 
     @Environment(AppModel.self) private var model
     @State private var pendingMode: SharingMode?
+    /// Whether the core says the switch to `pendingMode` re-sends the whole
+    /// local history; set before `pendingMode` so the sheet asks about it.
+    @State private var pendingReplays = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) { sections }
@@ -31,11 +34,13 @@ struct GlobalSessionSharingSettings: View {
         .sheet(item: $pendingMode) { mode in
             SharingConfirmationSheet(
                 mode: mode,
+                replaysHistory: pendingReplays,
                 onCancel: { pendingMode = nil },
                 onConfirm: { mode in
+                    let replays = pendingReplays
                     pendingMode = nil
                     Task {
-                        await model.setSharingMode(mode)
+                        await model.setSharingMode(mode, replayConfirmed: replays)
                     }
                 }
             )
@@ -60,7 +65,12 @@ struct GlobalSessionSharingSettings: View {
                 isPending: model.isChangingSharingMode && model.sharingMode == mode
             ) {
                 guard mode != model.sharingMode else { return }
-                pendingMode = mode
+                Task {
+                    guard let replays = await model.sharingReplaysHistory(mode),
+                          mode != model.sharingMode else { return }
+                    pendingReplays = replays
+                    pendingMode = mode
+                }
             }
             .disabled(lock != nil)
         }

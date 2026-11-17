@@ -121,6 +121,39 @@ async fn upload_preview(
     Ok(result)
 }
 
+/// `uploader.sharing.set`, recorded, and `uploader.sharing.preview`, which
+/// changes nothing and so records nothing.
+async fn sharing_call(
+    core: &Arc<Core>,
+    account: &Arc<Account>,
+    method: &str,
+    raw: Value,
+) -> Result<Value, RpcError> {
+    let uploader = account.uploader.clone();
+    if method == crate::contract::method::UploaderSharingPreview::NAME {
+        return answer::<crate::contract::method::UploaderSharingPreview, _>(
+            raw,
+            |request| async move {
+                uploader
+                    .sharing_preview(request.mode)
+                    .and_then(read_answer::<SharingChanged>)
+            },
+        )
+        .await;
+    }
+    answer::<crate::contract::method::UploaderSharingSet, _>(raw, |request| async move {
+        tracked::<SharingChanged>(
+            core,
+            account,
+            TelemetryEvent::new(TelemetryOperation::SharingMode, TelemetryOutcome::Succeeded)
+                .mode(request.mode),
+            uploader.sharing_set(request.mode, request.replay_confirmed),
+        )
+        .await
+    })
+    .await
+}
+
 /// Answers an account or uploader method, for [`Account`]'s plugin.
 pub(crate) async fn account_call(
     core: &Arc<Core>,
@@ -222,20 +255,9 @@ pub(crate) async fn account_call(
             })
             .await
         }
-        crate::contract::method::UploaderSharingSet::NAME => {
-            answer::<crate::contract::method::UploaderSharingSet, _>(raw, |request| {
-                tracked::<SharingChanged>(
-                    core,
-                    account,
-                    TelemetryEvent::new(
-                        TelemetryOperation::SharingMode,
-                        TelemetryOutcome::Succeeded,
-                    )
-                    .mode(request.mode),
-                    uploader.sharing_set(request.mode),
-                )
-            })
-            .await
+        crate::contract::method::UploaderSharingSet::NAME
+        | crate::contract::method::UploaderSharingPreview::NAME => {
+            sharing_call(core, account, method, raw).await
         }
         crate::contract::method::UploaderSessionsList::NAME => {
             answer::<crate::contract::method::UploaderSessionsList, _>(raw, |request| async move {
