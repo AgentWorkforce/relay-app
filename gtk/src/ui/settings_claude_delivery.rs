@@ -4,7 +4,7 @@ use super::settings_organization::organization_note_widget;
 use super::state::{Page, Pane};
 use super::widgets::{self, button, hbox, notice, text, vbox, LabelStyle, Tone};
 use crate::models::ClaudeDeliveryStatusOptimistic;
-use crate::models::{APPROVALS_TITLE, ORGANIZATION_HELD};
+use crate::models::{approvals, Approvals};
 use agent_relay_node::relay::contract::claude_delivery::{
     ClaudeDeliverySession, ClaudeDeliveryStatus, ClaudeHeldDelivery, ClaudeHeldParams,
     ClaudeRestrictionParams, ClaudeSender, ClaudeSenderDeliveryParams, ClaudeSessionDeliveryParams,
@@ -27,14 +27,12 @@ impl App {
         // The organization holds messages from senders who are not its
         // admins, in every harness: each is approved once, never allowed for
         // good.
-        let organization_hold = status
-            .as_ref()
-            .is_some_and(|status| status.organization_hold);
-        let disclosure = gtk::Expander::new(Some(if organization_hold {
-            APPROVALS_TITLE
-        } else {
-            "Claude Code message approvals"
-        }));
+        let approvals = approvals(
+            status
+                .as_ref()
+                .is_some_and(|status| status.organization_hold),
+        );
+        let disclosure = gtk::Expander::new(Some(approvals.title));
         disclosure.set_expanded(
             self.with_state(|state| state.settings_details_open.contains(APPROVALS_KEY)),
         );
@@ -62,8 +60,8 @@ impl App {
             )
             .wrapped(),
         );
-        if organization_hold {
-            body.append(&organization_note_widget(ORGANIZATION_HELD));
+        if let Some(note) = approvals.note {
+            body.append(&organization_note_widget(note));
         }
         let restricted = status.as_ref().is_some_and(|status| status.restricted);
         let weak = self.downgrade();
@@ -95,7 +93,7 @@ impl App {
         if let Some(status) = status {
             self.claude_approval_sessions(&body, status.sessions);
             self.claude_approval_senders(&body, status.allowed_senders);
-            self.claude_approval_messages(&body, status.held, organization_hold);
+            self.claude_approval_messages(&body, status.held, approvals);
         }
         body.append(&button(
             "Refresh",
@@ -322,7 +320,7 @@ impl App {
         &self,
         body: &gtk::Box,
         messages: Vec<ClaudeHeldDelivery>,
-        organization_hold: bool,
+        approvals: Approvals,
     ) {
         for message in messages {
             let item = vbox(4, &[]);
@@ -356,10 +354,8 @@ impl App {
                     &[],
                     self.on(move |app| app.claude_delivery_allow_and_approve(&id, &sender, &name)),
                 );
-                always.set_sensitive(!organization_hold);
-                if organization_hold {
-                    always.set_tooltip_text(Some(ORGANIZATION_HELD));
-                }
+                always.set_sensitive(approvals.always_allow);
+                always.set_tooltip_text(approvals.note);
                 actions.append(&always);
             }
             let id = message.id.clone();

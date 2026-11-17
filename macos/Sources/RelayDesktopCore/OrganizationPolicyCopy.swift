@@ -24,6 +24,22 @@ public enum OrganizationPolicyCopy {
     /// The empty list.
     public static let repositoriesNone = "None"
 
+    /// How the message approvals section reads, with or without the
+    /// organization's hold (`claude_delivery.status` `organization_hold`).
+    public struct Approvals: Equatable {
+        public let title: String
+        /// The note under its description, while the organization holds.
+        public let note: String?
+        /// Whether "Always allow" can be used.
+        public let alwaysAllow: Bool
+    }
+
+    public static func approvals(organizationHold: Bool) -> Approvals {
+        organizationHold
+            ? Approvals(title: approvalsTitle, note: held, alwaysAllow: false)
+            : Approvals(title: "Claude Code message approvals", note: nil, alwaysAllow: true)
+    }
+
     /// The note under `key`'s row, when the organization decides it.
     public static func note(_ policy: OrganizationPolicyState?, _ key: String) -> String? {
         guard let policy else { return nil }

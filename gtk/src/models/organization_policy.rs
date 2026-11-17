@@ -27,6 +27,33 @@ pub const REPOSITORIES_DETAIL: &str =
 /// The empty list.
 pub const REPOSITORIES_NONE: &str = "None";
 
+/// How the message approvals section reads, with or without the
+/// organization's hold (`claude_delivery.status` `organization_hold`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Approvals {
+    pub title: &'static str,
+    /// The note under its description, while the organization holds.
+    pub note: Option<&'static str>,
+    /// Whether "Always allow" can be used.
+    pub always_allow: bool,
+}
+
+pub fn approvals(organization_hold: bool) -> Approvals {
+    if organization_hold {
+        Approvals {
+            title: APPROVALS_TITLE,
+            note: Some(ORGANIZATION_HELD),
+            always_allow: false,
+        }
+    } else {
+        Approvals {
+            title: "Claude Code message approvals",
+            note: None,
+            always_allow: true,
+        }
+    }
+}
+
 /// The note under `key`'s row, when the organization decides it.
 pub fn organization_note(
     policy: Option<&OrganizationPolicyState>,
@@ -135,10 +162,35 @@ mod tests {
         assert_eq!(ORGANIZATION_MANAGED, "Managed by your organization.");
         assert_eq!(APPROVALS_TITLE, "Message approvals");
         assert_eq!(
+            ORGANIZATION_MISMATCHED,
+            "Your organization turns this on only on computers it enrolls. This computer keeps your own choice."
+        );
+        assert_eq!(
+            ORGANIZATION_HELD,
+            "Your organization holds messages from senders who are not its admins. Approve each message as it arrives."
+        );
+        assert_eq!(REPOSITORIES_TITLE, "Repositories that join the relay");
+        assert_eq!(
+            REPOSITORIES_DETAIL,
+            "Sessions working in these repositories join the relay by themselves."
+        );
+        assert_eq!(
             repositories_line(&["acme/web".into(), "tools/*".into()]),
             "acme/web, tools/*"
         );
         assert_eq!(repositories_line(&[]), "None");
         assert_eq!(repository_line("acme/web"), "Repository: acme/web");
+    }
+
+    #[test]
+    fn approvals_read_as_the_organization_holds() {
+        let held = approvals(true);
+        assert_eq!(held.title, "Message approvals");
+        assert_eq!(held.note, Some(ORGANIZATION_HELD));
+        assert!(!held.always_allow);
+        let open = approvals(false);
+        assert_eq!(open.title, "Claude Code message approvals");
+        assert_eq!(open.note, None);
+        assert!(open.always_allow);
     }
 }
