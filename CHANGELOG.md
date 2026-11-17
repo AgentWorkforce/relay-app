@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Chat proofs work right after Agent Relay starts.** The desktop now sends its chat attestation key with its first identity sync after launch. Before, that first sync dropped the key Agent Relay Cloud held, so for about a minute after a start Cursor, Claude and Copilot chat proofs failed with "could not verify this Cursor chat's attestation" (or the Claude or Copilot equivalent). The same on macOS, Linux and Windows.
 - **macOS: Renamed Copilot chats reply with their current identity.** Native Relay tools sync the renamed identity before sending, so replies stay in the conversation that received the message. Calls waiting for approval are refused if the chat is renamed before dispatch.
 - **macOS: Copilot waits for Relay's native verification to finish.** Managed standalone Copilot connections allow three minutes for MCP requests, preventing the client's default one-minute timeout from interrupting verified tool setup and calls.
 - **macOS: GitHub Copilot desktop connects to Relay.** Provider setup detects the standalone Copilot app, uses its native chat hooks for registration and messages, and shows its existing Copilot logo and history alongside VS Code sessions. On macOS, Linux and Windows, the provider is now named GitHub Copilot.
