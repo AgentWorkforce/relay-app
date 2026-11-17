@@ -101,6 +101,7 @@ mod enrollment_key;
 mod login_failure;
 mod login_start;
 mod session_refresh;
+pub(crate) use login_start::{TLS_ROOTS_REFUSED, TLS_ROOTS_REFUSED_MESSAGE};
 
 /// The kept session for a site.
 enum Kept {
@@ -683,6 +684,8 @@ impl Account {
                 ..AccountStatus::default()
             }
         });
+        // Before any flow, the default and a reused login included.
+        self.refuse_certificate_overrides(attempt)?;
         // Default setup reuses an eligible login before opening Google. An
         // explicit browser request (Use another account) chooses an account.
         let reusable = if request.flow == Some(Flow::Device) {
