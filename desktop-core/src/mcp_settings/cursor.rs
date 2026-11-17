@@ -18,7 +18,7 @@ impl Installer {
         if cfg!(windows) {
             format!("{detail} Cursor MCP setup is available; local Cursor session messaging hooks are unavailable on Windows.")
         } else if matches!(state, "configured" | "installed") {
-            format!("{detail} Cursor messaging hooks are installed, and each new Cursor chat is told the agent-relay-probe commands to use for its relay identity. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks.")
+            format!("{detail} Cursor messaging hooks are installed, and each new Cursor chat is told the agent-relay-probe commands to use for its relay identity. Reload Cursor or start a new chat, and approve the MCP connection if Cursor asks. {}", crate::cursor_guide::LOCAL_ONLY_NOTE)
         } else if state == "action_required" && selected && !self.cursor_hooks_ready() {
             format!("{detail} Cursor messaging hooks are off or could not be installed. Repair reconnects the hooks and Agent Relay MCP configuration.")
         } else {
@@ -39,7 +39,9 @@ impl Installer {
         self.helper
             .cursor_guide_hook()
             .and_then(|(command, socket)| GuideHooks::new(&self.cursor_config(), command, socket))
-            .ok_or_else(|| "Agent Relay's command-line helper path cannot be written into Cursor hooks.".into())
+            .ok_or_else(|| {
+                "Agent Relay's command-line helper path cannot be written into Cursor hooks.".into()
+            })
     }
 
     /// The core's messaging hooks for this build are on.
@@ -186,6 +188,7 @@ mod tests {
         if cfg!(windows) {
             assert!(cursor.detail.contains("unavailable on Windows"));
         } else {
+            assert!(cursor.detail.contains(crate::cursor_guide::LOCAL_ONLY_NOTE));
             let hooks: Value =
                 serde_json::from_str(&fs::read_to_string(profile.join("hooks.json")).unwrap())
                     .unwrap();
@@ -221,14 +224,20 @@ mod tests {
         hooks["hooks"][event].as_array().map_or(0, |entries| {
             entries
                 .iter()
-                .filter(|hook| hook["command"].as_str().is_some_and(|s| s.contains(" cursor-guide-hook")))
+                .filter(|hook| {
+                    hook["command"]
+                        .as_str()
+                        .is_some_and(|s| s.contains(" cursor-guide-hook"))
+                })
                 .count()
         })
     }
 
     fn hooks_file(root: &Path) -> Value {
-        serde_json::from_str(&fs::read_to_string(root.join(".cursor/hooks.json")).unwrap_or_default())
-            .unwrap_or_default()
+        serde_json::from_str(
+            &fs::read_to_string(root.join(".cursor/hooks.json")).unwrap_or_default(),
+        )
+        .unwrap_or_default()
     }
 
     #[cfg(not(windows))]
@@ -244,9 +253,13 @@ mod tests {
         );
         app.refresh(Some(&binding));
         let guide = &crate::cursor_guide::EVENTS;
-        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
+        assert!(guide
+            .iter()
+            .all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
         app.set_cursor_hooks(false).unwrap();
-        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 0));
+        assert!(guide
+            .iter()
+            .all(|event| guide_hooks(&hooks_file(root.path()), event) == 0));
         app.select(vec!["cursor".into()], Some(&binding), None)
             .unwrap();
         app.refresh(Some(&binding));
@@ -254,7 +267,9 @@ mod tests {
             !app.cursor_hooks_ready(),
             "maintenance and repeated choices keep an explicit Off"
         );
-        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 0));
+        assert!(guide
+            .iter()
+            .all(|event| guide_hooks(&hooks_file(root.path()), event) == 0));
         assert_ne!(
             app.report(Some(&binding), None)
                 .tools
@@ -273,7 +288,9 @@ mod tests {
         app.manage("cursor", "repair", Some(&binding), None)
             .unwrap();
         assert!(app.cursor_hooks_ready());
-        assert!(guide.iter().all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
+        assert!(guide
+            .iter()
+            .all(|event| guide_hooks(&hooks_file(root.path()), event) == 1));
         let repaired: Value = json5::from_str(&fs::read_to_string(mcp_path).unwrap()).unwrap();
         assert_eq!(
             repaired["mcpServers"][NAME]["url"],

@@ -38,6 +38,13 @@ pub const IDENTITY_TOOLS: [&str; 7] = [
     "set_relay_agent_card",
 ];
 
+/// Which Cursor chats can use Agent Relay. Cursor runs Cloud agents,
+/// Projects and Remote Control (My Machines) chats in its cloud, where it
+/// reads neither file, so only a local agent registers. The Mac's
+/// `CursorHooks.localOnlyNote` and GTK's `CURSOR_HOOKS_LOCAL_ONLY_NOTE` say
+/// the same for their platform.
+pub const LOCAL_ONLY_NOTE: &str = "Only a local Cursor agent (This Mac or This PC) can use Agent Relay. Cloud agents, Projects and Remote Control (My Machines) chats cannot, because Cursor does not load ~/.cursor/hooks.json or ~/.cursor/mcp.json for them. Pick This Mac or This PC in the selector under the chat box, or make it the default in Cursor Settings > Agents > Conversation > Default Environment.";
+
 /// Where the commands the hook names run: the probe and this build's
 /// session socket, when it could be found.
 pub struct Commands {
@@ -60,10 +67,13 @@ impl Commands {
 
     /// The sessionStart context.
     pub fn guidance(&self) -> String {
-        let head = "Agent Relay: this Cursor chat has no relay identity through the Agent Relay \
-                    MCP server, so its relay identity tools (join_relay, send_relay_message, \
-                    post_relay_channel, check_relay_inbox and the like) do not work here. Relay \
-                    messages for this chat arrive in the chat through Agent Relay's Cursor hooks.";
+        let head = format!(
+            "Agent Relay: this Cursor chat has no relay identity through the Agent Relay MCP \
+             server, so its relay identity tools (join_relay, send_relay_message, \
+             post_relay_channel, check_relay_inbox and the like) do not work here. Relay \
+             messages for this chat arrive in the chat through Agent Relay's Cursor hooks. \
+             {LOCAL_ONLY_NOTE}"
+        );
         let Some(socket) = self.socket.as_deref() else {
             return format!(
                 "{head} Agent Relay is not running, so this chat's relay session socket could \
@@ -238,6 +248,7 @@ mod tests {
         }
         assert!(context.contains("no relay identity through the Agent Relay MCP server"));
         assert!(context.contains("arrive in the chat through Agent Relay's Cursor hooks"));
+        assert!(context.contains(LOCAL_ONLY_NOTE));
     }
 
     #[test]
@@ -249,6 +260,7 @@ mod tests {
         );
         let context = output["additional_context"].as_str().unwrap();
         assert!(context.contains("Agent Relay is not running"));
+        assert!(context.contains(LOCAL_ONLY_NOTE));
         assert!(!context.contains("--socket"));
     }
 
