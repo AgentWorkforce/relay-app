@@ -175,10 +175,14 @@ A spawned Grok leader is a process of its own (`grok agent leader
 process has been `running` and its work `idle` (not `unknown`) for 24 hours,
 with no turn running, nothing owed as a final answer, and an empty Relaycast
 queue, the core ends the leader and removes the agent (`agents.end`'s path).
-A queue that cannot be read keeps the leader. A leader the person has taken
-over is left alone. The idle clock lives in the core's ledger, so a core
-restart starts it over. Claude and Codex keep their places while idle: a Codex
-thread no app-server has loaded stays paused, not ended.
+A queue that cannot be read keeps the leader. A turn that starts and finishes
+between looks restarts the 24 hours. Before the stop, with the delivery lock
+held, the core reads that turn again and leaves the leader if a turn has
+started, a newer one has finished, or the name now belongs to a different
+agent. A leader the person has taken over is left alone. The idle clock lives
+in the core's ledger, so a core restart starts it over. Claude and Codex keep
+their places while idle: a Codex thread no app-server has loaded stays paused,
+not ended.
 
 ### Where it lives
 
