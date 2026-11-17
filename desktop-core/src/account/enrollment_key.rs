@@ -147,11 +147,16 @@ pub(super) fn renewal_refused() -> RpcError {
 }
 
 /// The phase a failed attempt keeps: the enrollment key's ending, if it was
-/// one.
+/// one, or a refused certificate-file override.
 pub(super) fn ended_phase(state: &str) -> Option<String> {
-    [REJECTED, UNSUPPORTED, BUSY]
-        .contains(&state)
-        .then(|| state.to_string())
+    [
+        REJECTED,
+        UNSUPPORTED,
+        BUSY,
+        super::login_start::TLS_ROOTS_REFUSED,
+    ]
+    .contains(&state)
+    .then(|| state.to_string())
 }
 
 fn ended(state: &'static str) -> LoginError {

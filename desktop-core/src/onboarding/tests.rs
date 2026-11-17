@@ -333,6 +333,60 @@ fn denied_approval_and_backend_errors_have_static_safe_reasons() {
     ui.assert_private();
 }
 #[test]
+fn a_refused_certificate_override_says_how_to_fix_it() {
+    let refused = || json!({"state":"error","phase":"tls_roots_refused","error":"SECRET_ACCESS_TOKEN PRIVATE_TRANSCRIPT_PATH"});
+    for args in [
+        &["--json"][..],
+        &["--json", "--enrollment-key-file", KEY_FILE],
+    ] {
+        let mut core = Fake {
+            account: json!({"state":"signed_out"}),
+            statuses: VecDeque::from([json!({"state":"signed_out"}), refused()]),
+            failed: Some("account.sign_in"),
+            ..Fake::default()
+        };
+        let mut ui = Console::default();
+        let failure = setup(&mut core, &mut ui, &options(args)).unwrap_err();
+        assert_eq!(failure.code, "tls_roots_refused", "{args:?}");
+        assert_eq!(failure.message, crate::account::TLS_ROOTS_REFUSED_MESSAGE);
+        assert!(failure.message.contains("SSL_CERT_FILE"));
+        assert!(!failure.message.contains("SECRET"));
+        ui.assert_private();
+    }
+    // Any other failed sign-in stays a failed step: no RPC text is echoed.
+    let mut core = Fake {
+        account: json!({"state":"signed_out"}),
+        statuses: VecDeque::from([
+            json!({"state":"signed_out"}),
+            json!({"state":"error","error":"SECRET_ACCESS_TOKEN"}),
+        ]),
+        failed: Some("account.sign_in"),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    assert_eq!(
+        setup(&mut core, &mut ui, &options(&["--json"]))
+            .unwrap_err()
+            .code,
+        "core_request_failed"
+    );
+    ui.assert_private();
+    // A refusal the core reports in status is named as well.
+    let mut core = Fake {
+        account: json!({"state":"signed_out"}),
+        sign_in: refused(),
+        ..Fake::default()
+    };
+    let mut ui = Console::default();
+    assert_eq!(
+        setup(&mut core, &mut ui, &options(&["--json", "--wait"]))
+            .unwrap_err()
+            .code,
+        "tls_roots_refused"
+    );
+    ui.assert_private();
+}
+#[test]
 fn schedule_acknowledgement_is_never_implied_by_automation() {
     let mut core = Fake {
         account: json!({"state":"signed_out"}),

@@ -114,14 +114,13 @@ fn with_key(
     file: &Path,
     acknowledge: bool,
 ) -> Result<Value, Failure> {
-    let started = call(
-        core,
+    let started = core.call(
         "account.sign_in",
         json!({"flow":"enrollment_key", "enrollment_key_file":file, "workspace":options.workspace,
                "sharing":"selected", "acknowledge_uninspected_schedules":acknowledge}),
     );
     stdin_copy::remove(file);
-    started
+    started.map_err(|()| sign_in_failure(core))
 }
 
 /// Says so when setup leaves a given key alone because this computer is
