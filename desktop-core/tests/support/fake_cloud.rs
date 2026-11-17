@@ -95,6 +95,9 @@ pub struct State {
     pub self_tokens_minted: u32,
     /// Sent as `Retry-After` with any 429 answer; `0` while unset.
     pub retry_after: Option<String>,
+    /// The status every self-token `DELETE` answers while set, the token
+    /// left as it is.
+    pub delete_status: Option<u16>,
 }
 
 /// An answer that does not arrive whole.
@@ -151,6 +154,7 @@ impl Default for State {
             self_tokens: HashMap::new(),
             self_tokens_minted: 0,
             retry_after: None,
+            delete_status: None,
         }
     }
 }
@@ -589,9 +593,12 @@ fn route(
             if p.starts_with(&format!("/workspaces/{WORKSPACE}/relay-node/self-tokens/")) =>
         {
             let id = p.rsplit('/').next().unwrap_or_default();
-            match state.self_tokens.remove(id) {
-                Some(_) => (204, Value::Null),
-                None => (404, json!({"error": {"code": "not_found"}})),
+            match state.delete_status {
+                Some(status) => (status, json!({"error": {"code": "delete_failed"}})),
+                None => match state.self_tokens.remove(id) {
+                    Some(_) => (204, Value::Null),
+                    None => (404, json!({"error": {"code": "not_found"}})),
+                },
             }
         }
         ("PUT", p) if p == format!("/workspaces/{WORKSPACE}/messaging/desktop-identities") => {

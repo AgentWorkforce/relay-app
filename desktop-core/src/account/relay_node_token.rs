@@ -8,6 +8,24 @@
 //! session or limiting the rate is tried again with a backoff (a 429 first
 //! waits its `Retry-After` in place, a few times); a refusal is reported
 //! once, as spawning unavailable with its reason, until the next sign-in.
+//! A keychain that fails is reported once and tried again with the same
+//! backoff: it may be locked, or its daemon restarting.
+//!
+//! Sign-out always takes the token's secret out of the keychain. A token
+//! Control did not confirm gone leaves only its id behind, as a pending
+//! revoke, and the next mint deletes each pending id with its own bearer
+//! before it mints, best effort; an id whose `DELETE` fails again is kept
+//! in the new token's entry. A pending id is never handed to the node.
+//!
+//! Sign-out waits for a mint in flight (`Mint::wait_for_sign_out`), so the
+//! token it mints is kept and revoked with the rest, and a mint that sees a
+//! sign-out begin returns without a word.
+//!
+//! Lock order: `provider_credentials`, `relay_node_mint`, then `refreshing`.
+//! Sign-out takes them in that order; the mint takes `refreshing` (renewing
+//! the session) while it holds `relay_node_mint`; nothing holding
+//! `refreshing` waits for `relay_node_mint` (sign-out's own
+//! `forget_relay_node_token` is handed the guard it already holds).
 //!
 //! The token loaded or minted, or the reason there is none, is what the
 //! node's `relay_node_credential` hook answers (`relay_node_credential`).
@@ -15,7 +33,7 @@
 //! here and another minted once.
 
 use super::relay_node_credential::{
-    bare_reason, gate_only_workspace, node_credential, REFUSED_AGAIN,
+    bare_reason, gate_only_workspace, node_credential, REFUSED_AGAIN, UNAVAILABLE_PREFIX,
 };
 use super::*;
 use crate::cloud_api::self_tokens::{self, MintError};
@@ -33,6 +51,42 @@ pub(super) struct MintProgress {
     retry: Retry,
     refused: Option<(u64, String)>,
     kept: Option<(u64, String)>,
+    /// The keychain failed last time and the person was told.
+    keychain_failing: bool,
+}
+
+/// One mint at a time, with its progress, and sign-out's signal that cuts
+/// a `Retry-After` the mint waits out in place short.
+#[derive(Default)]
+pub(super) struct Mint {
+    progress: tokio::sync::Mutex<MintProgress>,
+    sign_outs: AtomicU64,
+    signing_out: tokio::sync::Notify,
+}
+
+impl Mint {
+    /// For sign-out: cuts a wait in place short, then waits for the mint
+    /// in flight to finish, and holds the mint off until the guard drops.
+    pub(super) async fn wait_for_sign_out(&self) -> tokio::sync::MutexGuard<'_, MintProgress> {
+        self.sign_outs.fetch_add(1, Ordering::SeqCst);
+        self.signing_out.notify_waiters();
+        self.progress.lock().await
+    }
+
+    /// Waits `wait` unless a sign-out begins (or began since `sign_outs`
+    /// was read): whether it waited the whole time.
+    async fn wait_in_place(&self, wait: Duration, sign_outs: u64) -> bool {
+        let notified = self.signing_out.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.sign_outs.load(Ordering::SeqCst) != sign_outs {
+            return false;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => true,
+            _ = notified => false,
+        }
+    }
 }
 
 /// How long a transient failure waits before the next mint: 10 s after the
@@ -63,16 +117,34 @@ impl Account {
     /// Whether a mint is running now. Tests wait for it to settle.
     #[cfg(any(test, feature = "test-site"))]
     pub fn relay_node_mint_running(&self) -> bool {
-        self.relay_node_mint.try_lock().is_err()
+        self.relay_node_mint.progress.try_lock().is_err()
+    }
+
+    /// Lets the next mint run now, its backoff cut short. For tests, which
+    /// would otherwise wait out ten seconds or more.
+    #[cfg(any(test, feature = "test-site"))]
+    pub async fn relay_node_mint_retry_now(&self) {
+        self.relay_node_mint.progress.lock().await.retry.not_before = None;
+    }
+
+    /// The site the account's token is minted on, kept under and revoked
+    /// at: the account's, or with none, the one this build signs in to.
+    pub(super) fn relay_node_site(&self) -> String {
+        self.account()
+            .map(|account| account.site_url)
+            .unwrap_or_else(|| self.site_url.clone())
     }
 
     /// Mints this computer's relay-node token when the account's workspace
     /// is gate-only and the keychain has none for it. Never fails: what
     /// went wrong is reported or tried again later.
     pub async fn ensure_relay_node_token(&self) {
-        let Ok(mut progress) = self.relay_node_mint.try_lock() else {
+        let Ok(mut progress) = self.relay_node_mint.progress.try_lock() else {
             return;
         };
+        // Read before anything awaits: a sign-out that begins from here on,
+        // even while the keychain is read, cuts a wait in place short.
+        let sign_outs = self.relay_node_mint.sign_outs.load(Ordering::SeqCst);
         let Some(core) = self.core() else { return };
         let Some(workspace) = gate_only_workspace(&core) else {
             // Not gate-only (any more): the node has no credential of ours,
@@ -95,7 +167,7 @@ impl Account {
         if let Some((refused, again)) = self.take_relay_node_refusal(epoch) {
             // Control refused the token on the node's bridge: it is no use
             // to anyone, so it goes, and another is minted once.
-            self.discard_relay_node_token(&refused, true).await;
+            self.discard_relay_node_token(&refused).await;
             self.drop_relay_node_credential(Some(&core), false);
             progress.kept = None;
             if again {
@@ -115,39 +187,56 @@ impl Account {
         if progress.retry.not_before.is_some_and(|at| now < at) {
             return;
         }
-        let entry = keychain::entry(&self.site_url, &workspace);
-        match self.keychain(move |k| keychain::load(k, &entry)).await {
-            Ok(Some(kept)) if !kept.expired(agent_relay_node::relay::state::now_ms()) => {
-                progress.kept = settled;
-                let credential = node_credential(&self.site_url, &kept);
-                return self.hold_relay_node_credential(&core, epoch, &workspace, credential);
+        let site = self.relay_node_site();
+        let entry = keychain::entry(&site, &workspace);
+        let pending = match self.keychain(move |k| keychain::load(k, &entry)).await {
+            Ok(held) => {
+                progress.keychain_failing = false;
+                match held.kept {
+                    Some(kept) if !kept.expired(agent_relay_node::relay::state::now_ms()) => {
+                        progress.kept = settled;
+                        let credential = node_credential(&site, &kept);
+                        return self
+                            .hold_relay_node_credential(&core, epoch, &workspace, credential);
+                    }
+                    _ => held.pending_revoke,
+                }
             }
-            Ok(_) => {}
             Err(error) => {
-                return self.refuse_relay_node_token(
-                    &core,
-                    &mut progress,
-                    epoch,
-                    &workspace,
-                    &error,
-                )
+                return self.keychain_failed(&core, &mut progress, epoch, &workspace, &error)
             }
-        }
+        };
         let node_name = agent_relay_node::relay::spawn::node_name(&core.machine_prefix);
-        let Some((site, bearer, minted)) = self
-            .mint_relay_node_token(epoch, &workspace, &node_name)
+        let Some(Minted {
+            site,
+            bearer,
+            answer,
+            pending,
+        }) = self
+            .mint_relay_node_token(epoch, sign_outs, &workspace, &node_name, pending)
             .await
         else {
             return;
         };
-        let token = match minted {
-            Ok(token) => token,
-            Err(error) if error.is_transient() => {
-                let retry = &mut progress.retry;
-                retry.failures = retry.failures.saturating_add(1);
-                let wait = backoff(retry.failures, &error);
-                retry.not_before = Some(tokio::time::Instant::now() + wait);
+        // Signed out, or signing out, while it was minted: nobody keeps it,
+        // and nothing is reported for a sign-in that is over.
+        let signed_out = || {
+            self.epoch.load(Ordering::SeqCst) != epoch
+                || self.relay_node_mint.sign_outs.load(Ordering::SeqCst) != sign_outs
+        };
+        let token = match answer {
+            Ok(token) if signed_out() => {
+                if !self_tokens::delete(&site, &bearer, &workspace, &token.id).await {
+                    let _ = self
+                        .add_relay_node_revokes(&workspace, vec![token.id])
+                        .await;
+                }
                 return;
+            }
+            Ok(token) => token,
+            Err(_) if signed_out() => return,
+            Err(error) if error.is_transient() => {
+                return back_off(&mut progress.retry, &error);
             }
             Err(error) => {
                 let reason = error.unavailable_reason();
@@ -160,11 +249,6 @@ impl Account {
                 );
             }
         };
-        // Signed out while it was minted: nobody keeps it.
-        if self.epoch.load(Ordering::SeqCst) != epoch {
-            self_tokens::delete(&site, &bearer, &workspace, &token.id).await;
-            return;
-        }
         let kept = Kept {
             node_name: if token.node_name.is_empty() {
                 node_name
@@ -175,55 +259,87 @@ impl Account {
             expires_at: token.expires_at,
             token: token.token,
         };
-        let (entry, value) = (keychain::entry(&self.site_url, &workspace), kept.clone());
+        // The ids whose DELETE failed again ride along in the new entry.
+        let held = keychain::Entry {
+            kept: Some(kept.clone()),
+            pending_revoke: pending,
+        };
+        let entry = keychain::entry(&site, &workspace);
         if let Err(error) = self
-            .keychain(move |k| keychain::store(k, &entry, &value))
+            .keychain(move |k| keychain::store(k, &entry, &held))
             .await
         {
             self_tokens::delete(&site, &bearer, &workspace, &kept.id).await;
-            return self.refuse_relay_node_token(&core, &mut progress, epoch, &workspace, &error);
+            if signed_out() {
+                return;
+            }
+            return self.keychain_failed(&core, &mut progress, epoch, &workspace, &error);
         }
-        // Signed out while it was kept: sign-out found nothing to take, so
-        // it goes now, before another sign-in could load it.
-        if self.epoch.load(Ordering::SeqCst) != epoch {
-            self.unkeep_relay_node_token(&workspace, &kept.id).await;
-            self_tokens::delete(&site, &bearer, &workspace, &kept.id).await;
+        // Signed out, or signing out, while it was kept: its secret leaves
+        // the keychain now, and it is deleted with the bearer it was minted
+        // with, before another sign-in could load it.
+        if signed_out() {
+            if let Ok(ids) = self
+                .retire_relay_node_tokens(&workspace, Some(kept.id))
+                .await
+            {
+                self.revoke_relay_node_tokens(&site, &bearer, &workspace, ids)
+                    .await;
+            }
             return;
         }
         progress.retry = Retry::default();
         progress.kept = settled;
+        progress.keychain_failing = false;
         let credential = node_credential(&site, &kept);
         self.hold_relay_node_credential(&core, epoch, &workspace, credential);
     }
 
-    /// Mints `node_name`'s token in `workspace`: a short `Retry-After` is
-    /// waited out in place, a few times, and a session Control refuses is
-    /// renewed once. The site and bearer it went out with, and Control's
-    /// answer; `None` when signed out meanwhile.
+    /// Mints `node_name`'s token in `workspace`: first the `pending`
+    /// revokes left by a sign-out are deleted with the same bearer, best
+    /// effort, then a short `Retry-After` is waited out in place, a few
+    /// times, unless a sign-out begins (or began since `sign_outs` was
+    /// read), and a session Control refuses is renewed once. `None` when
+    /// there is no session, or when signed out meanwhile.
     async fn mint_relay_node_token(
         &self,
         epoch: u64,
+        sign_outs: u64,
         workspace: &str,
         node_name: &str,
-    ) -> Option<(String, Secret, Result<self_tokens::SelfToken, MintError>)> {
+        pending: Vec<String>,
+    ) -> Option<Minted> {
         let (mut site, mut bearer) = self.pinned_credential(None).await?;
+        let pending = self
+            .revoke_relay_node_tokens(&site, &bearer, workspace, pending)
+            .await;
         let (mut attempt, mut renewed) = (1, false);
+        let minted = |site, bearer, answer| {
+            Some(Minted {
+                site,
+                bearer,
+                answer,
+                pending: pending.clone(),
+            })
+        };
         loop {
             match self_tokens::mint(&site, &bearer, workspace, node_name).await {
                 Err(MintError::RateLimited(wait))
                     if attempt < MINT_ATTEMPTS && wait <= LONGEST_WAIT_IN_PLACE =>
                 {
-                    tokio::time::sleep(wait).await;
+                    if !self.relay_node_mint.wait_in_place(wait, sign_outs).await {
+                        return minted(site, bearer, Err(MintError::RateLimited(wait)));
+                    }
                     attempt += 1;
                 }
                 Err(MintError::Unauthorized) if !renewed => {
                     renewed = true;
                     match self.pinned_credential(Some(bearer.clone())).await {
                         Some(credential) => (site, bearer) = credential,
-                        None => return Some((site, bearer, Err(MintError::Unauthorized))),
+                        None => return minted(site, bearer, Err(MintError::Unauthorized)),
                     }
                 }
-                other => return Some((site, bearer, other)),
+                other => return minted(site, bearer, other),
             }
             if self.epoch.load(Ordering::SeqCst) != epoch {
                 return None;
@@ -231,18 +347,108 @@ impl Account {
         }
     }
 
-    /// Takes the token `id` out of `workspace`'s keychain entry, if that
-    /// entry still holds it.
-    async fn unkeep_relay_node_token(&self, workspace: &str, id: &str) {
-        let (entry, id) = (keychain::entry(&self.site_url, workspace), id.to_string());
-        let _ = self
-            .keychain(move |k| match keychain::load(k, &entry)? {
-                Some(kept) if kept.id == id => k.delete(&entry),
-                _ => Ok(()),
-            })
-            .await;
+    /// Takes the live token's secret out of `workspace`'s keychain entry,
+    /// keeping its id as a pending revoke; with `only`, just when the entry
+    /// still holds that token. Should the entry not be written, it is
+    /// removed: the secret never stays behind. The ids left to revoke, or
+    /// the keychain's error when it could not be read.
+    async fn retire_relay_node_tokens(
+        &self,
+        workspace: &str,
+        only: Option<String>,
+    ) -> Result<Vec<String>, String> {
+        let entry = keychain::entry(&self.relay_node_site(), workspace);
+        self.keychain(move |k| {
+            let mut held = keychain::load(k, &entry)?;
+            let live = held.kept.as_ref().map(|kept| kept.id.clone());
+            if only.is_some() && live != only {
+                return Ok(Vec::new());
+            }
+            if held.retire() && keychain::store(k, &entry, &held).is_err() {
+                let _ = k.delete(&entry);
+            }
+            Ok(held.pending_revoke)
+        })
+        .await
     }
 
+    /// Keeps `ids` as pending revokes in `workspace`'s keychain entry, for
+    /// the next mint to delete.
+    async fn add_relay_node_revokes(
+        &self,
+        workspace: &str,
+        ids: Vec<String>,
+    ) -> Result<(), String> {
+        let entry = keychain::entry(&self.relay_node_site(), workspace);
+        self.keychain(move |k| {
+            let mut held = keychain::load(k, &entry)?;
+            for id in ids {
+                if !held.pending_revoke.contains(&id) {
+                    held.pending_revoke.push(id);
+                }
+            }
+            keychain::store(k, &entry, &held)
+        })
+        .await
+    }
+
+    /// Deletes the tokens `ids` in `workspace` at Control with `bearer`,
+    /// best effort, each bounded by its timeout, and drops from the keychain
+    /// entry those Control answers are gone (2xx or 404). The ids still to
+    /// revoke.
+    pub(super) async fn revoke_relay_node_tokens(
+        &self,
+        site: &str,
+        bearer: &Secret,
+        workspace: &str,
+        ids: Vec<String>,
+    ) -> Vec<String> {
+        let (mut gone, mut pending) = (Vec::new(), Vec::new());
+        for id in ids {
+            if self_tokens::delete(site, bearer, workspace, &id).await {
+                gone.push(id);
+            } else {
+                pending.push(id);
+            }
+        }
+        if !gone.is_empty() {
+            let entry = keychain::entry(&self.relay_node_site(), workspace);
+            let _ = self
+                .keychain(move |k| {
+                    let mut held = keychain::load(k, &entry)?;
+                    if held.settle(&gone) {
+                        keychain::store(k, &entry, &held)?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+        pending
+    }
+
+    /// The keychain could not be read or written: spawning is unavailable
+    /// for now, said once while it keeps failing, and tried again after
+    /// the backoff rather than given up on until the next sign-in.
+    fn keychain_failed(
+        &self,
+        core: &Core,
+        progress: &mut MintProgress,
+        epoch: u64,
+        workspace: &str,
+        error: &str,
+    ) {
+        back_off(&mut progress.retry, &MintError::Unreachable);
+        let reason = format!(
+            "{UNAVAILABLE_PREFIX}its relay-node token cannot be kept in the keychain. {error}"
+        );
+        if !std::mem::replace(&mut progress.keychain_failing, true) {
+            core.hub.activity(Level::Warning, reason.clone());
+        }
+        self.hold_relay_node_credential(core, epoch, workspace, Err(bare_reason(&reason)));
+    }
+
+    /// Control will not give this computer a token: said once, and not
+    /// asked again until the next sign-in.
     fn refuse_relay_node_token(
         &self,
         core: &Core,
@@ -252,59 +458,55 @@ impl Account {
         reason: &str,
     ) {
         progress.refused = Some((epoch, workspace.to_string()));
-        let reason = if reason.starts_with("Spawning is unavailable") {
-            reason.to_string()
-        } else {
-            format!(
-                "Spawning is unavailable on this computer: its relay-node token cannot be kept \
-                 in the keychain. {reason}"
-            )
-        };
-        let bare = bare_reason(&reason);
-        core.hub.activity(Level::Warning, reason);
-        self.hold_relay_node_credential(core, epoch, workspace, Err(bare));
+        core.hub.activity(Level::Warning, reason.to_string());
+        self.hold_relay_node_credential(core, epoch, workspace, Err(bare_reason(reason)));
     }
 
     /// Takes this sign-in's relay-node tokens out of the keychain for
-    /// sign-out: each one's workspace and token id, which its `DELETE`
-    /// takes. Only a gate-only workspace, or one whose token this sign-in
-    /// held, is looked for: other installs never wait on the keychain.
-    pub(super) async fn forget_relay_node_token(&self) -> Vec<(String, String)> {
-        if let Ok(mut progress) = self.relay_node_mint.try_lock() {
-            *progress = MintProgress::default();
-        }
+    /// sign-out, with the mint's `progress` sign-out holds: each workspace
+    /// with the token ids its `DELETE`s take, pending revokes from earlier
+    /// sign-outs included. The secret always leaves the keychain; each id
+    /// stays in the entry as a pending revoke until Control answers that
+    /// its token is gone (`revoke_relay_node_tokens`), or the next mint
+    /// deletes it. Only a gate-only workspace, or one whose token this
+    /// sign-in held, is looked for: other installs never wait on the
+    /// keychain.
+    pub(super) async fn forget_relay_node_token(
+        &self,
+        progress: &mut MintProgress,
+    ) -> Vec<(String, Vec<String>)> {
+        *progress = MintProgress::default();
         let core = self.core();
         let mut workspaces = self.take_kept_relay_node_workspaces();
         self.drop_relay_node_credential(core.as_deref(), true);
         workspaces.extend(core.as_deref().and_then(gate_only_workspace));
         let mut forgotten = Vec::new();
         for workspace in workspaces {
-            if let Some(id) = self.discard_relay_node_token(&workspace, false).await {
-                forgotten.push((workspace, id));
+            // A keychain that fails or does not answer holds sign-out up
+            // no longer: that workspace's entry is left as it is.
+            if let Ok(ids) = self.retire_relay_node_tokens(&workspace, None).await {
+                if !ids.is_empty() {
+                    forgotten.push((workspace, ids));
+                }
             }
         }
         forgotten
     }
 
-    /// Takes `workspace`'s relay-node token out of the keychain; answers its
-    /// id. With `revoke`, also deletes it at Control, best effort.
-    async fn discard_relay_node_token(&self, workspace: &str, revoke: bool) -> Option<String> {
-        let entry = keychain::entry(&self.site_url, workspace);
-        let kept = self
-            .keychain(move |k| {
-                let kept = keychain::load(k, &entry);
-                let _ = k.delete(&entry);
-                kept
-            })
-            .await
-            .ok()
-            .flatten()?;
-        if revoke {
-            if let Some((site, bearer)) = self.pinned_credential(None).await {
-                self_tokens::delete(&site, &bearer, workspace, &kept.id).await;
-            }
+    /// Takes `workspace`'s relay-node token out of the keychain and deletes
+    /// it at Control, best effort: with no session, or should Control not
+    /// answer it gone, its id is left for the next mint to delete.
+    async fn discard_relay_node_token(&self, workspace: &str) {
+        let Ok(ids) = self.retire_relay_node_tokens(workspace, None).await else {
+            return;
+        };
+        if ids.is_empty() {
+            return;
         }
-        Some(kept.id)
+        if let Some((site, bearer)) = self.pinned_credential(None).await {
+            self.revoke_relay_node_tokens(&site, &bearer, workspace, ids)
+                .await;
+        }
     }
 
     async fn keychain<T: Send + 'static>(
@@ -316,6 +518,21 @@ impl Account {
             .await
             .unwrap_or_else(|_| Err("The keychain did not answer.".into()))
     }
+}
+
+/// A mint's outcome: the site and bearer it went out with, Control's
+/// answer, and the pending revokes whose `DELETE` failed again.
+struct Minted {
+    site: String,
+    bearer: Secret,
+    answer: Result<self_tokens::SelfToken, MintError>,
+    pending: Vec<String>,
+}
+
+/// Counts a transient failure and sets when the next mint may run.
+fn back_off(retry: &mut Retry, error: &MintError) {
+    retry.failures = retry.failures.saturating_add(1);
+    retry.not_before = Some(tokio::time::Instant::now() + backoff(retry.failures, error));
 }
 
 #[cfg(test)]

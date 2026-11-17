@@ -29,10 +29,16 @@ impl Account {
     /// refreshed then, since another process may be rotating the same pair.
     async fn lock_refresh(&self) -> Option<(tokio::sync::MutexGuard<'_, ()>, SessionRefreshLock)> {
         let one = self.refreshing.lock().await;
+        Some((one, self.lock_refresh_file().await?))
+    }
+
+    /// The cross-process refresh lock alone, for a caller already holding
+    /// `refreshing`, with the store brought up to date with the file.
+    async fn lock_refresh_file(&self) -> Option<SessionRefreshLock> {
         let file = self.core()?.store.lock_session_refresh().await?;
         // A store this process cannot read back could not keep a new pair.
         self.core()?.store.reload().ok()?;
-        Some((one, file))
+        Some(file)
     }
 
     /// Replaces the kept session `expected` (and every copy of its pair)
@@ -59,6 +65,20 @@ impl Account {
         let Some(_locks) = self.lock_refresh().await else {
             return Kept::Unavailable(CloudError::Unreachable);
         };
+        self.kept_session_locked(site, margin).await
+    }
+
+    /// [`Self::kept_session`] for sign-out, which already holds
+    /// `refreshing`: takes only the cross-process lock.
+    pub(super) async fn kept_session_for_sign_out(&self, site: &str) -> Kept {
+        let Some(_file) = self.lock_refresh_file().await else {
+            return Kept::Unavailable(CloudError::Unreachable);
+        };
+        self.kept_session_locked(site, FRESH_MARGIN).await
+    }
+
+    /// `kept_session`'s work, under the refresh locks.
+    async fn kept_session_locked(&self, site: &str, margin: Duration) -> Kept {
         let Some(session) = self.load_session().filter(|s| s.site_url == site) else {
             return Kept::Absent;
         };
