@@ -15,7 +15,7 @@ struct SessionForkSheet<Source: View>: View {
     let close: () -> Void
 
     var body: some View {
-        let availability = SessionFork.availability(for: source, nodes: client.forkNodes)
+        let availability = client.forkAvailability(for: source)
         let machine = source.machine.isEmpty ? "its computer" : source.machine
         let validName = name.range(of: "^[a-z][a-z0-9-]{1,47}$", options: .regularExpression) != nil
         NavigationStack {
