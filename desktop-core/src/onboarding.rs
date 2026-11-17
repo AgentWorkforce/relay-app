@@ -1,6 +1,7 @@
 //! Terminal onboarding for the private, GTK-free desktop core. Authentication
 //! stays in the running core: the wizard receives only public device approval
 //! instructions and drives the same account/provider/settings RPCs as the app.
+use crate::account::{TLS_ROOTS_REFUSED, TLS_ROOTS_REFUSED_MESSAGE};
 use agent_relay_node::relay::{cli, links::built_in_site_url};
 use clap::{Parser, ValueEnum};
 use serde_json::{json, Value};
@@ -222,6 +223,14 @@ impl Failure {
     fn step() -> Self {
         Self { code: "core_request_failed", message: "Agent Relay could not complete this setup step. Check the running core and retry setup." }
     }
+    /// Cloud calls refuse `SSL_CERT_FILE` and `SSL_CERT_DIR`; the core says
+    /// so in the account's phase, and setup in its own words.
+    fn tls_roots_refused() -> Self {
+        Self {
+            code: TLS_ROOTS_REFUSED,
+            message: TLS_ROOTS_REFUSED_MESSAGE,
+        }
+    }
     fn choice() -> Self {
         Self {
             code: "invalid_choice",
@@ -231,6 +240,15 @@ impl Failure {
 }
 fn call(core: &mut impl Backend, method: &'static str, params: Value) -> Result<Value, Failure> {
     core.call(method, params).map_err(|_| Failure::step())
+}
+/// Why `account.sign_in` failed, from the account's status, never from the
+/// RPC's text: a refused certificate-file override says how to fix it,
+/// anything else stays a failed step.
+fn sign_in_failure(core: &mut impl Backend) -> Failure {
+    match core.call("account.status", json!({})) {
+        Ok(account) if account["phase"] == TLS_ROOTS_REFUSED => Failure::tls_roots_refused(),
+        _ => Failure::step(),
+    }
 }
 fn pending(ui: &mut impl Interface, code: &'static str, fields: Value) -> i32 {
     let mut fields = fields;
@@ -280,13 +298,16 @@ fn sign_in(
     options: &Options,
     acknowledge: bool,
 ) -> Result<Value, Failure> {
-    call(
-        core,
+    core.call(
         "account.sign_in",
         json!({"flow":"device", "workspace":options.workspace, "sharing":"selected", "acknowledge_uninspected_schedules":acknowledge}),
     )
+    .map_err(|()| sign_in_failure(core))
 }
 fn terminal_auth_failure(report: &Value) -> Option<Failure> {
+    if report["state"] == "error" && report["phase"] == TLS_ROOTS_REFUSED {
+        return Some(Failure::tls_roots_refused());
+    }
     match report["state"].as_str()? {
         "denied" => Some(Failure { code:"approval_denied", message:"Device approval was denied. Rerun setup when you are ready to approve this server." }),
         "expired" => Some(Failure { code:"approval_expired", message:"Device approval expired. Rerun setup to get a new code." }),
