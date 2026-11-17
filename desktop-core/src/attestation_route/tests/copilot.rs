@@ -1,4 +1,5 @@
 use super::*;
+mod presence;
 
 pub(super) struct NativeFixture;
 impl crate::copilot_dispatch::peer::Verifier for NativeFixture {
@@ -288,12 +289,21 @@ async fn non_relay_tools_get_no_proof_and_oversized_args_or_missing_registration
         }
     })?;
     assert_eq!(
-        f.outbound
-            .handle(IN_REGISTERED, uid, &valid)
+        before_with_budget(&f, &valid, Duration::ZERO)
             .await
             .unwrap_err()
             .code,
         OutboundError::not_registered().code
     );
     Ok(())
+}
+
+async fn before_with_budget(f: &Fixture, request: &Request, budget: Duration) -> Result<Value, OutboundError> {
+    let account = f.core.plugins.account.as_ref().unwrap().clone().as_any()
+        .downcast::<crate::account::Account>().unwrap();
+    crate::copilot_attestation::route_with_presence_budget(
+        &f.outbound, account, IN_REGISTERED,
+        agent_relay_node::relay::peer::current_uid(),
+        serde_json::from_slice(&request.body).unwrap(), budget,
+    ).await
 }

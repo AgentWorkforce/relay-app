@@ -15,6 +15,13 @@ use agent_relay_node::relay::{
     process::ProcessInfo,
     store::{SessionKind, Target},
 };
+mod protocol;
+use protocol::request_valid;
+#[cfg(any(debug_assertions, test))]
+use protocol::request_shape;
+#[cfg(test)]
+use protocol::{catalog, transport_capabilities};
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -68,69 +75,6 @@ fn binding_current(core: &Core, binding: &Binding) -> bool {
             && account.workspace_id == binding.workspace_id
             && account.user_id.as_deref() == Some(binding.account_id.as_str())
     })
-}
-
-fn request_valid(request: &Value) -> bool {
-    let Some(object) = request.as_object() else {
-        return false;
-    };
-    if request["jsonrpc"] != "2.0"
-        || object
-            .keys()
-            .any(|k| !matches!(k.as_str(), "jsonrpc" | "id" | "method" | "params"))
-    {
-        return false;
-    }
-    let notification = matches!(
-        request["method"].as_str(),
-        Some("notifications/initialized" | "notifications/cancelled")
-    );
-    let id = request.get("id");
-    if notification != id.is_none() || request["params"].get("task").is_some() {
-        return false;
-    }
-    if id.is_some_and(|id| {
-        !id.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 128)
-            && id.as_i64().is_none()
-            && id.as_u64().is_none()
-    }) {
-        return false;
-    }
-    matches!(
-        request["method"].as_str(),
-        Some(
-            "initialize"
-                | "ping"
-                | "tools/list"
-                | "tools/call"
-                | "resources/list"
-                | "resources/read"
-                | "resources/templates/list"
-                | "prompts/list"
-                | "prompts/get"
-                | "notifications/initialized"
-                | "notifications/cancelled"
-        )
-    )
-}
-
-fn catalog(reply: &mut Value) {
-    let Some(tools) = reply["result"]["tools"].as_array_mut() else {
-        return;
-    };
-    for tool in tools.iter_mut().filter(|t| {
-        t["name"]
-            .as_str()
-            .is_some_and(crate::copilot_attestation::native_tool)
-    }) {
-        if !tool["_meta"].is_object() {
-            tool["_meta"] = json!({});
-        }
-        if !tool["_meta"]["ui"].is_object() {
-            tool["_meta"]["ui"] = json!({});
-        }
-        tool["_meta"]["ui"]["visibility"] = json!(["model"]);
-    }
 }
 
 async fn approved(
@@ -197,18 +141,34 @@ pub(crate) async fn route(
     uid: u32,
     request: &Request,
 ) -> Result<Value, OutboundError> {
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + super::DISPATCH_BUDGET;
     if uid != agent_relay_node::relay::peer::current_uid() {
         return Err(refused("caller_unverified"));
     }
     if request.body.len() > 1 << 20 {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-dispatch] rejected request: body too large");
         return Err(refused("request_invalid"));
     }
     let envelope: Envelope =
-        serde_json::from_slice(&request.body).map_err(|_| refused("request_invalid"))?;
+        serde_json::from_slice(&request.body).map_err(|_| {
+            #[cfg(debug_assertions)]
+            eprintln!("[copilot-dispatch] rejected request: invalid envelope");
+            refused("request_invalid")
+        })?;
     if !request_valid(&envelope.request) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[copilot-dispatch] rejected request shape: {}",
+            request_shape(&envelope.request)
+        );
         return Err(refused("request_invalid"));
     }
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[copilot-dispatch] accepted request shape: {}",
+        request_shape(&envelope.request)
+    );
     if !binding_current(&outbound.core, &envelope.binding) {
         return Err(refused("binding_mismatch"));
     }
@@ -283,7 +243,7 @@ pub(crate) async fn route(
         authority,
         _permit: permit,
     };
-    let mut reply = tokio::task::spawn_blocking(move || dispatch.run())
+    let reply = tokio::task::spawn_blocking(move || dispatch.run())
         .await
         .unwrap_or_else(|_| {
             classified(
@@ -295,7 +255,6 @@ pub(crate) async fn route(
                 "outcome_unknown",
             )
         });
-    catalog(&mut reply);
     Ok(reply)
 }
 
@@ -471,6 +430,13 @@ impl Dispatch {
         // Provider deselection, removal, replacement or grant rotation through
         // ordinary UI actions revokes a queued call before it crosses network.
         let reply = match self.pending_current(&hosted) {
+            // This bridge speaks the initialize-based protocol to its hosted
+            // server. Answer the modern discovery probe as an unsupported RPC
+            // so clients can negotiate the legacy handshake. Never forward a
+            // modern request with our legacy HTTP protocol-version header.
+            Ok(()) if self.envelope.request["method"] == "server/discover" => Some(
+                forward::error(&id, -32601, "Use initialize to negotiate this MCP connection."),
+            ),
             Ok(()) => post(
                 &self.envelope.binding,
                 bearer,
@@ -496,6 +462,10 @@ impl Dispatch {
         if reply.is_object() {
             reply["id"] = id;
         }
+        protocol::normalize_reply(
+            self.envelope.request["method"].as_str().unwrap_or_default(),
+            &mut reply,
+        );
         reply
     }
 }

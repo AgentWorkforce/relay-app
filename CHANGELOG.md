@@ -14,6 +14,9 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **macOS: GitHub Copilot desktop connects to Relay.** Provider setup detects the standalone Copilot app, uses its native chat hooks for registration and messages, and shows its existing Copilot logo and history alongside VS Code sessions. On macOS, Linux and Windows, the provider is now named GitHub Copilot.
+- **macOS: Copilot can read Relay tool responses.** The native MCP bridge preserves inbox, messaging and other tool results, uses compatible protocol negotiation, and advertises only the notification capabilities its transport supports, so Copilot can finish tool setup and read responses.
+
 ## v2026.11.12
 
 - **Shared session history records who sent each message.** On macOS, Linux and Windows, uploaded Claude sessions now carry each message's origin (typed by a person, sent by another agent session, or a background task's notification), so History can show and search human-typed messages apart from agent-to-agent traffic. Sessions uploaded before this update are not changed.

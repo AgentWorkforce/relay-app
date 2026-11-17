@@ -306,6 +306,35 @@ Copilot CLI, Devin, Codex or OpenCode. Under any of the others it answers
 `{}` without asking the core, so it no longer tells a Cursor session it is
 the Claude session that started it.
 
+## GitHub Copilot desktop
+
+On macOS, the **GitHub Copilot** provider also detects the standalone GitHub
+Copilot app. Version 1.4.2 starts a GitHub-signed SDK runtime from its versioned
+cache with `--server --stdio`. The shared core checks that runtime, its direct
+GitHub-signed desktop parent and sealed installed app, and the native session
+hold before accepting a lifecycle hook. Other processes cannot name its chats.
+Each native session remains separate when one runtime holds several.
+
+Setup uses the existing `~/.copilot/mcp-config.json` native bridge and owned
+hook files. Start a new desktop chat after setup so it loads them. The app and
+native runtime must remain running to receive messages through those hooks.
+The existing Copilot artwork names these sessions on macOS and GTK; native
+messaging remains unavailable on Linux and Windows.
+
+RelayHistory owns acquisition for both desktop and VS Code journals through
+its existing `copilot` source. Its mixed-host conformance test covers discovery,
+hydration, appended messages, full sync and reopening without a live process.
+A private local verification retained every native user/assistant message ID
+across 15 local sessions (187 messages, 63 tool calls, 1,499 markers). Uploads
+continue to follow the person's sharing selection and schedule.
+
+The bridge leaves non-catalog MCP results unchanged. It also compares the
+bundled helper by file identity, because macOS can report either hardlink name
+for the same executable; live signature, exact arguments and runtime checks
+still apply, and same-byte copies do not pass. Packaged send/reply/upload
+verification remains pending the reviewed app build; the local kernel proof
+and history conformance alone do not establish that round trip.
+
 ## Copilot in VS Code
 
 The current **Copilot** harness has been checked with VS Code 1.144.0
@@ -354,7 +383,7 @@ Copilot provider credential, enrolled key, exact call/native chat proof and
 single-use nonce. The proof does not establish cryptographic endpoint identity
 from a field the hook does not provide.
 
-Choose **GitHub Copilot (VS Code)** in provider setup and start a new chat
+Choose **GitHub Copilot** in provider setup and start a new chat
 with the **Copilot** harness. On macOS the native `~/.copilot/mcp-config.json`
 uses the running app's `copilot-mcp` stdio bridge, pinned to the selected site,
 account and workspace. The legacy VS Code global user configuration retains

@@ -138,7 +138,7 @@ fn one_choice_installs_both_mcp_formats_hooks_and_revokes_them_together() {
             .exists());
     }
     assert!(row.detail.contains(if cfg!(target_os = "macos") {
-        "Start a new VS Code chat"
+        "Start a new chat in GitHub Copilot desktop or VS Code"
     } else {
         "Start a new chat"
     }));
@@ -151,7 +151,7 @@ fn one_choice_installs_both_mcp_formats_hooks_and_revokes_them_together() {
             .find(|row| row.id == "copilot")
             .unwrap()
             .name,
-        "GitHub Copilot (VS Code)"
+        "GitHub Copilot"
     );
     assert_eq!(
         unavailable

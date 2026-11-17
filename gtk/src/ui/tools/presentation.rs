@@ -462,7 +462,7 @@ mod tests {
     fn copilot_ready_setup_offers_connection_and_preserves_installed_limitations() {
         let mut tool = provider();
         tool.id = "copilot".into();
-        tool.name = "GitHub Copilot (VS Code)".into();
+        tool.name = "GitHub Copilot".into();
         tool.supported = true;
         tool.selected = false;
         tool.detected = true;
@@ -470,12 +470,12 @@ mod tests {
         tool.can_repair = false;
         tool.state = "onboarding_needed".into();
         tool.status_label = "Choose providers".into();
-        tool.detail="GitHub Copilot needs VS Code with the GitHub Copilot Chat extension, signed in to GitHub inside VS Code. VS Code: detected at /usr/bin/code. GitHub Copilot Chat extension: detected at /home/person/.vscode/extensions/github.copilot-chat-0.72.0.".into();
+        tool.detail="GitHub Copilot needs the Copilot desktop app on macOS, or VS Code with the GitHub Copilot Chat extension, signed in to GitHub. VS Code: detected at /usr/bin/code. GitHub Copilot Chat extension: detected at /home/person/.vscode/extensions/github.copilot-chat-0.72.0.".into();
         let ready = Presentation::new(&tool, Some("ready"));
         assert_eq!(ready.action, Some(NextAction::Install));
         assert_eq!(
             ready.action_label(),
-            Some("Connect GitHub Copilot (VS Code)")
+            Some("Connect GitHub Copilot")
         );
         tool.selected = true;
         tool.can_install = false;

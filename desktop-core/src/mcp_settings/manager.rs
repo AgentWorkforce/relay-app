@@ -21,7 +21,7 @@ pub(super) const TOOLS: &[(&str, &str)] = &[
     ("openclaw", "OpenClaw"),
     ("hermes", "Hermes"),
     ("droid", "Factory Droid"),
-    ("copilot", "GitHub Copilot (VS Code)"),
+    ("copilot", "GitHub Copilot"),
     ("amp", "Amp"),
 ];
 

@@ -1,6 +1,5 @@
-//! GitHub Copilot runs inside VS Code: it needs VS Code itself and the GitHub
-//! Copilot Chat extension. Both checks report what was found or every place
-//! checked, so macOS and GTK show the same detection text.
+//! GitHub Copilot desktop on macOS, or VS Code with its Copilot Chat extension.
+//! Both UIs use the same provider detection and setup text.
 use super::*;
 mod bundled;
 
@@ -32,6 +31,7 @@ impl Platform {
 /// Where VS Code and its extensions are looked for. Building it reads no files.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Search {
+    desktop_installs: Vec<PathBuf>,
     installs: Vec<PathBuf>,
     command: Option<&'static str>,
     path: Vec<PathBuf>,
@@ -41,6 +41,7 @@ pub(crate) struct Search {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Detection {
+    pub desktop: Option<PathBuf>,
     pub vscode: Option<PathBuf>,
     pub extension: Option<PathBuf>,
     pub bundled_checked: Vec<PathBuf>,
@@ -48,7 +49,7 @@ pub(crate) struct Detection {
 
 impl Detection {
     pub(crate) fn ready(&self) -> bool {
-        self.vscode.is_some() && self.extension.is_some()
+        self.desktop.is_some() || (self.vscode.is_some() && self.extension.is_some())
     }
 }
 
@@ -119,6 +120,14 @@ impl Search {
             }
         };
         Self {
+            desktop_installs: if platform == Platform::Mac {
+                [system.join("Applications"), home.join("Applications")]
+                    .into_iter()
+                    .map(|root| root.join("GitHub Copilot.app"))
+                    .collect()
+            } else {
+                Vec::new()
+            },
             installs,
             command: Some(command),
             // Relative PATH entries resolve against the app's working
@@ -132,6 +141,11 @@ impl Search {
     }
 
     pub(crate) fn detect(&self) -> Detection {
+        let desktop = self
+            .desktop_installs
+            .iter()
+            .find(|app| app.join("Contents/MacOS/github").is_file())
+            .cloned();
         let on_path = self
             .command
             .into_iter()
@@ -172,6 +186,7 @@ impl Search {
                 })
         });
         Detection {
+            desktop,
             vscode,
             extension,
             bundled_checked,
@@ -181,6 +196,9 @@ impl Search {
     /// The text both apps show under the provider: what Copilot needs, then
     /// each check with the location found or the locations checked.
     pub(crate) fn detail(&self, detection: &Detection) -> String {
+        if let Some(app) = &detection.desktop {
+            return format!("GitHub Copilot desktop: detected at {}.", app.display());
+        }
         let vscode = match &detection.vscode {
             Some(path) => format!("VS Code: detected at {}.", path.display()),
             None => {
@@ -243,7 +261,7 @@ fn extension_version(path: &Path) -> Option<Vec<u64>> {
     (!version.is_empty()).then_some(version)
 }
 
-pub(crate) const REQUIREMENTS: &str = "GitHub Copilot needs VS Code with the GitHub Copilot Chat extension, signed in to GitHub inside VS Code.";
+pub(crate) const REQUIREMENTS: &str = "GitHub Copilot needs the Copilot desktop app on macOS, or VS Code with the GitHub Copilot Chat extension, signed in to GitHub.";
 
 #[cfg(test)]
 mod tests {
@@ -252,6 +270,37 @@ mod tests {
     fn executable(path: &Path) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "fixture executable").unwrap();
+    }
+
+    #[test]
+    fn macos_desktop_is_ready_without_vscode_or_a_chat_extension() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let search = Search::for_platform(Platform::Mac, &home, &|_| None, vec![], root.path());
+        let app = root.path().join("Applications/GitHub Copilot.app");
+        fs::create_dir_all(&app).unwrap();
+        assert!(!search.detect().ready(), "an empty app directory is not installed");
+        executable(&app.join("Contents/MacOS/github"));
+        let detection = search.detect();
+        assert!(detection.ready());
+        assert_eq!(detection.desktop.as_ref(), Some(&app));
+        assert!(detection.vscode.is_none() && detection.extension.is_none());
+        assert!(search.detail(&detection).contains("GitHub Copilot desktop: detected at"));
+    }
+
+    #[test]
+    fn macos_desktop_is_detected_in_the_users_applications_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let app = home.join("Applications/GitHub Copilot.app");
+        executable(&app.join("Contents/MacOS/github"));
+        let search = Search::for_platform(Platform::Mac, &home, &|_| None, vec![], root.path());
+        assert_eq!(search.detect().desktop, Some(app));
+        for platform in [Platform::Linux, Platform::Windows] {
+            let search = Search::for_platform(platform, &home, &|_| None, vec![], root.path());
+            assert!(search.detect().desktop.is_none());
+            assert!(!search.detect().ready());
+        }
     }
 
     #[test]
@@ -270,6 +319,7 @@ mod tests {
         assert_eq!(
             missing,
             Detection {
+                desktop: None,
                 vscode: None,
                 extension: None,
                 bundled_checked: Vec::new(),

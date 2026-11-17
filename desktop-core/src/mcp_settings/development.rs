@@ -217,7 +217,17 @@ impl Helper {
     }
     pub(super) fn set_copilot_executable(&mut self, executable: Option<PathBuf>) {
         if !self.development_scope() {
-            self.copilot = executable.filter(|path| path.is_absolute());
+            self.copilot = executable.filter(|path| path.is_absolute()).map(|path| {
+                // proc_pidpath can name the Sessions hardlink for the core.
+                // Keep generated configuration stable across either spelling.
+                let main = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_suffix(" (Sessions)"))
+                    .map(|name| path.with_file_name(name));
+                main.filter(|main| same_file::is_same_file(main, &path).unwrap_or(false))
+                    .unwrap_or(path)
+            });
         }
     }
     pub(super) fn copilot_executable(&self) -> PathBuf {

@@ -224,7 +224,16 @@ impl ProviderFile {
             && schema_ready
             && (self.provider != Provider::Copilot || !servers.contains_key(COPILOT_MCP_SERVER))
             && hosted.is_some_and(|h| {
-                servers.get(self.provider.server_name()) == Some(&h.entry(self.provider))
+                servers
+                    .get(self.provider.server_name())
+                    .is_some_and(|entry| {
+                        let expected = h.entry(self.provider);
+                        if self.provider == Provider::CopilotHarness {
+                            copilot::entry_matches(entry, &expected)
+                        } else {
+                            entry == &expected
+                        }
+                    })
                     && servers.iter().all(|(key, entry)| {
                         key == self.provider.server_name()
                             || !managed_for(self.provider, entry, endpoint, helper)

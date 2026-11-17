@@ -16,6 +16,14 @@ static DNS_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const IN_DOUBT: &str = "dispatch_in_doubt_do_not_repeat";
 mod sse;
 
+fn in_doubt(phase: &'static str) -> &'static str {
+    #[cfg(debug_assertions)]
+    eprintln!("[copilot-dispatch] HTTP outcome unresolved at {phase}");
+    #[cfg(not(debug_assertions))]
+    let _ = phase;
+    IN_DOUBT
+}
+
 pub(super) fn error(id: &Value, code: i32, message: &'static str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
@@ -79,7 +87,12 @@ fn post_with_resolver(
     }
     let remaining = deadline
         .checked_duration_since(Instant::now())
-        .ok_or(IN_DOUBT)?;
+        .ok_or_else(|| in_doubt("deadline before HTTP"))?;
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[copilot-dispatch] HTTP start: bytes={}, budget_ms={}",
+        bytes.len(), remaining.as_millis()
+    );
     // Fresh agent + POST/nonempty body: neither recycled-connection retry path
     // in ureq2's Unit::is_retryable applies. No outer retry or auth refresh.
     let agent = ureq::AgentBuilder::new()
@@ -99,7 +112,7 @@ fn post_with_resolver(
     {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => response,
-        Err(_) => return Err(IN_DOUBT),
+        Err(_) => return Err(in_doubt("request send")),
     };
     let status = response.status();
     let media_type = response
@@ -111,6 +124,8 @@ fn post_with_resolver(
         .trim();
     let json = media_type.eq_ignore_ascii_case("application/json");
     let stream = media_type.eq_ignore_ascii_case("text/event-stream");
+    #[cfg(debug_assertions)]
+    eprintln!("[copilot-dispatch] HTTP response: status={status}, json={json}, sse={stream}");
     if !(200..300).contains(&status) {
         // Do not read/echo an upstream error body, even if it contains a proof.
         return status_error(status, &body["id"]);
@@ -123,19 +138,19 @@ fn post_with_resolver(
         .into_reader()
         .take(MAX_REPLY_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| IN_DOUBT)?;
+        .map_err(|_| in_doubt("response read"))?;
     if bytes.len() as u64 > MAX_REPLY_BYTES {
-        return Err(IN_DOUBT);
+        return Err(in_doubt("response size"));
     }
     if body.get("id").is_none() {
         return if status == 202 && bytes.is_empty() {
             Ok(Value::Null)
         } else {
-            Err(IN_DOUBT)
+            Err(in_doubt("notification response"))
         };
     }
     if !json {
-        return Err(IN_DOUBT);
+        return Err(in_doubt("response media type"));
     }
     response_value(&bytes, &body["id"])
 }
@@ -150,12 +165,12 @@ fn status_error(status: u16, id: &Value) -> Result<Value, &'static str> {
 }
 
 fn response_value(bytes: &[u8], id: &Value) -> Result<Value, &'static str> {
-    let reply: Value = serde_json::from_slice(bytes).map_err(|_| IN_DOUBT)?;
+    let reply: Value = serde_json::from_slice(bytes).map_err(|_| in_doubt("response JSON"))?;
     if reply["jsonrpc"] != "2.0"
         || reply.get("id") != Some(id)
         || reply.get("result").is_some() == reply.get("error").is_some()
     {
-        return Err(IN_DOUBT);
+        return Err(in_doubt("response RPC shape or identifier"));
     }
     if let Some(failure) = reply.get("error") {
         let code = failure

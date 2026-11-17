@@ -10,6 +10,29 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn rejected_request_diagnostics_expose_only_protocol_shape() {
+    let request = json!({
+        "jsonrpc": "SECRET_VERSION", "id": "SECRET_ID", "method": "tools/call",
+        "SECRET_TOP_KEY": "SECRET_TOP_VALUE",
+        "params": {"name": "SECRET_TOOL", "arguments": {"token": "SECRET_TOKEN"},
+            "task": null, "SECRET_PARAM_KEY": "SECRET_PARAM_VALUE"}
+    });
+    assert!(!request_valid(&request));
+    let shape = request_shape(&request);
+    assert_eq!(shape["method"], "tools/call");
+    assert_eq!(shape["id_type"], "string");
+    assert_eq!(shape["task_type"], "null");
+    assert_eq!(shape["keys"]["other_count"], 1);
+    assert_eq!(shape["params_keys"]["other_count"], 1);
+    assert!(!shape.to_string().contains("SECRET"));
+    assert_eq!(
+        request_shape(&json!({"method":"SECRET_METHOD"}))["method"],
+        "other"
+    );
+    assert_eq!(request_shape(&Value::Null)["type"], "null");
+}
+
 async fn fixture() -> Fixture {
     let f = registered_copilot().await.unwrap();
     let binding = binding();
@@ -101,6 +124,58 @@ fn dispatch(f: &Fixture, ticket: String, call: Call) -> Dispatch {
         authority: f.installer.copilot_epoch(),
         _permit: f.dispatch.http_permit().unwrap(),
     }
+}
+
+#[tokio::test]
+async fn initialize_dispatch_removes_unavailable_stream_capabilities_and_keeps_other_results() {
+    let f = fixture().await;
+    let (ticket, call) = pending(&f).await;
+    let mut d = dispatch(&f, ticket.clone(), call);
+    d.pending = None;
+    d.envelope.request = json!({"jsonrpc":"2.0","id":17,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture-copilot","version":"1"}}});
+    let reply = d.run_with(|_, grant, request, _| {
+        assert_eq!(grant, "synthetic-child-grant");
+        assert_eq!(request["method"], "initialize");
+        Ok(json!({"jsonrpc":"2.0","id":999,"result":{
+            "protocolVersion":"2025-11-25", "serverInfo":{"name":"fixture","version":"1"},
+            "capabilities":{"tools":{"listChanged":true,"extra":"kept"},
+                "resources":{"listChanged":true,"subscribe":true},"prompts":{"listChanged":true},
+                "experimental":{"fixture":true}}
+        }}))
+    });
+    assert_eq!(reply["id"], 17);
+    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
+    assert_eq!(reply["result"]["serverInfo"], json!({"name":"fixture","version":"1"}));
+    assert_eq!(reply["result"]["capabilities"], json!({"tools":{"extra":"kept"},"resources":{},"prompts":{},"experimental":{"fixture":true}}));
+    assert!(f.dispatch.call(&ticket, Instant::now()).is_ok());
+}
+
+#[tokio::test]
+async fn discovery_probe_uses_standard_legacy_fallback_without_network_or_intent_consumption() {
+    let f = fixture().await;
+    let (ticket, call) = pending(&f).await;
+    let mut d = dispatch(&f, ticket.clone(), call);
+    d.pending = None;
+    d.envelope.request = json!({"jsonrpc":"2.0","id":7,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}});
+    assert!(request_valid(&d.envelope.request));
+    let response = d.run_with(|_, _, _, _| panic!("discovery must not reach the hosted server"));
+    assert_eq!(response["id"], 7);
+    assert_eq!(response["error"]["code"], -32601);
+    assert!(response.get("result").is_none());
+    assert!(f.dispatch.call(&ticket, Instant::now()).is_ok());
+}
+
+#[tokio::test]
+async fn discovery_probe_still_requires_current_provider_authority() {
+    let f = fixture().await;
+    let (ticket, call) = pending(&f).await;
+    let mut d = dispatch(&f, ticket, call);
+    d.pending = None;
+    d.envelope.request = json!({"jsonrpc":"2.0","id":8,"method":"server/discover","params":{"_meta":{}}});
+    f.installer.select(vec![], Some(&binding()), None).unwrap();
+    let response = d.run_with(|_, _, _, _| panic!("revoked discovery must not reach the network"));
+    assert_eq!(response["error"]["code"], -32000);
+    assert_ne!(response["error"]["code"], -32601);
 }
 
 #[tokio::test]
@@ -388,6 +463,46 @@ fn malformed_requests_never_consume_an_intent_as_an_mcp_notification_or_task() {
     assert!(request_valid(
         &json!({"jsonrpc":"2.0","method":"notifications/initialized"})
     ));
+}
+
+#[test]
+fn initialize_advertises_only_capabilities_this_transport_can_deliver() {
+    let mut reply = json!({"jsonrpc":"2.0","id":1,"result":{
+        "protocolVersion":"2025-11-25","serverInfo":{"name":"relay","version":"1"},
+        "capabilities":{"tools":{"listChanged":true,"other":true},
+            "resources":{"listChanged":true,"subscribe":true},
+            "prompts":{"listChanged":true},"experimental":{"fixture":true}}
+    }});
+    transport_capabilities(&mut reply);
+    assert_eq!(reply["result"]["capabilities"], json!({
+        "tools":{"other":true},"resources":{},"prompts":{},
+        "experimental":{"fixture":true}
+    }));
+    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
+    assert_eq!(reply["result"]["serverInfo"], json!({"name":"relay","version":"1"}));
+    for original in [json!(null), json!({"result":{"content":[]}}), json!({"error":{"code":-32000}})] {
+        let mut reply = original.clone();
+        transport_capabilities(&mut reply);
+        assert_eq!(reply, original);
+    }
+}
+
+#[test]
+fn catalog_preserves_tool_results_and_other_non_catalog_replies() {
+    for original in [
+        json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Inbox is empty"}],"isError":false}}),
+        json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Refused"}}),
+        json!({"jsonrpc":"2.0","id":3,"result":{"capabilities":{},"serverInfo":{"name":"relay","version":"1"}}}),
+        json!({"jsonrpc":"2.0","id":4,"result":{}}),
+        json!(null),
+    ] {
+        let mut reply = original.clone();
+        catalog(&mut reply);
+        assert_eq!(
+            reply, original,
+            "catalog must not add fields to other replies"
+        );
+    }
 }
 
 #[test]

@@ -318,7 +318,7 @@ impl Installer {
             return detail;
         }
         let guidance = if cfg!(target_os = "macos") {
-            "Start a new VS Code chat with the Copilot harness and approve the Agent Relay MCP connection if asked. Incoming messages can resume the chat while its stop hook waits; VS Code and the chat must remain running. History uploads follow your sharing settings automatically. The legacy Local harness cannot verify its Relay identity and has no wake or history support."
+            "Start a new chat in GitHub Copilot desktop or VS Code with the Copilot harness and approve the Agent Relay MCP connection if asked. Incoming messages can resume the chat while its stop hook waits; the app and chat must remain running. History uploads follow your sharing settings automatically. The legacy Local harness cannot verify its Relay identity and has no wake or history support."
         } else {
             "Copilot MCP configuration and native Copilot harness history are available. Verified messaging and waking local VS Code Copilot chats are currently unavailable on this platform. Start a new chat to load the MCP connection. The legacy Local harness cannot verify its Relay identity and has no history support."
         };

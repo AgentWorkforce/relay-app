@@ -19,6 +19,45 @@ fn config(helper: PathBuf) -> HostedConfig {
     }
 }
 #[test]
+fn hardlinked_stdio_command_preserves_exact_binding_and_refuses_copies() {
+    let home = tempfile::tempdir().unwrap();
+    let main = home.path().join("helper main");
+    let alias = home.path().join("helper alias");
+    let copy = home.path().join("helper copy");
+    fs::write(&main, "synthetic helper").unwrap();
+    fs::hard_link(&main, &alias).unwrap();
+    fs::copy(&main, &copy).unwrap();
+    let hosted = config(alias.clone());
+    let file = ProviderFile::new(Provider::CopilotHarness, home.path().join("config.json"))
+        .with_copilot_helper(alias);
+    let mut entry = hosted.entry(Provider::CopilotHarness);
+    entry["command"] = json!(main);
+    let original = json!({"mcpServers":{"agentrelay":entry}}).to_string();
+    fs::write(&file.path, &original).unwrap();
+    private_fs::set_mode(&file.path, 0o600).unwrap();
+    let inspection = file.inspect(Some(&hosted)).unwrap();
+    assert!(inspection.present && inspection.configured);
+    assert_eq!(fs::read_to_string(&file.path).unwrap(), original);
+    let mut changed = entry.clone();
+    changed["args"][2] = json!("https://other.example");
+    fs::write(
+        &file.path,
+        json!({"mcpServers":{"agentrelay":changed}}).to_string(),
+    )
+    .unwrap();
+    assert!(!file.inspect(Some(&hosted)).unwrap().configured);
+    changed = entry;
+    changed["command"] = json!(copy);
+    fs::write(
+        &file.path,
+        json!({"mcpServers":{"agentrelay":changed}}).to_string(),
+    )
+    .unwrap();
+    let inspection = file.inspect(Some(&hosted)).unwrap();
+    assert!(!inspection.present && !inspection.configured);
+    assert!(file.install(&hosted).is_err());
+}
+#[test]
 fn copied_marker_does_not_own_foreign_command_or_authorize_its_replacement() {
     let home = tempfile::tempdir().unwrap();
     let current = home.path().join("managed-current-helper");

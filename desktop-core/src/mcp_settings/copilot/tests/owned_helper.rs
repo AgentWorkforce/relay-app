@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn production_copilot_uses_a_stable_main_helper_for_its_bundled_hardlink() {
+    let home = tempfile::tempdir().unwrap();
+    let (app, _) = fixture(home.path()).unwrap();
+    let main = home.path().join("Agent Relay Helper");
+    let sessions = home.path().join("Agent Relay Helper (Sessions)");
+    fs::write(&main, "synthetic helper").unwrap();
+    fs::hard_link(&main, &sessions).unwrap();
+    let app = app.with_copilot_executable(Some(sessions.clone()));
+    assert_eq!(app.copilot_helper(), main);
+    fs::remove_file(&sessions).unwrap();
+    fs::copy(&main, &sessions).unwrap();
+    let app = app.with_copilot_executable(Some(sessions.clone()));
+    assert_eq!(
+        app.copilot_helper(),
+        sessions,
+        "copied bytes are not a helper alias"
+    );
+}
+
+#[test]
 fn production_copilot_requires_its_explicit_absolute_executable() {
     for executable in [None, Some(PathBuf::from("relative-probe"))] {
         let home = tempfile::tempdir().unwrap();

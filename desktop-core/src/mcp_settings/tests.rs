@@ -460,7 +460,7 @@ fn providers_list_amp_and_copilot_in_name_order() {
         .collect();
     assert_eq!(names.first().map(String::as_str), Some("Amp"));
     let position = |name: &str| names.iter().position(|n| n == name).unwrap();
-    let copilot = position("GitHub Copilot (VS Code)");
+    let copilot = position("GitHub Copilot");
     assert!(position("Dot") < copilot && copilot < position("Grok"), "{names:?}");
     assert_eq!(names.len(), manager::TOOLS.len());
 }

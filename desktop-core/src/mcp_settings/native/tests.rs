@@ -383,7 +383,7 @@ fn copilot_reports_detection_and_supports_scoped_provider_setup() {
             .unwrap()
     };
     let missing = row(&app);
-    assert_eq!(missing.name, "GitHub Copilot (VS Code)");
+    assert_eq!(missing.name, "GitHub Copilot");
     assert!(!missing.detected);
     assert!(
         missing.detail.contains("VS Code: not detected. Checked "),

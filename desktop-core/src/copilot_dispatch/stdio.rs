@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::{BufRead, Read, Write};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const FRAME: u64 = 1 << 20;
 type Dispatch = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
@@ -210,7 +209,7 @@ pub(super) fn run(args: &[String]) -> i32 {
             "POST",
             super::ROUTE,
             &body,
-            Duration::from_secs(60),
+            super::LOCAL_RESPONSE_BUDGET,
         );
         reply(&request["id"], answer)
     });

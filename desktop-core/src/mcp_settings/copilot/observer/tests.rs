@@ -14,6 +14,29 @@ fn write(settings: &Settings, bytes: &[u8]) {
     private_fs::set_mode(&settings.path, 0o600).unwrap();
 }
 #[test]
+fn hardlink_observer_is_enabled_and_owned_but_copies_and_changed_flags_are_not() {
+    let (_dir, settings) = fixture(false);
+    fs::write(&settings.helper, "synthetic helper").unwrap();
+    let alias = settings.helper.with_file_name("helper alias");
+    let copy = settings.helper.with_file_name("copied helper");
+    fs::hard_link(&settings.helper, &alias).unwrap();
+    fs::copy(&settings.helper, &copy).unwrap();
+    settings.set_enabled(true).unwrap();
+    let aliased = Settings::new(settings.path.clone(), alias, false);
+    assert!(aliased.enabled());
+    assert!(aliased.snapshot().is_ok());
+    let copied = Settings::new(settings.path.clone(), copy, false);
+    assert!(!copied.enabled());
+    assert!(copied.snapshot().is_err());
+    let development = Settings::new(settings.path.clone(), aliased.helper.clone(), true);
+    assert!(!development.enabled());
+    let mut foreign = value(&settings.helper, false);
+    foreign["hooks"]["preMcpToolCall"][0]["timeoutSec"] = json!(99);
+    write(&settings, &serde_json::to_vec(&foreign).unwrap());
+    assert!(!aliased.enabled());
+    assert!(aliased.snapshot().is_err());
+}
+#[test]
 fn exact_schema_enable_disable_and_absent_rollback() {
     let (_dir, settings) = fixture(false);
     let backup = settings.snapshot().unwrap();

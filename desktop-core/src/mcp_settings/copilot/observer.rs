@@ -43,7 +43,13 @@ impl Settings {
             .flatten()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             .is_some_and(|v| {
-                self.helper.is_absolute() && v == value(&self.helper, self.development)
+                self.helper.is_absolute()
+                    && hook_helper(&v, self.development).is_some_and(|helper| {
+                        valid_path(&helper)
+                            && (helper == self.helper
+                                || same_file::is_same_file(&helper, &self.helper).unwrap_or(false))
+                            && v == value(&helper, self.development)
+                    })
             })
     }
     fn checked(&self) -> Result<Bytes, String> {
@@ -131,6 +137,7 @@ fn valid_path(path: &Path) -> bool {
 fn known(helper: &Path, current: &Path) -> bool {
     valid_path(helper)
         && (helper == current
+            || same_file::is_same_file(helper, current).unwrap_or(false)
             || [
                 ".local/bin/agent-relay-probe",
                 ".local/bin/agent-relay-probe.exe",
@@ -146,34 +153,28 @@ fn owned(bytes: &[u8], current: &Path) -> bool {
     let Ok(document) = serde_json::from_slice::<Value>(bytes) else {
         return false;
     };
-    let Some(command) = document["hooks"]["preMcpToolCall"][0]["command"].as_str() else {
-        return false;
-    };
     for development in [false, true] {
-        let suffix = if development {
-            " copilot-mcp-observe --dev"
-        } else {
-            " copilot-mcp-observe"
-        };
-        let Some(encoded) = command
-            .strip_prefix("exec ")
-            .and_then(|v| v.strip_suffix(suffix))
-        else {
-            continue;
-        };
-        let Some(inner) = encoded
-            .strip_prefix('\'')
-            .and_then(|v| v.strip_suffix('\''))
-        else {
-            continue;
-        };
-        let decoded = inner.replace("'\"'\"'", "'");
-        let helper = Path::new(&decoded);
-        if known(helper, current) && document == value(helper, development) {
-            return true;
+        if let Some(helper) = hook_helper(&document, development) {
+            if known(&helper, current) && document == value(&helper, development) {
+                return true;
+            }
         }
     }
     false
+}
+
+fn hook_helper(document: &Value, development: bool) -> Option<PathBuf> {
+    let suffix = if development {
+        " copilot-mcp-observe --dev"
+    } else {
+        " copilot-mcp-observe"
+    };
+    let encoded = document["hooks"]["preMcpToolCall"][0]["command"]
+        .as_str()?
+        .strip_prefix("exec ")?
+        .strip_suffix(suffix)?;
+    let inner = encoded.strip_prefix('\'')?.strip_suffix('\'')?;
+    Some(PathBuf::from(inner.replace("'\"'\"'", "'")))
 }
 fn read(path: &Path) -> Result<Bytes, String> {
     providers::safe_parent(path)?;

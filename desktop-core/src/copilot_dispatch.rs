@@ -7,6 +7,13 @@ mod stdio;
 
 pub(crate) const ROUTE: &str = "/copilot/mcp";
 
+// Live host seals and exact native chat proofs are checked repeatedly before
+// dispatch. A measured desktop call needed 47 seconds for those checks alone;
+// retain one absolute bound with room for verification and the hosted reply.
+pub(super) const DISPATCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+pub(super) const LOCAL_RESPONSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(140);
+const _: () = assert!(LOCAL_RESPONSE_BUDGET.as_millis() > DISPATCH_BUDGET.as_millis());
+
 /// Runs only when Copilot launches this app-owned MCP helper normally.
 pub fn main(args: &[String]) -> i32 {
     stdio::run(args)

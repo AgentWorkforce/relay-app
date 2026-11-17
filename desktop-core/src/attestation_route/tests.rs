@@ -26,6 +26,7 @@ const IN_UNREGISTERED: i32 = 4200;
 pub(crate) struct FakeCloud {
     calls: Mutex<Vec<(String, String, Option<Value>)>>,
     capabilities: Mutex<Value>,
+    account_override: Mutex<Option<CloudAccount>>,
     pub(crate) generation: std::sync::atomic::AtomicU64,
     /// Every request fails while set.
     offline: std::sync::atomic::AtomicBool,
@@ -33,6 +34,9 @@ pub(crate) struct FakeCloud {
 
 impl CloudAccess for FakeCloud {
     fn account(&self) -> Option<CloudAccount> {
+        if let Some(account) = self.account_override.lock().unwrap().clone() {
+            return Some(account);
+        }
         Some(CloudAccount {
             site_url: "https://agentrelay.com".into(),
             workspace_id: WORKSPACE.into(),

@@ -5,7 +5,13 @@ use agent_relay_node::relay::{
     copilot::proof,
     process::{ProcessInfo, ProcessTable, SystemProcesses},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// macOS can report either bundled helper hardlink as the live executable.
+/// Copies with the same bytes or basename are still different executables.
+fn same_helper(actual: &Path, expected: &Path) -> bool {
+    same_file::is_same_file(actual, expected).unwrap_or(false)
+}
 
 pub(crate) trait Verifier: Send + Sync {
     fn runtime(
@@ -83,7 +89,7 @@ pub(super) fn runtime(
     let expected =
         std::fs::canonicalize(installer.copilot_helper()).map_err(|_| "native_peer_unavailable")?;
     let actual_args = table.arguments(pid);
-    if executable != expected
+    if !same_helper(&executable, &expected)
         || !table.is_trusted_relay_helper(pid, &executable)
         || actual_args.get(1..)
             != Some(arguments(binding, installer.copilot_development()).as_slice())
@@ -95,6 +101,29 @@ pub(super) fn runtime(
         return Err("native_peer_changed");
     }
     Ok(runtime)
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_hardlink_names_match_but_copied_or_replaced_helpers_do_not() {
+        let root = tempfile::tempdir().unwrap();
+        let helper = root.path().join("Agent Relay Helper");
+        let sessions = root.path().join("Agent Relay Helper (Sessions)");
+        let copy = root.path().join("Copy");
+        std::fs::write(&helper, "synthetic helper").unwrap();
+        std::fs::hard_link(&helper, &sessions).unwrap();
+        std::fs::copy(&helper, &copy).unwrap();
+        assert!(same_helper(&sessions, &helper));
+        assert!(same_helper(&helper, &sessions));
+        assert!(!same_helper(&copy, &helper));
+        std::fs::remove_file(&helper).unwrap();
+        assert!(!same_helper(&sessions, &helper));
+        std::fs::write(&helper, "synthetic helper").unwrap();
+        assert!(!same_helper(&sessions, &helper));
+    }
 }
 
 pub(super) fn held(

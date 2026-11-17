@@ -7,6 +7,8 @@ use agent_relay_node::relay::store::{SessionKind, Target};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+mod presence;
 
 fn unavailable() -> OutboundError {
     OutboundError::new(409, "attestation_unavailable", "Agent Relay could not verify this Copilot chat. Keep the desktop app open, put this chat on the relay, and retry. Do not substitute another chat's identity.")
@@ -42,6 +44,13 @@ pub(crate) fn native_tool(name: &str) -> bool {
     )
 }
 
+fn trace_gate(phase: &'static str) {
+    #[cfg(debug_assertions)]
+    eprintln!("[copilot-attestation] {phase}");
+    #[cfg(not(debug_assertions))]
+    let _ = phase;
+}
+
 pub(crate) async fn route(
     outbound: &Outbound,
     dispatch_account: Arc<crate::account::Account>,
@@ -49,12 +58,34 @@ pub(crate) async fn route(
     uid: u32,
     input: Value,
 ) -> Result<Value, OutboundError> {
+    route_with_presence_budget(
+        outbound,
+        dispatch_account,
+        pid,
+        uid,
+        input,
+        Duration::from_secs(35),
+    ).await
+}
+
+// The production route chooses the budget; fixtures can exercise the same
+// verified route with short deadlines instead of spending 35 seconds asleep.
+pub(crate) async fn route_with_presence_budget(
+    outbound: &Outbound,
+    dispatch_account: Arc<crate::account::Account>,
+    pid: i32,
+    uid: u32,
+    input: Value,
+    presence_budget: Duration,
+) -> Result<Value, OutboundError> {
     if uid != agent_relay_node::relay::peer::current_uid() {
         return Err(OutboundError::not_a_session());
     }
+    trace_gate("before request received");
     let Some(tool) = tool(&input) else {
         return Ok(json!({}));
     };
+    trace_gate("native tool recognized");
     let mut args = input["toolArgs"]
         .as_object()
         .cloned()
@@ -75,6 +106,7 @@ pub(crate) async fn route(
     {
         return Err(OutboundError::not_a_session());
     }
+    trace_gate("native hook verified");
     let sid = input["sessionId"].as_str().ok_or_else(unavailable)?;
     let target = Target::new(SessionKind::Copilot, sid);
     let account = outbound
@@ -92,17 +124,30 @@ pub(crate) async fn route(
     if !Identities::new(outbound.core.clone()).copilot_attestation_verified() {
         return Err(unavailable());
     }
-    let (registration, source) = outbound.core.store.read(|store| {
-        (
-            store
-                .registration_for(&target)
-                .filter(|r| r.missing_since.is_none())
-                .cloned(),
-            store.desktop_sync_source_id.clone(),
-        )
-    });
-    let registration = registration.ok_or_else(OutboundError::not_registered)?;
-    let source = source.ok_or_else(OutboundError::not_registered)?;
+    trace_gate("account capability verified");
+    // The verified hook refreshed this exact chat's native runtime record.
+    // Ordinary lifecycle reconciliation may still hold its previous inactive
+    // state after a restart. Wait for that existing registration; never create
+    // one or clear inactivity ourselves, which would bypass normal eligibility.
+    let (registration, source) = presence::wait_for_active(
+        || {
+            if outbound.core.plugins.cloud.account().as_ref() != Some(&account)
+                || outbound.core.plugins.cloud.identity_sync_generation() != generation
+            {
+                return Err(unavailable());
+            }
+            outbound.core.store.read(|store| {
+                let registration = store.registration_for(&target)
+                    .ok_or_else(OutboundError::not_registered)?;
+                let source = store.desktop_sync_source_id.as_ref()
+                    .ok_or_else(OutboundError::not_registered)?;
+                Ok(registration.missing_since.is_none()
+                    .then(|| (registration.clone(), source.clone())))
+            })
+        },
+        Instant::now() + presence_budget,
+    ).await?.ok_or_else(OutboundError::not_registered)?;
+    trace_gate("registration verified");
     // A native join always keeps the already-registered chat identity. It
     // never creates a hosted participant under a model-provided name.
     if tool == "join_relay" {
@@ -122,7 +167,8 @@ pub(crate) async fn route(
     {
         return Err(unavailable());
     }
-    crate::copilot_dispatch::issue(
+    trace_gate("issuing ticket");
+    let result = crate::copilot_dispatch::issue(
         &dispatch_account,
         pid,
         uid,
@@ -137,7 +183,9 @@ pub(crate) async fn route(
             source,
             registration: format!("{}:{}", registration.agent_id, registration.registered_at),
         },
-    )
+    );
+    trace_gate(if result.is_ok() { "ticket issued" } else { "ticket refused" });
+    result
 }
 
 pub(crate) fn sign(

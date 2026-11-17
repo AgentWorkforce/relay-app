@@ -48,6 +48,8 @@ pub(super) fn managed_stdio(entry: &Value, endpoint: Option<&str>, helper: Optio
 fn known_helper(path: &Path, current: Option<&Path>) -> bool {
     path.is_absolute()
         && (current == Some(path)
+            || current
+                .is_some_and(|current| same_file::is_same_file(path, current).unwrap_or(false))
             || [
                 ".local/bin/agent-relay-probe",
                 ".local/bin/agent-relay-probe.exe",
@@ -58,6 +60,31 @@ fn known_helper(path: &Path, current: Option<&Path>) -> bool {
             ]
             .iter()
             .any(|suffix| path.ends_with(suffix)))
+}
+
+/// Only the executable spelling may vary; all other managed entry fields
+/// still have to match, including the binding and every argument.
+pub(super) fn entry_matches(actual: &Value, expected: &Value) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if actual["type"] != "stdio" || expected["type"] != "stdio" {
+        return false;
+    }
+    let (Some(actual_path), Some(expected_path)) =
+        (actual["command"].as_str(), expected["command"].as_str())
+    else {
+        return false;
+    };
+    if !Path::new(actual_path).is_absolute()
+        || !Path::new(expected_path).is_absolute()
+        || !same_file::is_same_file(actual_path, expected_path).unwrap_or(false)
+    {
+        return false;
+    }
+    let mut normalized = actual.clone();
+    normalized["command"] = expected["command"].clone();
+    &normalized == expected
 }
 
 pub(crate) struct CopilotBackup {
