@@ -92,7 +92,7 @@ impl HostedConfig {
         if provider == Provider::CopilotHarness {
             if let Some(stdio) = &self.copilot_stdio {
                 return json!({"type":"stdio","command":stdio.command,"args":stdio.args,
-                    "tools":["*"],"agentRelayManagedBy":OWNER});
+                    "tools":["*"],"timeout":copilot::TIMEOUT_MS,"agentRelayManagedBy":OWNER});
             }
         }
         let mut entry = json!({"url":self.endpoint,"headers":self.headers});
