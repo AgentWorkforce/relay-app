@@ -45,13 +45,18 @@ const QUERY: &str = "cursor";
 /// Where the hook announces a call.
 pub(crate) const INTENT_ROUTE: &str = "/copilot/hook?cursor=intent";
 /// How long the hook waits for Core to keep an announced call before it
-/// gives up, and denies an identity call.
-pub(crate) const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long Core may take to keep an announced call: well inside the hook's
-/// wait, so Core never keeps a call the hook already gave up on, which a
-/// retry or another chat's identical call would then take.
+/// gives up, and denies an identity call. Long enough for a new chat's
+/// first call: Core then puts the chat on the relay (a Relaycast request)
+/// and waits for the identity sync to Cloud before it keeps the call, which
+/// has taken around 10 s. A chat already on the relay is answered at once.
+pub(crate) const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long Core may take to keep an announced call, a new chat's
+/// registration and identity sync included: well inside the hook's wait, so
+/// Core never keeps a call the hook already gave up on, which a retry or
+/// another chat's identical call would then take.
 pub(crate) const ANNOUNCE_BUDGET: Duration =
     ANNOUNCE_TIMEOUT.saturating_sub(Duration::from_secs(1));
+const _: () = assert!(ANNOUNCE_BUDGET.as_millis() < ANNOUNCE_TIMEOUT.as_millis());
 /// Where the hook asks whether Cursor's calls are attested.
 pub(crate) const STATUS_ROUTE: &str = "/copilot/hook?cursor=status";
 /// Where the helper hands Core a request.
