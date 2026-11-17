@@ -82,6 +82,9 @@ pub struct State {
     /// How the enrollment exchange's answer is cut short once its request
     /// is recorded and answered.
     pub enrollment_cut_short: CutShort,
+    /// Fields the enrollment exchange's 200 adds to the session, such as
+    /// `managed` and `workspace_policy`.
+    pub enrollment_extra: Value,
     /// Sent as `Location` with any 3xx answer.
     pub redirect_location: Option<String>,
     /// The resolve names this relaygate: the workspace is gate-only.
@@ -148,6 +151,7 @@ impl Default for State {
             enrollment_key: Some(ENROLLMENT_KEY.into()),
             enrollment_slow_downs: 0,
             enrollment_cut_short: CutShort::No,
+            enrollment_extra: json!({}),
             redirect_location: None,
             relaygate_url: None,
             self_token_refusals: Default::default(),
@@ -439,12 +443,15 @@ fn route(
             }
             state.enrollment_key = None;
             let (access, refresh) = mint(state);
-            (
-                200,
-                json!({"access_token": access, "refresh_token": refresh,
-                       "access_token_expires_at": "2099-01-01T00:00:00Z",
-                       "api_url": format!("{site}/cloud")}),
-            )
+            let mut answer = json!({"access_token": access, "refresh_token": refresh,
+                   "access_token_expires_at": "2099-01-01T00:00:00Z",
+                   "api_url": format!("{site}/cloud")});
+            if let (Some(answer), Some(extra)) =
+                (answer.as_object_mut(), state.enrollment_extra.as_object())
+            {
+                answer.extend(extra.clone());
+            }
+            (200, answer)
         }
         ("POST", "/auth/desktop/session") => {
             if state.exchange_fails {

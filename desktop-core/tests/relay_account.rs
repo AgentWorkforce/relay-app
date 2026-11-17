@@ -4702,6 +4702,48 @@ async fn an_enrollment_key_signs_in_once_without_approval_and_its_file_is_delete
     harness.stop().await;
 }
 
+/// A key minted with the organization's consent answers with the
+/// workspace policy: the new computer caches it for the workspace it
+/// connects to, managed, even when its first policy read fails.
+#[tokio::test]
+async fn a_managed_enrollment_key_seeds_the_workspace_policy() {
+    let harness = Harness::start_with(|cloud, setup| {
+        cloud.state.lock().unwrap().enrollment_extra = json!({
+            "managed": true,
+            "policy_revision": 9,
+            "workspace_policy": {
+                "version": 2, "revision": 9, "managed": true,
+                "consent": ["accept_spawns"],
+                "sections": {"spawn": {"locked": {"accept_spawns": true}, "defaults": {}}}
+            }
+        });
+        // No policy file: every policy read fails.
+        setup.env.lock().unwrap().insert(
+            "RELAY_DESKTOP_OPERATOR_POLICY".into(),
+            setup.home.join("missing.json").to_str().unwrap().into(),
+        );
+    })
+    .await;
+    let mut client = harness.client().await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    let cached = || -> Option<Value> {
+        let bytes = std::fs::read(harness.home.join("app-data/workspace-policy.json")).ok()?;
+        let saved: Value = serde_json::from_slice(&bytes).ok()?;
+        Some(saved["workspaces"][WORKSPACE].clone())
+    };
+    eventually("seeded", || cached().is_some_and(|c| c["revision"] == 9)).await;
+    let cached = cached().unwrap();
+    assert_eq!(cached["policy"]["managed"], true);
+    assert_eq!(
+        cached["policy"]["sections"]["spawn"]["locked"],
+        json!({"accept_spawns": true})
+    );
+    harness.stop().await;
+}
+
 /// Wrong, revoked and already exchanged keys all read the same: the person
 /// learns only to ask for a new key. The file is kept for the admin to see.
 #[tokio::test]
