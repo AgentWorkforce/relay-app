@@ -12,14 +12,18 @@
 //    for GitHub to see it. Untracked files are never pushed.
 // 2. Push the snapshot to a throwaway ci/<sha> branch and dispatch Desktop CI
 //    there with the merge base as `base-sha`, so it picks the lanes a pull
-//    request would, and with `full-matrix`, since this is the last gate before
-//    main and main's own run tests every architecture. Mobile CI runs too when
+//    request would, and with `full-matrix`, so every architecture runs and a
+//    green gate leaves evidence main's push can reuse. Mobile CI runs too when
 //    its own path filter matches.
 // 3. Wait (up to two hours) for exactly the dispatched runs, print the failed
 //    jobs' log tails and then one verdict line per run, delete the branch, and
-//    exit 1 unless every run passed. A SIGTERM or SIGINT (the fleet stopping
-//    this step) deletes the branch too, and each watch first sweeps snapshot
-//    branches an earlier, harder kill left behind.
+//    exit 1 unless every run passed. A Desktop CI run whose only red jobs are
+//    the macOS x64 lanes passes (see DEFERRED_LANES): their results are
+//    reported but do not block landing. Main's push CI and the release
+//    candidate still require them, so a red x64 lane is fixed forward before
+//    the next release. A SIGTERM or SIGINT (the fleet stopping this step)
+//    deletes the branch too, and each watch first sweeps snapshot branches an
+//    earlier, harder kill left behind.
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -149,6 +153,37 @@ export function latestRuns(runs, since, workflows) {
   return [...byWorkflow.values()];
 }
 
+// The macOS x64 lanes, as desktop-ci.yml names them: macos-package,
+// macos-swift-tests and macos-core-tests on the x64 row of the macOS matrix.
+// They are a release-time check, not a landing gate.
+export const DEFERRED_LANES = ["macOS package (x64)", "macOS Swift tests (x64)", "macOS core tests (x64)"];
+// The "macOS <arch>" completion gates read each lane's result over the whole
+// matrix, so one red x64 lane turns both of them red too.
+const MACOS_COMPLETION = ["macOS arm64", "macOS x64"];
+
+/**
+ * The gate's verdict on one run, given the latest attempt's jobs ({name,
+ * conclusion}) for a failed Desktop CI run. A Desktop CI failure passes only
+ * when at least one macOS x64 lane failed and every other job that did not
+ * succeed or skip is one of the two macOS completion gates; anything else
+ * red, cancelled or timed out still fails the gate.
+ */
+export function verdict(run, jobs = []) {
+  if (run.conclusion === "success") return { pass: true, note: "" };
+  if (run.workflowName !== "Desktop CI" || run.conclusion !== "failure") return { pass: false, note: "" };
+  const red = jobs.filter((job) => job.conclusion !== "success" && job.conclusion !== "skipped");
+  const deferred = red.some((job) => DEFERRED_LANES.includes(job.name))
+    && red.every((job) => DEFERRED_LANES.includes(job.name) || MACOS_COMPLETION.includes(job.name));
+  return deferred ? { pass: true, note: " (macOS x64 lanes deferred)" } : { pass: false, note: "" };
+}
+
+// Every job of the run's latest attempt; a Desktop CI run has more than one
+// page of them.
+const runJobs = (id) => gh(
+  "api", "--paginate", `repos/{owner}/{repo}/actions/runs/${id}/jobs?filter=latest&per_page=100`,
+  "--jq", ".jobs[] | {name, conclusion}",
+).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+
 const changedSince = (base) => git(["diff", "--no-renames", "--name-only", base]).split("\n").filter(Boolean);
 const mobileChanged = (base) =>
   touches(changedSince(base), mobilePrefixes(readFileSync(".github/workflows/mobile-ci.yml", "utf8")));
@@ -234,11 +269,20 @@ async function watch(base, desktop, mobile, agent) {
         console.log(partial ? partial.split("\n").slice(-80).join("\n") : `could not read the failed log: ${error.message}`);
       }
     }
+    const verdicts = runs.map((run) => {
+      if (run.workflowName !== "Desktop CI" || run.conclusion !== "failure") return verdict(run);
+      try {
+        return verdict(run, runJobs(run.databaseId));
+      } catch (error) {
+        console.log(`could not list the jobs of ${run.url}: ${error.message}`);
+        return verdict(run);
+      }
+    });
     // Last, so a size-capped tail of this output always keeps them.
-    for (const run of runs) {
-      console.log(`${run.conclusion === "success" ? "PASS" : "FAIL"} ${run.workflowName}: ${run.conclusion} ${run.url}`);
-    }
-    return runs.every((run) => run.conclusion === "success");
+    runs.forEach((run, i) => {
+      console.log(`${verdicts[i].pass ? "PASS" : "FAIL"} ${run.workflowName}: ${run.conclusion}${verdicts[i].note} ${run.url}`);
+    });
+    return verdicts.every((v) => v.pass);
   } finally {
     // Runs and their logs outlive the branch; only the ref is removed.
     deleteBranch(branch);
