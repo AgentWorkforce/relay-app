@@ -9,6 +9,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
+mod rename;
 
 #[test]
 fn rejected_request_diagnostics_expose_only_protocol_shape() {

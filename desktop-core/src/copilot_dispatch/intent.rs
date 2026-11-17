@@ -34,6 +34,16 @@ pub(crate) struct Owner {
     pub registration: String,
 }
 
+/// A rename changes the credential that sends, even though the owning
+/// registration and native SID stay the same. Revoke queued old-name calls.
+pub(crate) fn registration_key(registration: &agent_relay_node::relay::store::Registration) -> String {
+    let mut key = format!("{}:{}", registration.agent_id, registration.registered_at);
+    if let Some(alias) = &registration.alias {
+        key.push_str(&format!("->{}:{}", alias.agent_id, alias.registered_at));
+    }
+    key
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Peer {
     pub runtime: agent_relay_node::relay::process::ProcessInfo,

@@ -1,5 +1,33 @@
 //! Bounded convergence with normal registration lifecycle policy.
+use agent_relay_node::relay::{
+    cloud_session::CloudAccount,
+    outbound::{Outbound, OutboundError},
+    store::Target,
+};
 use std::time::{Duration, Instant};
+
+pub(super) fn active_registration(
+    outbound: &Outbound,
+    target: &Target,
+    account: &CloudAccount,
+    generation: u64,
+) -> Result<Option<()>, OutboundError> {
+    if outbound.core.plugins.cloud.account().as_ref() != Some(account)
+        || outbound.core.plugins.cloud.identity_sync_generation() != generation
+    {
+        return Err(super::unavailable());
+    }
+    outbound.core.store.read(|store| {
+        let registration = store
+            .registration_for(target)
+            .ok_or_else(OutboundError::not_registered)?;
+        store
+            .desktop_sync_source_id
+            .as_ref()
+            .ok_or_else(OutboundError::not_registered)?;
+        Ok(registration.missing_since.is_none().then_some(()))
+    })
+}
 
 pub(super) async fn wait_for_active<T, E>(
     mut read: impl FnMut() -> Result<Option<T>, E>,
