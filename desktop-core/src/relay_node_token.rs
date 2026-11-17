@@ -311,12 +311,20 @@ fn unavailable(stderr: &[u8]) -> String {
     format!("This computer's Secret Service keychain is unavailable: {detail}")
 }
 
-/// Runs `secret-tool`, giving it `secret` on stdin, never on its command line.
+/// How long `secret-tool` has to answer. A Secret Service that hangs
+/// (a locked collection whose unlock prompt never shows, a wedged
+/// daemon) would otherwise hold the mint, and sign-out, for good.
+#[cfg(not(any(target_os = "macos", windows)))]
+const SECRET_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Runs `secret-tool`, giving it `secret` on stdin, never on its command
+/// line. One that has not exited within [`SECRET_TOOL_TIMEOUT`] is killed,
+/// and is an error: the keychain did not answer, which is not an entry
+/// that is absent.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn secret_tool(args: &[&str], secret: Option<&Secret>) -> Result<std::process::Output, String> {
-    use std::io::Write;
     use std::process::{Command, Stdio};
-    let mut child = Command::new("secret-tool")
+    let child = Command::new("secret-tool")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -326,14 +334,71 @@ fn secret_tool(args: &[&str], secret: Option<&Secret>) -> Result<std::process::O
             "This computer has no Secret Service keychain (secret-tool is not installed)."
                 .to_string()
         })?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(secret) = secret {
-            let _ = stdin.write_all(secret.expose().as_bytes());
+    let input = secret.map(|s| s.expose().as_bytes().to_vec());
+    wait_within(child, input, SECRET_TOOL_TIMEOUT).map_err(|timed_out| {
+        if timed_out {
+            format!(
+                "The Secret Service keychain did not answer within {} seconds.",
+                SECRET_TOOL_TIMEOUT.as_secs()
+            )
+        } else {
+            "The Secret Service keychain did not answer.".to_string()
         }
+    })
+}
+
+/// Gives `child` `input` on stdin and collects its output, killing it once
+/// `timeout` has passed: `Err(true)` then, `Err(false)` when it could not
+/// be waited for. Its pipes are read on threads of their own, so a child
+/// that fills one never blocks the wait.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn wait_within(
+    mut child: std::process::Child,
+    input: Option<Vec<u8>>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, bool> {
+    use std::io::{Read, Write};
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
     }
-    child
-        .wait_with_output()
-        .map_err(|_| "The Secret Service keychain did not answer.".to_string())
+    let stdin = child.stdin.take();
+    let feed = std::thread::spawn(move || {
+        if let (Some(mut stdin), Some(input)) = (stdin, input) {
+            let _ = stdin.write_all(&input);
+        }
+    });
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(true);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(false);
+            }
+        }
+    };
+    let _ = feed.join();
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// A keychain in memory, for tests: nothing reaches the person's keychain.
@@ -454,6 +519,37 @@ mod tests {
         // An entry that is not one of ours is absent.
         keychain.write(&account, &Secret::new("not json")).unwrap();
         assert_eq!(load(&keychain, &account).unwrap(), None);
+    }
+
+    /// A child that never answers is killed at the deadline and reported
+    /// as not answering, not as an entry that is absent.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    fn a_keychain_child_that_hangs_is_killed_at_the_deadline() {
+        use std::process::{Command, Stdio};
+        let spawn = |script: &str| {
+            Command::new("sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let started = std::time::Instant::now();
+        let hung = wait_within(spawn("sleep 30"), None, std::time::Duration::from_millis(200));
+        assert!(hung.unwrap_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        // One that answers in time gives its output, stdin included.
+        let answered = wait_within(
+            spawn("cat; echo oops >&2"),
+            Some(b"value".to_vec()),
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(answered.status.success());
+        assert_eq!(answered.stdout, b"value");
+        assert_eq!(answered.stderr, b"oops\n");
     }
 
     #[test]
