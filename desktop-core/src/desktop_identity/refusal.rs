@@ -6,7 +6,7 @@ use agent_relay_node::relay::cloud_session::CloudAccount;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-const RETRY_BASE: Duration = Duration::from_secs(5 * 60);
+pub(super) const RETRY_BASE: Duration = Duration::from_secs(5 * 60);
 const RETRY_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// One credential-bearing snapshot Cloud refused. Supervision sees it every
