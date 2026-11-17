@@ -2,16 +2,22 @@
 //! of tools without an identity, and the MCP route's envelope checks.
 use super::*;
 
-const HOOK_PID: i32 = 4501;
+pub(super) const HOOK_PID: i32 = 4501;
 
 /// A `cursor-agent` holding `sid()`'s store, with the hook's shell below it.
 fn hook_table(f: &Fixture) -> FakeProcesses {
+    holding(f, &sid())
+}
+
+/// A `cursor-agent` holding chat `chat`'s store, with the hook's shell
+/// (`HOOK_PID`) below it.
+pub(super) fn holding(f: &Fixture, chat: &str) -> FakeProcesses {
     let store = f
         .installer
         .cursor_config()
         .chats()
         .join("87460ce610ea3b92e1e9d04e6e66eac4")
-        .join(sid());
+        .join(chat);
     std::fs::create_dir_all(&store).unwrap();
     std::fs::write(store.join("store.db"), b"").unwrap();
     let uid = agent_relay_node::relay::peer::current_uid();
@@ -61,7 +67,7 @@ async fn an_accepted_announcement_signs_the_identity_call_as_its_chat() {
     let hooks = hook_table(&f);
     assert_eq!(
         accepted(&account, &f.core, HOOK_PID, &sid(), &hooks),
-        Ok(())
+        Ok(Chat::Registered)
     );
     assert_eq!(
         accepted(&account, &f.core, 4400 + 1, &sid(), &hooks),

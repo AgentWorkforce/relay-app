@@ -127,15 +127,16 @@ pub(crate) async fn intent(
     let core = outbound.core.clone();
     let generation = core.plugins.cloud.identity_sync_generation();
     let intent = announced(&input, generation).map_err(refused)?;
-    let checked = {
-        let (account, core, sid) = (account.clone(), core.clone(), intent.sid.clone());
-        tokio::task::spawn_blocking(move || {
-            accepted(&account, &core, pid, &sid, &SystemProcesses::default())
-        })
-        .await
-        .unwrap_or(Err("cursor_hook_unverified"))
-    };
-    checked.map_err(refused)?;
+    admitted(
+        &account,
+        &core,
+        pid,
+        &intent.sid,
+        Arc::new(SystemProcesses::default()),
+        started + ANNOUNCE_BUDGET.saturating_sub(REGISTER_MARGIN),
+    )
+    .await
+    .map_err(refused)?;
     if core.plugins.cloud.identity_sync_generation() != generation {
         return Err(refused("account_changed"));
     }
@@ -182,6 +183,18 @@ pub(crate) async fn status(
     Ok(json!({"attesting": attesting}))
 }
 
+/// How much of the announce budget an on-demand registration leaves for
+/// keeping the call once it is done.
+const REGISTER_MARGIN: Duration = Duration::from_millis(250);
+
+/// An announced chat that passed every check: on the relay already, or not
+/// yet but announced by the process holding it.
+#[derive(Debug, PartialEq, Eq)]
+enum Chat {
+    Registered,
+    Unregistered,
+}
+
 /// Every check on an announced call of chat `sid` by hook process `pid`.
 fn accepted(
     account: &Account,
@@ -189,20 +202,100 @@ fn accepted(
     pid: i32,
     sid: &str,
     table: &dyn ProcessTable,
-) -> Result<(), &'static str> {
+) -> Result<Chat, &'static str> {
     if !attesting(account, core) {
         return Err("cursor_attestation_unavailable");
     }
-    if !cursor_cli::is_session_id(sid) || registered(core, sid).is_none() {
+    if !cursor_cli::is_session_id(sid) {
         return Err("cursor_chat_unknown");
     }
     let installer = account
         .mcp_config
         .get()
         .ok_or("cursor_attestation_unavailable")?;
-    cursor_cli::hook_caller_holds(&installer.cursor_config(), table, pid, sid)
-        .then_some(())
-        .ok_or("cursor_hook_unverified")
+    let holds = || cursor_cli::hook_caller_holds(&installer.cursor_config(), table, pid, sid);
+    if registered(core, sid).is_some() {
+        return holds()
+            .then_some(Chat::Registered)
+            .ok_or("cursor_hook_unverified");
+    }
+    // A chat not on the relay yet may be put there only by the process
+    // holding it; any other caller learns no more than that it is unknown.
+    holds()
+        .then_some(Chat::Unregistered)
+        .ok_or("cursor_chat_unknown")
+}
+
+/// The checks on an announced call of chat `sid` by hook process `pid`,
+/// putting the chat on the relay when it is not yet there (a new chat whose
+/// first action is an identity call). Done by `deadline` or refused.
+async fn admitted(
+    account: &Arc<Account>,
+    core: &Arc<Core>,
+    pid: i32,
+    sid: &str,
+    table: Arc<dyn ProcessTable>,
+    deadline: Instant,
+) -> Result<(), &'static str> {
+    let chat = {
+        let (account, core, sid) = (account.clone(), core.clone(), sid.to_owned());
+        tokio::task::spawn_blocking(move || accepted(&account, &core, pid, &sid, table.as_ref()))
+            .await
+            .unwrap_or(Err("cursor_hook_unverified"))?
+    };
+    match chat {
+        Chat::Registered => Ok(()),
+        Chat::Unregistered => register(core, sid, deadline).await,
+    }
+}
+
+/// Puts chat `sid`, whose own hook process announced a call, on the relay
+/// as `agent.register` does for it, and waits by `deadline` for Cloud to
+/// hold its identity. Core refuses a chat its discovery does not list live:
+/// Cursor's `beforeSubmitPrompt` hook records an editor conversation, and
+/// `cursor-agent` holds a CLI chat's store. Registering creates the agent
+/// on Relaycast, so it is one Relaycast request, a store write and, after
+/// it, one identity sync to Cloud. Both run on as their own tasks past
+/// `deadline`, so a slow registration still finishes for the next call.
+async fn register(core: &Arc<Core>, sid: &str, deadline: Instant) -> Result<(), &'static str> {
+    let started = Instant::now();
+    let registering = {
+        let (core, target) = (core.clone(), Target::new(SessionKind::CursorCli, sid));
+        tokio::spawn(async move { core.register_target(&target, None, None).await })
+    };
+    match tokio::time::timeout_at(deadline.into(), registering).await {
+        Ok(Ok(Ok(_))) => {}
+        Ok(Ok(Err(error))) => {
+            eprintln!(
+                "[cursor-dispatch] could not put a chat on the relay: {}",
+                error.message
+            );
+            return Err("cursor_chat_unknown");
+        }
+        Ok(Err(_)) => return Err("cursor_chat_unknown"),
+        Err(_) => {
+            eprintln!("[cursor-dispatch] putting a chat on the relay outlasted the hook");
+            return Err("cursor_chat_unknown");
+        }
+    }
+    // An existing registration in another workspace is answered as it is.
+    if registered(core, sid).is_none() {
+        return Err("cursor_chat_unknown");
+    }
+    // Cloud acts as the chat with the identities it holds. A sync that has
+    // not finished by the deadline goes on; the call is kept either way.
+    let syncing = {
+        let identities = Identities::new(core.clone());
+        tokio::spawn(async move { identities.sync_desktop_identities().await })
+    };
+    let synced = tokio::time::timeout_at(deadline.into(), syncing)
+        .await
+        .is_ok();
+    eprintln!(
+        "[cursor-dispatch] put a chat on the relay in {} ms (identity synced: {synced})",
+        started.elapsed().as_millis()
+    );
+    Ok(())
 }
 
 #[derive(Deserialize)]
