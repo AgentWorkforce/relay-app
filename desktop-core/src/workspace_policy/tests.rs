@@ -479,3 +479,59 @@ fn a_repeated_settings_failure_is_reported_once() {
     cache.settings_applied(None);
     assert!(cache.settings_failure_is_new("another failure"));
 }
+
+
+fn seeded(revision: i64) -> WorkspacePolicy {
+    parse_document(&json!({
+        "version": 2, "revision": revision, "managed": true, "consent": [],
+        "sections": {"spawn": {"locked": {"spawn_max_agents": 3}, "defaults": {}}}
+    }))
+    .unwrap()
+}
+
+/// An enrollment key's policy is cached only for the attempt that held it
+/// and a named workspace, provisionally: it never replaces a workspace
+/// already read, and the first read of its workspace replaces it whatever
+/// the revision, or clears it when that workspace has none.
+#[test]
+fn a_seed_is_provisional_and_bound_to_its_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = WorkspacePolicies::new(dir.path());
+    // Another attempt's seed, or no workspace, caches nothing.
+    cache.hold_seed(1, Some(seeded(9)));
+    cache.take_seed(2, "ws_a");
+    assert!(cache.entry("ws_a").is_none());
+    cache.hold_seed(1, Some(seeded(9)));
+    cache.take_seed(1, "");
+    assert!(cache.entry("").is_none());
+    // Cached provisionally for the workspace the attempt connects to.
+    cache.hold_seed(1, Some(seeded(9)));
+    cache.take_seed(1, "ws_a");
+    let entry = cache.entry("ws_a").unwrap();
+    assert!(entry.provisional);
+    assert_eq!(entry.revision, 9);
+    // The workspace's own policy replaces it, though its revision is lower.
+    let mut own = seeded(3);
+    own.managed = false;
+    cache.record("ws_a", Fetched::Policy(Box::new(own.clone())));
+    let entry = cache.entry("ws_a").unwrap();
+    assert!(!entry.provisional);
+    assert_eq!((entry.revision, entry.policy.managed), (3, false));
+    // A seed never replaces a workspace already read.
+    cache.hold_seed(1, Some(seeded(9)));
+    cache.take_seed(1, "ws_a");
+    assert_eq!(cache.entry("ws_a").unwrap().revision, 3);
+    // A workspace with no policy clears a seed, revision and all.
+    cache.hold_seed(5, Some(seeded(9)));
+    cache.take_seed(5, "ws_b");
+    cache.record("ws_b", Fetched::Absent);
+    let entry = cache.entry("ws_b").unwrap();
+    assert!(!entry.provisional);
+    assert_eq!(entry.policy, WorkspacePolicy::unset());
+    assert_eq!(entry.revision, UNSET_REVISION);
+    // A failed read keeps the seed.
+    cache.hold_seed(6, Some(seeded(9)));
+    cache.take_seed(6, "ws_c");
+    cache.record("ws_c", Fetched::Failed);
+    assert!(cache.entry("ws_c").unwrap().provisional);
+}

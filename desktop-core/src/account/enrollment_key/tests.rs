@@ -323,7 +323,6 @@ fn a_managed_exchange_carries_the_workspace_policy() {
     let Outcome::Session(_, enrolled) = outcome(&reply(200, body, None), SITE) else {
         panic!("expected a session");
     };
-    assert!(enrolled.managed);
     let seed = enrolled.seed.expect("a seed");
     assert_eq!(seed.revision(), 9);
     // The answer's managed is the session's, whatever the document says.
@@ -352,6 +351,32 @@ fn an_unusable_policy_in_the_exchange_is_ignored() {
             panic!("expected a session for {extra}");
         };
         assert!(enrolled.seed.is_none(), "{extra}");
-        assert_eq!(enrolled.managed, extra["managed"] == json!(true), "{extra}");
     }
+}
+
+/// A document whose revision is not the answer's `policy_revision` is not
+/// trusted; without `policy_revision` the document's own is taken.
+#[test]
+fn a_document_that_disagrees_with_policy_revision_is_ignored() {
+    let answer = |extra: Value| {
+        let mut body = json!({"access_token": "access-1"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let Outcome::Session(_, enrolled) = outcome(&reply(200, body, None), SITE) else {
+            panic!("expected a session");
+        };
+        enrolled.seed
+    };
+    assert!(
+        answer(json!({"policy_revision": 9, "workspace_policy": policy_document(7)})).is_none()
+    );
+    assert_eq!(
+        answer(json!({"workspace_policy": policy_document(7)})).map(|seed| seed.revision()),
+        Some(7)
+    );
+    // The answer's managed is the document's, managed or not.
+    let unmanaged = answer(json!({"managed": false, "policy_revision": 7,
+        "workspace_policy": policy_document(7)}));
+    assert!(!unmanaged.unwrap().managed());
 }
