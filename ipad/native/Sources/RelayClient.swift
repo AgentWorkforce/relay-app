@@ -283,7 +283,13 @@ struct RelayAPIError: LocalizedError {
     /// A paid GPT-Live session the voice broker created but couldn't confirm
     /// closed; the call reports usage for it until the close is confirmed.
     var voiceSessionID: String? = nil
-    var errorDescription: String? { message }
+    /// `message` holds text from a server's answer, not copy the app wrote.
+    /// It is kept for classifying the failure and never shown; see UserFacingError.
+    var fromServer = false
+    /// What to show instead of a server's `message`, when the app worded the
+    /// failure from it (SpawnFailure).
+    var summary: String? = nil
+    var errorDescription: String? { UserFacingError.apiMessage(self) }
 }
 
 private enum SecureStore {
@@ -343,6 +349,9 @@ private enum SecureStore {
     @Published var connected = false
     @Published var busy = false
     @Published var error: String?
+    /// A small inline line for the open conversation while its latest
+    /// automatic read failed; never an alert. Cleared by the next good read.
+    @Published var refreshNotice: String?
     @Published var workspace = UserDefaults.standard.string(forKey: "relay.workspaceName") ?? "Workspace"
     @Published var account = UserDefaults.standard.string(forKey: "relay.accountName") ?? "Agent Relay"
     /// The bare handle agents use to reach this person (`to=<handle>`).
@@ -423,9 +432,11 @@ private enum SecureStore {
     private var conversationMetadataWorkerID: UUID?
     private var conversationRefreshGeneration = 0
     private var refreshGeneration = 0
-    /// Which failed automatic reads reach the alert: not one from before the
-    /// app was last suspended, nor a cancelled or superseded one.
+    /// Which failed automatic reads are reported (never in the alert): not one
+    /// from before the app was last suspended, nor a cancelled or superseded one.
     private var connectionReports = ConnectionErrorReports()
+    /// Reads the server asked the app to hold back (429, Retry-After, DM reads shed).
+    private var readBackoff = ReadBackoff()
     /// A sign-out is under way: the session is already invalid while its network calls finish.
     private(set) var signingOut = false
     /// Changes whenever the signed-in identity does, so file work started for
@@ -494,7 +505,8 @@ private enum SecureStore {
             let voiceSession = string(json["sessionId"])
             throw RelayAPIError(message: detail, status: http.statusCode, code: code,
                                 retryAfterSeconds: headerDelay,
-                                voiceSessionID: voiceSession.isEmpty ? nil : voiceSession)
+                                voiceSessionID: voiceSession.isEmpty ? nil : voiceSession,
+                                fromServer: code != "database_overloaded")
         }
         throw RelayAPIError(message: "Agent Relay is busy. Try again in a moment.", status: 503,
                             code: "database_overloaded")
@@ -512,6 +524,11 @@ private enum SecureStore {
             throw RelayAPIError(message: "Invalid Relaycast URL")
         }
         let request = RelayRequestSpec(url: url, token: token, method: method, body: body, idempotencyKey: idempotencyKey)
+        let readScope = ReadBackoff.scope(path: path, method: method)
+        if let readScope, let wait = readBackoff.remaining(readScope, token: token) {
+            // The server asked for a pause; reading before it ends lengthens it.
+            throw RelayAPIError(message: UserFacingError.busy, code: "read_paused", retryAfterSeconds: wait)
+        }
         let result: JSONObject
         do {
             result = try await call(request)
@@ -527,7 +544,7 @@ private enum SecureStore {
             }
             UserDefaults.standard.set(person.name, forKey: "relay.mobileName")
             registeredPushToken = nil
-            result = try await call(request.resent(with: person.token))
+            result = try await resend(request, with: person.token, pausing: readScope)
         } catch let failure as RelayAPIError where !agent && failure.status == 401 {
             // Relaycast answers 401 for a workspace key it no longer knows: a
             // rotation whose grace has lapsed. Ask Cloud for the current key
@@ -538,9 +555,23 @@ private enum SecureStore {
             } catch WorkspaceKeyRecoveryError.superseded {
                 throw failure
             }
-            result = try await call(request.resent(with: replacement))
+            result = try await resend(request, with: replacement, pausing: readScope)
+        } catch {
+            if let readScope { readBackoff.failed(readScope, token: token, error: error) }
+            throw error
         }
+        if let readScope { readBackoff.succeeded(readScope) }
         return result["data"] ?? result
+    }
+    /// Sends `request` again with a recovered `token`. A wait the server asks
+    /// for pauses `readScope` for that token, the one the resend used.
+    private func resend(_ request: RelayRequestSpec, with token: String, pausing readScope: String?) async throws -> JSONObject {
+        do {
+            return try await call(request.resent(with: token))
+        } catch {
+            if let readScope { readBackoff.failed(readScope, token: token, error: error) }
+            throw error
+        }
     }
     /// The current key for a workspace key Relaycast refused, resolved from
     /// Cloud with this device's session, checked like a sign-in's and saved.
@@ -734,7 +765,7 @@ private enum SecureStore {
             do {
                 try await finishSavedCloudSignIn()
             } catch {
-                self.error = error.localizedDescription
+                reportFailure(error)
             }
             return
         }
@@ -809,7 +840,7 @@ private enum SecureStore {
                 signInStatus = ""
             }
         } catch {
-            self.error = error.localizedDescription
+            reportFailure(error)
             signInFailures += 1
         }
     }
@@ -840,7 +871,7 @@ private enum SecureStore {
             SecureStore.write(url.absoluteString, for: "cloudPendingURL")
             try await pollCloudGrant(code: code, deadline: deadline, initialInterval: interval)
         } catch {
-            self.error = error.localizedDescription
+            reportFailure(error)
             signInFailures += 1
         }
     }
@@ -1058,18 +1089,31 @@ private enum SecureStore {
     func sceneChanged(foreground: Bool) {
         connectionReports.sceneChanged(foreground: foreground)
     }
-    /// Shows a failed automatic read in the alert unless it is stale, and
-    /// returns whether it did.
+    /// Counts a failed automatic read unless it is stale, and returns whether
+    /// it did. An automatic read never raises the alert: the next read retries
+    /// it (after any wait the server asked for), a failed presence refresh
+    /// shows as Offline, and a failed history read shows the open
+    /// conversation's inline `refreshNotice`. A channel's history is not
+    /// re-read by the periodic refresh, so its notice promises no retry.
     @discardableResult
-    private func reportConnectionFailure(_ failure: Error, from ticket: ConnectionErrorReports.Ticket) -> Bool {
+    private func reportConnectionFailure(_ failure: Error, from ticket: ConnectionErrorReports.Ticket,
+                                         channel: Bool = false) -> Bool {
         switch connectionReports.decision(for: failure, from: ticket) {
-        case .show(let message):
-            error = message
+        case .show:
+            if ticket.operation == .history {
+                refreshNotice = channel ? UserFacingError.staleChannelMessages : UserFacingError.staleMessages
+            }
             return true
         case .drop(let reason):
             NSLog("%@", ConnectionErrorReports.diagnostic(ticket.operation, reason, failure))
             return false
         }
+    }
+
+    /// Shows a failure the person caused (a send, a sign-in, a download) in
+    /// the alert, in the app's words; a cancellation shows nothing.
+    func reportFailure(_ failure: Error) {
+        if let message = UserFacingError.message(for: failure) { error = message }
     }
 
     func refresh() async {
@@ -1136,8 +1180,7 @@ private enum SecureStore {
             rosterLoaded = true
             // A failure from before the app was suspended says nothing about
             // the connection now; the foreground refresh decides that.
-            if reportConnectionFailure(error, from: ticket),
-               (error as? RelayAPIError)?.code != "database_overloaded" { connected = false }
+            if reportConnectionFailure(error, from: ticket), !UserFacingError.isBackoff(error) { connected = false }
         }
         await messageRefresh
         await channelRefresh
@@ -1263,7 +1306,7 @@ private enum SecureStore {
             return true
         } catch is CancellationError {
             return false
-        } catch { self.error = error.localizedDescription; return false }
+        } catch { reportFailure(error); return false }
     }
     /// Joining is idempotent on Relaycast. A join that returns after the
     /// person signed out or switched accounts is dropped.
@@ -1557,7 +1600,7 @@ private enum SecureStore {
             sessionsMissingFromHistory.insert(id)
         } catch {
             summaries[id] = SessionOverview(status: .failed, title: previous?.title ?? "",
-                                            description: previous?.description ?? "", error: error.localizedDescription)
+                                            description: previous?.description ?? "", error: UserFacingError.message(for: error))
         }
     }
     func requestSummary(for agent: RelayAgent) async {
@@ -1578,7 +1621,7 @@ private enum SecureStore {
             sessionsMissingFromHistory.insert(id)
         } catch {
             summaries[id] = SessionOverview(status: .failed, title: summaries[id]?.title ?? "",
-                                            description: summaries[id]?.description ?? "", error: error.localizedDescription)
+                                            description: summaries[id]?.description ?? "", error: UserFacingError.message(for: error))
         }
     }
     func selectConversation(_ agent: RelayAgent?) {
@@ -1587,6 +1630,7 @@ private enum SecureStore {
         selectedConversation = id
         messages = []
         loadedHistoryConversation = nil
+        refreshNotice = nil
     }
     /// Whether `messages` holds the history of `agent`'s conversation, read
     /// since it was opened. Until then, an empty or partial list says nothing
@@ -1594,8 +1638,9 @@ private enum SecureStore {
     func historyLoaded(for agent: RelayAgent) -> Bool {
         selectedConversation == agent.id && loadedHistoryConversation == agent.id
     }
+    /// A failure shows as the inline `refreshNotice`, never the alert.
     /// Push-driven reloads pass `reportsErrors: false` so a flaky
-    /// connection doesn't raise an alert the person didn't ask for.
+    /// connection shows nothing the person didn't ask for.
     func loadHistory(for agent: RelayAgent, reportsErrors: Bool = true) async {
         guard selectedConversation == agent.id else { return }
         let ticket = connectionReports.begin(.history)
@@ -1630,9 +1675,12 @@ private enum SecureStore {
                 }
             }
             error = nil
+            refreshNotice = nil
             connectionReports.succeeded(ticket)
         } catch {
-            if reportsErrors, selectedConversation == agent.id { reportConnectionFailure(error, from: ticket) }
+            if reportsErrors, selectedConversation == agent.id {
+                reportConnectionFailure(error, from: ticket, channel: agent.source == .channel)
+            }
         }
         await refreshDelivery(for: agent)
     }
@@ -1752,7 +1800,7 @@ private enum SecureStore {
             threadMisses.sent(to: agent.name)
             return response
         }, onFailure: { error in
-            self.error = error.localizedDescription
+            self.reportFailure(error)
             // The POST may still have been applied; history decides, never a re-send.
             Task { if self.selectedConversation == agent.id { await self.loadHistory(for: agent, reportsErrors: false) } }
         }, afterAcceptance: { [weak self] in
@@ -1808,7 +1856,7 @@ private enum SecureStore {
         let (_, response) = try await URLSession.shared.upload(for: request, fromFile: url)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw RelayAPIError(message: "File upload failed (HTTP \(status))", status: status)
+            throw RelayAPIError(message: "The file could not be uploaded. Try again.", status: status)
         }
         try checkSession(generation)
 
@@ -1868,8 +1916,8 @@ private enum SecureStore {
             accepted = object(try await api("/nodes/\(encodedNode)/actions/spawn/invoke",
                                             agent: true, method: "POST", body: ["input": input]))
         } catch let error as RelayAPIError {
-            throw RelayAPIError(message: SpawnFailure.message(error.message, node: node.name, name: name, harness: harness),
-                                status: error.status, code: error.code)
+            throw SpawnFailure.error(error.message, node: node.name, name: name, harness: harness,
+                                     status: error.status, code: error.code, fromServer: error.fromServer)
         } catch {
             // A server rejection keeps its HTTP status above. Anything else
             // means the reply never arrived: a fork must not be sent again.
@@ -1906,14 +1954,12 @@ private enum SecureStore {
                 let output = object(receipt["output"])
                 guard output["spawned"] as? Bool == true,
                       output["ready"] as? Bool != false else {
-                    throw RelayAPIError(message: SpawnFailure.message(string(output["error"]), node: node.name,
-                                                                      name: name, harness: harness))
+                    throw SpawnFailure.error(string(output["error"]), node: node.name, name: name, harness: harness)
                 }
                 await refresh()
                 return .ready
             case "failed", "cancelled", "canceled":
-                throw RelayAPIError(message: SpawnFailure.message(string(receipt["error"]), node: node.name,
-                                                                  name: name, harness: harness))
+                throw SpawnFailure.error(string(receipt["error"]), node: node.name, name: name, harness: harness)
             default: break
             }
         }
@@ -1970,19 +2016,18 @@ private enum SecureStore {
                 case "completed":
                     let output = object(receipt["output"])
                     guard output["released"] as? Bool == true else {
-                        throw RelayAPIError(message: string(output["error"]).isEmpty ? "The agent did not stop" : string(output["error"]))
+                        throw RelayAPIError(message: string(output["error"]), fromServer: true, summary: "The agent did not stop")
                     }
                     await refresh()
                     return true
                 case "failed", "cancelled", "canceled":
-                    let detail = string(receipt["error"])
-                    throw RelayAPIError(message: detail.isEmpty ? "The agent did not stop" : detail)
+                    throw RelayAPIError(message: string(receipt["error"]), fromServer: true, summary: "The agent did not stop")
                 default: break
                 }
             }
             throw RelayAPIError(message: "Release was requested, but its result is not available yet. Check Agents before trying again.")
         } catch {
-            self.error = error.localizedDescription
+            reportFailure(error)
             return false
         }
     }
@@ -2013,7 +2058,7 @@ private enum SecureStore {
             terminalSocket = socket
             socket.resume()
             terminalTask = Task { await streamTerminal(socket, id: id) }
-        } catch { self.error = error.localizedDescription }
+        } catch { reportFailure(error) }
     }
     private func streamTerminal(_ socket: URLSessionWebSocketTask, id: String) async {
         do {
@@ -2047,7 +2092,7 @@ private enum SecureStore {
         } catch {
             if !Task.isCancelled && attachedID == id {
                 terminalEnded = true
-                self.error = error.localizedDescription
+                reportFailure(error)
             }
         }
     }
@@ -2056,7 +2101,7 @@ private enum SecureStore {
               let data = try? JSONSerialization.data(withJSONObject: frame),
               let text = String(data: data, encoding: .utf8) else { return }
         do { try await socket.send(.string(text)) }
-        catch { self.error = error.localizedDescription }
+        catch { reportFailure(error) }
     }
     func terminalInput(_ text: String, raw: Bool = false) async {
         guard let id = terminalSessionID, attachedMode == "drive" else { return }

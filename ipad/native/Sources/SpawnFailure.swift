@@ -11,10 +11,26 @@ enum SpawnOutcome: Equatable {
 }
 
 /// Turns the node's or Relay's raw start error into a sentence a person can
-/// act on, keeping the raw detail for support.
+/// act on. `message` keeps the raw detail for classification; only `summary`
+/// is shown (see `error(_:node:name:harness:status:code:)`).
 enum SpawnFailure {
     static func message(_ detail: String, node: String, name: String, harness: String) -> String {
         let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = Self.summary(detail, node: node, name: name, harness: harness)
+        return detail.isEmpty ? summary : "\(summary)\nDetails: \(detail)"
+    }
+
+    /// The failure as shown: the sentence alone, never a server's or node's
+    /// raw detail. `fromServer` is false only when `detail` is the app's own copy.
+    static func error(_ detail: String, node: String, name: String, harness: String,
+                      status: Int? = nil, code: String = "", fromServer: Bool = true) -> RelayAPIError {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return RelayAPIError(message: Self.message(trimmed, node: node, name: name, harness: harness),
+                             status: status, code: code, fromServer: fromServer && !trimmed.isEmpty,
+                             summary: Self.summary(trimmed, node: node, name: name, harness: harness))
+    }
+
+    static func summary(_ detail: String, node: String, name: String, harness: String) -> String {
         let lower = detail.lowercased()
         let summary: String
         if lower.contains("spawn_fork_refused") {
@@ -44,7 +60,7 @@ enum SpawnFailure {
         } else {
             summary = "\(node) did not start \(name)."
         }
-        return detail.isEmpty ? summary : "\(summary)\nDetails: \(detail)"
+        return summary
     }
 }
 
