@@ -1332,6 +1332,9 @@ struct RelaySettingsSection: View {
                 Text(enabled ? CursorHooks.onExplanation : CursorHooks.offExplanation)
                     .zoomFont(.footnote).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text(CursorHooks.localOnlyNote)
+                    .zoomFont(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let cursorDeliveryError { notice(cursorDeliveryError, color: .red) }
             }
             Spacer(minLength: 12)
