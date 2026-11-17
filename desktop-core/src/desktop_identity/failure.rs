@@ -68,7 +68,7 @@ impl Identities {
 
     /// A failed identity sync leaves `join_relay` unable to link this
     /// desktop's agents, so it is reported, never dropped silently.
-    fn report_sync_failure(&self, error: &CloudError) {
+    pub(super) fn report_sync_failure(&self, error: &CloudError) {
         let message = sync_failure_message(error);
         agent_relay_node::relay::diagnostics::write(format_args!("relay: {message}"));
         self.hub.activity(Level::Warning, message);

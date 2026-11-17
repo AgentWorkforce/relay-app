@@ -2044,6 +2044,256 @@ mod tests {
         assert_eq!(delay(&core), Duration::from_secs(30));
     }
 
+    /// A core with the account plugin and one agent whose capability reads
+    /// fail with `error` while `reads_fail` is set; every other request
+    /// succeeds and advertises the attestation capability.
+    fn core_with_failing_reads(
+        error: CloudError,
+    ) -> (
+        tempfile::TempDir,
+        Identities,
+        Arc<FakeCloud>,
+        Arc<AtomicBool>,
+    ) {
+        let (temp, core, cloud) = core_with_account();
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("chat", "agent-1", KEY), Secret::new("secret")));
+            })
+            .unwrap();
+        *cloud.response.lock().unwrap() = Some(json!({
+            "synced": 1,
+            "identities": [],
+            "capabilities": {"claude_session_attestation": 1}
+        }));
+        let reads_fail = Arc::new(AtomicBool::new(true));
+        let weak = Arc::downgrade(&cloud);
+        let failing = reads_fail.clone();
+        *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+            let cloud = weak.upgrade().unwrap();
+            let get = cloud.calls.lock().unwrap().last().unwrap().0 == "GET";
+            *cloud.failure.lock().unwrap() =
+                (get && failing.load(Ordering::SeqCst)).then(|| error.clone());
+        }));
+        (temp, core, cloud, reads_fail)
+    }
+
+    /// Lets the next sync read the capability again, or, with `hold`, also
+    /// ends the hold of the failed reads so far.
+    fn expire_capability_retry(core: &Identities, hold: bool) {
+        let mut failed = core.state.capability_read_failed.lock().unwrap();
+        let read = failed.as_mut().unwrap();
+        read.retry_at = Instant::now();
+        if hold {
+            read.hold_ends = Instant::now();
+        }
+    }
+
+    /// The activity lines published since `events` subscribed, as level and
+    /// message.
+    fn activity_lines(
+        events: &mut tokio::sync::broadcast::Receiver<agent_relay_node::relay::protocol::Event>,
+    ) -> Vec<(String, String)> {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| event.topic == agent_relay_node::relay::protocol::Topic::Activity)
+            .map(|event| {
+                let text = |field: &str| event.data[field].as_str().unwrap_or_default().to_string();
+                (text("level"), text("message"))
+            })
+            .collect()
+    }
+
+    /// Only a read that may answer soon holds the sync back. Any other
+    /// failure would come again: the sync goes without the key, as it did
+    /// before the hold, and reports its own outcome.
+    #[tokio::test]
+    async fn only_a_transient_capability_read_failure_holds_the_sync_back() {
+        let status = |status| CloudError::Status {
+            status,
+            message: None,
+        };
+        for error in [CloudError::Unreachable, status(503)] {
+            let (_temp, core, cloud, _) = core_with_failing_reads(error.clone());
+            core.sync_desktop_identities().await;
+            assert!(cloud.writes().is_empty(), "{error:?} holds the sync back");
+        }
+        for error in [status(403), status(401)] {
+            let (_temp, core, cloud, _) = core_with_failing_reads(error.clone());
+            crate::account::cloud_binding::note_ready_for_test(&core);
+            core.sync_desktop_identities().await;
+            let writes = cloud.writes();
+            assert_eq!(writes.len(), 1, "{error:?} does not hold the sync back");
+            assert_eq!(writes[0].0, "PUT");
+            assert!(writes[0]
+                .2
+                .as_ref()
+                .unwrap()
+                .get("attestation_key")
+                .is_none());
+            assert_eq!(crate::account::cloud_binding::report(&core), Some("ready"));
+        }
+    }
+
+    /// Failed reads hold syncs back for at most `HOLD_LIMIT` from the first
+    /// of them; then the sync goes without the key, the read is still
+    /// retried, and once it succeeds the next sync carries the key.
+    #[tokio::test]
+    async fn a_held_sync_goes_without_the_key_once_the_hold_limit_has_passed() {
+        let (_temp, core, cloud, reads_fail) = core_with_failing_reads(CloudError::Unreachable);
+        core.sync_desktop_identities().await;
+        expire_capability_retry(&core, false);
+        core.sync_desktop_identities().await;
+        assert_eq!(cloud.calls.lock().unwrap().len(), 2, "two failed reads");
+        assert!(cloud.writes().is_empty(), "held within the limit");
+
+        expire_capability_retry(&core, true);
+        core.sync_desktop_identities().await;
+        let writes = cloud.writes();
+        assert_eq!(writes.len(), 1, "the limit has passed");
+        assert!(writes[0]
+            .2
+            .as_ref()
+            .unwrap()
+            .get("attestation_key")
+            .is_none());
+
+        // The read is still retried at its backoff, and still not holding.
+        expire_capability_retry(&core, false);
+        core.sync_desktop_identities().await;
+        let methods: Vec<String> = (cloud.calls.lock().unwrap().iter())
+            .map(|(method, _, _)| method.clone())
+            .collect();
+        assert_eq!(methods, ["GET", "GET", "GET", "PUT", "GET"]);
+
+        reads_fail.store(false, Ordering::SeqCst);
+        expire_capability_retry(&core, false);
+        core.sync_desktop_identities().await;
+        let key = core.account.as_ref().unwrap();
+        let key = key.attestation_key.get(&core.config.app_data_dir).unwrap();
+        let writes = cloud.writes();
+        assert_eq!(writes.len(), 2, "the key changes the body");
+        assert_eq!(
+            writes[1].2.as_ref().unwrap()["attestation_key"],
+            key.registration()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_held_capability_read_failure_is_reported_once() {
+        let (_temp, core, cloud, _) = core_with_failing_reads(CloudError::Unreachable);
+        let mut events = core.hub.subscribe();
+
+        core.sync_desktop_identities().await;
+        assert_eq!(
+            activity_lines(&mut events),
+            [(
+                "warning".to_string(),
+                format!("Desktop identity sync failed: {}", CloudError::Unreachable)
+            )]
+        );
+
+        expire_capability_retry(&core, false);
+        core.sync_desktop_identities().await;
+        assert_eq!(cloud.calls.lock().unwrap().len(), 2, "the read was retried");
+        assert!(
+            activity_lines(&mut events).is_empty(),
+            "a retry is not reported"
+        );
+    }
+
+    /// The report is for the first failure that holds syncs back, which
+    /// need not be the account generation's first failed read.
+    #[tokio::test]
+    async fn a_held_failure_after_one_that_did_not_hold_is_still_reported() {
+        let (_temp, core, cloud, _) = core_with_failing_reads(CloudError::Unreachable);
+        let error = Arc::new(Mutex::new(CloudError::Status {
+            status: 403,
+            message: None,
+        }));
+        let weak = Arc::downgrade(&cloud);
+        let next = error.clone();
+        *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+            let cloud = weak.upgrade().unwrap();
+            let get = cloud.calls.lock().unwrap().last().unwrap().0 == "GET";
+            *cloud.failure.lock().unwrap() = get.then(|| next.lock().unwrap().clone());
+        }));
+        let mut events = core.hub.subscribe();
+
+        core.sync_desktop_identities().await;
+        assert_eq!(cloud.writes().len(), 1, "a 403 does not hold the sync back");
+        assert!(activity_lines(&mut events).is_empty(), "nothing was held");
+
+        *error.lock().unwrap() = CloudError::Unreachable;
+        expire_capability_retry(&core, false);
+        core.sync_desktop_identities().await;
+        assert_eq!(cloud.writes().len(), 1, "the failed read now holds");
+        assert_eq!(
+            activity_lines(&mut events),
+            [(
+                "warning".to_string(),
+                format!("Desktop identity sync failed: {}", CloudError::Unreachable)
+            )]
+        );
+    }
+
+    /// A read that failed after the sign-in changed says nothing about the
+    /// current sign-in: it marks no failed sync and reports nothing.
+    #[tokio::test]
+    async fn a_sign_in_change_during_a_failed_capability_read_marks_no_failed_sync() {
+        for change_account in [false, true] {
+            let (_temp, core, cloud, _) = core_with_failing_reads(CloudError::Unreachable);
+            crate::account::cloud_binding::note_ready_for_test(&core);
+            let weak = Arc::downgrade(&cloud);
+            *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+                let cloud = weak.upgrade().unwrap();
+                if change_account {
+                    *cloud.site.lock().unwrap() = Some("https://other.example".into());
+                } else {
+                    cloud
+                        .identity_sync_generation
+                        .fetch_add(1, Ordering::SeqCst);
+                }
+                *cloud.failure.lock().unwrap() = Some(CloudError::Unreachable);
+            }));
+            let mut events = core.hub.subscribe();
+
+            core.sync_desktop_identities().await;
+
+            assert_eq!(cloud.calls.lock().unwrap().len(), 1, "only the read");
+            assert_eq!(crate::account::cloud_binding::report(&core), Some("ready"));
+            assert!(activity_lines(&mut events).is_empty());
+        }
+    }
+
+    /// The backoff belongs to one account generation: another account's
+    /// failure starts it over, with the hold counted from its own first
+    /// failure.
+    #[tokio::test]
+    async fn a_failed_read_for_another_account_starts_the_backoff_over() {
+        let (_temp, core, cloud, _) = core_with_failing_reads(CloudError::Unreachable);
+        core.sync_desktop_identities().await;
+        expire_capability_retry(&core, false);
+        core.sync_desktop_identities().await;
+        let (delay, hold_ends) = {
+            let failed = core.state.capability_read_failed.lock().unwrap();
+            let read = failed.as_ref().unwrap();
+            (read.delay, read.hold_ends)
+        };
+        assert_eq!(delay, Duration::from_secs(60));
+
+        // Same generation, another account.
+        *cloud.site.lock().unwrap() = Some("https://other.example".into());
+        core.sync_desktop_identities().await;
+
+        assert_eq!(cloud.calls.lock().unwrap().len(), 3, "read at once");
+        let failed = core.state.capability_read_failed.lock().unwrap();
+        let read = failed.as_ref().unwrap();
+        assert_eq!(read.delay, Duration::from_secs(30));
+        assert!(read.hold_ends > hold_ends, "a fresh first failure");
+        assert!(cloud.writes().is_empty());
+    }
+
     #[tokio::test]
     async fn capability_discovery_continues_when_all_agents_are_missing() {
         let (_temp, core, cloud) = core();
