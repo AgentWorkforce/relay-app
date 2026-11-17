@@ -28,6 +28,7 @@
 //! This is the reader only: nothing here enforces a setting yet.
 
 use agent_relay_node::relay::cloud_session::CloudError;
+use agent_relay_node::relay::settings_policy::SettingsPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub mod keys;
+pub mod settings;
 
 pub use crate::history::operator_policy::{ENFORCED, MANAGED};
 pub use keys::{Key, SectionName, Tier};
@@ -448,6 +450,10 @@ fn load(file: &Path) -> (Saved, Vec<String>) {
 pub struct WorkspacePolicies {
     file: PathBuf,
     saved: Mutex<Saved>,
+    /// The settings policy last handed to the core in this run (`None` until
+    /// the first; `Some(None)` once none applies), so it is handed over only
+    /// when it changes.
+    applied_settings: Mutex<Option<Option<SettingsPolicy>>>,
 }
 
 impl WorkspacePolicies {
@@ -463,7 +469,26 @@ impl WorkspacePolicies {
         WorkspacePolicies {
             file,
             saved: Mutex::new(saved),
+            applied_settings: Mutex::new(None),
         }
+    }
+
+    /// Whether `wanted` differs from the settings policy last handed to the
+    /// core in this run.
+    pub fn settings_changed(&self, wanted: &Option<SettingsPolicy>) -> bool {
+        let applied = self
+            .applied_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        applied.as_ref() != Some(wanted)
+    }
+
+    /// Records `applied` as handed to the core.
+    pub fn settings_applied(&self, applied: Option<SettingsPolicy>) {
+        *self
+            .applied_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(applied);
     }
 
     /// The cached entry for `workspace_id`.

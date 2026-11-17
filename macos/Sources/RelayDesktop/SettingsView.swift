@@ -100,6 +100,8 @@ struct SettingsPaneView: View {
                     systemImage: "waveform.path.ecg",
                     notice: model.settingErrors["analytics_enabled"],
                     isPending: model.isSettingPending("analytics_enabled"),
+                    organization: OrganizationPolicyCopy.note(model.settings?.organizationPolicy, "analytics_enabled"),
+                    locked: OrganizationPolicyCopy.isLocked(model.settings?.organizationPolicy, "analytics_enabled"),
                     isOn: Binding(
                         get: { model.analyticsEnabled },
                         set: { model.setAnalyticsEnabled($0) }
@@ -151,6 +153,7 @@ private struct SpawnSettingsSection: View {
     @Environment(AppModel.self) private var model
 
     private var accepts: Bool { model.settings?.acceptSpawns ?? false }
+    private var policy: OrganizationPolicyState? { model.settings?.organizationPolicy }
 
     var body: some View {
         SettingsSection(title: SpawnCopy.title, description: SpawnCopy.description) {
@@ -162,6 +165,8 @@ private struct SpawnSettingsSection: View {
                     notice: model.settingErrors["accept_spawns"] ?? (accepts ? SpawnCopy.statusLine(model.spawn) : nil),
                     noticeIsStatus: model.settingErrors["accept_spawns"] == nil && SpawnCopy.statusIsHealthy(model.spawn),
                     isPending: model.isSettingPending("accept_spawns"),
+                    organization: OrganizationPolicyCopy.note(policy, "accept_spawns"),
+                    locked: OrganizationPolicyCopy.isLocked(policy, "accept_spawns"),
                     isOn: Binding(
                         get: { accepts },
                         set: { value in Task { await model.setSetting(SettingsChange(acceptSpawns: value)) } }
@@ -179,6 +184,8 @@ private struct SpawnSettingsSection: View {
                             ? (SpawnCopy.claimRetry, { Task { await model.retrySpawnClaim() } })
                             : nil,
                         isPending: model.isSettingPending("spawn_allow_teammates"),
+                        organization: OrganizationPolicyCopy.note(policy, "spawn_allow_teammates"),
+                        locked: OrganizationPolicyCopy.isLocked(policy, "spawn_allow_teammates"),
                         isOn: Binding(
                             get: { model.settings?.spawnAllowTeammates ?? false },
                             set: { value in Task { await model.setSetting(SettingsChange(spawnAllowTeammates: value)) } }
@@ -191,6 +198,8 @@ private struct SpawnSettingsSection: View {
                         systemImage: "text.bubble",
                         notice: model.settingErrors["spawn_native_input"],
                         isPending: model.isSettingPending("spawn_native_input"),
+                        organization: OrganizationPolicyCopy.note(policy, "spawn_native_input"),
+                        locked: OrganizationPolicyCopy.isLocked(policy, "spawn_native_input"),
                         isOn: Binding(
                             get: { model.settings?.spawnNativeInput ?? true },
                             set: { value in Task { await model.setSetting(SettingsChange(spawnNativeInput: value)) } }
@@ -204,6 +213,8 @@ private struct SpawnSettingsSection: View {
                             systemImage: "checkmark.shield",
                             notice: model.settingErrors["spawn_requester_approvals"],
                             isPending: model.isSettingPending("spawn_requester_approvals"),
+                            organization: OrganizationPolicyCopy.note(policy, "spawn_requester_approvals"),
+                            locked: OrganizationPolicyCopy.isLocked(policy, "spawn_requester_approvals"),
                             isOn: Binding(
                                 get: { model.settings?.spawnRequesterApprovals ?? false },
                                 set: { value in Task { await model.setSetting(SettingsChange(spawnRequesterApprovals: value)) } }
@@ -213,6 +224,8 @@ private struct SpawnSettingsSection: View {
                     SettingsDivider()
                     SpawnMaxAgentsRow(
                         value: model.settings?.spawnMaxAgents ?? SpawnCopy.maxAgentsDefault,
+                        organization: OrganizationPolicyCopy.note(policy, "spawn_max_agents"),
+                        locked: OrganizationPolicyCopy.isLocked(policy, "spawn_max_agents"),
                         set: { value in await model.setSetting(SettingsChange(spawnMaxAgents: value)) }
                     )
                 }
@@ -236,6 +249,8 @@ struct ProviderSpawnSettings: View {
                     systemImage: "lock.open",
                     notice: SpawnCopy.fullAccessChange(harness.id, true).fields.compactMap { model.settingErrors[$0] }.first,
                     isPending: SpawnCopy.fullAccessChange(harness.id, true).fields.contains(where: model.isSettingPending),
+                    organization: OrganizationPolicyCopy.note(model.settings?.organizationPolicy, "spawn_full_access_\(harness.id)"),
+                    locked: OrganizationPolicyCopy.isLocked(model.settings?.organizationPolicy, "spawn_full_access_\(harness.id)"),
                     isOn: Binding(
                         get: { SpawnCopy.fullAccess(model.settings, harness) },
                         set: { value in Task { await model.setSetting(SpawnCopy.fullAccessChange(harness.id, value)) } }
@@ -277,6 +292,8 @@ final class SpawnCapEditor {
 /// How many spawned agents may run here at once.
 private struct SpawnMaxAgentsRow: View {
     let value: Int
+    var organization: String? = nil
+    var locked = false
     let set: (Int) async -> String?
     @State private var editor = SpawnCapEditor()
 
@@ -292,7 +309,7 @@ private struct SpawnMaxAgentsRow: View {
         .onSubmit { commit() }
         .onAppear { editor.confirm(value) }
         .onChange(of: value) { _, next in editor.confirm(next) }
-        .disabled(editor.saving)
+        .disabled(editor.saving || locked)
         .accessibilityLabel(SpawnCopy.maxAgentsTitle)
     }
 
@@ -310,6 +327,9 @@ private struct SpawnMaxAgentsRow: View {
                 if let error = editor.error {
                     Text(error).zoomFont(.footnote).foregroundStyle(.red)
                 }
+                if let organization {
+                    OrganizationNote(text: organization)
+                }
             }
 
             Spacer(minLength: 20)
@@ -318,7 +338,7 @@ private struct SpawnMaxAgentsRow: View {
             Button("Save", action: commit)
                 .buttonStyle(AgentRelayPrimaryButtonStyle())
                 .controlSize(.small)
-                .disabled(editor.saving)
+                .disabled(editor.saving || locked)
         }
         .zoomPadding(16)
         .accessibilityElement(children: .contain)
@@ -729,6 +749,11 @@ private struct SettingsToggleRow: View {
     var noticeAction: (title: String, run: () -> Void)? = nil
     /// The switch shows the state asked for while the core saves it.
     var isPending = false
+    /// What the organization's workspace policy says about this setting
+    /// (`OrganizationPolicyCopy.note`).
+    var organization: String? = nil
+    /// The organization locks it: the switch cannot be changed.
+    var locked = false
     @Binding var isOn: Bool
 
     var body: some View {
@@ -754,6 +779,9 @@ private struct SettingsToggleRow: View {
                         .buttonStyle(AgentRelayPrimaryButtonStyle())
                         .zoomPadding(.top, 4)
                 }
+                if let organization {
+                    OrganizationNote(text: organization)
+                }
             }
 
             Spacer(minLength: 20)
@@ -764,6 +792,7 @@ private struct SettingsToggleRow: View {
             }
             Toggle(title, isOn: $isOn)
                 .labelsHidden()
+                .disabled(locked)
                 .toggleStyle(SwitchToggleStyle(tint: CloudTheme.settingsAction))
                 .actionCursor()
                 .controlSize(.regular)
@@ -771,6 +800,20 @@ private struct SettingsToggleRow: View {
         }
         .zoomPadding(16)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// What the organization's workspace policy says about a setting, under its
+/// row (Linux's `settings_organization::organization_note_widget`).
+struct OrganizationNote: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "building.2")
+            .zoomFont(.footnote)
+            .foregroundStyle(CloudTheme.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .zoomPadding(.top, 2)
     }
 }
 
@@ -1012,6 +1055,11 @@ struct RelaySettingsSection: View {
                 if model.settings?.autoJoinGeneral != nil {
                     SettingsDivider()
                     autoJoinGeneralRow
+                }
+                if !(model.settings?.autoJoinRepositories ?? []).isEmpty
+                    || OrganizationPolicyCopy.note(model.settings?.organizationPolicy, "auto_join_repositories") != nil {
+                    SettingsDivider()
+                    autoJoinRepositoriesRow
                 }
                 if let changes = model.settings?.agentChanges, !changes.isEmpty {
                     SettingsDivider()
@@ -1459,17 +1507,48 @@ struct RelaySettingsSection: View {
                     .zoomFont(.footnote).foregroundStyle(CloudTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let autoJoinGeneralError { notice(autoJoinGeneralError, color: .red) }
+                if let organization = OrganizationPolicyCopy.note(model.settings?.organizationPolicy, "auto_join_general") {
+                    OrganizationNote(text: organization)
+                }
             }
             Spacer(minLength: 12)
-            if enabled {
-                Button("Turn Off") { setAutoJoinGeneral(false) }
-                    .help(AutoJoinGeneral.turnOffHelp)
-            } else {
-                Button("Turn On") { setAutoJoinGeneral(true) }
-                    .help(AutoJoinGeneral.turnOnHelp)
+            Group {
+                if enabled {
+                    Button("Turn Off") { setAutoJoinGeneral(false) }
+                        .help(AutoJoinGeneral.turnOffHelp)
+                } else {
+                    Button("Turn On") { setAutoJoinGeneral(true) }
+                        .help(AutoJoinGeneral.turnOnHelp)
+                }
             }
+            .disabled(OrganizationPolicyCopy.isLocked(model.settings?.organizationPolicy, "auto_join_general"))
         }
         .zoomPadding(16)
+    }
+
+    /// The repositories whose sessions join the relay by themselves, shown
+    /// once there are some or the organization decides them. Read only here.
+    @ViewBuilder private var autoJoinRepositoriesRow: some View {
+        let entries = model.settings?.autoJoinRepositories ?? []
+        let organization = OrganizationPolicyCopy.note(model.settings?.organizationPolicy, "auto_join_repositories")
+        if !entries.isEmpty || organization != nil {
+            HStack(alignment: .top, spacing: 14) {
+                SettingsIcon(systemImage: "folder.badge.person.crop")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(OrganizationPolicyCopy.repositoriesTitle).zoomFont(.body, weight: .medium)
+                    Text(OrganizationPolicyCopy.repositoriesDetail)
+                        .zoomFont(.footnote).foregroundStyle(CloudTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(OrganizationPolicyCopy.repositories(entries))
+                        .zoomFont(.footnote)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let organization { OrganizationNote(text: organization) }
+                }
+                Spacer(minLength: 12)
+            }
+            .zoomPadding(16)
+        }
     }
 
     private func setAutoJoinGeneral(_ enabled: Bool) {
@@ -1854,11 +1933,20 @@ struct ClaudeDeliverySettings: View {
     var delivery: ClaudeDeliveryModel
     @State private var isExpanded = false
 
+    /// The organization holds messages from senders who are not its admins,
+    /// in every harness: each is approved once, never allowed for good.
+    private var approvals: OrganizationPolicyCopy.Approvals {
+        OrganizationPolicyCopy.approvals(organizationHold: delivery.status?.organizationHold == true)
+    }
+
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Choose which Claude Code sessions and workspace members may receive messages directly. Ask first holds each message in Agent Relay for your approval.")
                     .zoomFont(.footnote)
+                if let note = approvals.note {
+                    OrganizationNote(text: note)
+                }
                 Toggle("Only allowed members may deliver directly", isOn: Binding(
                     get: { delivery.status?.restricted ?? false },
                     set: { value in Task { await delivery.restrict(value) } }
@@ -1899,6 +1987,8 @@ struct ClaudeDeliverySettings: View {
                             Button("Approve once") { Task { await delivery.approve(message.id) } }
                             if !message.sender.isEmpty {
                                 Button("Always allow") { Task { await delivery.alwaysAllow(message) } }
+                                    .disabled(!approvals.alwaysAllow)
+                                    .help(approvals.note ?? "")
                             }
                             Button("Dismiss") { Task { await delivery.dismiss(message.id) } }
                         }
@@ -1915,7 +2005,7 @@ struct ClaudeDeliverySettings: View {
                     .strokeBorder(CloudTheme.border)
             }
         } label: {
-            Text("Claude Code message approvals")
+            Text(approvals.title)
                 .zoomFont(size: 13, weight: .semibold)
                 .accessibilityAddTraits(.isHeader)
         }

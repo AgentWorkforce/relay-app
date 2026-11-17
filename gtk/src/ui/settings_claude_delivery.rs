@@ -1,8 +1,10 @@
 //! Settings › Relay: Claude Code message approvals and consent controls.
 use super::app::App;
+use super::settings_organization::organization_note_widget;
 use super::state::{Page, Pane};
 use super::widgets::{self, button, hbox, notice, text, vbox, LabelStyle, Tone};
 use crate::models::ClaudeDeliveryStatusOptimistic;
+use crate::models::{approvals, Approvals};
 use agent_relay_node::relay::contract::claude_delivery::{
     ClaudeDeliverySession, ClaudeDeliveryStatus, ClaudeHeldDelivery, ClaudeHeldParams,
     ClaudeRestrictionParams, ClaudeSender, ClaudeSenderDeliveryParams, ClaudeSessionDeliveryParams,
@@ -22,7 +24,15 @@ impl App {
             )
         });
         let section = vbox(10, &[]);
-        let disclosure = gtk::Expander::new(Some("Claude Code message approvals"));
+        // The organization holds messages from senders who are not its
+        // admins, in every harness: each is approved once, never allowed for
+        // good.
+        let approvals = approvals(
+            status
+                .as_ref()
+                .is_some_and(|status| status.organization_hold),
+        );
+        let disclosure = gtk::Expander::new(Some(approvals.title));
         disclosure.set_expanded(
             self.with_state(|state| state.settings_details_open.contains(APPROVALS_KEY)),
         );
@@ -50,6 +60,9 @@ impl App {
             )
             .wrapped(),
         );
+        if let Some(note) = approvals.note {
+            body.append(&organization_note_widget(note));
+        }
         let restricted = status.as_ref().is_some_and(|status| status.restricted);
         let weak = self.downgrade();
         let restriction = gtk::CheckButton::with_label("Only allowed members may deliver directly");
@@ -80,7 +93,7 @@ impl App {
         if let Some(status) = status {
             self.claude_approval_sessions(&body, status.sessions);
             self.claude_approval_senders(&body, status.allowed_senders);
-            self.claude_approval_messages(&body, status.held);
+            self.claude_approval_messages(&body, status.held, approvals);
         }
         body.append(&button(
             "Refresh",
@@ -303,7 +316,12 @@ impl App {
             body.append(&row);
         }
     }
-    fn claude_approval_messages(&self, body: &gtk::Box, messages: Vec<ClaudeHeldDelivery>) {
+    fn claude_approval_messages(
+        &self,
+        body: &gtk::Box,
+        messages: Vec<ClaudeHeldDelivery>,
+        approvals: Approvals,
+    ) {
         for message in messages {
             let item = vbox(4, &[]);
             item.append(&text(
@@ -331,11 +349,14 @@ impl App {
                 let id = message.id.clone();
                 let sender = message.sender.clone();
                 let name = message.sender_name.clone();
-                actions.append(&button(
+                let always = button(
                     "Always allow",
                     &[],
                     self.on(move |app| app.claude_delivery_allow_and_approve(&id, &sender, &name)),
-                ));
+                );
+                always.set_sensitive(approvals.always_allow);
+                always.set_tooltip_text(approvals.note);
+                actions.append(&always);
             }
             let id = message.id.clone();
             actions.append(&button(

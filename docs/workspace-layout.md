@@ -2164,8 +2164,9 @@ inbound delivery and analytics), in the `workspace_policy` field of the same
 `{"version":2,"revision":N,"managed":false,"consent":[...],"sections":{"capture":{"locked":{},"defaults":{}},...}}`.
 `locked` values are the operator's and the person cannot change them;
 `defaults` are initial values the person may change; an absent key leaves the
-desktop's own behaviour. This step only reads the document; no setting is
-enforced yet.
+desktop's own behaviour. The capture section is enforced by the operator upload
+policy above; the other sections are handed to the core, which locks and
+defaults its settings by them.
 
 - The core (`desktop-core/src/workspace_policy.rs`) has no request of its own:
   each read of the operator upload policy above parses both fields of the one
@@ -2195,6 +2196,32 @@ enforced yet.
   empty). A revision older than the cached one is ignored.
 - Its `revision` is its own counter. Uploads still send the capture policy's
   revision in `X-Agent-Relay-Capture-Policy-Revision`.
+- After each policy read and on each supervision tick, the account hands the
+  attached workspace's spawn, join, delivery and analytics sections to the core
+  (`Core::apply_settings_policy`, through
+  `desktop-core/src/workspace_policy/settings.rs`), only when they changed in
+  this run. Nothing is handed over before the workspace's policy was first
+  read, so a lock the core keeps is never lifted while offline; a read that
+  finds no policy lifts it. The core writes locked values, refuses changes to
+  them ("This setting is set by your organization."), writes each default once,
+  and applies a value that turns on a person-only setting only on a computer
+  enrolled with the organization's consent for it.
+- Settings shows the result, the same on macOS, Linux and Windows
+  (`OrganizationPolicyCopy` on the Mac, `models::organization_policy` in GTK),
+  from `settings.get`'s `organization_policy`: under each setting the
+  organization decides, "This setting is set by your organization." (and its
+  control cannot be changed), "Managed by your organization." for a default,
+  or, for a value only an enrolled computer takes, "Your organization turns
+  this on only on computers it enrolls. This computer keeps your own choice."
+  The rows: Share diagnostics; the spawning switches, maximum and each
+  harness's full access; new agents joining #general; and "Repositories that
+  join the relay" (read only), shown once there are some or the organization
+  decides them. While `claude_delivery.status` reports `organization_hold`,
+  the approvals section is titled "Message approvals", says "Your organization
+  holds messages from senders who are not its admins. Approve each message as
+  it arrives.", and "Always allow" is shown but cannot be used. A session's
+  sidebar shows "Repository: owner/name" under the agent's name when its
+  registration names one.
 
 Providers also includes Conductor, Paseo, Capy and Replicas. Claude cloud-session
 sharing is part of the Claude Code page, with no separate Claude cloud provider.
