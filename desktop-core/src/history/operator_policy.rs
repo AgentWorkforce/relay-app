@@ -650,6 +650,17 @@ impl OperatorPolicy {
         self.workspace.policy(workspace_id)
     }
 
+    /// The workspace policies (v2) as cached.
+    pub fn workspace_policies(&self) -> &WorkspacePolicies {
+        &self.workspace
+    }
+
+    /// The workspace policy (v2) last read for `workspace_id`; `None` when
+    /// none was read yet, which tells nothing (not even that none applies).
+    pub fn workspace_policy_read(&self, workspace_id: &str) -> Option<WorkspacePolicy> {
+        self.workspace.entry(workspace_id).map(|entry| entry.policy)
+    }
+
     /// Keeps `value` as the person's own `key` while it is enforced over,
     /// unless one is kept already.
     pub fn remember(&self, workspace_id: &str, key: &str, value: Value) {

@@ -138,6 +138,41 @@ impl Account {
         self.operator_policy.workspace_policy(workspace_id)
     }
 
+    /// Hands the core the attached workspace's settings policy (spawning,
+    /// joining, delivery, analytics) when it changed: the core locks and
+    /// defaults its settings by it (`Core::apply_settings_policy`). Nothing is
+    /// handed over before the workspace's policy was first read, so a lock the
+    /// core keeps is never lifted while offline; a read that found no policy
+    /// lifts it.
+    pub(super) fn apply_workspace_settings(&self) {
+        let Some(core) = self.core() else {
+            return;
+        };
+        let Some(workspace) = self.uploader.target().and_then(|t| t.workspace_id) else {
+            return;
+        };
+        let Some(read) = self.operator_policy.workspace_policy_read(&workspace) else {
+            return;
+        };
+        let policy = crate::workspace_policy::settings::settings_policy(&read);
+        let wanted = crate::workspace_policy::settings::applies(&policy).then_some(policy);
+        let cache = self.operator_policy.workspace_policies();
+        if !cache.settings_changed(&wanted) {
+            return;
+        }
+        match core.apply_settings_policy(wanted.clone()) {
+            Ok(()) => cache.settings_applied(wanted),
+            // Tried again on the next supervision tick.
+            Err(error) => core.hub.activity(
+                Level::Warning,
+                format!(
+                    "Could not apply your organization's settings policy: {}",
+                    error.message
+                ),
+            ),
+        }
+    }
+
     /// A workspace refresh reads the attached workspace's policy again.
     pub(super) async fn refresh_attached_operator_policy(&self) {
         if let Some(workspace) = self.uploader.target().and_then(|t| t.workspace_id) {
@@ -151,6 +186,7 @@ impl Account {
     /// lifts it; uploads withheld at sign-in resume once the policy is read,
     /// and uploads the operator runs resume from the person's earlier pause.
     pub(super) async fn enforce_operator_policy(&self) {
+        self.apply_workspace_settings();
         let Some(install) = self.uploader.install() else {
             return;
         };

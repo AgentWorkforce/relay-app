@@ -4334,6 +4334,49 @@ async fn a_sign_in_caches_the_workspace_policy_beside_the_capture_policy() {
     harness.stop().await;
 }
 
+/// The organization's settings sections reach the core once read: a locked
+/// spawn setting is written and labelled locked, a default is written and
+/// labelled managed, and the capture section is left to the upload policy.
+#[tokio::test]
+async fn a_sign_in_applies_the_workspace_policy_to_settings() {
+    let mut policy = enforcing("all", 3);
+    policy["workspace_policy"] = json!({
+        "version": 2,
+        "revision": 5,
+        "managed": false,
+        "consent": [],
+        "sections": {
+            "spawn": {
+                "locked": { "spawn_max_agents": 4 },
+                "defaults": { "spawn_billing_codex": "api" }
+            }
+        }
+    });
+    let harness = with_operator_policy(Some(policy)).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+    eventually("locked", || {
+        harness.core.settings()["spawn_max_agents"] == 4
+    })
+    .await;
+    let settings = client.ok("settings.get", json!({})).await;
+    assert_eq!(
+        settings["organization_policy"]["locked"],
+        json!(["spawn_max_agents"])
+    );
+    assert_eq!(
+        settings["organization_policy"]["defaults"],
+        json!(["spawn_billing_codex"])
+    );
+    assert_eq!(settings["spawn_billing_codex"], "api");
+    // The lock is the organization's: the person cannot change it.
+    let refused = client
+        .error("settings.set", json!({"spawn_max_agents": 6}))
+        .await;
+    assert_eq!(refused.1, "This setting is set by your organization.");
+    harness.stop().await;
+}
+
 /// A policy that arrives while signed in switches the install to the
 /// enforced mode, refuses the person's changes, and gives their mode back
 /// once lifted.

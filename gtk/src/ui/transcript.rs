@@ -556,7 +556,7 @@ impl App {
                 || agent.is_some_and(|agent| state.busy_targets.contains(&agent.target.key()));
             page.agent_name.set_visible(agent.is_some());
             page.agent_name.set_sensitive(!busy);
-            page.copy_name.set_visible(agent.is_some());
+            super::transcript_notes::show_agent(&page.copy_name, &page.naming, agent);
             page.rename.set_visible(agent.is_some());
             page.rename.set_sensitive(!busy);
             page.rename.set_label(if page.renaming.get() {

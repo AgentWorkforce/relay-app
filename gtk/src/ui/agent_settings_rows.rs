@@ -3,6 +3,7 @@
 //! Mac's `autoJoinGeneralRow` and `agentChangesRow` match them.
 
 use super::app::App;
+use super::settings_organization::organization_note_widget;
 use super::settings_page::SettingRow;
 use super::widgets::{button, settings_divider, settings_row, text, LabelStyle};
 use crate::models::{
@@ -10,6 +11,7 @@ use crate::models::{
     AUTO_JOIN_GENERAL_DETAIL, AUTO_JOIN_GENERAL_JOINED_DETAIL, AUTO_JOIN_GENERAL_TITLE,
     AUTO_JOIN_GENERAL_TURN_OFF_HELP, AUTO_JOIN_GENERAL_TURN_ON_HELP,
 };
+use crate::models::{repositories_line, REPOSITORIES_DETAIL, REPOSITORIES_TITLE};
 use agent_relay_node::relay::contract::agents::SettingsChange;
 use gtk::prelude::*;
 use gtk4 as gtk;
@@ -26,6 +28,7 @@ impl App {
         self.append_teammate_native_input_row(group);
         self.append_show_relay_messages_row(group);
         self.append_auto_join_general_row(group);
+        self.append_auto_join_repositories_row(group);
         self.append_agent_changes_row(group);
     }
 
@@ -60,6 +63,9 @@ impl App {
             on.set_tooltip_text(Some(AUTO_JOIN_GENERAL_TURN_ON_HELP));
             on
         };
+        let (note, locked) = self.organization("auto_join_general");
+        accessory.set_sensitive(!locked);
+        let extra: Vec<gtk::Widget> = note.map(organization_note_widget).into_iter().collect();
         settings_divider(group, 62);
         group.append(
             &settings_row(
@@ -75,7 +81,38 @@ impl App {
                     "mail-send-symbolic"
                 },
                 Some(accessory.upcast_ref()),
-                &[],
+                &extra,
+            )
+            .0,
+        );
+    }
+
+    /// The repositories whose sessions join the relay by themselves, shown
+    /// once there are some or the organization decides them. Read only here.
+    fn append_auto_join_repositories_row(&self, group: &gtk::Box) {
+        let entries = self.with_state(|state| {
+            state
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.auto_join_repositories.clone())
+                .unwrap_or_default()
+        });
+        let (note, _) = self.organization("auto_join_repositories");
+        if entries.is_empty() && note.is_none() {
+            return;
+        }
+        let list = text(&repositories_line(&entries), &["caption"]).wrapped();
+        list.set_selectable(true);
+        let mut extra: Vec<gtk::Widget> = vec![list.upcast()];
+        extra.extend(note.map(organization_note_widget));
+        settings_divider(group, 62);
+        group.append(
+            &settings_row(
+                REPOSITORIES_TITLE,
+                REPOSITORIES_DETAIL,
+                "folder-remote-symbolic",
+                None,
+                &extra,
             )
             .0,
         );
