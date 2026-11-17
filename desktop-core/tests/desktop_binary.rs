@@ -107,6 +107,38 @@ fn the_retired_teammate_context_hook_prints_nothing_and_never_fails() {
 }
 
 #[test]
+fn the_cursor_guide_hook_names_the_commands_and_never_blocks_cursor() {
+    use std::io::Write;
+    let run = |input: &[u8]| {
+        let mut child = Command::new(PROBE)
+            .args(["cursor-guide-hook", "--socket", "/tmp/guide example.sock"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let probe = std::fs::canonicalize(PROBE).unwrap();
+    let start = run(br#"{"hook_event_name":"sessionStart","conversation_id":"c1"}"#);
+    let context = start["additional_context"].as_str().unwrap();
+    let whoami = "-probe whoami --socket '/tmp/guide example.sock'";
+    assert!(context.contains(whoami), "{context}");
+    assert!(context.contains(&*probe.to_string_lossy()), "{context}");
+    let call = |server: &str| {
+        serde_json::json!({"hook_event_name": "beforeMCPExecution", "tool_name": "send_relay_message",
+            "tool_input": "{}", "mcp_server_name": server})
+        .to_string()
+    };
+    assert_eq!(run(call("agent-relay").as_bytes())["permission"], "deny");
+    assert_eq!(run(call("other").as_bytes()), serde_json::json!({}));
+    assert_eq!(run(b"not json"), serde_json::json!({}));
+}
+
+#[test]
 fn the_version_is_this_binary_s_and_the_earlier_relay_word_still_runs() {
     let version = Command::new(PROBE).arg("--version").output().unwrap();
     assert!(String::from_utf8_lossy(&version.stdout).starts_with("agent-relay-probe "));

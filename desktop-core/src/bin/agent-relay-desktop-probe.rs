@@ -42,6 +42,9 @@ fn main() {
                 agent_relay_desktop_core::service_callers::command::run(rest),
             ),
             "claude-attestation-hook" => std::process::exit(claude_attestation::hook::main(rest)),
+            agent_relay_desktop_core::cursor_guide::SUBCOMMAND => {
+                std::process::exit(agent_relay_desktop_core::cursor_guide::main(rest))
+            }
             "teammate-context-hook" => {
                 std::process::exit(agent_relay_desktop_core::teammate_context::main(rest))
             }

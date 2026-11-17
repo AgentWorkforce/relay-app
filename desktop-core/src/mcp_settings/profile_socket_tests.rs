@@ -233,3 +233,50 @@ fn a_development_build_keeps_its_own_sockets() {
     assert!(app.claude_hook_command().unwrap().ends_with(" --dev"));
     assert_eq!(app.helper.server(), NAME);
 }
+
+/// Cursor's guide hook names the profile build's session socket, beside
+/// Agent Relay's own entry, and each build takes out only its own.
+#[cfg(not(windows))]
+#[test]
+fn a_profile_builds_cursor_guide_hook_names_its_session_socket() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let (config, session) = profile(home, "cursor");
+    let executable = probe(home);
+    let app = installer(home).with_core_sockets(&config);
+    let default = installer(home);
+    app.set_cursor_hooks(true).unwrap();
+    default.set_cursor_hooks(true).unwrap();
+    let ours = format!(
+        "{} cursor-guide-hook --socket {}",
+        word(&executable),
+        word(&session)
+    );
+    let commands = |event: &str| -> Vec<String> {
+        let hooks: Value =
+            serde_json::from_slice(&fs::read(home.join(".cursor/hooks.json")).unwrap()).unwrap();
+        hooks["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|hook| hook["command"].as_str().map(str::to_string))
+            .filter(|command| command.contains(" cursor-guide-hook"))
+            .collect()
+    };
+    for event in crate::cursor_guide::EVENTS {
+        let found = commands(event);
+        assert!(found.contains(&ours), "{event}: {found:?}");
+        assert!(
+            found.contains(&format!("{} cursor-guide-hook", word(&executable))),
+            "{event}: {found:?}"
+        );
+    }
+    app.set_cursor_hooks(false).unwrap();
+    for event in crate::cursor_guide::EVENTS {
+        assert_eq!(
+            commands(event),
+            [format!("{} cursor-guide-hook", word(&executable))],
+            "{event}"
+        );
+    }
+}

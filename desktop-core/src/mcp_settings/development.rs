@@ -252,6 +252,14 @@ impl Helper {
             self.development_scope(),
         )
     }
+    /// This build's Cursor guide hook command and the session socket it
+    /// names, a site profile build's.
+    pub(super) fn cursor_guide_hook(&self) -> Option<(String, Option<&Path>)> {
+        let socket = self.session.as_deref();
+        let command =
+            super::cursor_guide::command(&self.path, self.development_scope(), socket)?;
+        Some((command, socket))
+    }
     pub fn usable(&self) -> bool {
         self.ready.load(Ordering::Acquire)
             && agent_relay_node::platform::exe::is_executable(&self.path)
