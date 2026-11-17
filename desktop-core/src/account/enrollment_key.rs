@@ -129,9 +129,8 @@ fn unanswered(kind: ureq::ErrorKind) -> Unanswered {
 /// What a session the exchange gave comes with.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Enrolled {
-    /// The key carried the organization's consent; false when not said.
-    pub(super) managed: bool,
-    /// The organization's workspace policy the answer carried.
+    /// The organization's workspace policy the answer carried, with the
+    /// answer's `managed` as its own.
     pub(super) seed: Option<Box<WorkspacePolicy>>,
 }
 
@@ -379,11 +378,20 @@ fn session(value: &Value, site: &str) -> Result<CloudSession, LoginError> {
 /// the document's too.
 fn enrolled(value: &Value) -> Enrolled {
     let managed = value["managed"].as_bool().unwrap_or(false);
+    let revision = value["policy_revision"].as_i64();
     let seed = value
         .get("workspace_policy")
         .filter(|document| !document.is_null())
         .and_then(
             |document| match workspace_policy::parse_document(document) {
+                // The answer names the document's revision; one that
+                // disagrees is not trusted.
+                Ok(policy) if revision.is_some_and(|revision| revision != policy.revision) => {
+                    eprintln!(
+                        "enrollment key: the workspace policy was ignored: its revision is not the answer's policy_revision"
+                    );
+                    None
+                }
                 Ok(mut policy) => {
                     policy.managed = managed;
                     Some(Box::new(policy))
@@ -394,7 +402,7 @@ fn enrolled(value: &Value) -> Enrolled {
                 }
             },
         );
-    Enrolled { managed, seed }
+    Enrolled { seed }
 }
 
 /// What an answer means. The rejections stay generic: a wrong, expired,
@@ -588,11 +596,13 @@ impl Account {
     /// ([`Account::take_enrollment_seed`]).
     pub(super) async fn enrollment_key_session(
         &self,
+        attempt: u64,
         login: EnrollmentKeyLogin,
         site: &str,
     ) -> Result<CloudSession, LoginError> {
         let (session, enrolled) = login.exchange(site, self.core.get().cloned()).await?;
-        let attempt = self.current_attempt();
+        // The attempt that ran this exchange: one that started since takes
+        // nothing from it.
         self.operator_policy
             .workspace_policies()
             .hold_seed(attempt, enrolled.seed.map(|policy| *policy));

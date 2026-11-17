@@ -4714,7 +4714,7 @@ async fn a_managed_enrollment_key_seeds_the_workspace_policy() {
             "workspace_policy": {
                 "version": 2, "revision": 9, "managed": true,
                 "consent": ["accept_spawns"],
-                "sections": {"spawn": {"locked": {"accept_spawns": true}, "defaults": {}}}
+                "sections": {"spawn": {"locked": {"accept_spawns": true, "spawn_max_agents": 3}, "defaults": {}}}
             }
         });
         // No policy file: every policy read fails.
@@ -4737,9 +4737,21 @@ async fn a_managed_enrollment_key_seeds_the_workspace_policy() {
     eventually("seeded", || cached().is_some_and(|c| c["revision"] == 9)).await;
     let cached = cached().unwrap();
     assert_eq!(cached["policy"]["managed"], true);
+    assert_eq!(cached["provisional"], true);
     assert_eq!(
         cached["policy"]["sections"]["spawn"]["locked"],
-        json!({"accept_spawns": true})
+        json!({"accept_spawns": true, "spawn_max_agents": 3})
+    );
+    // The seeded locks reach the settings from the first launch.
+    eventually("applied", || {
+        harness.core.settings()["spawn_max_agents"] == 3
+    })
+    .await;
+    let settings = client.ok("settings.get", json!({})).await;
+    assert_eq!(settings["organization_policy"]["managed"], true);
+    assert_eq!(
+        settings["organization_policy"]["locked"],
+        json!(["accept_spawns", "spawn_max_agents"])
     );
     harness.stop().await;
 }
