@@ -1,7 +1,7 @@
 //! Terminal onboarding for the private, GTK-free desktop core. Authentication
 //! stays in the running core: the wizard receives only public device approval
 //! instructions and drives the same account/provider/settings RPCs as the app.
-use crate::account::{TLS_ROOTS_REFUSED, TLS_ROOTS_REFUSED_MESSAGE};
+use crate::account::login_start::{TLS_ROOTS_REFUSED, TLS_ROOTS_REFUSED_MESSAGE};
 use agent_relay_node::relay::{cli, links::built_in_site_url};
 use clap::{Parser, ValueEnum};
 use serde_json::{json, Value};
