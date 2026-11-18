@@ -2423,7 +2423,8 @@ start on the desktop continue to use Claude's native desktop prompt.
 
 **Native input from the spawning agent** (`spawn_native_input`, on by default)
 lets the verified requester send DMs as native Codex or Claude user turns. Other
-agents remain peers and tool approvals remain with the human owner. The switch
+agents remain peers, except the workspace's leaders (see
+[workspace leaders](native-spawn.md#workspace-leaders)), and tool approvals remain with the human owner. The switch
 is shared across macOS, Linux and Windows; see [native spawn](native-spawn.md) for details.
 
 **Approvals from the spawning agent** (`spawn_requester_approvals`), shown
