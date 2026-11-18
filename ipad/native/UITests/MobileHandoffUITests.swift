@@ -46,8 +46,10 @@ final class MobileHandoffUITests: XCTestCase {
         let exists = NSPredicate(format: "exists == true")
         let draftReady = XCTNSPredicateExpectation(predicate: exists, object: completeDraft)
         let sendReady = XCTNSPredicateExpectation(predicate: exists, object: enabledSend)
-        // Both conditions share the original deadline; neither types or sends.
-        guard XCTWaiter.wait(for: [draftReady, sendReady], timeout: 10) == .completed else {
+        // Both conditions share one deadline; neither types or sends. On a
+        // cold hosted simulator one accessibility query has taken 7 to 9 s
+        // in the first test, so 10 s allowed a single look.
+        guard XCTWaiter.wait(for: [draftReady, sendReady], timeout: 30) == .completed else {
             XCTFail("The complete draft and enabled Send button must be ready before submission")
             return
         }
