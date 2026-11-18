@@ -468,16 +468,23 @@ async fn the_environment_stands_in_for_cloud_in_tests() {
 
 
 /// A failure to hand the settings policy over is reported once until it
-/// changes or the hand-over succeeds.
+/// changes, the policy being handed over changes (a lift included), or the
+/// hand-over succeeds.
 #[test]
 fn a_repeated_settings_failure_is_reported_once() {
+    use agent_relay_node::relay::settings_policy::SettingsPolicy;
     let dir = tempfile::tempdir().unwrap();
     let cache = WorkspacePolicies::new(dir.path());
-    assert!(cache.settings_failure_is_new("store failed"));
-    assert!(!cache.settings_failure_is_new("store failed"));
-    assert!(cache.settings_failure_is_new("another failure"));
+    let locked: Option<SettingsPolicy> =
+        Some(serde_json::from_value(json!({"locked": {"spawn_max_agents": 4}})).unwrap());
+    assert!(cache.settings_failure_is_new(&locked, "store failed"));
+    assert!(!cache.settings_failure_is_new(&locked, "store failed"));
+    assert!(cache.settings_failure_is_new(&locked, "another failure"));
+    // Signed out, the lift fails with the same words: still reported.
+    assert!(cache.settings_failure_is_new(&None, "another failure"));
+    assert!(!cache.settings_failure_is_new(&None, "another failure"));
     cache.settings_applied(None);
-    assert!(cache.settings_failure_is_new("another failure"));
+    assert!(cache.settings_failure_is_new(&None, "another failure"));
 }
 
 

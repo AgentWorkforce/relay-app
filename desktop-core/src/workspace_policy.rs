@@ -473,9 +473,10 @@ pub struct WorkspacePolicies {
     /// the first; `Some(None)` once none applies), so it is handed over only
     /// when it changes.
     applied_settings: Mutex<Option<Option<SettingsPolicy>>>,
-    /// The last failure to hand the settings policy to the core, so it is
-    /// reported once rather than on every tick.
-    settings_failure: Mutex<Option<String>>,
+    /// The last failure to hand the settings policy to the core, with the
+    /// policy it was handing over, so it is reported once rather than on
+    /// every tick.
+    settings_failure: Mutex<Option<(Option<SettingsPolicy>, String)>>,
     /// The policy an enrollment key's exchange answered with, and the sign-in
     /// attempt it belongs to, until that attempt connects a workspace.
     enrollment_seed: Mutex<Option<(u64, WorkspacePolicy)>>,
@@ -527,15 +528,18 @@ impl WorkspacePolicies {
         }
     }
 
-    /// Records `message` as the latest failure to hand the settings policy
-    /// over; answers whether it differs from the one before (worth showing).
-    pub fn settings_failure_is_new(&self, message: &str) -> bool {
+    /// Records `message` as the latest failure to hand `wanted` over;
+    /// answers whether it differs from the one before (worth showing): a
+    /// failure for another policy, a lift included, is new even with the same
+    /// message.
+    pub fn settings_failure_is_new(&self, wanted: &Option<SettingsPolicy>, message: &str) -> bool {
         let mut last = self
             .settings_failure
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let new = last.as_deref() != Some(message);
-        *last = Some(message.to_string());
+        let failure = (wanted.clone(), message.to_string());
+        let new = last.as_ref() != Some(&failure);
+        *last = Some(failure);
         new
     }
 

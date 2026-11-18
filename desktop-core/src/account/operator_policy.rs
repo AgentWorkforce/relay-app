@@ -174,7 +174,7 @@ impl Account {
             // Tried again on the next supervision tick, signed in or out; the
             // warning shows once per failure, not on every tick.
             Err(error) => {
-                if cache.settings_failure_is_new(&error.message) {
+                if cache.settings_failure_is_new(&wanted, &error.message) {
                     core.hub.activity(
                         Level::Warning,
                         format!(
