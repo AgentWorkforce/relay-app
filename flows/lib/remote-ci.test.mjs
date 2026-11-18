@@ -298,3 +298,34 @@ test("the gate's verdicts list jobs only for a failed or running Desktop CI run 
   ]);
   assert.deepEqual(logged, ["could not list the jobs of u2: HTTP 502", "could not list the jobs of u7: HTTP 502"]);
 });
+
+test("Mobile CI waits for the simulator to boot and runs unit and UI tests as separate steps", () => {
+  const steps = parse(readFileSync(new URL("../../.github/workflows/mobile-ci.yml", import.meta.url), "utf8")).jobs.simulator.steps;
+  const named = (name) => {
+    const step = steps.find((candidate) => candidate.name === name);
+    assert.ok(step, `the "${name}" step is gone`);
+    return step;
+  };
+  const boot = named("Boot the simulator");
+  const build = named("Build for testing");
+  const unit = named("Run unit tests");
+  const ui = named("Test mobile handoff without production credentials");
+  const wait = 'simctl bootstatus "$SIMULATOR_UDID" -b';
+
+  assert.ok(boot.run.includes(wait), "the boot step no longer waits with simctl bootstatus -b");
+  assert.ok(steps.indexOf(boot) < steps.indexOf(build), "the boot wait no longer comes before the build");
+  assert.ok(build.run.includes("build-for-testing"), "the build step no longer runs build-for-testing");
+  assert.equal(build.id, "build", "the build step lost its id, which the UI step's condition reads");
+  assert.notEqual(unit, ui, "unit and UI tests are one step again");
+  assert.ok(unit.run.includes("test-without-building"), "the unit step no longer uses test-without-building");
+  assert.ok(unit.run.includes("-only-testing:AgentRelayUnitTests"), "the unit step no longer selects only the unit tests");
+  assert.ok(ui.run.includes("test-without-building"), "the UI step no longer uses test-without-building");
+  assert.ok(!ui.run.includes("-only-testing:AgentRelayUnitTests"), "the UI step is restricted to the unit tests");
+  assert.equal(String(ui.if).trim(), "${{ !cancelled() && steps.build.outcome == 'success' }}", "the UI step's condition changed, so it may not run after a unit failure");
+  assert.ok(ui.run.includes(wait), "the UI step no longer waits for the simulator before xcodebuild");
+  assert.ok(ui.run.indexOf(wait) < ui.run.indexOf("xcodebuild"), "the UI step's boot wait no longer comes before xcodebuild");
+
+  const upload = steps.find((step) => String(step.uses ?? "").startsWith("actions/upload-artifact"));
+  assert.ok(upload, "the upload step is gone");
+  assert.ok(upload.with.path.includes("MobileHandoff") && upload.with.path.includes("MobileUnit"), "the upload no longer covers both the MobileHandoff and MobileUnit results");
+});
