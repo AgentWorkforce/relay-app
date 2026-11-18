@@ -40,6 +40,28 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate extra UI test classes
+        id: extra
+        env:
+          # Empty on push and pull_request; only a manual dispatch sets it.
+          EXTRA_UI_TESTS: ${{ inputs.extra-ui-tests }}
+        run: |
+          classes=()
+          IFS=',' read -r -a extra_classes <<< "${EXTRA_UI_TESTS:-}"
+          for raw in "${extra_classes[@]}"; do
+            class="${raw//[[:space:]]/}"
+            if [ -z "$class" ]; then
+              continue
+            fi
+            if ! [[ "$class" =~ ^[A-Za-z0-9_]+$ ]]; then
+              echo "::error::extra-ui-tests entry '$class' is not a test class name (letters, digits and _ only)"
+              exit 1
+            fi
+            classes+=("$class")
+          done
+          # Only validated class names reach the output.
+          (IFS=','; echo "classes=${classes[*]}") >> "$GITHUB_OUTPUT"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -64,65 +86,119 @@ jobs:
           print("Testing on " + phone["name"])
           PY
 
-      - name: Test mobile handoff without production credentials
+      # A cold simulator left to xcodebuild boots while the first test waits,
+      # so that test's launch or readiness wait times out. Boot it up front
+      # and block until booting, data migration included, has finished.
+      - name: Boot the simulator
         env:
           SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
-          # Empty on push and pull_request; only a manual dispatch sets it.
-          EXTRA_UI_TESTS: ${{ inputs.extra-ui-tests }}
         run: |
-          only_testing=(
-            -only-testing:AgentRelayUnitTests
-            -only-testing:AgentRelayUITests/MobileHandoffUITests
-          )
-          IFS=',' read -r -a extra_classes <<< "${EXTRA_UI_TESTS:-}"
-          for raw in "${extra_classes[@]}"; do
-            class="${raw//[[:space:]]/}"
-            if [ -z "$class" ]; then
-              continue
-            fi
-            if ! [[ "$class" =~ ^[A-Za-z0-9_]+$ ]]; then
-              echo "::error::extra-ui-tests entry '$class' is not a test class name (letters, digits and _ only)"
+          if ! output=$(xcrun simctl boot "$SIMULATOR_UDID" 2>&1); then
+            if ! grep -q "current state: Booted" <<< "$output"; then
+              echo "$output"
               exit 1
             fi
-            only_testing+=("-only-testing:AgentRelayUITests/$class")
-          done
-          xcodebuild test \
+            echo "Simulator already booted"
+          fi
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Build for testing
+        id: build
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          xcodebuild build-for-testing \
             -project ipad/native/AgentRelayiPad.xcodeproj \
             -scheme AgentRelayiPad \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run unit tests
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          xcodebuild test-without-building \
+            -project ipad/native/AgentRelayiPad.xcodeproj \
+            -scheme AgentRelayiPad \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/MobileUnit.xcresult" \
+            -parallel-testing-enabled NO \
+            -skipPackagePluginValidation \
+            -only-testing:AgentRelayUnitTests \
+            CODE_SIGNING_ALLOWED=NO
+
+      # Runs in its own xcodebuild invocation, so the first UI launch no
+      # longer follows the unit tests in the same run, and runs after a unit
+      # test failure too, so one run reports both; either failure fails the job.
+      - name: Test mobile handoff without production credentials
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+          EXTRA_UI_CLASSES: ${{ steps.extra.outputs.classes }}
+        run: |
+          only_testing=(-only-testing:AgentRelayUITests/MobileHandoffUITests)
+          IFS=',' read -r -a extra_classes <<< "${EXTRA_UI_CLASSES:-}"
+          for class in "${extra_classes[@]}"; do
+            only_testing+=("-only-testing:AgentRelayUITests/$class")
+          done
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          xcodebuild test-without-building \
+            -project ipad/native/AgentRelayiPad.xcodeproj \
+            -scheme AgentRelayiPad \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -resultBundlePath "$RUNNER_TEMP/MobileHandoff.xcresult" \
             -parallel-testing-enabled NO \
             -skipPackagePluginValidation \
             "${only_testing[@]}" \
             CODE_SIGNING_ALLOWED=NO
 
+      # MobileHandoff is the UI test bundle and MobileUnit the unit test
+      # bundle; either is absent when its step did not get to run.
       - name: Export viewable interaction screenshots
         if: always()
         run: |
-          if [ -d "$RUNNER_TEMP/MobileHandoff.xcresult" ]; then
-            mkdir -p "$RUNNER_TEMP/MobileHandoff-attachments"
-            xcrun xcresulttool export attachments --help
+          export_attachments() {
+            mkdir -p "$RUNNER_TEMP/$1-attachments" || return 1
+            xcrun xcresulttool export attachments --help || return 1
             xcrun xcresulttool export attachments \
-              --path "$RUNNER_TEMP/MobileHandoff.xcresult" \
-              --output-path "$RUNNER_TEMP/MobileHandoff-attachments"
-          fi
+              --path "$RUNNER_TEMP/$1.xcresult" \
+              --output-path "$RUNNER_TEMP/$1-attachments" || return 1
+          }
+          failed=0
+          for bundle in MobileHandoff MobileUnit; do
+            if [ -d "$RUNNER_TEMP/$bundle.xcresult" ]; then
+              export_attachments "$bundle" || failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Export simulator diagnostics and app console
         if: always()
         run: |
-          if [ -d "$RUNNER_TEMP/MobileHandoff.xcresult" ]; then
-            mkdir -p "$RUNNER_TEMP/MobileHandoff-diagnostics"
-            xcrun xcresulttool export diagnostics --help
+          export_diagnostics() {
+            mkdir -p "$RUNNER_TEMP/$1-diagnostics" || return 1
+            xcrun xcresulttool export diagnostics --help || return 1
             xcrun xcresulttool export diagnostics \
-              --path "$RUNNER_TEMP/MobileHandoff.xcresult" \
-              --output-path "$RUNNER_TEMP/MobileHandoff-diagnostics"
-            xcrun xcresulttool get log --help
+              --path "$RUNNER_TEMP/$1.xcresult" \
+              --output-path "$RUNNER_TEMP/$1-diagnostics" || return 1
+            xcrun xcresulttool get log --help || return 1
             if ! xcrun xcresulttool get log \
-              --path "$RUNNER_TEMP/MobileHandoff.xcresult" --type console \
-              > "$RUNNER_TEMP/MobileHandoff-console.json"; then
-              echo "::warning::Bundle-wide console export unavailable; simulator diagnostics are preserved."
+              --path "$RUNNER_TEMP/$1.xcresult" --type console \
+              > "$RUNNER_TEMP/$1-console.json"; then
+              echo "::warning::$1 bundle-wide console export unavailable; simulator diagnostics are preserved."
             fi
-          fi
+          }
+          failed=0
+          for bundle in MobileHandoff MobileUnit; do
+            if [ -d "$RUNNER_TEMP/$bundle.xcresult" ]; then
+              export_diagnostics "$bundle" || failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Preserve test results and interaction screenshots
         if: always()
@@ -134,5 +210,9 @@ jobs:
             ${{ runner.temp }}/MobileHandoff-attachments
             ${{ runner.temp }}/MobileHandoff-diagnostics
             ${{ runner.temp }}/MobileHandoff-console.json
+            ${{ runner.temp }}/MobileUnit.xcresult
+            ${{ runner.temp }}/MobileUnit-attachments
+            ${{ runner.temp }}/MobileUnit-diagnostics
+            ${{ runner.temp }}/MobileUnit-console.json
           if-no-files-found: ignore
           retention-days: 7
