@@ -465,3 +465,17 @@ async fn the_environment_stands_in_for_cloud_in_tests() {
         Fetched::Failed
     );
 }
+
+
+/// A failure to hand the settings policy over is reported once until it
+/// changes or the hand-over succeeds.
+#[test]
+fn a_repeated_settings_failure_is_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = WorkspacePolicies::new(dir.path());
+    assert!(cache.settings_failure_is_new("store failed"));
+    assert!(!cache.settings_failure_is_new("store failed"));
+    assert!(cache.settings_failure_is_new("another failure"));
+    cache.settings_applied(None);
+    assert!(cache.settings_failure_is_new("another failure"));
+}

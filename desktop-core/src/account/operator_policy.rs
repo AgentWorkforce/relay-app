@@ -105,6 +105,9 @@ impl Account {
             return;
         }
         let Some(workspace) = self.uploader.target().and_then(|t| t.workspace_id) else {
+            // Signed out: a settings policy the core still holds (a lift at
+            // sign-out that failed) is lifted now.
+            self.apply_workspace_settings();
             return;
         };
         // The periodic read never renews the session itself: the uploads'
@@ -167,14 +170,19 @@ impl Account {
         }
         match core.apply_settings_policy(wanted.clone()) {
             Ok(()) => cache.settings_applied(wanted),
-            // Tried again on the next supervision tick.
-            Err(error) => core.hub.activity(
-                Level::Warning,
-                format!(
-                    "Could not apply your organization's settings policy: {}",
-                    error.message
-                ),
-            ),
+            // Tried again on the next supervision tick, signed in or out; the
+            // warning shows once per failure, not on every tick.
+            Err(error) => {
+                if cache.settings_failure_is_new(&error.message) {
+                    core.hub.activity(
+                        Level::Warning,
+                        format!(
+                            "Could not apply your organization's settings policy: {}",
+                            error.message
+                        ),
+                    );
+                }
+            }
         }
     }
 
