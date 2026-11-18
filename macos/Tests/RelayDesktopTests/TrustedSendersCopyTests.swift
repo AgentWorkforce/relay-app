@@ -25,6 +25,18 @@ final class TrustedSendersCopyTests: XCTestCase {
         XCTAssertEqual(String(data: change, encoding: .utf8), #"{"trust_workspace_members":false}"#)
     }
 
+    func testSettingsDecodeTheWorkspaceLeaders() throws {
+        let json = #"{"allow_self_registration": true, "auto_activate": false, "workspace_leaders": {"leaders": [{"name": "lead", "agent_id": "a-1"}], "patterns": ["*lead"]}}"#
+        let settings = try JSONDecoder().decode(SettingsValues.self, from: Data(json.utf8))
+        XCTAssertEqual(settings.workspaceLeaders?.leaders, [WorkspaceLeader(agentId: "a-1", name: "lead")])
+        XCTAssertEqual(settings.workspaceLeaders?.patterns, ["*lead"])
+        let applied = settings.applying(SettingsChange(trustWorkspaceMembers: true))
+        XCTAssertEqual(applied.trustWorkspaceMembers, true)
+        XCTAssertEqual(applied.workspaceLeaders, settings.workspaceLeaders)
+        let absent = try JSONDecoder().decode(SettingsValues.self, from: Data(#"{"allow_self_registration": true, "auto_activate": false}"#.utf8))
+        XCTAssertNil(absent.workspaceLeaders)
+    }
+
     func testFieldParsesToTheList() {
         XCTAssertEqual(TrustedSendersCopy.senders(from: " ada-lovelace, ,bot@node-9 "), ["ada-lovelace", "bot@node-9"])
         XCTAssertEqual(TrustedSendersCopy.senders(from: ""), [])

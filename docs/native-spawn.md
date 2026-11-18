@@ -808,6 +808,11 @@ rather than a terminal. Adapter: `probe/src/relay/harness/grok.rs`.
   between ends the leader, which nothing could reach.
 - **Release.** `SIGTERM` to the leader, only while it is still the process
   the record names; a second release does nothing more.
+- **Idle for a day.** A spawned Grok that has been idle for 24 hours, with
+  no turn in progress, no message waiting and no final answer still owed, is
+  ended and taken off the relay, which frees its place under a cap. A turn
+  that finishes in between restarts the clock, and an agent that was taken
+  over is left alone. Idle Claude and Codex agents keep their places.
 - **Replies.** A spawned Grok's tools can answer on the relay-send socket.
   Its session claim is accepted only under the exact recorded leader, proved
   through the kernel's process, executable, socket and private launch marker.
