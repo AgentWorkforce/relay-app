@@ -39,6 +39,14 @@ private func cliInName(_ value: String) -> String {
 private func cliStated(in hints: [String]) -> String {
     hints.lazy.map(cliInName).first { !$0.isEmpty } ?? ""
 }
+/// The harness a record states for a session on a computer. A hosted bot's kind
+/// (`grok-bot`) names a product, not a session a computer can fork, so it states none.
+private func harnessStated(in hints: [String]) -> String {
+    let namesBot = hints.contains { hint in
+        hint.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains { $0.hasSuffix("bot") }
+    }
+    return namesBot ? "" : cliStated(in: hints)
+}
 private func agentCLI(structured: [String], name: String, persona: String = "") -> String {
     let stated = cliStated(in: structured)
     if !stated.isEmpty { return stated }
@@ -138,7 +146,7 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         let hints = [string(metadata["session_kind"]), string(metadata["cli"]), string(metadata["tool"]),
                      string(metadata["harness"]), string(metadata["provider"])]
         cli = agentCLI(structured: hints, name: name, persona: string(data["persona"]))
-        statedCLI = cliStated(in: hints)
+        statedCLI = harnessStated(in: hints)
         // Gateway registrations name an agent (for example OpenClaw's `main`),
         // not any one of its conversations. Never request a brief for that ID.
         let gateway = string(metadata["session_scope"]) == "agent" ||
@@ -170,7 +178,7 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let hints = [string(data["cli"]), string(data["harness"]), string(data["providerLabel"]), string(data["cliModel"])]
         cli = agentCLI(structured: hints, name: name)
-        statedCLI = cliStated(in: hints)
+        statedCLI = harnessStated(in: hints)
         subtitle = [node, string(data["cliModel"]).isEmpty ? string(data["providerLabel"]) : string(data["cliModel"])].filter { !$0.isEmpty }.joined(separator: " · ")
         let state = string(data["workerLiveness"])
         status = state.isEmpty ? string(data["state"]) : state
@@ -197,7 +205,7 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         isDesktopRegistration = data["desktop_registration"] as? Bool ?? false
         cli = isHuman ? "" : agentCLI(structured: [string(peer?["cli"]), string(data["cli"])], name: name)
         // `data["cli"]` is copied from a roster entry and may be a guess.
-        statedCLI = isHuman ? "" : cliStated(in: [string(peer?["cli"])])
+        statedCLI = isHuman ? "" : harnessStated(in: [string(peer?["cli"])])
         subtitle = string(object(data["last_message"])["text"])
         status = string(data["status"])
         attachable = false
