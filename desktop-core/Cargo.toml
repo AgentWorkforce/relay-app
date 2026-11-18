@@ -29,11 +29,12 @@ service-callers-dev-attest = []
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 8210f16e, after ed9bfee5: #2206 (a spawned Grok leader idle for a day
-# is ended and taken off the relay) and #2213 (workspace leaders: a leader's
-# direct message is native input; settings.get lists them, read only).
+# main 13ace287, after ed9bfee5: #2206 (a spawned Grok leader idle for a day
+# is ended and taken off the relay), #2213 (workspace leaders: a leader's
+# direct message is native input; settings.get lists them, read only) and
+# #2218 (a spawn can fork a Grok session; not on Windows).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "8210f16e03cf6af28a2118ef1713eadf32d697fb", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "13ace287f03167f614ea3f74b4de49f47a591411", default-features = false }
 # relayhistory 0.60.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
