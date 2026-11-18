@@ -129,7 +129,8 @@ Codex thread archived ─▶ completed              (existing archive path remov
 
 - A slot is held from reservation until explicit release, or until the
   process is positively seen `exited` (crash, clean completion, or a Codex
-  thread archived). `idle`, `waiting` and `unknown` keep it.
+  thread archived). `idle`, `waiting` and `unknown` keep it. The one
+  exception is a spawned Grok leader ended by the idle release below.
 - `held` = spawned registrations that are not archived and not observed
   `exited`; `reserved` = spawns between the capacity check and the saved
   registration. A spawn is admitted when `max == 0` (no limit), or while
@@ -168,10 +169,22 @@ heartbeat at once when slots change, rather than waiting for the 60 s cycle.
 
 Only by explicit `release` (Relaycast `action.invoke release`, or **End Agent**
 in the app through `agents.end`), or completion through the existing archive
-path (Codex thread archived). A safe idle policy is defined but not turned on:
-release an agent idle for longer than a set time only when its process is
-`running`, its work `idle` (not `unknown`), no turn is running, no delivery is
-in flight on its line and its Relaycast queue is empty.
+path (Codex thread archived), or the Grok leader idle release below.
+
+A spawned Grok leader is a process of its own (`grok agent leader
+--no-exit-on-disconnect`) and does not exit when its client does. Once that
+process has been `running` and its work `idle` (not `unknown`) for 24 hours,
+with no turn running, no delivery in flight, nothing owed as a final answer,
+and an empty Relaycast queue, the core ends the leader and removes the agent
+(`agents.end`'s path).
+A queue that cannot be read keeps the leader. A turn that starts and finishes
+between looks restarts the 24 hours. Before the stop, with the delivery lock
+held, the core reads that turn again and leaves the leader if a turn has
+started, a newer one has finished, or the name now belongs to a different
+agent. A leader the person has taken over is left alone. The idle clock lives
+in the core's ledger, so a core restart starts it over. Claude and Codex keep
+their places while idle: a Codex thread no app-server has loaded stays paused,
+not ended.
 
 ### Where it lives
 
@@ -242,8 +255,6 @@ answer first through `Spawner::observe`.
 - A reclaimed Codex thread (not loaded anywhere) can still be resumed by a
   later delivery. Should the node resume it, or leave it reclaimed until
   released?
-- The safe idle release policy is defined above but off. Should it ship, and
-  with what idle time?
 - Capability metadata that changes on every heartbeat makes Relaycast run its
   roster prune pass each beat. A dedicated live-signal field on
   `node.heartbeat` would avoid it.
