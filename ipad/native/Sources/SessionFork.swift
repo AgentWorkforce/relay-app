@@ -2,7 +2,8 @@ import Foundation
 
 /// Forking an agent's session from the phone: the agent's computer starts a
 /// new headless agent in the same folder as a copy of the conversation
-/// (Claude's `--fork-session`, Codex's `thread/fork`), and the original keeps
+/// (Claude's `--fork-session`, Codex's `thread/fork`, Grok's own session
+/// fork), and the original keeps
 /// running. Only computers advertising `relay:spawn-fork:v1` accept a fork;
 /// older ones would ignore the request and start an empty agent.
 enum SessionFork {
@@ -72,6 +73,7 @@ enum SessionFork {
         switch statedHarness(for: agent, roster: roster, spawned: spawned) {
         case "claude", "claudecode": return "claude"
         case "codex": return "codex"
+        case "grok": return "grok"
         default: return nil
         }
     }
@@ -105,7 +107,7 @@ enum SessionFork {
             return .unavailable("\(agent.name) is no longer running. Only active agents can be forked.")
         }
         guard let harness = harness(for: agent, roster: roster, spawned: spawned) else {
-            return .unavailable("Only Claude and Codex sessions can be forked.")
+            return .unavailable("Only Claude, Codex and Grok sessions can be forked.")
         }
         let capable = nodes.filter { $0.forkHarnesses.contains(harness) }
         let matched: [RelaySpawnNode]
