@@ -281,6 +281,12 @@ struct RelayWorkspaceView: View {
             reconcileSelection(in: conversations, source: .conversation)
             presentPendingNotificationConversation()
         }
+        // A bubble leaves once the open conversation's history shows its
+        // message. This view always observes the client, so that does not
+        // wait for the chat view, pushed or not, to be built again.
+        .onChange(of: client.messages.map(\.id)) { _, _ in
+            if let selected { outgoing.reconcile(agentID: selected.id, with: historyRows) }
+        }
         .onChange(of: client.channels) { _, channels in
             reconcileSelection(in: channels, source: .channel)
         }
@@ -820,41 +826,9 @@ struct RelayWorkspaceView: View {
                 }
             }
             .navigationDestination(for: MobileConversationRoute.self) { route in
-                let destination = route.agent
-                let agent = selected?.id == route.id ? selected ?? destination : destination
-                agentDetail(agent, phone: true)
-                    .navigationTitle(client.displayName(for: agent))
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        if SessionFork.Placement.current == .menu {
-                            ToolbarItem(placement: .topBarTrailing) { forkMenu(agent) }
-                        }
-                        // The navigation bar is never under the keyboard, so
-                        // this stays reachable however the thread lays out.
-                        if messageFocused {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button { messageFocused = false } label: {
-                                    Image(systemName: "keyboard.chevron.compact.down")
-                                }
-                                .accessibilityLabel("Hide keyboard")
-                                .accessibilityIdentifier("Hide keyboard navigation")
-                            }
-                        }
-                    }
-                    .onAppear {
-                        // Metadata changes may re-evaluate the destination;
-                        // only entering a different chat resets focus/history.
-                        if selected?.id != agent.id { selectAgent(agent) }
-                    }
-                    .onDisappear {
-                        // Popping back to the list is handled by the phonePath
-                        // change; this also runs when an iPad crosses the compact
-                        // width breakpoint with the same conversation still open,
-                        // so it must not drop staged files or a running upload.
-                        messageDraft = ""
-                        messageFocused = false
-                        Task { await client.closeTerminal() }
-                    }
+                // The pushed chat observes the client itself: a send's history
+                // must show without waiting for an unrelated change.
+                ObservingContent(object: client) { phoneConversation(route) }
             }
         }
         .onChange(of: phonePath) { _, path in
@@ -864,6 +838,44 @@ struct RelayWorkspaceView: View {
                 client.selectConversation(nil)
             }
         }
+    }
+    /// The chat pushed for `route` on a phone.
+    private func phoneConversation(_ route: MobileConversationRoute) -> some View {
+        let destination = route.agent
+        let agent = selected?.id == route.id ? selected ?? destination : destination
+        return agentDetail(agent, phone: true)
+            .navigationTitle(client.displayName(for: agent))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if SessionFork.Placement.current == .menu {
+                    ToolbarItem(placement: .topBarTrailing) { forkMenu(agent) }
+                }
+                // The navigation bar is never under the keyboard, so
+                // this stays reachable however the thread lays out.
+                if messageFocused {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { messageFocused = false } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                        }
+                        .accessibilityLabel("Hide keyboard")
+                        .accessibilityIdentifier("Hide keyboard navigation")
+                    }
+                }
+            }
+            .onAppear {
+                // Metadata changes may re-evaluate the destination;
+                // only entering a different chat resets focus/history.
+                if selected?.id != agent.id { selectAgent(agent) }
+            }
+            .onDisappear {
+                // Popping back to the list is handled by the phonePath
+                // change; this also runs when an iPad crosses the compact
+                // width breakpoint with the same conversation still open,
+                // so it must not drop staged files or a running upload.
+                messageDraft = ""
+                messageFocused = false
+                Task { await client.closeTerminal() }
+            }
     }
     private func agentRow(_ agent: RelayAgent) -> some View {
         HStack(spacing: 2) {
@@ -1424,10 +1436,6 @@ struct RelayWorkspaceView: View {
                 messageComposer(for: agent)
                     .background(Color(.systemBackground))
             }
-        }
-        // A bubble leaves once the open conversation's history shows its message.
-        .onChange(of: client.messages.map(\.id)) { _, _ in
-            outgoing.reconcile(agentID: agent.id, with: historyRows)
         }
     }
     @ViewBuilder
