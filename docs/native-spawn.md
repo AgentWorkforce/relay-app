@@ -59,7 +59,7 @@ with its full message id as `clientUserMessageId` for deduplication and the
 automatic answer. Unless **Native input from the spawning agent** is on, the
 spawn's requester keeps the `[via Agent Relay]` attribution, framed as the
 owner's (see [Who counts as the owner](#who-counts-as-the-owner)); every other
-agent keeps the peer framing. The optional **Native input from the
+agent keeps the peer framing, except a [workspace leader](#workspace-leaders). The optional **Native input from the
 spawning agent** setting admits the verified requester's DMs as native turns
 without giving that agent permission-approval authority; **Approvals from the
 spawning agent** adds that authority for its own sessions only (see
@@ -808,6 +808,11 @@ rather than a terminal. Adapter: `probe/src/relay/harness/grok.rs`.
   between ends the leader, which nothing could reach.
 - **Release.** `SIGTERM` to the leader, only while it is still the process
   the record names; a second release does nothing more.
+- **Idle for a day.** A spawned Grok that has been idle for 24 hours, with
+  no turn in progress, no message waiting and no final answer still owed, is
+  ended and taken off the relay, which frees its place under a cap. A turn
+  that finishes in between restarts the clock, and an agent that was taken
+  over is left alone. Idle Claude and Codex agents keep their places.
 - **Replies.** A spawned Grok's tools can answer on the relay-send socket.
   Its session claim is accepted only under the exact recorded leader, proved
   through the kernel's process, executable, socket and private launch marker.
@@ -1152,6 +1157,39 @@ This option permits user turns only; tool approvals still belong to the verified
 human owner unless **Approvals from the spawning agent** is also on.
 Attribution, attachments and reply context are preserved. No
 Relaycast wire change or relaycast-cloud dependency update is required.
+
+### Workspace leaders
+
+A workspace can name leaders in Relaycast. The core reads the list
+(`GET /v1/workspace/leaders`), keeps it for a minute, and reads it again as
+each spawned agent starts. While reads fail it keeps the last list for at
+most ten minutes after the last read that succeeded; a 401, 403 or 404
+drops it at once. A leader is matched by its immutable agent id, never by
+its name.
+
+A leader's 1:1 direct message, or a reply in that DM's thread, is native
+input:
+
+- to a spawned agent that has not been taken over, through the spawn's
+  harness, while **Native input from the spawning agent** is on;
+- to a Claude Code session the person started or took over, as a user turn
+  started by its Agent Relay plugin, while teammate native input
+  (`teammate_native_input`) is on.
+
+The message carries the native attribution and a `[leader: @<name> leads
+this work; …]` line that names the leader and says what still needs the
+person's OK. Anywhere else, and with those settings off, it is a peer
+message with no leader line. A leader's channel posts, group messages and
+mentions stay peer messages, and a spawn's own requester keeps its requester
+framing even when the list names it. Leaders are never approvers: a leader
+cannot answer permission or approval requests, fork a session, or release an
+agent it did not ask for.
+
+`settings.get` shows the last list read for the current workspace as
+`workspace_leaders` (`{"leaders":[{"name","agent_id"}],"patterns":[...]}`),
+read only and absent until a list has been read. The desktop apps do not
+show the list yet; it is the same on macOS, Linux and Windows. The core's
+own description is in relay's `crates/relay-node/docs/relay-core.md`.
 
 ### Approvals from the spawning agent
 

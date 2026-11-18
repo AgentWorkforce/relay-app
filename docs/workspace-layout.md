@@ -695,7 +695,9 @@ the claim failed), and
 **No limit**, the default; `spawn_max_agents: 0` clears the cap through the API.
 The old untouched default of 12 was stored as absent and now becomes unlimited;
 explicit caps, including 12, are preserved. When a cap is set, it limits how many
-run at once: an idle agent keeps its place until it is released, and a spawn
+run at once: an idle agent keeps its place until it is released (a spawned
+Grok agent idle for 24 hours is ended, which frees its place; see
+[native-spawn.md](native-spawn.md#grok-cli)), and a spawn
 beyond the cap is refused, never queued. Save with **Save** or Enter; leaving the field or refreshing Settings does not apply an unfinished edit. Failed saves show the error and restore the confirmed cap. A **full access** switch on each provider’s settings page, for each
 harness the node offers, chooses whether spawned agents run without their
 sandbox; Codex and Claude approval requests go to the machine owner alone, as Relay
@@ -2423,7 +2425,8 @@ start on the desktop continue to use Claude's native desktop prompt.
 
 **Native input from the spawning agent** (`spawn_native_input`, on by default)
 lets the verified requester send DMs as native Codex or Claude user turns. Other
-agents remain peers and tool approvals remain with the human owner. The switch
+agents remain peers, except the workspace's leaders (see
+[workspace leaders](native-spawn.md#workspace-leaders)), and tool approvals remain with the human owner. The switch
 is shared across macOS, Linux and Windows; see [native spawn](native-spawn.md) for details.
 
 **Approvals from the spawning agent** (`spawn_requester_approvals`), shown
