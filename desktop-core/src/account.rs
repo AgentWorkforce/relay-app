@@ -814,7 +814,7 @@ impl Account {
             Start::Device(login) => login.poll().await.map_err(login_failure::device_ended),
             Start::Browser(login) => self.browser_session(&login, &site).await,
             Start::Reused(session) => Ok(session),
-            Start::EnrollmentKey(login) => self.enrollment_key_session(login, &site).await,
+            Start::EnrollmentKey(login) => self.enrollment_key_session(attempt, login, &site).await,
         };
         let kept = match session {
             Ok(session) => {
@@ -1047,7 +1047,7 @@ impl Account {
             Start::Reused(session) => Ok(session),
             Start::Device(login) => login.poll().await.map_err(login_failure::device_ended),
             Start::Browser(login) => self.browser_session(&login, &site).await,
-            Start::EnrollmentKey(login) => self.enrollment_key_session(login, &site).await,
+            Start::EnrollmentKey(login) => self.enrollment_key_session(attempt, login, &site).await,
         };
         let session = match session {
             Ok(session) => session,

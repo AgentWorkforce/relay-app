@@ -194,9 +194,11 @@ fn the_host_name_is_trimmed_cleaned_and_cut_to_eighty_units() {
 fn a_200_builds_the_device_sign_ins_session() {
     let body = json!({"data": {"access_token": "access-1", "refresh_token": "refresh-1",
         "access_token_expires_at": "2099-01-01T00:00:00Z", "api_url": format!("{SITE}/cloud/")}});
-    let Outcome::Session(session) = outcome(&reply(200, body, None), SITE) else {
+    let Outcome::Session(session, enrolled) = outcome(&reply(200, body, None), SITE) else {
         panic!("expected a session");
     };
+    // A key without the organization's consent: not managed, nothing seeded.
+    assert_eq!(enrolled, Enrolled::default());
     assert_eq!(session.access_token.expose(), "access-1");
     assert_eq!(
         session.refresh_token.as_ref().map(Secret::expose),
@@ -305,4 +307,76 @@ async fn an_unreachable_site_keeps_the_key_file() {
     assert_eq!(error.message, "Could not reach Agent Relay Cloud.");
     assert!(!error.message.contains(KEY));
     assert!(file.exists());
+}
+
+fn policy_document(revision: i64) -> Value {
+    json!({"version": 2, "revision": revision, "managed": false, "consent": ["accept_spawns"],
+        "sections": {"spawn": {"locked": {"spawn_max_agents": 4}, "defaults": {}}}})
+}
+
+/// A key minted with the organization's consent answers `managed`, with the
+/// workspace policy the new computer applies before its first read.
+#[test]
+fn a_managed_exchange_carries_the_workspace_policy() {
+    let body = json!({"data": {"access_token": "access-1", "managed": true,
+        "policy_revision": 9, "workspace_policy": policy_document(9)}});
+    let Outcome::Session(_, enrolled) = outcome(&reply(200, body, None), SITE) else {
+        panic!("expected a session");
+    };
+    let seed = enrolled.seed.expect("a seed");
+    assert_eq!(seed.revision(), 9);
+    // The answer's managed is the session's, whatever the document says.
+    assert!(seed.managed());
+    assert_eq!(
+        seed.locked(crate::workspace_policy::Key::SpawnMaxAgents),
+        Some(&json!(4))
+    );
+}
+
+/// A document this build cannot read seeds nothing and the session still
+/// signs in; the first read decides.
+#[test]
+fn an_unusable_policy_in_the_exchange_is_ignored() {
+    for extra in [
+        json!({"managed": true}),
+        json!({"managed": true, "workspace_policy": null}),
+        json!({"managed": true, "workspace_policy": {"version": 3}}),
+        json!({"managed": "yes", "workspace_policy": "policy"}),
+    ] {
+        let mut body = json!({"access_token": "access-1"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let Outcome::Session(_, enrolled) = outcome(&reply(200, body, None), SITE) else {
+            panic!("expected a session for {extra}");
+        };
+        assert!(enrolled.seed.is_none(), "{extra}");
+    }
+}
+
+/// A document whose revision is not the answer's `policy_revision` is not
+/// trusted; without `policy_revision` the document's own is taken.
+#[test]
+fn a_document_that_disagrees_with_policy_revision_is_ignored() {
+    let answer = |extra: Value| {
+        let mut body = json!({"access_token": "access-1"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let Outcome::Session(_, enrolled) = outcome(&reply(200, body, None), SITE) else {
+            panic!("expected a session");
+        };
+        enrolled.seed
+    };
+    assert!(
+        answer(json!({"policy_revision": 9, "workspace_policy": policy_document(7)})).is_none()
+    );
+    assert_eq!(
+        answer(json!({"workspace_policy": policy_document(7)})).map(|seed| seed.revision()),
+        Some(7)
+    );
+    // The answer's managed is the document's, managed or not.
+    let unmanaged = answer(json!({"managed": false, "policy_revision": 7,
+        "workspace_policy": policy_document(7)}));
+    assert!(!unmanaged.unwrap().managed());
 }

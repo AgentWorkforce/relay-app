@@ -2222,6 +2222,21 @@ defaults its settings by them.
   it arrives.", and "Always allow" is shown but cannot be used. A session's
   sidebar shows "Repository: owner/name" under the agent's name when its
   registration names one.
+- An enrollment key minted with the organization's consent makes the
+  session **managed**. The exchange's 200 may carry `workspace_policy`, the
+  document `access/me` serves, with `managed` and `policy_revision`. The
+  answer names no workspace, so the document is kept for the sign-in attempt
+  that ran the exchange and cached for the workspace that attempt connects
+  to, just before that workspace's first policy read, with the answer's
+  `managed` as its own (absent reads as false). It is cached provisionally: a
+  workspace already read keeps its own policy, and the first read of this one
+  replaces the seed whatever its revision, or clears it when the workspace
+  has no policy. A new computer so applies the organization's settings policy
+  from its first launch, even when that first read fails. A document whose
+  revision is not the answer's `policy_revision`, or that does not parse, is
+  ignored and the sign-in goes on; a cancelled or superseded attempt's
+  document is dropped. `managed` with no usable document changes nothing:
+  the first read brings the document.
 
 Providers also includes Conductor, Paseo, Capy and Replicas. Claude cloud-session
 sharing is part of the Claude Code page, with no separate Claude cloud provider.

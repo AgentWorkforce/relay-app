@@ -9,9 +9,19 @@
 //! through a link. Once Cloud accepts the key, its file is deleted if it is
 //! still the file that was read, even when the sign-in was cancelled while
 //! the exchange was in flight.
+//!
+//! A key minted with the organization's consent makes the session
+//! **managed**. The exchange's answer says whether it is (`managed`) and may
+//! carry the organization's workspace policy (`workspace_policy`, the
+//! document `access/me` serves, with its `policy_revision`). The answer names
+//! no workspace, so the document is cached for the workspace the sign-in
+//! connects to, just before that workspace's first policy read: a new
+//! computer has the policy even when that read fails. A document that is
+//! missing or malformed is ignored and the first read decides.
 
 use super::{Account, Start};
 use crate::contract::account::{Flow, SignInRequest};
+use crate::workspace_policy::{self, WorkspacePolicy};
 use agent_relay_node::platform::fs::{owned_by_current_user, private_to_owner};
 use agent_relay_node::relay::cloud_http::sendable;
 use agent_relay_node::relay::cloud_login::LoginError;
@@ -116,8 +126,16 @@ fn unanswered(kind: ureq::ErrorKind) -> Unanswered {
     }
 }
 
+/// What a session the exchange gave comes with.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Enrolled {
+    /// The organization's workspace policy the answer carried, with the
+    /// answer's `managed` as its own.
+    pub(super) seed: Option<Box<WorkspacePolicy>>,
+}
+
 enum Outcome {
-    Session(Box<CloudSession>),
+    Session(Box<CloudSession>, Enrolled),
     Wait(u64),
     Failed(LoginError),
 }
@@ -354,6 +372,39 @@ fn session(value: &Value, site: &str) -> Result<CloudSession, LoginError> {
     })
 }
 
+/// What a 200 says of the session beyond its tokens: whether it is managed,
+/// and the workspace policy to seed the cache with. A document that does not
+/// parse seeds nothing. The answer's `managed` is the session's, so it is
+/// the document's too.
+fn enrolled(value: &Value) -> Enrolled {
+    let managed = value["managed"].as_bool().unwrap_or(false);
+    let revision = value["policy_revision"].as_i64();
+    let seed = value
+        .get("workspace_policy")
+        .filter(|document| !document.is_null())
+        .and_then(
+            |document| match workspace_policy::parse_document(document) {
+                // The answer names the document's revision; one that
+                // disagrees is not trusted.
+                Ok(policy) if revision.is_some_and(|revision| revision != policy.revision) => {
+                    eprintln!(
+                        "enrollment key: the workspace policy was ignored: its revision is not the answer's policy_revision"
+                    );
+                    None
+                }
+                Ok(mut policy) => {
+                    policy.managed = managed;
+                    Some(Box::new(policy))
+                }
+                Err(error) => {
+                    eprintln!("enrollment key: the workspace policy was ignored: {error}");
+                    None
+                }
+            },
+        );
+    Enrolled { seed }
+}
+
 /// What an answer means. The rejections stay generic: a wrong, expired,
 /// revoked or already used key all read the same.
 fn outcome(reply: &Reply, site: &str) -> Outcome {
@@ -361,7 +412,7 @@ fn outcome(reply: &Reply, site: &str) -> Outcome {
     let code = value["error"].as_str();
     match (reply.status, code) {
         (200, _) => match session(value, site) {
-            Ok(session) => Outcome::Session(Box::new(session)),
+            Ok(session) => Outcome::Session(Box::new(session), enrolled(value)),
             Err(error) => Outcome::Failed(error),
         },
         (429, _) | (_, Some("slow_down")) => Outcome::Wait(
@@ -468,7 +519,7 @@ impl EnrollmentKeyLogin {
         self,
         site: &str,
         core: Option<Weak<Core>>,
-    ) -> Result<CloudSession, LoginError> {
+    ) -> Result<(CloudSession, Enrolled), LoginError> {
         let url = format!("{}/auth/enrollment/token", api_base(site));
         let body = json!({ "enrollment_key": self.key.expose(), "client_name": CLIENT_NAME,
             "desktop_host_name": self.host_name });
@@ -490,7 +541,7 @@ impl EnrollmentKeyLogin {
             .unwrap_or(Err(Unanswered::Lost));
             let reply = reply.map_err(|unanswered| unanswered.error())?;
             match outcome(&reply, site) {
-                Outcome::Session(session) => return Ok(*session),
+                Outcome::Session(session, enrolled) => return Ok((*session, enrolled)),
                 Outcome::Wait(seconds) if retries < SLOW_DOWN_RETRIES => {
                     retries += 1;
                     tokio::time::sleep(Duration::from_secs(seconds)).await;
@@ -539,13 +590,42 @@ impl Account {
     /// Exchanges the key; once Cloud accepts it the key is spent, so its
     /// file is deleted, unless it changed since it was read. That holds even
     /// when the answer carried no usable session and the attempt fails, and
-    /// when the attempt is cancelled while the exchange is in flight.
+    /// when the attempt is cancelled while the exchange is in flight. The
+    /// workspace policy the answer carried is kept for this attempt, to be
+    /// cached for the workspace it connects to
+    /// ([`Account::take_enrollment_seed`]).
     pub(super) async fn enrollment_key_session(
         &self,
+        attempt: u64,
         login: EnrollmentKeyLogin,
         site: &str,
     ) -> Result<CloudSession, LoginError> {
-        login.exchange(site, self.core.get().cloned()).await
+        let (session, enrolled) = login.exchange(site, self.core.get().cloned()).await?;
+        // The attempt that ran this exchange: one that started since takes
+        // nothing from it.
+        self.operator_policy
+            .workspace_policies()
+            .hold_seed(attempt, enrolled.seed.map(|policy| *policy));
+        Ok(session)
+    }
+
+    /// The sign-in attempt under way now.
+    fn current_attempt(&self) -> u64 {
+        self.attempt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .id
+    }
+
+    /// Caches the workspace policy the current attempt's enrollment key
+    /// answered with for `workspace_id`, the workspace the sign-in connects
+    /// to, as a read would cache it: a lower revision than the cached one is
+    /// refused, and the read that follows replaces it. A seed of an earlier
+    /// attempt is dropped.
+    pub(super) fn take_enrollment_seed(&self, workspace_id: &str) {
+        self.operator_policy
+            .workspace_policies()
+            .take_seed(self.current_attempt(), workspace_id);
     }
 }
 

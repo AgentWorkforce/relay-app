@@ -58,6 +58,7 @@ impl Account {
         let workspace = target.workspace_id.as_deref().unwrap_or_default();
         let policy = &self.operator_policy;
         policy.sign_in(workspace);
+        self.take_enrollment_seed(workspace);
         self.refresh_operator_policy(workspace).await;
         let enforced = policy.enforced_sharing(Some(workspace));
         let mut install = crate::history::uploader::command::cloud_install(

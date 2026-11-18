@@ -307,6 +307,11 @@ pub enum Fetched {
     Absent,
     /// Cloud could not be asked, or its document was unreadable.
     Failed,
+    /// An enrollment key's exchange answered with a document for the
+    /// workspace the sign-in connects to, which the exchange does not name:
+    /// kept provisionally, until the first read of that workspace replaces it
+    /// whatever its revision.
+    Seed(Box<WorkspacePolicy>),
 }
 
 /// Reads `access/me`'s answer: no `workspace_policy` field (or `null`) is
@@ -366,24 +371,38 @@ pub struct Entry {
     /// revision never goes backwards.
     pub revision: i64,
     pub policy: WorkspacePolicy,
+    /// Seeded from an enrollment key's exchange, not read for this
+    /// workspace yet: the first read replaces it whatever its revision.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provisional: bool,
 }
 
 /// `entry` after a read that found `fetched`. A failure changes nothing; an
-/// older revision is refused; no policy is the unset one.
+/// older revision is refused; no policy is the unset one. A provisional
+/// (seeded) entry gives way to any read, and a seed never replaces a read.
 pub fn apply(entry: Option<Entry>, workspace_id: &str, fetched: Fetched) -> Option<Entry> {
+    let fresh = |policy: Box<WorkspacePolicy>, provisional| Entry {
+        workspace_id: workspace_id.to_string(),
+        revision: policy.revision,
+        policy: *policy,
+        provisional,
+    };
     match fetched {
         Fetched::Failed => entry,
-        Fetched::Absent => entry.map(|entry| Entry {
-            policy: WorkspacePolicy::unset(),
-            ..entry
+        Fetched::Absent => entry.map(|entry| match entry.provisional {
+            true => fresh(Box::default(), false),
+            false => Entry {
+                policy: WorkspacePolicy::unset(),
+                ..entry
+            },
         }),
         Fetched::Policy(policy) => match entry {
-            Some(entry) if policy.revision < entry.revision => Some(entry),
-            _ => Some(Entry {
-                workspace_id: workspace_id.to_string(),
-                revision: policy.revision,
-                policy: *policy,
-            }),
+            Some(entry) if !entry.provisional && policy.revision < entry.revision => Some(entry),
+            _ => Some(fresh(policy, false)),
+        },
+        Fetched::Seed(policy) => match entry {
+            Some(entry) if !entry.provisional => Some(entry),
+            _ => Some(fresh(policy, true)),
         },
     }
 }
@@ -457,6 +476,9 @@ pub struct WorkspacePolicies {
     /// The last failure to hand the settings policy to the core, so it is
     /// reported once rather than on every tick.
     settings_failure: Mutex<Option<String>>,
+    /// The policy an enrollment key's exchange answered with, and the sign-in
+    /// attempt it belongs to, until that attempt connects a workspace.
+    enrollment_seed: Mutex<Option<(u64, WorkspacePolicy)>>,
 }
 
 impl WorkspacePolicies {
@@ -474,6 +496,34 @@ impl WorkspacePolicies {
             saved: Mutex::new(saved),
             applied_settings: Mutex::new(None),
             settings_failure: Mutex::new(None),
+            enrollment_seed: Mutex::new(None),
+        }
+    }
+
+    /// Keeps the policy sign-in `attempt`'s enrollment key answered with
+    /// (`None`: it answered with none) for the workspace it connects to.
+    pub fn hold_seed(&self, attempt: u64, policy: Option<WorkspacePolicy>) {
+        *self
+            .enrollment_seed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = policy.map(|policy| (attempt, policy));
+    }
+
+    /// Caches the held policy for `workspace_id`, the workspace sign-in
+    /// attempt `current` connects to, provisionally (`Fetched::Seed`): a
+    /// workspace already read keeps its own policy, and the first read of
+    /// this one replaces the seed whatever its revision. A policy held for
+    /// another attempt is dropped.
+    pub fn take_seed(&self, current: u64, workspace_id: &str) {
+        let seed = self
+            .enrollment_seed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some((attempt, policy)) = seed {
+            if attempt == current && !workspace_id.is_empty() {
+                self.record(workspace_id, Fetched::Seed(Box::new(policy)));
+            }
         }
     }
 
