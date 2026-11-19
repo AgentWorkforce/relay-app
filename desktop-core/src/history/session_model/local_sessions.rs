@@ -276,68 +276,9 @@ pub fn local_session_week(timestamp: Option<i64>) -> String {
     format!("Week of {}", monday.format("%b %-d, %Y"))
 }
 
-/// Row keys a relay-only session had before it joined its transcript by
-/// upload key; hidden sessions saved under them stay hidden.
-const RENAMED_ROW_KEYS: &[(&str, &str)] = &[
-    ("grok-open:", "grok:"),
-    ("opencode-open:", "opencode:"),
-    ("muse-open:", "muse:"),
-    ("cursor-cli:", "cursor:"),
-];
-
-/// The current row key for a hidden session saved under an older one.
-pub fn current_hidden_key(key: &str) -> String {
-    RENAMED_ROW_KEYS
-        .iter()
-        .find_map(|(old, new)| key.strip_prefix(old).map(|id| format!("{new}{id}")))
-        .unwrap_or_else(|| key.to_owned())
-}
-
-/// The host-aware key added beside an older hidden target key. Keeping both
-/// makes the preference stable if web discovery is temporarily unavailable.
-pub fn additional_hidden_key_for_sessions(key: &str, sessions: &[LocalSession]) -> Option<String> {
-    let current = current_hidden_key(key);
-    let session = (current == key).then(|| {
-        sessions.iter().find(|session| {
-            session.target.kind == agent_relay_node::relay::store::SessionKind::ClaudeCloud
-                && session.host.as_deref() == Some(agent_relay_node::relay::claude_web::HOST)
-                && agent_relay_node::relay::claude_web::web_session_id(&session.target).is_some()
-                && (session.target.key() == key || session.upload_key().as_deref() == Some(key))
-        })
-    })??;
-    let target = session.target.key();
-    let upload = session.upload_key()?;
-    if target == key {
-        Some(upload)
-    } else if upload == key {
-        Some(target)
-    } else {
-        None
-    }
-}
-
-/// Whether two persisted row keys are aliases for one Claude web session.
-/// Both are retained while hidden so a discovery outage cannot reveal it;
-/// unhiding either identity removes the complete alias set.
-pub fn same_hidden_session(left: &str, right: &str) -> bool {
-    left == right
-        || claude_hidden_body(left)
-            .zip(claude_hidden_body(right))
-            .is_some_and(|(left, right)| left == right)
-}
-
-fn claude_hidden_body(key: &str) -> Option<&str> {
-    let id = key
-        .strip_prefix("claude-cloud:")
-        .or_else(|| key.strip_prefix("claude:"))?;
-    let body = id
-        .strip_prefix("session_")
-        .or_else(|| id.strip_prefix("cse_"))?;
-    agent_relay_node::relay::store::is_claude_session_id(id).then_some(body)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::{additional_hidden_key_for_sessions, same_hidden_session};
     use super::*;
     use serde_json::json;
     #[test]
@@ -396,25 +337,6 @@ mod tests {
             }
             assert!(relay_session_for(&[stopped.clone()], &key).is_some());
         }
-    }
-    #[test]
-    fn hidden_sessions_saved_under_a_relay_row_key_stay_hidden() {
-        let id = "01a15bca-891b-7ce2-9318-d0683ee0163a";
-        let row = merge_local_sessions(&[], &[local("grok-open", id)]).remove(0);
-        assert_eq!(current_hidden_key(&format!("grok-open:{id}")), row.key());
-        for (kind, id) in [
-            ("opencode-open", "ses_1"),
-            ("muse-open", "m1"),
-            ("cursor-cli", "cursor-1"),
-        ] {
-            let row = merge_local_sessions(&[], &[local(kind, id)]).remove(0);
-            assert_eq!(current_hidden_key(&format!("{kind}:{id}")), row.key());
-        }
-        assert_eq!(current_hidden_key("codex:same"), "codex:same");
-        assert_eq!(
-            current_hidden_key("claude-cloud:cse_1"),
-            "claude-cloud:cse_1"
-        );
     }
     #[test]
     fn joins_by_harness_and_keeps_sessions_without_transcripts() {

@@ -15,6 +15,7 @@ whose `## Unreleased` section has no bullet stops before building.
 ## Unreleased
 
 - **Your organization's fleet view shows which release and policy each computer runs.** On macOS, Linux and Windows, when Agent Relay reads your organization's policy it now tells Agent Relay Cloud its release, its platform (macOS, Linux or Windows) and the workspace policy revision it applied, so admins can see in the fleet view which computers are current. A newly applied revision is reported about a minute later rather than at the next 15-minute read. The enrollment key sign-in names the platform the same way. Nothing changes in the app.
+- **Cursor chats you hid before 2026.11.16 show again, with sharing off.** On macOS, Linux and Windows, every Cursor chat hidden before 2026.11.16, for whatever reason, shows in the session list again once Agent Relay has turned its sharing off, which it does the first time the app is open, signed in and connected after this update. Until then the chat stays hidden. Its sharing then stays off until you turn it on, and turning it on now stays on; before, the old hide turned sharing off again within a second, with nothing on screen to say why. A Cursor chat you hide from now on stays hidden. If you changed your hidden sessions while running 2026.11.16, an old Cursor hide stays hidden; turn on Show hidden in the table display settings and choose Unhide session to show it.
 
 ## v2026.11.16
 

@@ -1,7 +1,8 @@
 //! Local visibility preferences and the sharing shutdown required by hiding.
 use super::app::App;
 use crate::models::{
-    additional_hidden_key_for_sessions, current_hidden_key, relay_session_for, same_hidden_session,
+    additional_hidden_key_for_sessions, current_hidden_keys, relay_session_for,
+    retired_hidden_keys, same_hidden_session, saved_hidden_keys,
 };
 use agent_relay_desktop_core::contract::account::SessionKeysParams;
 use gtk4::glib;
@@ -13,13 +14,22 @@ const HIDDEN: &str = "hiddenSessions.v1";
 const SHOW: &str = "showHiddenSessions.v1";
 impl App {
     pub fn hidden_sessions(&self) -> BTreeSet<String> {
+        current_hidden_keys(&self.saved_hidden_sessions())
+    }
+    fn saved_hidden_sessions(&self) -> Vec<String> {
         self.prefs()
             .get(HIDDEN)
             .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
             .unwrap_or_default()
-            .iter()
-            .map(|key| current_hidden_key(key))
-            .collect()
+    }
+    /// Every write of the hidden list goes here, so a retired hide still
+    /// waiting for its exclusion keeps its old key.
+    fn save_hidden_sessions(&self, hidden: &BTreeSet<String>) -> std::io::Result<()> {
+        let saved = saved_hidden_keys(hidden, &self.saved_hidden_sessions());
+        self.inner
+            .prefs
+            .borrow_mut()
+            .set(HIDDEN, serde_json::json!(saved))
     }
     pub(super) fn migrate_hidden_sessions(
         &self,
@@ -35,11 +45,7 @@ impl App {
             return;
         }
         stored.extend(additions);
-        let _ = self
-            .inner
-            .prefs
-            .borrow_mut()
-            .set(HIDDEN, serde_json::json!(stored));
+        let _ = self.save_hidden_sessions(&stored);
     }
     pub fn session_hidden(&self, key: &str) -> bool {
         self.hidden_sessions().contains(key)
@@ -68,6 +74,7 @@ impl App {
                 .iter()
                 .filter(|key| {
                     !state.hiding_sessions.contains(*key)
+                        && !state.session_query.hidden_retry_waiting.contains(*key)
                         && (!state.session_query.hidden_confirmed.contains(*key)
                             || state
                                 .sessions
@@ -97,14 +104,7 @@ impl App {
         } else {
             stored.retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)));
         }
-        if stored != previous
-            && self
-                .inner
-                .prefs
-                .borrow_mut()
-                .set(HIDDEN, serde_json::json!(stored))
-                .is_err()
-        {
+        if stored != previous && self.save_hidden_sessions(&stored).is_err() {
             return;
         }
         if stored != previous {
@@ -117,7 +117,10 @@ impl App {
             self.update_state(|s| {
                 s.session_query
                     .hidden_confirmed
-                    .retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)))
+                    .retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)));
+                s.session_query
+                    .hidden_retry_waiting
+                    .retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)));
             });
             self.render_sessions();
             return;
@@ -127,6 +130,7 @@ impl App {
             self.update_state(|state| {
                 state.hiding_sessions.insert(key.clone());
                 state.session_query.hidden_confirmed.remove(&key);
+                state.session_query.hidden_retry_waiting.remove(&key);
                 state.session_selection.remove(&key);
             });
             let session =
@@ -138,11 +142,13 @@ impl App {
         }
         self.render_sessions();
     }
-    fn defer_hiding_session(&self, key: &str) {
+    fn defer_hiding_session(&self, key: &str, row_error: bool) {
         self.update_state(|s| {
             s.hiding_sessions.remove(key);
-            s.upload_errors
-                .insert(key.into(), "Waiting to stop uploads…".into());
+            if row_error {
+                s.upload_errors
+                    .insert(key.into(), "Waiting to stop uploads…".into());
+            }
         });
         self.retry_hidden_sessions();
         self.render_sessions();
@@ -175,22 +181,40 @@ impl App {
             if app.with_state(|s| s.generation) != generation {
                 return;
             }
-            app.update_state(|s| s.session_query.hidden_retry_scheduled = false);
+            app.update_state(|s| {
+                s.session_query.hidden_retry_scheduled = false;
+                s.session_query.hidden_retry_waiting.clear();
+            });
             if app.with_state(|s| s.core_connected) {
                 app.reconcile_hidden_sessions();
             }
         });
     }
+    /// A retired hide whose exclusion failed stays hidden and saved in its
+    /// old form, with no error on a row nobody sees. The exclusion is sent
+    /// again when the backoff timer fires or at the next connection.
+    fn keep_retired_hide(&self, key: &str) {
+        self.update_state(|s| {
+            s.hiding_sessions.remove(key);
+            s.session_query.hidden_retry_waiting.insert(key.into());
+        });
+        self.retry_hidden_sessions();
+        self.render_sessions();
+    }
     fn finish_hiding_session(&self, key: &str, error: Option<String>) {
-        let rolled_back = error.is_some();
-        if error.is_some() {
+        // A retired hide is dropped once its exclusion succeeds, and only
+        // then: the chat shows again, its sharing stays off and no exclusion
+        // follows.
+        let retired = retired_hidden_keys(&self.saved_hidden_sessions()).contains(key);
+        if retired && error.is_some() {
+            self.keep_retired_hide(key);
+            return;
+        }
+        let rolled_back = error.is_some() || retired;
+        if rolled_back {
             let mut hidden = self.hidden_sessions();
             hidden.retain(|stored| !same_hidden_session(stored, key));
-            let _ = self
-                .inner
-                .prefs
-                .borrow_mut()
-                .set(HIDDEN, serde_json::json!(hidden));
+            let _ = self.save_hidden_sessions(&hidden);
         }
         self.update_state(|state| {
             state.hiding_sessions.remove(key);
