@@ -1,4 +1,5 @@
 //! First-install consent; reconnects keep the saved sharing policy.
+use super::cloud_commands::Install;
 use super::{bridge, user_error};
 use crate::history::delivery;
 use crate::history::delivery_status::Config;
@@ -14,6 +15,33 @@ fn import_choice(answer: &str) -> Option<crate::contract::account::SharingMode> 
         "3" => Some(crate::contract::account::SharingMode::All),
         _ => None,
     }
+}
+
+/// The sharing choice setup applies: a saved install's own, else the one
+/// requested (`None` asks interactively). A different explicit choice for a
+/// saved install is refused, since changing it replaces its delivery
+/// generation, unless `keep_saved` says the request is only the default for a
+/// new install, as the desktop apps' sign-in does.
+pub(super) fn setup_sharing(
+    saved: Option<crate::contract::account::SharingMode>,
+    requested: Option<crate::contract::account::SharingMode>,
+    keep_saved: bool,
+) -> Result<Option<crate::contract::account::SharingMode>> {
+    match (saved, requested) {
+        (Some(saved), Some(requested)) if saved != requested && !keep_saved => Err(user_error(
+            "A saved sharing choice exists. Changing selection requires explicitly replacing its delivery generation.",
+        )),
+        (Some(saved), _) => Ok(Some(saved)),
+        (None, requested) => Ok(requested),
+    }
+}
+
+/// Whether a new install records its sharing mode as unchosen: only when
+/// nothing is saved and the desktop said the mode is its own default. Withheld
+/// uploads do not change that: the mode is still the app's, not a choice. A
+/// reconnect keeps whatever was chosen before.
+pub(super) fn records_unchosen(options: &Install, existing: Option<&Config>) -> bool {
+    existing.is_none() && options.sharing_is_app_default
 }
 
 pub(super) fn choose_import() -> Result<Option<crate::contract::account::SharingMode>> {

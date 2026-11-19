@@ -16,6 +16,7 @@ use history_destination::{
     cloud_named_origin, move_destination, saved_destination, start_generation, SavedDestination,
 };
 mod install_sharing;
+use install_sharing::{records_unchosen, setup_sharing};
 mod inventory;
 mod live;
 mod output;
@@ -471,32 +472,6 @@ fn install(options: Install) -> Result<()> {
     )
 }
 
-/// The sharing choice setup applies: a saved install's own, else the one
-/// requested (`None` asks interactively). A different explicit choice for a
-/// saved install is refused, since changing it replaces its delivery
-/// generation, unless `keep_saved` says the request is only the default for a
-/// new install, as the desktop apps' sign-in does.
-fn setup_sharing(
-    saved: Option<crate::contract::account::SharingMode>,
-    requested: Option<crate::contract::account::SharingMode>,
-    keep_saved: bool,
-) -> Result<Option<crate::contract::account::SharingMode>> {
-    match (saved, requested) {
-        (Some(saved), Some(requested)) if saved != requested && !keep_saved => Err(user_error(
-            "A saved sharing choice exists. Changing selection requires explicitly replacing its delivery generation.",
-        )),
-        (Some(saved), _) => Ok(Some(saved)),
-        (None, requested) => Ok(requested),
-    }
-}
-
-/// Whether a new install records its sharing mode as unchosen: only when
-/// nothing is saved, the desktop said the mode is its own default, and
-/// uploads are not withheld. A reconnect keeps whatever was chosen before.
-fn records_unchosen(options: &Install, existing: Option<&Config>) -> bool {
-    existing.is_none() && options.sharing_is_app_default && !options.withhold_uploads
-}
-
 /// Setup's work on `directory` once it owns the install's collector.
 fn connect(
     options: &Install,
@@ -756,7 +731,8 @@ mod tests {
         assert!(options.keep_saved_sharing && options.selected_sessions_only);
     }
     /// Only a fresh install told the mode is the app's default records it as
-    /// unchosen; a saved config or withheld uploads never do.
+    /// unchosen, whether or not its uploads are withheld; a saved config
+    /// never does.
     #[test]
     fn a_fresh_app_default_install_records_unchosen_and_a_keep_saved_one_never_does() {
         let install = |extra: &[&str]| {
@@ -780,8 +756,9 @@ mod tests {
         assert!(records_unchosen(&app_default, None));
         assert!(!records_unchosen(&app_default, Some(&saved)));
         assert!(!records_unchosen(&install(&["--keep-saved-sharing"]), None));
+        // Withholding uploads does not make the app's default a choice.
         let withheld = install(&["--sharing-is-app-default", "--withhold-uploads"]);
-        assert!(!records_unchosen(&withheld, None));
+        assert!(records_unchosen(&withheld, None));
     }
     /// `start` replaces another build of this release's collector only when
     /// asked to: the desktop asks when its core is the default one.

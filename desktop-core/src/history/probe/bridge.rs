@@ -6,6 +6,8 @@ pub(super) mod openclaw_upgrade;
 mod selection_validation;
 mod sharing_plan;
 use sharing_plan::make_plan;
+mod sharing_entry;
+use sharing_entry::{newer_sharing_entry, sharing_entry};
 #[cfg(test)]
 mod consent_tests;
 mod session_rows;
@@ -512,33 +514,6 @@ pub fn describe_sharing(mode: SharingMode) -> &'static str {
         SharingMode::Selected => "only the sessions you selected",
     }
 }
-/// One install's sharing, from its configuration alone.
-fn sharing_entry(directory: &Path, config: &Config) -> Value {
-    json!({
-        "directory": directory,
-        "site_url": config.site_url,
-        "account_id": config.account_id,
-        "workspace_id": config.workspace_id,
-        "sharing_mode": mode(config),
-        "sharing_unchosen": config.sharing_unchosen,
-        "change_pending": directory.join("sharing-change.json").exists(),
-        "upgrade_required": false,
-    })
-}
-/// An install a newer build set up, in a configuration format this build
-/// does not read: listed by identity, its sharing unknown here.
-fn newer_sharing_entry(directory: &Path) -> Option<Value> {
-    let install = newer_install(directory)?;
-    Some(json!({
-        "directory": directory,
-        "site_url": install["site_url"],
-        "account_id": install["account_id"],
-        "workspace_id": install["workspace_id"],
-        "sharing_mode": null,
-        "change_pending": directory.join("sharing-change.json").exists(),
-        "upgrade_required": true,
-    }))
-}
 /// The sharing of every install under `root` matching `options`. With an
 /// account and workspace it names exactly that install (on `--site-url`, or
 /// the site this build is made for) and fails when it is not set up here.
@@ -700,13 +675,7 @@ fn change_with_cloud(
     // Reject stale keys while the collector is still running. Rebuild the plan
     // under collector.lock after stopping so newly captured sessions are seen.
     let was_running = collector::running(directory)?;
-    let mut config = read_config(directory)?;
-    // Any mode the person sets is their choice, even the one already applied,
-    // so the install stops counting as unchosen before the short-circuit.
-    if requested.is_some() && config.sharing_unchosen {
-        config.sharing_unchosen = false;
-        save_json(&directory.join("config.json"), &config)?;
-    }
+    let config = read_config(directory)?;
     if !delete
         && sharing_plan::already_applied(
             directory,
@@ -717,7 +686,7 @@ fn change_with_cloud(
             include,
         )?
     {
-        return Ok(());
+        return sharing_plan::record_choice(directory, config, requested);
     }
     selection_validation::preflight_plan(
         directory,
@@ -741,9 +710,7 @@ fn change_with_cloud(
         }
         let _guard = lock(directory)?;
         recover(directory)?;
-        let mut config = read_config(directory)?;
-        // A replayed older plan may have written the flag back.
-        config.sharing_unchosen &= requested.is_none();
+        let config = read_config(directory)?;
         let conn = db(directory)?;
         let mut plan = selection_validation::plan(
             &conn,
@@ -3017,6 +2984,52 @@ mod tests {
         assert!(!chosen.sharing_unchosen);
         assert_eq!(chosen.job_id, unchosen.job_id, "nothing else changed");
         assert_eq!(mode(&chosen), SharingMode::Selected);
+    }
+    /// A change to another mode is the person's choice too: the flag is saved
+    /// cleared with the change itself.
+    #[test]
+    fn sharing_set_to_another_mode_clears_unchosen() {
+        let Some(_home) = crate::history::probe::live::tests::isolated_home(
+            "history::probe::bridge::tests::sharing_set_to_another_mode_clears_unchosen",
+        ) else {
+            return;
+        };
+        let (dir, config) = fixture(SharingMode::Selected);
+        let unchosen = Config {
+            sharing_unchosen: true,
+            ..config
+        };
+        save_json(&dir.path().join("config.json"), &unchosen).unwrap();
+        change(dir.path(), Some(SharingMode::New), &[], true).unwrap();
+        let chosen = read_config(dir.path()).unwrap();
+        assert_eq!(mode(&chosen), SharingMode::New);
+        assert!(!chosen.sharing_unchosen);
+    }
+    /// A sharing change that fails never applied, so the install still counts
+    /// as unchosen on disk.
+    #[test]
+    fn a_failed_sharing_set_keeps_unchosen() {
+        let Some(_home) = crate::history::probe::live::tests::isolated_home(
+            "history::probe::bridge::tests::a_failed_sharing_set_keeps_unchosen",
+        ) else {
+            return;
+        };
+        let (dir, config) = fixture(SharingMode::Selected);
+        // A job the database does not know fails the plan.
+        let unchosen = Config {
+            sharing_unchosen: true,
+            job_id: "missing".into(),
+            ..config
+        };
+        save_json(&dir.path().join("config.json"), &unchosen).unwrap();
+        for requested in [SharingMode::Selected, SharingMode::New] {
+            change(dir.path(), Some(requested), &[], true).unwrap_err();
+            assert!(
+                read_config(dir.path()).unwrap().sharing_unchosen,
+                "{requested:?}"
+            );
+            assert!(!dir.path().join("sharing-change.json").exists());
+        }
     }
     #[test]
     fn reapplying_all_with_cloud_deleted_sessions_is_not_already_applied() {

@@ -1,4 +1,13 @@
-use super::{install_flag, target_arguments, SharingMode, Target};
+use super::{target_arguments, SharingMode, Target};
+
+/// The `cloud install` flag that asks for `mode`.
+pub fn install_flag(mode: SharingMode) -> &'static str {
+    match mode {
+        SharingMode::All => "--include-existing",
+        SharingMode::New => "--new-sessions-only",
+        SharingMode::Selected => "--selected-sessions-only",
+    }
+}
 
 fn with(name: &[&str], target: &Target, tail: &[&str]) -> Vec<String> {
     name.iter()

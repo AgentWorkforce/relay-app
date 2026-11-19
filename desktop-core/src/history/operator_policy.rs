@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 
 mod pass;
 pub mod settings;
+mod suggestion;
 
 pub use pass::{pass_policy, pass_policy_with, pass_revision};
 
@@ -661,26 +662,6 @@ impl OperatorPolicy {
     /// none was read yet, which tells nothing (not even that none applies).
     pub fn workspace_policy_read(&self, workspace_id: &str) -> Option<WorkspacePolicy> {
         self.workspace.entry(workspace_id).map(|entry| entry.policy)
-    }
-
-    /// The sharing mode the organization suggests for `workspace_id`: its
-    /// workspace policy's default `sharing_mode`, only when Cloud answered
-    /// with it since the last sign-in, nothing is enforced or withheld, the
-    /// defaults do not stand in, and the key is not locked. It is only ever
-    /// shown; nothing applies it.
-    pub fn suggested_sharing(&self, workspace_id: &str) -> Option<SharingMode> {
-        let workspace = Some(workspace_id);
-        if self.enforced_sharing(workspace).is_some()
-            || self.withholds(workspace)
-            || self.defaulted(workspace_id)
-        {
-            return None;
-        }
-        // A default whose key is also locked was dropped when the document
-        // was read, so a locked mode never shows up here.
-        let policy = self.workspace.read_since_sign_in(workspace_id)?;
-        let suggested = policy.default(workspace_policy::Key::SharingMode)?;
-        serde_json::from_value(suggested.clone()).ok()
     }
 
     /// Keeps `value` as the person's own `key` while it is enforced over,
