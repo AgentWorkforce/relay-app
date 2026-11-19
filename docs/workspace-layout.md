@@ -1178,6 +1178,13 @@ development build (Agent Relay Dev) neither replaces nor is replaced. The
 replacement only works between builds from the release that introduced the
 marker onward: an Agent Relay installed before it carries no marker and is
 not found, so update Agent Relay first, then open the profile's build.
+The headless macOS installer (`macos/install.sh`, any product's copy) uses
+the same marker: it refuses to install, update or roll back while an app in
+`/Applications` or `~/Applications` carries `AgentRelayProduct`, or while a
+marked product's core (`<bundle id>.core`, `.core.local`, `.core.session`)
+is loaded, since that core shares the helper copy and the agents' hooks with
+a headless one; a `--coexist` build does not stop it, and `--uninstall` is
+never refused.
 
 A profile can opt out: with `DESKTOP_COEXIST` set to `true` (an internal or
 dev profile; see Site profiles) its build is made with `build-app.sh

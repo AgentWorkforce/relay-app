@@ -26,6 +26,13 @@
 #   1. Refuses when the Agent Relay app is installed or its core is loaded:
 #      the app runs the same core on the same socket, and the headless core
 #      hands over to it (daemon.rs), so the two must not both be set to start.
+#      Refuses too when any other marked Agent Relay app (a site profile's
+#      build: AgentRelayProduct in its Info.plist) is in an Applications
+#      folder, or the core of one is loaded: it has its own socket, but it
+#      shares the helper copy ~/.local/bin/agent-relay-probe and the agents'
+#      hook settings, which a headless core would change and --uninstall
+#      would not put back. A coexist build carries no marker and is no
+#      obstacle.
 #   2. Resolves the release (latest, or --version), downloads
 #      <ASSET_PREFIX>-<version>-macOS-<arch>-probe.tar.gz, checks it against
 #      the release's .sha256, and checks the core's Developer ID signature
@@ -201,6 +208,10 @@ LOG_DIR="$HOME/Library/Logs/Agent Relay"
 DATA_DIR="$HOME/Library/Application Support/com.agentrelay.desktop"
 DOMAIN="gui/$(id -u)"
 PROBE="$PREFIX/current/agent-relay-probe"
+# The system Applications folder, searched with ~/Applications for apps this
+# core must not run beside. A test seam: scripts/test-macos-install.sh points
+# it at a directory of its own; nothing else sets it.
+SYSTEM_APPLICATIONS="${AGENT_RELAY_SYSTEM_APPLICATIONS:-/Applications}"
 
 case "$(uname -m)" in
   arm64|aarch64) ARCH=arm64 ;;
@@ -871,7 +882,7 @@ esac
 # exits ("already running"), and a headless core that sees the app's job
 # exits cleanly to hand over. Installing both leaves one of them failing.
 app_reason=""
-for apps in /Applications "$HOME/Applications"; do
+for apps in "$SYSTEM_APPLICATIONS" "$HOME/Applications"; do
   if [ -f "$apps/$APP_PLIST" ]; then app_reason="$apps/${APP_PLIST%%/*} is installed"; break; fi
 done
 if [ -z "$app_reason" ]; then
@@ -881,6 +892,59 @@ if [ -z "$app_reason" ]; then
 fi
 if [ -n "$app_reason" ]; then
   die "$app_reason. The $PRODUCT_NAME app runs this core itself; use the app, or quit and delete it (then log out and in) before installing the headless core"
+fi
+
+# Any other Agent Relay app, such as a site profile's build, has its own
+# socket and data, but its core shares the helper copy
+# ~/.local/bin/agent-relay-probe (only ever upgraded, probe_copy.rs) and the
+# agents' hook settings with this one: a headless core beside it would change
+# both, and --uninstall puts neither back. Such an app is recognised as the
+# app does (ProductTakeover.swift), by its marker alone: build-app.sh writes
+# AgentRelayProduct, the bundle id, into a release build's Info.plist, and
+# its core's jobs are <bundle id>.core, .core.local and .core.session (the
+# bundled job and LaunchAgentService's fallbacks, which carry the marker
+# too). A coexist build (build-app.sh --coexist) and the development build
+# carry none and are left alone; so is a property list that cannot be read.
+# This copy of the script refuses beside any marked app, its own product's
+# included. --status and --uninstall never get here.
+plist_string() { # file key: the value, or nothing when it cannot be read
+  plutil -extract "$2" raw -o - "$1" < /dev/null 2>/dev/null | tr -d '[:space:]' || true
+}
+is_product_id() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'; }
+marked_reason=""
+for apps in "$SYSTEM_APPLICATIONS" "$HOME/Applications"; do
+  for marked_app in "$apps"/*.app; do
+    [ -f "$marked_app/Contents/Info.plist" ] || continue
+    marker="$(plist_string "$marked_app/Contents/Info.plist" AgentRelayProduct)"
+    [ -n "$marker" ] || continue
+    marked_reason="$marked_app is installed"
+    if is_product_id "$marker"; then
+      for marked_label in "$marker.core" "$marker.core.local" "$marker.core.session"; do
+        if launchctl print "$DOMAIN/$marked_label" < /dev/null >/dev/null 2>&1; then marked_reason="$marked_reason and its core ($marked_label) is loaded"; break; fi
+      done
+    fi
+    break 2
+  done
+done
+if [ -z "$marked_reason" ]; then
+  for agents in "$HOME/Library/LaunchAgents" "$HOME/Library/Application Support/AgentRelay/SessionServices"; do
+    for marked_plist in "$agents"/*.plist; do
+      [ -f "$marked_plist" ] || continue
+      marker="$(plist_string "$marked_plist" AgentRelayProduct)"
+      is_product_id "$marker" || continue
+      marked_label="$(plist_string "$marked_plist" Label)"
+      case "$marked_label" in
+        "$marker.core"|"$marker.core.local"|"$marker.core.session") ;;
+        *) continue ;;
+      esac
+      if launchctl print "$DOMAIN/$marked_label" < /dev/null >/dev/null 2>&1; then
+        marked_reason="the core of another Agent Relay app ($marked_label) is loaded"; break 2
+      fi
+    done
+  done
+fi
+if [ -n "$marked_reason" ]; then
+  die "$marked_reason. That Agent Relay app shares its agent hooks and helper with this core; use that app, or quit and delete it (then log out and in) before installing the headless core"
 fi
 
 # gui/<uid> exists only while the user is logged in at the Mac (or by

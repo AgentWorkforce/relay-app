@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **The headless Mac installer no longer installs next to another Agent Relay app.** On macOS, `install-macos.sh` now refuses, and names the app, when another Agent Relay app, such as your site's own build, is installed in Applications or its background service is running, instead of installing a second core beside it that would change the helper and agent hooks that app uses. Use that app, or quit and delete it, then log out and in before installing the headless core. A dry run refuses the same way.
+
 ## v2026.11.17
 
 - **Your organization's fleet view shows which release and policy each computer runs.** On macOS, Linux and Windows, when Agent Relay reads your organization's policy it now tells Agent Relay Cloud its release, its platform (macOS, Linux or Windows) and the workspace policy revision it applied, so admins can see in the fleet view which computers are current. A newly applied revision is reported about a minute later rather than at the next 15-minute read. The enrollment key sign-in names the platform the same way. Nothing changes in the app.

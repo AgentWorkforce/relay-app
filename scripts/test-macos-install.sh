@@ -2,9 +2,10 @@
 #
 # test-macos-install.sh -- exercise macos/install.sh end to end on Linux (or a
 # Mac) with a fake release server and fake uname, sysctl, curl, shasum,
-# codesign, launchctl and sqlite3 on PATH, in a throwaway HOME: refusals (not
-# macOS, the app installed or loaded, no login session, --update with nothing
-# installed), a first install and the LaunchAgent it writes, an idempotent
+# codesign, launchctl, plutil and sqlite3 on PATH, in a throwaway HOME:
+# refusals (not macOS, the app installed or loaded, another marked Agent Relay
+# app installed or its core loaded, but not a coexist build or an unreadable
+# Info.plist, no login session, --update with nothing installed), a first install and the LaunchAgent it writes, an idempotent
 # rerun, an update, a bad checksum, an unsigned core (never run), a stray
 # archive, a new version that never answers or that launchd refuses to
 # restart (rolled back), --rollback (only ever to an older version), a
@@ -280,9 +281,23 @@ connection = sqlite3.connect(uri, uri=True)
 for row in connection.execute(sql):
     print("|".join("" if value is None else str(value) for value in row))
 EOF
-# plutil -lint, failing while state/plutil-fails exists.
+# plutil -lint, failing while state/plutil-fails exists, and
+# plutil -extract KEY raw -o - FILE: a string value of a real property list,
+# failing as plutil does on one that cannot be read or has no such string.
 cat > "$root/bin/plutil" <<EOF
 #!/usr/bin/env bash
+$stdin_check
+if [ "\$1" = -extract ]; then
+  [ "\$3 \$4 \$5" = "raw -o -" ] || exit 2
+  exec python3 -I -c '
+import plistlib, sys
+try:
+    with open(sys.argv[2], "rb") as f: value = plistlib.load(f).get(sys.argv[1])
+except Exception:
+    print(sys.argv[2] + ": invalid", file=sys.stderr); sys.exit(1)
+if not isinstance(value, str): sys.exit(1)
+print(value)' "\$2" "\$6"
+fi
 [ "\$1" = -lint ] || exit 2
 [ ! -e "$root/state/plutil-fails" ] || { echo "\$2: invalid" >&2; exit 1; }
 echo "\$2: OK"
@@ -326,6 +341,8 @@ export PATH="$root/bin:$PATH"
 export AGENT_RELAY_RELEASES_API=https://api.test/releases
 export AGENT_RELAY_DOWNLOAD_BASE=https://releases.test
 export AGENT_RELAY_HEALTH_TIMEOUT=4
+# The system Applications folder the installer searches, never the host's.
+export AGENT_RELAY_SYSTEM_APPLICATIONS="$root/Applications"
 
 current() { basename "$(readlink "$prefix/current")"; }
 no_current_gap() { # what was checked
@@ -389,6 +406,94 @@ grep -q "com.agentrelay.desktop.core.local) is loaded" "$root/state/out" || fail
 rm "$root/state/loaded-com.agentrelay.desktop.core.local"
 { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a refused install left files behind"
 pass "refuses while the app is installed or its core is loaded"
+
+# Another Agent Relay app, as build-app.sh makes it: an Info.plist and the
+# core's LaunchAgent in the bundle, both with the AgentRelayProduct marker
+# unless it is a coexist build.
+other_app() { # applications-folder app-name bundle-id marked|coexist
+  local contents="$1/$2/Contents"
+  mkdir -p "$contents/Library/LaunchAgents"
+  python3 -I -c '
+import plistlib, sys
+contents, bundle_id, kind = sys.argv[1:]
+info = {"CFBundleIdentifier": bundle_id, "CFBundleName": "Example Relay"}
+agent = {"Label": bundle_id + ".core", "ProgramArguments": ["agent-relay-probe", "serve"]}
+if kind == "marked":
+    info["AgentRelayProduct"] = bundle_id
+    agent["AgentRelayProduct"] = bundle_id
+with open(contents + "/Info.plist", "wb") as f: plistlib.dump(info, f)
+with open(contents + "/Library/LaunchAgents/" + bundle_id + ".core.plist", "wb") as f: plistlib.dump(agent, f)
+' "$contents" "$3" "$4"
+}
+other_id=com.example.relay.desktop
+refused_beside() { # what [install options...]
+  local what="$1"; shift
+  if bash "$INSTALL" "$@" > "$root/state/out" 2>&1; then cat "$root/state/out"; fail "installed beside $what"; fi
+  ! grep -q "would run" "$root/state/out" || { cat "$root/state/out"; fail "said what it would install beside $what"; }
+  grep -q "quit and delete it (then log out and in)" "$root/state/out" || { cat "$root/state/out"; fail "the refusal beside $what does not say what to do"; }
+  { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a refused install beside $what left files behind"
+}
+installs_beside() { # what
+  : > "$root/state/stdin-violations"
+  piped "$INSTALL" | STDIN_CHECK=1 bash -s -- --dry-run > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a --dry-run beside $what failed"; }
+  grep -q "would run: launchctl bootstrap gui/$uid $plist" "$root/state/out" || { cat "$root/state/out"; fail "a --dry-run beside $what did not reach the end"; }
+  [ ! -s "$root/state/stdin-violations" ] || { cat "$root/state/stdin-violations" >&2; fail "a --dry-run beside $what let a command read the script"; }
+  { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a --dry-run beside $what left files behind"
+}
+
+other_app "$AGENT_RELAY_SYSTEM_APPLICATIONS" "Example Relay.app" "$other_id" marked
+refused_beside "a marked app in /Applications"
+grep -q "$AGENT_RELAY_SYSTEM_APPLICATIONS/Example Relay.app is installed" "$root/state/out" || { cat "$root/state/out"; fail "the marked-app refusal does not name the app"; }
+refused_beside "a marked app in /Applications, dry run" --dry-run
+grep -q "Example Relay.app is installed" "$root/state/out" || { cat "$root/state/out"; fail "the --dry-run refusal does not name the app"; }
+refused_beside "a marked app in /Applications, rollback" --rollback
+touch "$root/state/loaded-$other_id.core.local"
+refused_beside "a marked app whose core is loaded"
+grep -q "Example Relay.app is installed and its core ($other_id.core.local) is loaded" "$root/state/out" \
+  || { cat "$root/state/out"; fail "the refusal does not name the marked app's loaded core"; }
+# --status and --uninstall are never refused.
+bash "$INSTALL" --uninstall > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--uninstall was refused beside a marked app"; }
+! grep -q "Example Relay.app" "$root/state/out" || { cat "$root/state/out"; fail "--uninstall reported the marked app"; }
+grep -q "^bootout gui/$uid/$other_id" "$root/state/launchctl.log" 2>/dev/null && fail "--uninstall stopped the marked app's core"
+rm -f "$root/state/launchctl.log" "$root/state/loaded-$other_id.core.local"
+rm -rf "$AGENT_RELAY_SYSTEM_APPLICATIONS"
+other_app "$HOME/Applications" "Example Relay.app" "$other_id" marked
+refused_beside "a marked app in ~/Applications"
+grep -q "$HOME/Applications/Example Relay.app is installed" "$root/state/out" || { cat "$root/state/out"; fail "the ~/Applications refusal does not name the app"; }
+# A site profile's own copy of the script refuses beside any marked app.
+sed "s/^PRODUCT_NAME='Agent Relay'\$/PRODUCT_NAME='Other Relay'/" "$INSTALL" > "$root/state/profile-install.sh"
+grep -q "^PRODUCT_NAME='Other Relay'" "$root/state/profile-install.sh" || fail "could not make a profile copy of the script"
+if bash "$root/state/profile-install.sh" --dry-run > "$root/state/out" 2>&1; then cat "$root/state/out"; fail "a profile copy installed beside a marked app"; fi
+grep -q "Example Relay.app is installed" "$root/state/out" || { cat "$root/state/out"; fail "the profile copy's refusal does not name the app"; }
+rm -rf "$HOME/Applications"
+pass "refuses beside a marked Agent Relay app, also in a dry run and in a profile's copy; --uninstall is not refused"
+
+# A marked core left loaded by LaunchAgentService's fallback, its app gone.
+mkdir -p "$HOME/Library/LaunchAgents"
+python3 -I -c '
+import plistlib, sys
+with open(sys.argv[1], "wb") as f:
+    plistlib.dump({"Label": sys.argv[2] + ".core.local", "AgentRelayProduct": sys.argv[2], "ProgramArguments": ["x"]}, f)
+' "$HOME/Library/LaunchAgents/$other_id.core.local.plist" "$other_id"
+touch "$root/state/loaded-$other_id.core.local"
+refused_beside "a marked app's loaded fallback core"
+grep -q "another Agent Relay app ($other_id.core.local) is loaded" "$root/state/out" || { cat "$root/state/out"; fail "the loaded-core refusal does not name the job"; }
+rm "$root/state/loaded-$other_id.core.local"
+installs_beside "a marked fallback LaunchAgent that is not loaded"
+rm -rf "$HOME/Library/LaunchAgents"
+pass "refuses while a marked app's core is loaded without its app"
+
+# A coexist build has no marker: its own socket, data and helper copy.
+other_app "$AGENT_RELAY_SYSTEM_APPLICATIONS" "Example Relay.app" "$other_id" coexist
+touch "$root/state/loaded-$other_id.core"
+installs_beside "a coexist build with its core loaded"
+rm -rf "$AGENT_RELAY_SYSTEM_APPLICATIONS" "$root/state/loaded-$other_id.core"
+# An Info.plist that cannot be read is not a marked app, and stops nothing.
+mkdir -p "$HOME/Applications/Broken Relay.app/Contents"
+printf 'not a property list' > "$HOME/Applications/Broken Relay.app/Contents/Info.plist"
+installs_beside "an app with an unreadable Info.plist"
+rm -rf "$HOME/Applications" "$root/state/launchctl.log"
+pass "a coexist build or an unreadable Info.plist does not stop an install"
 
 touch "$root/state/no-gui"
 if bash "$INSTALL" > "$root/state/out" 2>&1; then fail "installed without a login session"; fi

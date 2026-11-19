@@ -108,7 +108,10 @@ removes the browser approval step, not macOS's login-session requirement below.
 - **The app.** The app runs this same core on the same socket. The installer
   refuses while the app is installed or its core is loaded, and a headless
   core that sees the app's core job exits to hand over. Run
-  `install.sh --uninstall` before installing the app.
+  `install.sh --uninstall` before installing the app. It refuses as well
+  beside any other marked Agent Relay app, such as a site's own build
+  (`AgentRelayProduct` in its `Info.plist`, or its core loaded), which shares
+  the helper and the agents' hooks; a coexist build does not stop it.
 
 `scripts/test-macos-install.sh` runs the installer against a fake release
 server and a fake `launchctl`, on Linux too.
