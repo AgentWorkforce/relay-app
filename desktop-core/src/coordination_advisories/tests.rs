@@ -51,6 +51,7 @@ fn token() -> ReadToken {
 
 #[derive(Default)]
 struct FakeTokens {
+    generation: AtomicU64,
     asked: AtomicUsize,
     refused: AtomicUsize,
     /// Signed out.
@@ -80,7 +81,10 @@ impl TokenSource for FakeTokens {
 
     fn principal(&self) -> Option<Principal> {
         let user = self.user.lock().unwrap().clone();
-        (!self.none.load(Ordering::SeqCst)).then(|| principal(user.as_deref().unwrap_or("alice")))
+        (!self.none.load(Ordering::SeqCst)).then(|| Principal {
+            generation: self.generation.load(Ordering::SeqCst) + 1,
+            ..principal(user.as_deref().unwrap_or("alice"))
+        })
     }
 
     fn refused(&self, _token: &ReadToken) {
@@ -177,6 +181,150 @@ fn world(enabled: bool) -> World {
         api,
         advisories,
     }
+}
+
+#[tokio::test]
+async fn pending_is_cached_and_never_consumes_an_advisory() {
+    let w = world(true);
+    let session = claude();
+    assert!(!w.advisories.pending(&session));
+    w.api.answer(
+        &session,
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    let now = Instant::now();
+    w.advisories.poll(&[session.clone()], now).await;
+    let requests = w.api.lists();
+    assert!(w.advisories.pending(&session));
+    assert!(w.advisories.pending(&session));
+    assert_eq!(w.api.lists(), requests);
+    assert_eq!(w.advisories.take_at(&session, now).unwrap().ids, ["a1"]);
+    assert!(!w.advisories.pending(&session));
+    w.advisories.set_enabled(false).unwrap();
+    assert!(!w.advisories.pending(&session));
+}
+
+#[tokio::test]
+async fn shown_receipts_resume_ack_after_restart_and_new_sign_in_generation() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    w.api.answer(
+        &session,
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    *w.api.acks.lock().unwrap() = vec![Ack::Failed];
+    w.advisories.poll(&[session.clone()], now).await;
+    let shown = w.advisories.take_at(&session, now).unwrap();
+    assert!(w.advisories.mark_shown(&session, &shown.ids));
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked(), ["a1"]);
+    let bytes =
+        std::fs::read_to_string(w._dir.path().join("coordination-advisory-receipts.json")).unwrap();
+    assert!(!bytes.contains("rth_at_read_1"));
+    assert!(!bytes.contains("Another agent"));
+    assert!(!bytes.contains("generation"));
+    w.tokens.generation.store(9, Ordering::SeqCst);
+    let restarted = Advisories::new(w._dir.path(), w.tokens.clone(), w.api.clone());
+    restarted
+        .poll(&[session.clone()], now + Duration::from_secs(60))
+        .await;
+    assert!(!restarted.pending(&session));
+    assert!(restarted.take_at(&session, now).is_none());
+    assert_eq!(w.api.acked(), ["a1", "a1"]);
+    // Once the server accepts the ACK, a subsequent restart needs no retry.
+    *w.api.acks.lock().unwrap() = vec![Ack::Done];
+    restarted
+        .send_shown(now + ACK_RETRY + Duration::from_secs(61))
+        .await;
+    assert_eq!(receipts::load(w._dir.path()).len(), 0);
+    let restarted = Advisories::new(w._dir.path(), w.tokens.clone(), w.api.clone());
+    restarted.poll(&[], now).await;
+    assert_eq!(w.api.acked().len(), 3);
+}
+
+#[tokio::test]
+async fn restart_receipts_never_suppress_another_persons_advisory() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    w.api.answer(
+        &session,
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    *w.api.acks.lock().unwrap() = vec![Ack::Failed];
+    w.advisories.poll(&[session.clone()], now).await;
+    let shown = w.advisories.take_at(&session, now).unwrap();
+    w.advisories.mark_shown(&session, &shown.ids);
+    w.advisories.send_shown(now).await;
+    w.tokens.sign_in("bob");
+    let restarted = Advisories::new(w._dir.path(), w.tokens.clone(), w.api.clone());
+    restarted.poll(&[session.clone()], now).await;
+    assert!(restarted.pending(&session));
+    assert_eq!(restarted.take_at(&session, now).unwrap().ids, ["a1"]);
+    assert_eq!(w.api.acked().len(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_receipt_write_keeps_the_ack_retryable() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    w.api.answer(
+        &session,
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    w.advisories.poll(&[session.clone()], now).await;
+    let shown = w.advisories.take_at(&session, now).unwrap();
+    w.advisories.mark_shown(&session, &shown.ids);
+    let path = w._dir.path().join("coordination-advisory-receipts.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    w.advisories.send_shown(now).await;
+    assert!(w.api.acked().is_empty());
+    assert!(!w.advisories.state().taken[&session]["a1"].sending);
+    std::fs::remove_dir(&path).unwrap();
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked(), ["a1"]);
+}
+
+#[test]
+fn a_late_ack_cannot_ack_the_same_id_in_another_accounts_cache() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    let alice = principal("alice");
+    w.tokens.sign_in("bob");
+    {
+        let mut state = w.advisories.state();
+        state.belong_to(Some(&principal("bob")));
+        let mut taken = Taken::new(now);
+        taken.shown = true;
+        state
+            .taken
+            .entry(session.clone())
+            .or_default()
+            .insert("a1".into(), taken);
+    }
+    w.advisories.acked(&alice, &session, "a1", Ack::Done, now);
+    assert!(!w.advisories.state().taken[&session]["a1"].acked);
+}
+
+#[test]
+fn ack_urls_encode_workspace_and_advisory_id_independently() {
+    let token = ReadToken {
+        workspace_id: "workspace with&query".into(),
+        ..token()
+    };
+    let url = url::Url::parse(&HttpApi::ack_url(&token, "id/with?query").unwrap()).unwrap();
+    assert_eq!(
+        url.path(),
+        "/v1/coordination/advisories/id%2Fwith%3Fquery/ack"
+    );
+    assert_eq!(
+        url.query_pairs().collect::<Vec<_>>(),
+        [("workspace".into(), "workspace with&query".into())]
+    );
 }
 
 // The setting.
@@ -730,7 +878,9 @@ async fn the_http_api_maps_every_answer() {
         .contains("authorization: bearer rth_at_read_1"));
     let ack = &seen[8];
     assert!(
-        ack.starts_with("POST /v1/coordination/advisories/a1/ack "),
+        ack.starts_with(&format!(
+            "POST /v1/coordination/advisories/a1/ack?workspace={WORKSPACE} "
+        )),
         "{ack}"
     );
     let body: Value = serde_json::from_str(&ack[ack.find('{').unwrap()..]).unwrap();
