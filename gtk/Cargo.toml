@@ -36,13 +36,12 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 7cac6b0a, after 52fc1197: #2214 (question escalation: with
-# question_escalation on, a Claude Code or spawned Codex session's question
-# goes as a DM to question_escalation_inbox and the answer is typed back;
-# off by default) and #2200 (a busy write without Retry-After no longer
-# shortens a socket write pause).
+# main d1b81ab7, after 7cac6b0a: #2228 (a hand-registered Codex chat run by a
+# stdio `codex app-server` stays present while a trusted Codex of this user
+# holds the chat's writer lock; before, the next presence pass marked it
+# missing and it stopped heartbeating).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "7cac6b0ad81ac09514fffd8f2f3dca24952f9cc8", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "d1b81ab76f89d4a92cb796d5f5746183ee517761", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
