@@ -14,4 +14,8 @@ pub struct CoordinationAdvisoriesParams {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct CoordinationAdvisoriesState {
     pub enabled: bool,
+    /// A separate opt-in; upgrades of a turn-end-only setting stay quiet.
+    pub notifications_enabled: bool,
+    /// Requests/availability, never a claim that the OS displayed a banner.
+    pub notification_status: String,
 }

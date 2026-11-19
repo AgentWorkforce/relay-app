@@ -1947,6 +1947,7 @@ async fn the_bridge_lists_every_account_method_and_the_sign_in_topic() {
         "contractors.status",
         "coordination_advisories.status",
         "coordination_advisories.set",
+        "coordination_advisories.notifications.set",
     ] {
         assert!(methods.contains(&method), "{method}");
     }
@@ -1966,17 +1967,17 @@ async fn coordination_advisory_rpcs_report_saved_changes_and_survive_a_restart()
     let mut client = harness.client().await;
     assert_eq!(
         client.ok("coordination_advisories.status", json!({})).await,
-        json!({"enabled": false})
+        json!({"enabled": false,"notifications_enabled":false,"notification_status":"Coordination notes are off."})
     );
     assert_eq!(
         client
             .ok("coordination_advisories.set", json!({"enabled": true}))
             .await,
-        json!({"enabled": true})
+        json!({"enabled": true,"notifications_enabled":false,"notification_status":"Urgent system notifications are off."})
     );
     assert_eq!(
         client.ok("coordination_advisories.status", json!({})).await,
-        json!({"enabled": true})
+        json!({"enabled": true,"notifications_enabled":false,"notification_status":"Urgent system notifications are off."})
     );
     // A failed save must be an RPC error, never an echo of the requested
     // setting, and must leave the live setting unchanged.
@@ -1989,7 +1990,7 @@ async fn coordination_advisory_rpcs_report_saved_changes_and_survive_a_restart()
     assert_eq!(kind, "store_failed");
     assert_eq!(
         client.ok("coordination_advisories.status", json!({})).await,
-        json!({"enabled": true})
+        json!({"enabled": true,"notifications_enabled":false,"notification_status":"Urgent system notifications are off."})
     );
     std::fs::remove_dir(&path).unwrap();
     client
@@ -2000,21 +2001,83 @@ async fn coordination_advisory_rpcs_report_saved_changes_and_survive_a_restart()
     let mut client = harness.client().await;
     assert_eq!(
         client.ok("coordination_advisories.status", json!({})).await,
-        json!({"enabled": true})
+        json!({"enabled": true,"notifications_enabled":false,"notification_status":"Urgent system notifications are off."})
     );
     assert_eq!(
         client
             .ok("coordination_advisories.set", json!({"enabled": false}))
             .await,
-        json!({"enabled": false})
+        json!({"enabled": false,"notifications_enabled":false,"notification_status":"Coordination notes are off."})
     );
     drop(client);
     let harness = harness.restart().await;
     let mut client = harness.client().await;
     assert_eq!(
         client.ok("coordination_advisories.status", json!({})).await,
-        json!({"enabled": false})
+        json!({"enabled": false,"notifications_enabled":false,"notification_status":"Coordination notes are off."})
     );
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn urgent_notification_preference_is_separate_durable_and_reports_failed_saves() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+    let (kind, _) = client
+        .error(
+            "coordination_advisories.notifications.set",
+            json!({"enabled":true}),
+        )
+        .await;
+    assert_eq!(kind, "store_failed");
+    client
+        .ok("coordination_advisories.set", json!({"enabled":true}))
+        .await;
+    let state = client
+        .ok(
+            "coordination_advisories.notifications.set",
+            json!({"enabled":true}),
+        )
+        .await;
+    assert_eq!(state["notifications_enabled"], true);
+    assert_eq!(
+        state["notification_status"],
+        "Waiting for validated priority-one advisories."
+    );
+    drop(client);
+    let harness = harness.restart().await;
+    let mut client = harness.client().await;
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await["notifications_enabled"],
+        true
+    );
+    let path = harness.home.join("app-data/coordination-advisories.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let (kind, _) = client
+        .error(
+            "coordination_advisories.notifications.set",
+            json!({"enabled":false}),
+        )
+        .await;
+    assert_eq!(kind, "store_failed");
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await["notifications_enabled"],
+        true
+    );
+    std::fs::remove_dir(&path).unwrap();
+    client
+        .ok(
+            "coordination_advisories.notifications.set",
+            json!({"enabled":false}),
+        )
+        .await;
+    drop(client);
+    let harness = harness.restart().await;
+    let mut client = harness.client().await;
+    let state = client.ok("coordination_advisories.status", json!({})).await;
+    assert_eq!(state["enabled"], true);
+    assert_eq!(state["notifications_enabled"], false);
     harness.stop().await;
 }
 

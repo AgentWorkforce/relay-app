@@ -125,6 +125,7 @@ public enum CoreMethod {
     public static let loginItemStatus = "login_item.status"
     public static let coordinationAdvisoriesStatus = "coordination_advisories.status"
     public static let coordinationAdvisoriesSet = "coordination_advisories.set"
+    public static let coordinationAdvisoriesNotificationsSet = "coordination_advisories.notifications.set"
     public static let chatConversation = "chat.conversation"
     public static let chatSend = "chat.send"
     public static let chatClear = "chat.clear"
@@ -2882,23 +2883,35 @@ public struct CoordinationAdvisoriesParams: Codable, Equatable, Hashable, Sendab
 /// ends. Off by default.
 public struct CoordinationAdvisoriesState: Codable, Equatable, Hashable, Sendable {
     public let enabled: Bool
+    /// Requests/availability, never a claim that the OS displayed a banner.
+    public let notificationStatus: String
+    /// A separate opt-in; upgrades of a turn-end-only setting stay quiet.
+    public let notificationsEnabled: Bool
 
-    public init(enabled: Bool) {
+    public init(enabled: Bool, notificationStatus: String, notificationsEnabled: Bool) {
         self.enabled = enabled
+        self.notificationStatus = notificationStatus
+        self.notificationsEnabled = notificationsEnabled
     }
 
     enum CodingKeys: String, CodingKey {
         case enabled
+        case notificationStatus = "notification_status"
+        case notificationsEnabled = "notifications_enabled"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.enabled = try c.decode(Bool.self, forKey: .enabled)
+        self.notificationStatus = try c.decode(String.self, forKey: .notificationStatus)
+        self.notificationsEnabled = try c.decode(Bool.self, forKey: .notificationsEnabled)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.enabled, forKey: .enabled)
+        try c.encode(self.notificationStatus, forKey: .notificationStatus)
+        try c.encode(self.notificationsEnabled, forKey: .notificationsEnabled)
     }
 }
 
@@ -13584,6 +13597,12 @@ extension CoreClient {
     @discardableResult
     public func coordinationAdvisoriesSet(_ params: CoordinationAdvisoriesParams) async throws -> CoordinationAdvisoriesState {
         try await call(CoreMethod.coordinationAdvisoriesSet, params)
+    }
+
+    /// `coordination_advisories.notifications.set`; only a core built with an account answers it.
+    @discardableResult
+    public func coordinationAdvisoriesNotificationsSet(_ params: CoordinationAdvisoriesParams) async throws -> CoordinationAdvisoriesState {
+        try await call(CoreMethod.coordinationAdvisoriesNotificationsSet, params)
     }
 
     /// `chat.conversation`; only a core built with an account answers it.

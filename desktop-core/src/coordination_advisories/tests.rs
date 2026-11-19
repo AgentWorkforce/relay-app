@@ -23,6 +23,9 @@ fn advisory(id: &str, urgency: &'static str) -> Advisory {
     Advisory {
         id: id.into(),
         urgency,
+        priority: None,
+        dm_delivered: false,
+        notify_eligible: false,
         message: format!("Another agent may be working near src/{id}."),
         peer_source: "codex".into(),
         peer_session_id: "peer-session".into(),
@@ -1624,4 +1627,62 @@ async fn an_ended_session_gives_up_its_ack_after_a_few_failures() {
     }
     assert_eq!(w.api.acked().len(), ENDED_ACK_FAILURES as usize);
     assert!(w.advisories.state().taken.is_empty());
+}
+
+#[tokio::test]
+async fn a_listing_429_pauses_both_lists_and_acks_for_the_device() {
+    let w = world(true);
+    let now = Instant::now();
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    w.advisories.poll(&[claude()], now).await;
+    let ids = w.advisories.take_at(&claude(), now).unwrap().ids;
+    assert!(w.advisories.mark_shown(&claude(), &ids));
+    w.api.answer(&claude(), vec![Listing::Throttled]);
+    w.advisories.poll(&[claude()], now).await;
+    w.advisories
+        .poll(&[codex()], now + Duration::from_secs(1))
+        .await;
+    w.advisories.send_shown(now + Duration::from_secs(1)).await;
+    assert_eq!(w.api.lists(), 2);
+    assert!(w.api.acked().is_empty());
+    w.api.answer(&claude(), vec![Listing::Advisories(vec![])]);
+    w.advisories.poll(&[claude()], now + SESSION_BACKOFF).await;
+    assert_eq!(w.api.acked(), vec!["a1"]);
+}
+
+#[tokio::test]
+async fn an_ack_429_releases_the_unsent_batch_without_spending_failure_budgets() {
+    let w = world(true);
+    let now = Instant::now();
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![
+            advisory("a1", "low"),
+            advisory("a2", "low"),
+        ])],
+    );
+    w.advisories.poll(&[claude()], now).await;
+    let ids = w.advisories.take_at(&claude(), now).unwrap().ids;
+    assert!(w.advisories.mark_shown(&claude(), &ids));
+    *w.api.acks.lock().unwrap() = vec![Ack::Throttled];
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked().len(), 1);
+    for taken in w
+        .advisories
+        .state()
+        .taken
+        .values()
+        .flat_map(|rows| rows.values())
+    {
+        assert!(!taken.sending);
+        assert_eq!(taken.failures, 0);
+    }
+    w.advisories.send_shown(now + Duration::from_secs(1)).await;
+    assert_eq!(w.api.acked().len(), 1);
+    *w.api.acks.lock().unwrap() = vec![Ack::Done];
+    w.advisories.send_shown(now + SESSION_BACKOFF).await;
+    assert_eq!(w.api.acked().len(), 3);
 }

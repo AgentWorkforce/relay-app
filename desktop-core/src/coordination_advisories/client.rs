@@ -60,6 +60,8 @@ pub enum Listing {
     /// 404, 501 or 403: the route is not there, switched off, or not for
     /// this token. Every session waits.
     Off,
+    /// 429: pause this device's advisory traffic before retrying.
+    Throttled,
     /// The network, a bad body, or any other status. This session waits.
     Failed,
 }
@@ -73,6 +75,7 @@ pub enum Ack {
     Unauthorized,
     /// 403: the token may not ack; retried at most hourly.
     Forbidden,
+    Throttled,
     /// Anything else.
     Failed,
 }
@@ -86,6 +89,60 @@ pub trait AdvisoryApi: Send + Sync + 'static {
         target: &'a Target,
         id: &'a str,
     ) -> BoxFuture<'a, Ack>;
+}
+
+/// Shared by listing and acknowledgement traffic for one Desktop. Queued
+/// calls recheck their principal after waiting, before any network I/O.
+pub(super) struct PacedApi {
+    inner: Arc<dyn AdvisoryApi>,
+    tokens: Arc<dyn TokenSource>,
+    next: tokio::sync::Mutex<tokio::time::Instant>,
+}
+
+impl PacedApi {
+    pub(super) fn new(inner: Arc<dyn AdvisoryApi>, tokens: Arc<dyn TokenSource>) -> Self {
+        Self {
+            inner,
+            tokens,
+            next: tokio::sync::Mutex::new(tokio::time::Instant::now()),
+        }
+    }
+    async fn admit(&self, token: &ReadToken) -> bool {
+        let at = {
+            let mut next = self.next.lock().await;
+            let at = (*next).max(tokio::time::Instant::now());
+            *next = at + Duration::from_millis(500);
+            at
+        };
+        tokio::time::sleep_until(at).await;
+        self.tokens.principal().as_ref() == Some(&token.principal)
+    }
+}
+
+impl AdvisoryApi for PacedApi {
+    fn list<'a>(&'a self, token: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing> {
+        Box::pin(async move {
+            if self.admit(token).await {
+                self.inner.list(token, target).await
+            } else {
+                Listing::Off
+            }
+        })
+    }
+    fn ack<'a>(
+        &'a self,
+        token: &'a ReadToken,
+        target: &'a Target,
+        id: &'a str,
+    ) -> BoxFuture<'a, Ack> {
+        Box::pin(async move {
+            if self.admit(token).await {
+                self.inner.ack(token, target, id).await
+            } else {
+                Ack::Unauthorized
+            }
+        })
+    }
 }
 
 /// The pipeline's harness name for `kind`: the history source the core
@@ -152,6 +209,7 @@ impl AdvisoryApi for HttpApi {
                     debug(format_args!("the listing answered {}", answer.status));
                     match answer.status {
                         401 => Listing::Unauthorized,
+                        429 => Listing::Throttled,
                         403 | 404 | 501 => Listing::Off,
                         _ => Listing::Failed,
                     }
@@ -190,6 +248,7 @@ impl AdvisoryApi for HttpApi {
                     debug(format_args!("an ack answered {}", answer.status));
                     match answer.status {
                         401 => Ack::Unauthorized,
+                        429 => Ack::Throttled,
                         403 => Ack::Forbidden,
                         _ => Ack::Failed,
                     }

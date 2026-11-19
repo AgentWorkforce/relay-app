@@ -3,8 +3,11 @@
 //! CoordinationAdvisoriesCopy word for word.
 
 pub const COORDINATION_ADVISORIES_TITLE: &str =
-    "Show teammates' overlapping work at the end of a turn";
-pub const COORDINATION_ADVISORIES_DETAIL: &str = "Off: nothing is added. On: when a Claude Code, Codex, Copilot, Devin or Cursor CLI session ends a turn, it is shown a short note about teammates' work that overlaps with its own, once per note. Your workspace's Cloud must offer these notes.";
+    "Show agents teammates' overlapping work";
+pub const COORDINATION_ADVISORIES_DETAIL: &str = "Off: nothing is added. On: urgent notes may reach registered agents before a turn ends. Other notes appear once at the end of a supported Claude Code, Codex, Copilot, Devin or Cursor CLI turn. Your workspace must provide coordination notes.";
+
+pub const COORDINATION_NOTIFICATIONS_TITLE: &str = "Urgent coordination system notifications";
+pub const COORDINATION_NOTIFICATIONS_DETAIL: &str = "Off by default. When coordination notes are on, validated priority-one alerts can request a system notification, up to three batches per hour. Your system's notification permissions and Focus or Do Not Disturb settings still apply. Agent Relay has no separate quiet hours or snooze.";
 
 #[cfg(test)]
 mod tests {
@@ -28,9 +31,15 @@ mod tests {
             )),
             "the Mac's detail differs"
         );
+        for (key, value) in [
+            ("notificationsTitle", COORDINATION_NOTIFICATIONS_TITLE),
+            ("notificationsDetail", COORDINATION_NOTIFICATIONS_DETAIL),
+        ] {
+            assert!(MAC_COPY.contains(&format!("public static let {key} = \"{value}\"\n")));
+        }
         assert_eq!(
             COORDINATION_ADVISORIES_TITLE,
-            "Show teammates' overlapping work at the end of a turn"
+            "Show agents teammates' overlapping work"
         );
     }
 }
