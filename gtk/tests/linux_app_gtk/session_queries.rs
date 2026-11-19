@@ -788,6 +788,97 @@ fn a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later(
     assert!(!registered.load(Ordering::SeqCst));
 }
 
+fn an_old_cursor_hide_kept_while_signed_out_is_sent_again_after_sign_in(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let registered = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let unregisters = Arc::new(AtomicUsize::new(0));
+    let (listed, unregistered, seen) =
+        (registered.clone(), registered.clone(), unregisters.clone());
+    let case = Case::seeded(
+        runtime,
+        move |core| {
+            core.answer("uploader.sessions.query", Answer::Value(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})));
+            core.answer(
+                "sessions.list",
+                Answer::with(move |_| {
+                    let registration = if listed.load(Ordering::SeqCst) {
+                        json!({"name":"chat","address":"chat@desk","added_by_session":false,"push":null})
+                    } else {
+                        Value::Null
+                    };
+                    async move {
+                        Ok(json!({"sessions":[local_session("cursor-cli","x","Chat",true,registration)]}))
+                    }
+                }),
+            );
+            core.answer(
+                "agents.unregister",
+                Answer::with(move |_| {
+                    let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
+                    if !first {
+                        unregistered.store(false, Ordering::SeqCst);
+                    }
+                    async move {
+                        if first {
+                            Err(RpcError::new(ErrorKind::Internal, "Relay is unavailable"))
+                        } else {
+                            Ok(json!({"removed":true}))
+                        }
+                    }
+                }),
+            );
+            core.answer("uploader.sessions.exclude", json!({"updated":1}));
+        },
+        Arc::new(FakeService::default()),
+        |prefs| {
+            prefs
+                .set("hiddenSessions.v1", json!(["cursor-cli:x"]))
+                .unwrap()
+        },
+    );
+    // Signed out, a local read takes the chat off the relay, which fails:
+    // the hide is kept with no retry timer to clear its wait.
+    case.app.refresh_local();
+    case.pump(|case| {
+        unregisters.load(Ordering::SeqCst) == 1
+            && case.app.with_state(|s| {
+                s.hiding_sessions.is_empty()
+                    && !s.session_query.hidden_retry_scheduled
+                    && s.session_query.hidden_retry_waiting.contains("cursor:x")
+            })
+    });
+    // Further reads while signed out send nothing.
+    for _ in 0..3 {
+        let applied = case.app.with_state(|s| s.local_applied);
+        case.app.refresh_local();
+        case.pump(|case| case.app.with_state(|s| s.local_applied > applied));
+    }
+    case.settle();
+    assert_eq!(unregisters.load(Ordering::SeqCst), 1);
+    assert_eq!(cursor_x_exclusions(&case), 0);
+    assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
+    assert!(case.app.session_hidden("cursor:x"));
+    assert!(case.app.with_state(|s| {
+        s.hiding_sessions.is_empty()
+            && !s.session_query.hidden_retry_scheduled
+            && s.session_query.hidden_retry_waiting.contains("cursor:x")
+    }));
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        saved_hidden(case) == Some(json!([]))
+            && case.app.with_state(|s| s.hiding_sessions.is_empty())
+    });
+    case.settle();
+    assert_eq!(unregisters.load(Ordering::SeqCst), 2);
+    assert_eq!(cursor_x_exclusions(&case), 1);
+    assert!(!registered.load(Ordering::SeqCst));
+    assert!(!case.app.session_hidden("cursor:x"));
+    assert!(case
+        .app
+        .with_state(|s| !s.upload_errors.contains_key("cursor:x")));
+}
+
 fn an_ordinary_hide_still_rolls_back_on_a_failed_exclusion(runtime: &tokio::runtime::Runtime) {
     let case = old_cursor_hide(
         runtime,
@@ -875,6 +966,9 @@ fn an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide(
     });
     held.notify_one();
     case.pump(|case| case.app.with_state(|s| s.hiding_sessions.is_empty()));
+    assert!(case
+        .app
+        .with_state(|s| !s.upload_errors.contains_key("cursor:x")));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
     assert!(case.app.session_hidden("cursor:x"));
@@ -888,9 +982,22 @@ fn an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide(
 fn an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turned_on(
     runtime: &tokio::runtime::Runtime,
 ) {
+    // The exclusion of cursor:x answers only once its row has loaded, so the
+    // hide is dropped after the row is there to show with sharing off.
+    let held = Arc::new(Notify::new());
+    let release = held.clone();
     let case = old_cursor_hide(
         runtime,
-        Answer::Value(json!({"updated":0})),
+        Answer::with(move |params| {
+            let wait = params["session_keys"] == json!(["cursor:x"]);
+            let held = release.clone();
+            async move {
+                if wait {
+                    held.notified().await;
+                }
+                Ok(json!({"updated":0}))
+            }
+        }),
         json!(["cursor-cli:x", "cursor:y", "grok-open:g"]),
     );
     let all = ["cursor:x", "cursor:y", "grok:g"].map(String::from);
@@ -904,6 +1011,8 @@ fn an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turne
         "Nothing is rewritten at launch"
     );
     case.set_state(workspace_snapshot());
+    case.pump(|case| cursor_x_exclusions(case) == 1 && cursor_x_included(case) == Some(true));
+    held.notify_one();
     case.pump(|case| {
         saved_hidden(case) == Some(json!(["cursor:y", "grok:g"]))
             && case.app.with_state(|s| s.hiding_sessions.is_empty())
@@ -1097,6 +1206,10 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later",
         a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later,
+    ),
+    (
+        "an_old_cursor_hide_kept_while_signed_out_is_sent_again_after_sign_in",
+        an_old_cursor_hide_kept_while_signed_out_is_sent_again_after_sign_in,
     ),
     (
         "an_ordinary_hide_still_rolls_back_on_a_failed_exclusion",

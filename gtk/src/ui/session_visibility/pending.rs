@@ -56,7 +56,7 @@ impl App {
                         || s.account_state()
                             != agent_relay_node::relay::state::SignInState::SignedIn
                 }) {
-                    app.defer_hiding_session(&key);
+                    app.defer_hiding_session(&key, true);
                     return;
                 }
                 // Exclude preserves existing cloud copies; delete does not.
@@ -67,10 +67,13 @@ impl App {
                 app.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsExclude>(params, move |app, result| {
                     let policy_changed = policy_revision
                         != app.with_state(|s| s.session_query.upload_policy_revision);
-                    if (result.is_ok() && policy_changed)
-                        || result.as_ref().err().is_some_and(exclusion_waits)
-                    {
-                        app.defer_hiding_session(&key);
+                    if result.is_ok() && policy_changed {
+                        // A retired hide has no row to show the wait on.
+                        let retired =
+                            retired_hidden_keys(&app.saved_hidden_sessions()).contains(&key);
+                        app.defer_hiding_session(&key, !retired);
+                    } else if result.as_ref().err().is_some_and(exclusion_waits) {
+                        app.defer_hiding_session(&key, true);
                     } else {
                         app.finish_hiding_session(&key, result.err().map(|error| error.message));
                     }

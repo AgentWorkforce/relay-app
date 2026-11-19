@@ -16,13 +16,27 @@ pub struct SessionQueryState {
     pub hidden_retry_scheduled: bool,
     pub hidden_retry_attempt: u32,
     /// Retired hides whose exclusion failed: a reconcile skips them until the
-    /// backoff timer fires or the connection is replaced.
+    /// backoff timer fires, the connection is replaced or the account signs
+    /// in.
     pub hidden_retry_waiting: std::collections::BTreeSet<String>,
     pub archived_keys: Option<std::collections::BTreeSet<String>>,
     pub local_sessions: Option<Vec<LocalSession>>,
 }
 
 impl super::super::State {
+    /// A retired hide kept while signed out has no retry timer; signing in
+    /// lets the reads that follow send it again.
+    pub(crate) fn release_hidden_waits_on_sign_in(
+        &mut self,
+        before: agent_relay_node::relay::state::SignInState,
+        after: agent_relay_node::relay::state::SignInState,
+    ) {
+        use agent_relay_node::relay::state::SignInState::SignedIn;
+        if after == SignedIn && before != SignedIn {
+            self.session_query.hidden_retry_waiting.clear();
+        }
+    }
+
     pub(super) fn interrupt_session_queries(&mut self) {
         self.hiding_sessions.clear();
         self.session_query.facets_loading = false;

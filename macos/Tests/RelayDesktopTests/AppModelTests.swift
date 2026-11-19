@@ -1400,6 +1400,51 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(registered.value)
     }
 
+    func testAnOldCursorHideKeptWhileNotAttachedIsSentAgainAfterSignIn() async throws {
+        defaults.set(["cursor-cli:x"], forKey: "hiddenSessions.v1")
+        let registered = Locked(true)
+        let unregisters = Locked(0)
+        core.on("sessions.list") { _ in
+            ["sessions": [["target": ["kind": "cursor-cli", "id": "x"], "title": "Chat", "live": true,
+                "registration": registered.value ? ["name": "chat", "address": "chat@mac", "added_by_session": false] as Any : NSNull(), "suggested_name": "chat"]]]
+        }
+        core.on("agents.unregister") { _ in
+            unregisters.value += 1
+            if unregisters.value == 1 { throw FakeCore.Failure(kind: "internal", message: "Relay is unavailable") }
+            registered.value = false
+            return [:]
+        }
+        core.on("uploader.sessions.exclude") { _ in ["updated": 1] }
+        let model = model()
+        defer { model.shutdown() }
+        // Not attached, a local read takes the chat off the relay, which
+        // fails: the hide is kept with no retry timer to clear its wait.
+        try await model.relay.loadSessions()
+        let failed = await eventually(10) { unregisters.value == 1 && model.hidingSessionIDs.isEmpty }
+        XCTAssertTrue(failed)
+        XCTAssertNotEqual(model.phase, .attached)
+        // Further reads while not attached send nothing.
+        for _ in 0..<3 {
+            try await model.relay.loadSessions()
+            model.reconcileHiddenSessions()
+            await Task.yield()
+        }
+        XCTAssertEqual(unregisters.value, 1)
+        XCTAssertEqual(cursorXExclusions(), 0)
+        XCTAssertEqual(savedHidden(), ["cursor-cli:x"])
+        XCTAssertTrue(model.hiddenSessionIDs.contains("cursor:x"))
+        XCTAssertTrue(model.hidingSessionIDs.isEmpty)
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        await model.bootstrapIfNeeded()
+        let dropped = await eventually(10) { self.savedHidden().isEmpty && model.hidingSessionIDs.isEmpty }
+        XCTAssertTrue(dropped)
+        XCTAssertEqual(unregisters.value, 2)
+        XCTAssertEqual(cursorXExclusions(), 1)
+        XCTAssertFalse(registered.value)
+        XCTAssertFalse(model.hiddenSessionIDs.contains("cursor:x"))
+        XCTAssertNil(model.uploadErrors["cursor:x"])
+    }
+
     func testAnOrdinaryHideStillRollsBackOnAFailedExclusion() async {
         defaults.set(["cursor-cli:x"], forKey: "hiddenSessions.v1")
         core.on("uploader.sessions.exclude") { _ in throw FakeCore.Failure(kind: "internal", message: "Cannot stop uploads") }
@@ -1445,6 +1490,7 @@ final class AppModelTests: XCTestCase {
         held.signal()
         let answered = await eventually { model.hidingSessionIDs.isEmpty }
         XCTAssertTrue(answered)
+        XCTAssertNil(model.uploadErrors["cursor:x"])
         XCTAssertEqual(requests.value, 1)
         XCTAssertEqual(savedHidden(), ["cursor-cli:x"])
         XCTAssertTrue(model.hiddenSessionIDs.contains("cursor:x"))

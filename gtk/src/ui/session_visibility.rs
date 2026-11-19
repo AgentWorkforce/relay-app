@@ -142,11 +142,13 @@ impl App {
         }
         self.render_sessions();
     }
-    fn defer_hiding_session(&self, key: &str) {
+    fn defer_hiding_session(&self, key: &str, row_error: bool) {
         self.update_state(|s| {
             s.hiding_sessions.remove(key);
-            s.upload_errors
-                .insert(key.into(), "Waiting to stop uploads…".into());
+            if row_error {
+                s.upload_errors
+                    .insert(key.into(), "Waiting to stop uploads…".into());
+            }
         });
         self.retry_hidden_sessions();
         self.render_sessions();

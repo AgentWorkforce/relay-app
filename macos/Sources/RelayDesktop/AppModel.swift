@@ -2048,7 +2048,8 @@ final class AppModel {
                 // A newer policy may have enabled this identity after the
                 // exclusion committed but before its reply arrived.
                 guard policyRevision == status?.uploadPolicyRevision else {
-                    uploadErrors[key] = "Waiting to stop uploads…"
+                    // A retired hide has no row to show the wait on.
+                    if !isRetiredHide(key) { uploadErrors[key] = "Waiting to stop uploads…" }
                     retryHiddenSessions()
                     continue
                 }

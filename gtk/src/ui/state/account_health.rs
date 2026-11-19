@@ -18,6 +18,7 @@ impl State {
         if previous.auth_checked_at != next.auth_checked_at {
             self.account_health_error = None;
         }
+        self.release_hidden_waits_on_sign_in(previous.state, next.state);
         previous
     }
 }
