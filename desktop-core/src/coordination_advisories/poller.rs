@@ -144,6 +144,11 @@ impl Advisories {
 
     /// Acks every shown advisory whose retry is due.
     pub(super) async fn send_due_acks(&self, token: &ReadToken, now: Instant) {
+        // Save shown IDs before acknowledging them; a normal restart resumes
+        // retries without showing the message again. No credentials are saved.
+        if !self.checkpoint_receipts(&token.principal) {
+            return;
+        }
         let due: Vec<(Target, String)> = {
             let mut state = self.state();
             // Another account's token never acks this one's notes.
@@ -166,16 +171,30 @@ impl Advisories {
             due
         };
         for (target, id) in due {
+            if self.tokens.principal().as_ref() != Some(&token.principal) {
+                break;
+            }
             let ack = self.api.ack(token, &target, &id).await;
             if ack == Ack::Unauthorized {
                 self.tokens.refused(token);
             }
-            self.acked(&target, &id, ack, now);
+            self.acked(&token.principal, &target, &id, ack, now);
         }
+        self.checkpoint_receipts(&token.principal);
     }
 
-    pub(super) fn acked(&self, target: &Target, id: &str, ack: Ack, now: Instant) {
+    pub(super) fn acked(
+        &self,
+        principal: &Principal,
+        target: &Target,
+        id: &str,
+        ack: Ack,
+        now: Instant,
+    ) {
         let mut state = self.state();
+        if state.principal.as_ref() != Some(principal) {
+            return;
+        }
         let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(id)) else {
             return;
         };

@@ -111,6 +111,18 @@ impl HttpApi {
             .append_pair("status", "pending");
         Some(url.into())
     }
+
+    pub(super) fn ack_url(token: &ReadToken, id: &str) -> Option<String> {
+        let mut url = url::Url::parse(&format!(
+            "{}/v1/coordination/advisories/{}/ack",
+            token.origin.trim_end_matches('/'),
+            segment(id)
+        ))
+        .ok()?;
+        url.query_pairs_mut()
+            .append_pair("workspace", &token.workspace_id);
+        Some(url.into())
+    }
 }
 
 impl AdvisoryApi for HttpApi {
@@ -159,11 +171,9 @@ impl AdvisoryApi for HttpApi {
         id: &'a str,
     ) -> BoxFuture<'a, Ack> {
         Box::pin(async move {
-            let url = format!(
-                "{}/v1/coordination/advisories/{}/ack",
-                token.origin.trim_end_matches('/'),
-                segment(id)
-            );
+            let Some(url) = Self::ack_url(token, id) else {
+                return Ack::Failed;
+            };
             let body = json!({"source": source(target.kind), "sessionId": target.id});
             let bearer = token.bearer.expose().to_string();
             match agent_relay_node::relay::cloud_http::send(
