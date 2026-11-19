@@ -33,13 +33,13 @@ service-callers-dev-attest = []
 # preserves their Archived classification when upgrading.
 # Move it in desktop-core and gtk together.
 agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "52fc1197888da2635b2bcad5b0c0ce5072e315da", default-features = false }
-# relayhistory 0.60.0 from crates.io. `history-provider-sources` pins ai-hist
+# relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
-ai-hist = { version = "=0.60.0", features = ["opencode-backup", "git-hooks", "fs-events"] }
+ai-hist = { version = "=0.61.0", features = ["opencode-backup", "git-hooks", "fs-events"] }
 # The remote source connectors session history composes (`devin-cloud`,
 # `cursor-cloud`).
-history-provider-sources = "=0.60.0"
+history-provider-sources = "=0.61.0"
 # The watcher ai-hist's own watch is built on, for selected mode's catalog
 # (src/probe/inventory.rs), which ai-hist's sync-driven watch cannot serve.
 notify = "8"
