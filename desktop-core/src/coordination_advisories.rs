@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! GET  {origin}/v1/coordination/advisories?workspace=&source=&sessionId=&status=pending
-//! POST {origin}/v1/coordination/advisories/:advisoryId/ack   {"source","sessionId"} -> 204
+//! POST {origin}/v1/coordination/advisories/:advisoryId/ack?workspace=   {"source","sessionId"} -> 204
 //! ```
 //!
 //! A background poller ([`watch`]), never the hook path, asks for each live
@@ -16,6 +16,10 @@
 //! [`Target`], deduplicated by advisory id. The core's stop hooks then
 //! [`take`](TurnEndAdvisories::take) the cached ones, once, and report them
 //! [`shown`](TurnEndAdvisories::shown); this module acks them upstream.
+//! Shown-but-unacknowledged IDs are checkpointed in the background for up to
+//! eight days, scoped by site, workspace and person (not sign-in generation).
+//! No message text or credentials are saved. A crash before the checkpoint can
+//! repeat a note; this is at-least-once delivery, not exactly-once delivery.
 //!
 //! Everything is quiet: the routes may be missing (404), switched off (501),
 //! or refuse the token (401, 403), and the network may fail. Each gives the
@@ -108,6 +112,7 @@ fn debug(args: std::fmt::Arguments<'_>) {
 mod client;
 mod delivery;
 mod poller;
+mod receipts;
 mod rows;
 mod settings;
 mod tokens;
@@ -166,6 +171,8 @@ struct Backoff {
 
 #[derive(Default)]
 struct State {
+    /// Minimal shown-but-unacknowledged receipts; never message text or tokens.
+    receipts: Vec<receipts::Receipt>,
     /// What each session has waiting, oldest first.
     waiting: HashMap<Target, Vec<Advisory>>,
     /// What each session was handed, by advisory id.
@@ -185,6 +192,7 @@ impl State {
         self.taken.clear();
         self.sessions.clear();
         self.paused_until = None;
+        self.principal = None;
     }
 
     /// Makes this the cache of `principal` (`None`: signed out), forgetting
@@ -196,6 +204,9 @@ impl State {
         }
         self.clear();
         self.principal = principal.cloned();
+        if let Some(principal) = principal {
+            receipts::restore(self, principal);
+        }
         false
     }
 
@@ -229,6 +240,7 @@ pub struct Advisories {
     tokens: Arc<dyn TokenSource>,
     api: Arc<dyn AdvisoryApi>,
     state: Mutex<State>,
+    receipt_save: Mutex<()>,
 }
 
 impl Advisories {
@@ -244,7 +256,11 @@ impl Advisories {
             setting: Mutex::new(()),
             tokens,
             api,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                receipts: receipts::load(app_data_dir),
+                ..State::default()
+            }),
+            receipt_save: Mutex::new(()),
         })
     }
 
@@ -281,6 +297,19 @@ impl Advisories {
 }
 
 impl TurnEndAdvisories for Advisories {
+    fn pending(&self, target: &Target) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let current = self.tokens.principal();
+        let mut state = self.state();
+        current.is_some()
+            && state.belong_to(current.as_ref())
+            && state
+                .waiting
+                .get(target)
+                .is_some_and(|rows| !rows.is_empty())
+    }
     fn take(&self, target: &Target) -> Option<TurnEndAdvisory> {
         self.take_at(target, Instant::now())
     }
