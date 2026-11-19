@@ -187,14 +187,14 @@ echo "promoting v$version ($channel${profile:+, profile $profile}) from run $run
 # A delegated approval: the profile is final here and nothing has been written
 # or dispatched yet. The validator spends the message id on a permit, so it
 # runs only once the candidate itself checked out. Anything but a permit for
-# exactly this action and target refuses. A promote this run of the command
-# resumes (the row is promoting or tagging) under the same message id already
-# spent its permit on the promoting write, so it is not asked for again.
+# exactly this action and target refuses. A rerun that resumes a promote (the
+# row is promoting or tagging) is not asked again when the row already holds
+# this message id for this channel: its permit was spent before that write.
 spent=""
 if [ -n "$approval" ]; then
   # A profile taken from the row is held to the same form as --profile.
   [ -z "$profile" ] || [[ "$profile" =~ ^[a-z0-9]+$ ]] || { echo "refusing: run $run_id carries profile $profile, which is not lowercase letters and digits; a delegated approval cannot name it" >&2; exit 4; }
-  spent=$(jq -r --argjson id "$run_id" '[.[] | select(.run_id == $id and (.status == "promoting" or .status == "tagging"))] | last | .approval_message // empty' "$state")
+  spent=$(jq -r --argjson id "$run_id" --arg ch "$channel" '[.[] | select(.run_id == $id and .channel == $ch and (.status == "promoting" or .status == "tagging"))] | last | .approval_message // empty' "$state")
 fi
 if [ -n "$approval" ] && [ "$resuming" != 0 ] && [ "$spent" = "$approval" ]; then
   echo "delegated approval: resuming run $run_id under the permit already spent for message $approval"

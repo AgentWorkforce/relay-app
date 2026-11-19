@@ -260,6 +260,12 @@ test("a promoting row with another message id asks the validator and is refused 
   assert.equal(o.decideArgv?.[5], MSG);
 });
 
+test("a promoting row of the other channel with the same message id asks the validator", () => {
+  const o = release({ args: delegated, rows: [row({ channel: "beta", status: "promoting", promote_since: "2026-11-19T01:00:00Z", approval_message: MSG })], decideExit: 10, decideOut: deny });
+  refused(o, "other channel");
+  assert.ok(o.calls.includes("decide"));
+});
+
 test("a promoting row with no recorded message id asks the validator", () => {
   const o = release({ args: delegated, rows: [row({ status: "promoting", promote_since: "2026-11-19T01:00:00Z" })], decideExit: 10, decideOut: deny });
   refused(o, "no stored id");
