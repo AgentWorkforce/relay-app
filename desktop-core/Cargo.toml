@@ -28,11 +28,11 @@ test-site = []
 service-callers-dev-attest = []
 
 [dependencies]
-# Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 52fc1197 (#2223): joins local Cursor sessions to upload history and
-# preserves their Archived classification when upgrading.
-# Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "52fc1197888da2635b2bcad5b0c0ce5072e315da", default-features = false }
+# Relay's public core (AgentWorkforce/relay crates/relay-node), review of
+# turn-end advisories (#2166) rebased onto relay main 521d19d6. This keeps
+# main's Cursor history matching and spawn placement. Before landing, pin
+# the reviewed feature on relay main. Move both desktop-core and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "f4c9ac4a200b82c8db780ad85665b3179e728062", default-features = false }
 # relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
