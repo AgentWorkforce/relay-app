@@ -52,6 +52,12 @@ pub struct Install {
     /// Nothing captured is deleted; uploads resume once the policy is read.
     #[arg(long)]
     pub withhold_uploads: bool,
+    /// The requested mode is the desktop apps' own default, not something
+    /// the person or an operator chose. A fresh install records it as
+    /// unchosen; an install with a saved config, or one whose uploads are
+    /// withheld, ignores the flag.
+    #[arg(long)]
+    pub sharing_is_app_default: bool,
 }
 
 #[derive(Args)]

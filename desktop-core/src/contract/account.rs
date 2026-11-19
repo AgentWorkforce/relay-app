@@ -137,6 +137,12 @@ pub struct UploaderStatus {
     /// apps lock the upload policy and say why.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub uploads_withheld: bool,
+    /// The sharing mode the workspace's organization suggests, while the
+    /// install still shares under the app's own default: never enforced or
+    /// locked, and absent while uploads are withheld or the policy was not
+    /// read since sign-in. Nothing applies it; the person chooses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_sharing_mode: Option<SharingMode>,
 }
 
 /// Health of the Claude Code cloud-session source, credential-free.

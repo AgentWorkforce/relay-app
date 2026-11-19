@@ -12242,6 +12242,11 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
     /// `needs_attention`, except that a receiver conflict keeps `conflict`
     /// and a failed cycle with no delivery failure keeps `offline`.
     public let stalled: Bool
+    /// The sharing mode the workspace's organization suggests, while the
+    /// install still shares under the app's own default: never enforced or
+    /// locked, and absent while uploads are withheld or the policy was not
+    /// read since sign-in. Nothing applies it; the person chooses.
+    public let suggestedSharingMode: SharingMode?
     /// The collector is upgrading local history.
     public let upgrading: Bool
     /// Saved upload membership/exclusion changes, independent of counts and
@@ -12252,7 +12257,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
     /// apps lock the upload policy and say why.
     public let uploadsWithheld: Bool?
 
-    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, enforcedSettings: [String: String]? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, upgrading: Bool, uploadPolicyRevision: Int64? = nil, uploadsWithheld: Bool? = nil) {
+    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, enforcedSettings: [String: String]? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, suggestedSharingMode: SharingMode? = nil, upgrading: Bool, uploadPolicyRevision: Int64? = nil, uploadsWithheld: Bool? = nil) {
         self.claudeCloud = claudeCloud
         self.collectorOutdated = collectorOutdated
         self.collectorReplacing = collectorReplacing
@@ -12268,6 +12273,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         self.stage = stage
         self.stageMessage = stageMessage
         self.stalled = stalled
+        self.suggestedSharingMode = suggestedSharingMode
         self.upgrading = upgrading
         self.uploadPolicyRevision = uploadPolicyRevision
         self.uploadsWithheld = uploadsWithheld
@@ -12289,6 +12295,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         case stage
         case stageMessage = "stage_message"
         case stalled
+        case suggestedSharingMode = "suggested_sharing_mode"
         case upgrading
         case uploadPolicyRevision = "upload_policy_revision"
         case uploadsWithheld = "uploads_withheld"
@@ -12311,6 +12318,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         self.stage = try c.decode(Stage.self, forKey: .stage)
         self.stageMessage = try c.decodeIfPresent(String.self, forKey: .stageMessage)
         self.stalled = try c.decode(Bool.self, forKey: .stalled)
+        self.suggestedSharingMode = try c.decodeIfPresent(SharingMode.self, forKey: .suggestedSharingMode)
         self.upgrading = try c.decode(Bool.self, forKey: .upgrading)
         self.uploadPolicyRevision = try c.decodeIfPresent(Int64.self, forKey: .uploadPolicyRevision)
         self.uploadsWithheld = try c.decodeIfPresent(Bool.self, forKey: .uploadsWithheld)
@@ -12333,6 +12341,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.stage, forKey: .stage)
         try c.encode(self.stageMessage, forKey: .stageMessage)
         try c.encode(self.stalled, forKey: .stalled)
+        try c.encodeIfPresent(self.suggestedSharingMode, forKey: .suggestedSharingMode)
         try c.encode(self.upgrading, forKey: .upgrading)
         try c.encode(self.uploadPolicyRevision, forKey: .uploadPolicyRevision)
         try c.encodeIfPresent(self.uploadsWithheld, forKey: .uploadsWithheld)

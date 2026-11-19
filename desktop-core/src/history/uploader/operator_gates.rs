@@ -77,6 +77,19 @@ impl Uploader {
             .is_some_and(|policy| policy.withholds(self.workspace_id().as_deref()))
     }
 
+    /// The sharing mode the organization suggests to the attached install's
+    /// person, while its mode is still the app's own default. Only reported.
+    pub fn suggested_sharing_mode(&self) -> Option<SharingMode> {
+        let unchosen = self
+            .install
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|install| install.sharing_unchosen);
+        let workspace_id = self.workspace_id().filter(|_| unchosen)?;
+        self.operator_policy()?.suggested_sharing(&workspace_id)
+    }
+
     /// The person's sharing choice, refused when the operator enforces
     /// another, and, when it re-sends the whole local history, unless the
     /// person `replay_confirmed` it.
@@ -115,6 +128,7 @@ impl Uploader {
         let mut install = self.install.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(install) = install.as_mut().filter(|install| install.target == target) {
             install.sharing_mode = Some(mode);
+            install.sharing_unchosen = false;
         }
         Ok(json!({
             "sharing_mode": value["sharing_mode"].as_str().unwrap_or(mode.as_str()),

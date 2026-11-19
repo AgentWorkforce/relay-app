@@ -101,7 +101,7 @@ pub fn profile(directory: &Path, config: &Config, paused: bool) -> Result<Value>
         "account_email":config.account_email, "account_name":config.account_name,
         "account_avatar_url":config.account_avatar_url,
         "workspace_id":config.workspace_id, "workspace_name":config.workspace_name, "org_id":config.org_id, "sharing_mode":mode(config),
-        "running":running(directory)?, "paused":paused,
+        "sharing_unchosen":config.sharing_unchosen, "running":running(directory)?, "paused":paused,
         "claude_cloud":claude_cloud_health(directory)}),
     )
 }
@@ -348,6 +348,7 @@ pub(crate) mod tests {
             include_existing: true,
             sharing_mode: Some(SharingMode::All),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         fs::write(
             directory.path().join("config.json"),

@@ -1996,6 +1996,7 @@ pub(crate) mod tests {
             include_existing: false,
             sharing_mode: Some(crate::contract::account::SharingMode::New),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         super::super::save_json(&directory.join("config.json"), &config).unwrap();
         assert!(super::super::read_config(directory).is_ok());

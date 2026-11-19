@@ -549,6 +549,7 @@ pub fn status_report(status: &Value) -> UploaderStatus {
         claude_cloud: serde_json::from_value(status["claude_cloud"].clone()).ok(),
         enforced_settings: Default::default(),
         uploads_withheld: false,
+        suggested_sharing_mode: None,
     }
 }
 
@@ -700,6 +701,10 @@ pub struct Install {
     /// The Cloud organization the workspace belongs to.
     pub org_id: Option<String>,
     pub sharing_mode: Option<SharingMode>,
+    /// Whether `sharing_mode` is still the app's own default. A probe that
+    /// does not report it predates the field, and its install counts as
+    /// chosen.
+    pub sharing_unchosen: bool,
 }
 
 impl Install {
@@ -724,6 +729,7 @@ impl Install {
             account_avatar_url: text("account_avatar_url"),
             org_id: text("org_id"),
             sharing_mode: serde_json::from_value(value["sharing_mode"].clone()).ok(),
+            sharing_unchosen: value["sharing_unchosen"].as_bool().unwrap_or(false),
         })
     }
 }
