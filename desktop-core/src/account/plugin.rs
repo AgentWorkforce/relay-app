@@ -60,13 +60,20 @@ fn provider_installer(
             .with_copilot_executable(executable.clone())
             .with_core_sockets(
                 config,
-                executable
-                    .as_deref()
-                    .filter(|_| crate::executable_identity::built_to_coexist()),
+                own_copy(
+                    executable.as_deref(),
+                    crate::executable_identity::built_to_coexist(),
+                ),
             )
     });
     sessions.configure_copilot_helper(installer.copilot_helper());
     installer
+}
+
+/// What a production build copies into its app data to run as its own
+/// probe: its executable, only when it is built to coexist with Agent Relay.
+fn own_copy(executable: Option<&std::path::Path>, coexists: bool) -> Option<&std::path::Path> {
+    executable.filter(|_| coexists)
 }
 
 /// Where this computer's agents keep what proves a session's owner, as
@@ -428,5 +435,17 @@ mod tests {
             "{hook}"
         );
         assert_eq!(server, "agent-relay-devaws");
+    }
+
+    /// Only a build built to coexist copies its executable to run as its
+    /// own probe; any other runs the shared copy, and no executable gives
+    /// nothing to copy.
+    #[test]
+    fn only_a_build_built_to_coexist_gets_its_own_copy() {
+        let executable = std::path::Path::new("/Applications/Site.app/Contents/Helpers/core");
+        assert_eq!(own_copy(Some(executable), true), Some(executable));
+        assert_eq!(own_copy(Some(executable), false), None);
+        assert_eq!(own_copy(None, true), None);
+        assert_eq!(own_copy(None, false), None);
     }
 }
