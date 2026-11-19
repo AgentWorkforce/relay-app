@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 
 mod pass;
 pub mod settings;
+mod suggestion;
 
 pub use pass::{pass_policy, pass_policy_with, pass_revision};
 
@@ -579,8 +580,10 @@ impl OperatorPolicy {
     }
 
     /// A sign-in to `workspace_id`: with nothing cached, its uploads wait
-    /// for the first read.
+    /// for the first read, and no workspace counts as read until Cloud
+    /// answers for this sign-in.
     pub fn sign_in(&self, workspace_id: &str) {
+        self.workspace.forget_reads();
         if self.entry(workspace_id).is_none() {
             self.change(|saved| {
                 saved.workspaces.insert(

@@ -1121,6 +1121,7 @@ pub(super) mod tests {
                 crate::contract::account::SharingMode::All
             }),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         }
     }
 

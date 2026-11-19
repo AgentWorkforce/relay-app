@@ -179,6 +179,7 @@ mod tests {
             include_existing: true,
             sharing_mode: Some(all),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let saved = |history_url: &str, account: &str| {
             saved_destination(Some(config.clone()), account, history_url)
@@ -248,6 +249,7 @@ mod tests {
                 include_existing: false,
                 sharing_mode: None,
                 acknowledge_uninspected_schedules: false,
+                sharing_unchosen: false,
             };
         let config = |history_url: &str, cloud_history_origin: Option<&str>| {
             config_at("https://agentrelay.com", history_url, cloud_history_origin)

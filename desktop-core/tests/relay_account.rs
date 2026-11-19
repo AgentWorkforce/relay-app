@@ -129,9 +129,14 @@ impl ProbeRunner for FakeProbe {
                 state.installs.clear();
                 Ok(json!({"disconnected": true}))
             }
-            "sharing" => Ok(
-                json!({"sharing_mode": args[args.iter().position(|a| a == "--mode").unwrap() + 1], "regenerated": false}),
-            ),
+            "sharing" => {
+                let mode = &args[args.iter().position(|a| a == "--mode").unwrap() + 1];
+                for install in &mut state.installs {
+                    install["sharing_mode"] = json!(mode);
+                    install["sharing_unchosen"] = json!(false);
+                }
+                Ok(json!({"sharing_mode": mode, "regenerated": false}))
+            }
             "sessions" if args[1] == "list" => Ok(
                 json!({"sharing_mode": "new", "sessions": [{"source": "codex", "session_id": "a", "title": "a",
                     "cwd": null, "git_branch": null, "first_activity_ms": null, "last_activity_ms": null,
@@ -172,9 +177,12 @@ impl ProbeRunner for FakeProbe {
         .into_iter()
         .find(|(flag, _)| args.iter().any(|arg| arg == flag))
         .map_or("new", |(_, mode)| mode);
+        let has = |flag: &str| args.iter().any(|arg| arg == flag);
+        let unchosen = has("--sharing-is-app-default");
         let connected = |site: &str| {
             let mut install = FakeProbe::connected(site);
             install["sharing_mode"] = json!(mode);
+            install["sharing_unchosen"] = json!(unchosen);
             install
         };
         if args.iter().any(|arg| arg == "--withhold-uploads") {
@@ -4232,6 +4240,102 @@ async fn sign_in_sharing(harness: &Harness, client: &mut Client, sharing: &str) 
         )
         .await;
     eventually("signed in", || harness.account_state() == "signed_in").await;
+}
+
+/// A capture policy enforcing nothing, with a workspace policy holding
+/// `sharing_mode` in `tier` (`"defaults"` or `"locked"`).
+fn sharing_policy(tier: &str, mode: &str, revision: i64) -> Value {
+    let mut capture = json!({"locked": {}, "defaults": {}});
+    capture[tier] = json!({"sharing_mode": mode});
+    json!({"version": 1, "revision": revision, "settings": {},
+        "workspace_policy": {"version": 2, "revision": revision, "sections": {"capture": capture}}})
+}
+
+/// A fresh sign-in on the app's default mode is told the organization's
+/// default, which nothing applies; the person's own choice of the same mode
+/// ends the suggestion.
+#[tokio::test]
+async fn a_fresh_install_is_suggested_the_organizations_default_and_never_given_it() {
+    let harness = with_operator_policy(Some(sharing_policy("defaults", "all", 1))).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+    let (args, _) = &harness.probe.calls("cloud")[0];
+    assert!(
+        args.contains(&"--sharing-is-app-default".to_string()),
+        "{args:?}"
+    );
+    assert!(
+        args.contains(&"--new-sessions-only".to_string()),
+        "{args:?}"
+    );
+    assert!(harness.sharing_sets().is_empty());
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["suggested_sharing_mode"], "all");
+    assert_eq!(status["enforced_settings"], Value::Null);
+
+    client
+        .ok("uploader.sharing.set", json!({"mode": "new"}))
+        .await;
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["suggested_sharing_mode"], Value::Null);
+    assert_eq!(harness.sharing_sets(), ["new"]);
+    harness.stop().await;
+}
+
+/// A lock that arrives later, even on the mode already applied, hides the
+/// suggestion and makes the mode the organization's choice, so lifting it
+/// brings back neither the suggestion nor any switch to the default.
+#[tokio::test]
+async fn a_later_lock_ends_the_suggestion_for_good() {
+    let harness = with_operator_policy(Some(sharing_policy("defaults", "all", 1))).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["suggested_sharing_mode"], "all");
+
+    let mut locked = sharing_policy("locked", "new", 2);
+    locked["settings"] = json!({"sharing_mode": "new"});
+    harness.set_operator_policy(locked);
+    let connect = json!({"workspace_id": WORKSPACE});
+    client
+        .ok("account.connect_workspace", connect.clone())
+        .await;
+    assert_eq!(harness.sharing_sets(), ["new"]);
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["suggested_sharing_mode"], Value::Null);
+
+    harness.set_operator_policy(sharing_policy("defaults", "all", 3));
+    client.ok("account.connect_workspace", connect).await;
+    assert_eq!(harness.sharing_sets(), ["new"]);
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["suggested_sharing_mode"], Value::Null);
+    harness.stop().await;
+}
+
+/// After signing in again, a workspace policy only cached from the earlier
+/// session suggests nothing.
+#[tokio::test]
+async fn a_cached_workspace_policy_suggests_nothing_after_signing_in_again() {
+    let harness = with_operator_policy(Some(sharing_policy("defaults", "all", 1))).await;
+    let mut client = harness.client().await;
+    sign_in_sharing(&harness, &mut client, "new").await;
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["suggested_sharing_mode"], "all");
+    client.ok("account.sign_out", json!({})).await;
+
+    let mut unreadable = sharing_policy("defaults", "all", 2);
+    unreadable["workspace_policy"]["revision"] = json!("two");
+    harness.set_operator_policy(unreadable);
+    sign_in_sharing(&harness, &mut client, "new").await;
+    let (args, _) = harness.probe.calls("cloud").pop().unwrap();
+    assert!(
+        args.contains(&"--sharing-is-app-default".to_string()),
+        "{args:?}"
+    );
+    let status = client.ok("uploader.status", json!({})).await;
+    assert_eq!(status["uploads_withheld"], Value::Null);
+    assert_eq!(status["suggested_sharing_mode"], Value::Null);
+    harness.stop().await;
 }
 
 /// A sign-in while the operator enforces a mode sets up with that mode and

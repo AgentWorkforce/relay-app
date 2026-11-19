@@ -20,6 +20,9 @@ pub(super) fn make_plan(
         excluded(conn)?
     };
     if let Some(mode) = requested {
+        // Any mode the person sets is their choice. The flag is cleared here,
+        // after a replayed older plan, so it is saved only with the change.
+        config.sharing_unchosen = false;
         config.sharing_mode = Some(mode);
         config.include_existing = mode == SharingMode::All;
         withheld = if mode == SharingMode::All {
@@ -110,6 +113,21 @@ pub(super) fn already_applied(
         emit(json!({"sharing_mode": requested, "regenerated": false}));
     }
     Ok(kept)
+}
+
+/// Re-applying the mode already shared is still the person's choice, so the
+/// install stops counting as unchosen. The caller holds desktop.lock, as every
+/// config.json writer does; a failed request never reaches here.
+pub(super) fn record_choice(
+    directory: &Path,
+    mut config: Config,
+    requested: Option<SharingMode>,
+) -> Result<()> {
+    if requested.is_some() && config.sharing_unchosen {
+        config.sharing_unchosen = false;
+        save_json(&directory.join("config.json"), &config)?;
+    }
+    Ok(())
 }
 
 /// The replayed intent records whether an exclusion was automatic or explicit.

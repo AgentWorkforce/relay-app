@@ -16,6 +16,7 @@ use history_destination::{
     cloud_named_origin, move_destination, saved_destination, start_generation, SavedDestination,
 };
 mod install_sharing;
+use install_sharing::{records_unchosen, setup_sharing};
 mod inventory;
 mod live;
 mod output;
@@ -471,25 +472,6 @@ fn install(options: Install) -> Result<()> {
     )
 }
 
-/// The sharing choice setup applies: a saved install's own, else the one
-/// requested (`None` asks interactively). A different explicit choice for a
-/// saved install is refused, since changing it replaces its delivery
-/// generation, unless `keep_saved` says the request is only the default for a
-/// new install, as the desktop apps' sign-in does.
-fn setup_sharing(
-    saved: Option<crate::contract::account::SharingMode>,
-    requested: Option<crate::contract::account::SharingMode>,
-    keep_saved: bool,
-) -> Result<Option<crate::contract::account::SharingMode>> {
-    match (saved, requested) {
-        (Some(saved), Some(requested)) if saved != requested && !keep_saved => Err(user_error(
-            "A saved sharing choice exists. Changing selection requires explicitly replacing its delivery generation.",
-        )),
-        (Some(saved), _) => Ok(Some(saved)),
-        (None, requested) => Ok(requested),
-    }
-}
-
 /// Setup's work on `directory` once it owns the install's collector.
 fn connect(
     options: &Install,
@@ -506,6 +488,7 @@ fn connect(
         .flatten();
     bridge::recover(&directory)?;
     let existing = saved_config(&directory)?;
+    let unchosen = records_unchosen(options, existing.as_ref());
     let requested = if options.include_existing {
         Some(crate::contract::account::SharingMode::All)
     } else if options.new_sessions_only {
@@ -626,6 +609,7 @@ fn connect(
                 include_existing,
                 sharing_mode: Some(sharing_mode),
                 acknowledge_uninspected_schedules: options.acknowledge_uninspected_schedules,
+                sharing_unchosen: unchosen,
             };
             save_json(&directory.join("config.json"), &config)?;
             config
@@ -745,6 +729,36 @@ mod tests {
             panic!("install expected")
         };
         assert!(options.keep_saved_sharing && options.selected_sessions_only);
+    }
+    /// Only a fresh install told the mode is the app's default records it as
+    /// unchosen, whether or not its uploads are withheld; a saved config
+    /// never does.
+    #[test]
+    fn a_fresh_app_default_install_records_unchosen_and_a_keep_saved_one_never_does() {
+        let install = |extra: &[&str]| {
+            let args = ["probe", "cloud", "install", "--selected-sessions-only"];
+            let cli = Cli::try_parse_from(args.iter().chain(extra)).unwrap();
+            let Commands::Cloud {
+                command: cloud_commands::CloudCommands::Install(options),
+            } = cli.command
+            else {
+                panic!("install expected")
+            };
+            options
+        };
+        let saved: Config = serde_json::from_value(serde_json::json!({
+            "version": 1, "site_url": "s", "account_id": "a", "org_id": "o",
+            "workspace_id": "w", "history_url": "h", "delivery_account": "d",
+            "job_id": "j", "include_existing": false, "sharing_mode": "selected",
+        }))
+        .unwrap();
+        let app_default = install(&["--sharing-is-app-default", "--keep-saved-sharing"]);
+        assert!(records_unchosen(&app_default, None));
+        assert!(!records_unchosen(&app_default, Some(&saved)));
+        assert!(!records_unchosen(&install(&["--keep-saved-sharing"]), None));
+        // Withholding uploads does not make the app's default a choice.
+        let withheld = install(&["--sharing-is-app-default", "--withhold-uploads"]);
+        assert!(records_unchosen(&withheld, None));
     }
     /// `start` replaces another build of this release's collector only when
     /// asked to: the desktop asks when its core is the default one.

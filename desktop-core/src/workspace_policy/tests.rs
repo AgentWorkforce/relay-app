@@ -190,7 +190,7 @@ fn each_unreadable_entry_is_dropped_and_the_rest_applies() {
             "telemetry": { "locked": { "analytics_enabled": false } },
             "capture": {
                 "locked": { "sharing_mode": "every", "upload_control": "operator", "accept_spawns": true },
-                "defaults": { "sharing_mode": "all" },
+                "defaults": { "sharing_mode": "all", "oops_window_seconds": 30 },
                 "suggested": { "sharing_mode": "all" }
             },
             "spawn": {
@@ -223,12 +223,15 @@ fn each_unreadable_entry_is_dropped_and_the_rest_applies() {
         BTreeSet::from(["accept_spawns".to_string()])
     );
     // Unknown section and tier, a wrong-section key, a wrong value and a
-    // capture key in defaults are dropped.
+    // capture key other than `sharing_mode` in defaults are dropped.
     assert_eq!(
         policy.sections.capture.locked,
         BTreeMap::from([(Key::UploadControl, json!("operator"))])
     );
-    assert!(policy.sections.capture.defaults.is_empty());
+    assert_eq!(
+        policy.sections.capture.defaults,
+        BTreeMap::from([(Key::SharingMode, json!("all"))])
+    );
     assert_eq!(policy.locked(Key::SpawnMaxAgents), None);
     assert_eq!(policy.default(Key::SpawnMaxAgents), Some(&json!(4)));
     assert_eq!(policy.locked(Key::SpawnFullAccessCodex), None);
@@ -541,4 +544,142 @@ fn a_seed_is_provisional_and_bound_to_its_attempt() {
     cache.take_seed(6, "ws_c");
     cache.record("ws_c", Fetched::Failed);
     assert!(cache.entry("ws_c").unwrap().provisional);
+}
+
+/// `access/me` with nothing enforced on capture, carrying a workspace
+/// policy whose capture section holds `sharing_mode` in `tier`.
+fn suggesting(tier: &str, mode: &str, revision: i64) -> Result<Value, CloudError> {
+    let mut capture = json!({ "locked": {}, "defaults": {} });
+    capture[tier] = json!({ "sharing_mode": mode });
+    let document =
+        json!({ "version": 2, "revision": revision, "sections": { "capture": capture } });
+    Ok(json!({ "role": "member", "grant": null, "policy": null, FIELD: document }))
+}
+
+#[test]
+fn a_locked_sharing_mode_drops_its_default() {
+    let policy = parsed(json!({
+        "version": 2,
+        "revision": 1,
+        "sections": { "capture": {
+            "locked": { "sharing_mode": "selected" },
+            "defaults": { "sharing_mode": "all" }
+        } }
+    }));
+    assert_eq!(policy.locked(Key::SharingMode), Some(&json!("selected")));
+    assert_eq!(policy.default(Key::SharingMode), None);
+}
+
+/// The default is suggested only from a document Cloud answered with since
+/// the last sign-in: not before the first read, not from a seed, and not
+/// once another sign-in starts over.
+#[tokio::test]
+async fn a_default_sharing_mode_is_suggested_only_once_read_since_sign_in() {
+    let (_dir, policy) = policies();
+    policy.sign_in(WORKSPACE);
+    // The capture policy is read, the workspace policy is not, and an
+    // enrollment key's exchange seeds it.
+    let mut unreadable = suggesting("defaults", "all", 1).unwrap();
+    unreadable[FIELD]["revision"] = json!("one");
+    let cloud = FakeCloud::answering(vec![
+        Ok(unreadable),
+        suggesting("defaults", "all", 1),
+        Err(CloudError::Unreachable),
+    ]);
+    policy.refresh(&cloud, WORKSPACE).await;
+    let seed = parsed(suggesting("defaults", "all", 1).unwrap()[FIELD].clone());
+    policy.workspace_policies().hold_seed(1, Some(seed));
+    policy.workspace_policies().take_seed(1, WORKSPACE);
+    assert!(!policy.withholds(Some(WORKSPACE)));
+    assert!(policy.workspace_policy_read(WORKSPACE).is_some());
+    assert_eq!(policy.suggested_sharing(WORKSPACE), None, "seeded");
+
+    policy.refresh(&cloud, WORKSPACE).await;
+    let all = crate::contract::account::SharingMode::All;
+    assert_eq!(policy.suggested_sharing(WORKSPACE), Some(all));
+    assert_eq!(policy.enforced_sharing(Some(WORKSPACE)), None);
+
+    // Another sign-in whose read fails sees only the cached document.
+    policy.sign_in(WORKSPACE);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(!policy.withholds(Some(WORKSPACE)));
+    assert_eq!(policy.workspace_policy(WORKSPACE).revision, 1);
+    assert_eq!(policy.suggested_sharing(WORKSPACE), None);
+}
+
+/// After a re-sign-in, Cloud answering an older revision than the cached one
+/// is refused, and the refused answer is not a read of the cached document:
+/// nothing is suggested from it.
+#[tokio::test]
+async fn an_older_revision_after_sign_in_suggests_nothing() {
+    let (_dir, policy) = policies();
+    let cloud = FakeCloud::answering(vec![
+        suggesting("defaults", "all", 5),
+        suggesting("defaults", "new", 3),
+    ]);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(policy.suggested_sharing(WORKSPACE).is_some());
+    policy.sign_in(WORKSPACE);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(!policy.withholds(Some(WORKSPACE)));
+    assert_eq!(policy.workspace_policy(WORKSPACE).revision, 5);
+    assert_eq!(policy.suggested_sharing(WORKSPACE), None);
+}
+
+/// A document cached by an earlier run, or another person's session, never
+/// produces a suggestion until this run reads it again.
+#[tokio::test]
+async fn a_cached_document_alone_suggests_nothing() {
+    let (dir, policy) = policies();
+    let cloud = FakeCloud::answering(vec![suggesting("defaults", "new", 1)]);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(policy.suggested_sharing(WORKSPACE).is_some());
+    let reopened = OperatorPolicy::new(dir.path(), None);
+    assert!(reopened.workspace_policy_read(WORKSPACE).is_some());
+    assert!(!reopened.withholds(Some(WORKSPACE)));
+    assert_eq!(reopened.suggested_sharing(WORKSPACE), None);
+}
+
+/// Locking the key, enforcing a mode or withholding uploads hides the
+/// suggestion, and so do a build's defaults standing in for an unread
+/// capture policy.
+#[tokio::test]
+async fn a_lock_enforcement_withholding_or_compiled_defaults_hide_the_suggestion() {
+    let (_dir, policy) = policies();
+    let cloud = FakeCloud::answering(vec![
+        suggesting("defaults", "all", 1),
+        suggesting("locked", "all", 2),
+        me(Some(json!({ "version": 2, "revision": 3,
+            "sections": { "capture": { "defaults": { "sharing_mode": "new" } } } }))),
+    ]);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(policy.suggested_sharing(WORKSPACE).is_some());
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert_eq!(policy.suggested_sharing(WORKSPACE), None, "locked");
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(policy.enforced_sharing(Some(WORKSPACE)).is_some());
+    assert_eq!(policy.suggested_sharing(WORKSPACE), None, "enforced");
+
+    // The capture policy unreadable: withheld, or under the build's defaults.
+    let unreadable = || {
+        let mut answer = suggesting("defaults", "all", 1).unwrap();
+        answer["policy"] =
+            json!({ "version": 1, "revision": 1, "settings": { "sharing_mode": 7 } });
+        Ok(answer)
+    };
+    let defaults = BTreeMap::from([(operator_policy::OOPS_WINDOW_SECONDS.to_string(), json!(30))]);
+    for defaults in [None, Some(defaults)] {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = OperatorPolicy::with_defaults(dir.path(), None, defaults.clone());
+        policy.sign_in(WORKSPACE);
+        policy
+            .refresh(&FakeCloud::answering(vec![unreadable()]), WORKSPACE)
+            .await;
+        assert!(policy
+            .workspace_policies()
+            .read_since_sign_in(WORKSPACE)
+            .is_some());
+        assert_eq!(policy.enforced_sharing(Some(WORKSPACE)), None);
+        assert_eq!(policy.suggested_sharing(WORKSPACE), None, "{defaults:?}");
+    }
 }

@@ -217,6 +217,7 @@ pub(crate) async fn account_call(
                 result.map(|status| crate::contract::account::UploaderStatus {
                     enforced_settings: uploader.enforced_settings(),
                     uploads_withheld: uploader.uploads_withheld(),
+                    suggested_sharing_mode: uploader.suggested_sharing_mode(),
                     ..crate::history::uploader::status_report(&status)
                 })
             })

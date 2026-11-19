@@ -480,6 +480,10 @@ pub struct WorkspacePolicies {
     /// The policy an enrollment key's exchange answered with, and the sign-in
     /// attempt it belongs to, until that attempt connects a workspace.
     enrollment_seed: Mutex<Option<(u64, WorkspacePolicy)>>,
+    /// The workspaces Cloud answered for since the last sign-in, in memory
+    /// only: a document cached by an earlier run or another person's
+    /// session, or seeded by an enrollment key, is not in it.
+    read: Mutex<BTreeSet<String>>,
 }
 
 impl WorkspacePolicies {
@@ -498,6 +502,7 @@ impl WorkspacePolicies {
             applied_settings: Mutex::new(None),
             settings_failure: Mutex::new(None),
             enrollment_seed: Mutex::new(None),
+            read: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -578,12 +583,44 @@ impl WorkspacePolicies {
             .unwrap_or_default()
     }
 
+    /// Forgets which workspaces were read: a sign-in, which may be another
+    /// person's, starts over.
+    pub fn forget_reads(&self) {
+        self.read.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// The document Cloud answered with for `workspace_id` since the last
+    /// sign-in; `None` while only a cached or seeded one is known.
+    pub fn read_since_sign_in(&self, workspace_id: &str) -> Option<WorkspacePolicy> {
+        let read = (self.read.lock().unwrap_or_else(|e| e.into_inner())).contains(workspace_id);
+        read.then(|| self.entry(workspace_id))
+            .flatten()
+            .filter(|entry| !entry.provisional)
+            .map(|entry| entry.policy)
+    }
+
     /// Caches what a read of `workspace_id` found, writing the file when the
     /// entry changed or the last write failed.
     pub fn record(&self, workspace_id: &str, fetched: Fetched) {
+        let answered = match &fetched {
+            Fetched::Policy(policy) => Some(Some(policy.revision)),
+            Fetched::Absent => Some(None),
+            Fetched::Failed | Fetched::Seed(_) => None,
+        };
         let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
         let cached = saved.workspaces.get(workspace_id).cloned();
         let applied = apply(cached.clone(), workspace_id, fetched);
+        // An older revision refused in favour of the cached one is not a read
+        // of what is cached.
+        let read = match answered {
+            Some(Some(revision)) => applied.as_ref().is_some_and(|e| e.revision == revision),
+            Some(None) => true,
+            None => false,
+        };
+        if read {
+            let mut reads = self.read.lock().unwrap_or_else(|e| e.into_inner());
+            reads.insert(workspace_id.to_string());
+        }
         if applied == cached && !saved.unwritten {
             return;
         }
