@@ -585,6 +585,121 @@ fn unhiding_claude_web_session_removes_target_and_history_aliases(
         .with_state(|state| state.session_query.hidden_confirmed.is_empty()));
 }
 
+fn saved_hidden(case: &Case) -> Option<Value> {
+    Preferences::load(case.prefs_path.clone())
+        .get("hiddenSessions.v1")
+        .cloned()
+}
+
+fn old_cursor_hide(runtime: &tokio::runtime::Runtime, exclude: Answer, saved: Value) -> Case {
+    Case::seeded(
+        runtime,
+        |core| {
+            core.answer("uploader.sessions.query", Answer::Value(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})));
+            core.answer("uploader.sessions.exclude", exclude);
+        },
+        Arc::new(FakeService::default()),
+        |prefs| prefs.set("hiddenSessions.v1", saved).unwrap(),
+    )
+}
+
+fn cursor_x_exclusions(case: &Case) -> usize {
+    case.called("uploader.sessions.exclude")
+        .iter()
+        .filter(|params| params["session_keys"] == json!(["cursor:x"]))
+        .count()
+}
+
+fn an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turned_on(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let case = old_cursor_hide(
+        runtime,
+        Answer::Value(json!({"updated":0})),
+        json!(["cursor-cli:x", "cursor:y", "grok-open:g"]),
+    );
+    let all = ["cursor:x", "cursor:y", "grok:g"].map(String::from);
+    assert_eq!(
+        case.app.hidden_sessions(),
+        std::collections::BTreeSet::from(all)
+    );
+    assert_eq!(
+        saved_hidden(&case),
+        Some(json!(["cursor-cli:x", "cursor:y", "grok-open:g"])),
+        "Nothing is rewritten at launch"
+    );
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        saved_hidden(case) == Some(json!(["cursor:y", "grok:g"]))
+            && case.app.with_state(|s| s.hiding_sessions.is_empty())
+    });
+    assert_eq!(cursor_x_exclusions(&case), 1);
+    assert!(!case.app.session_hidden("cursor:x"));
+    assert!(case.app.session_hidden("cursor:y"));
+    // The core now reports sharing on, as after the person turned it on.
+    let before = case.called("uploader.sessions.query").len();
+    case.app.refresh_uploader(true);
+    case.pump(|case| {
+        case.called("uploader.sessions.query").len() > before
+            && case.app.with_state(|s| {
+                !s.refreshing_sessions
+                    && s.sessions
+                        .iter()
+                        .any(|row| row.session_id == "x" && row.included)
+            })
+    });
+    case.settle();
+    assert_eq!(cursor_x_exclusions(&case), 1);
+    assert!(case.app.with_state(|s| s
+        .sessions
+        .iter()
+        .any(|row| row.session_id == "x" && row.included)));
+}
+
+fn an_old_cursor_hide_stays_while_its_exclusion_waits(runtime: &tokio::runtime::Runtime) {
+    let case = old_cursor_hide(
+        runtime,
+        fail(ErrorKind::Busy, "Session history is preparing."),
+        json!(["cursor-cli:x"]),
+    );
+    case.settle();
+    assert!(case.called("uploader.sessions.exclude").is_empty());
+    assert!(case.app.session_hidden("cursor:x"));
+    assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        cursor_x_exclusions(case) >= 1 && case.app.with_state(|s| s.hiding_sessions.is_empty())
+    });
+    assert!(case.app.session_hidden("cursor:x"));
+    assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
+    let saved = saved_hidden(&case).unwrap();
+    drop(case);
+    let reopened = old_cursor_hide(runtime, Answer::Value(json!({"updated":1})), saved);
+    reopened.settle();
+    assert!(reopened.app.session_hidden("cursor:x"));
+    assert_eq!(saved_hidden(&reopened), Some(json!(["cursor-cli:x"])));
+}
+
+fn other_hides_keep_an_old_cursor_hide_in_its_old_form(runtime: &tokio::runtime::Runtime) {
+    let case = old_cursor_hide(
+        runtime,
+        Answer::Value(json!({"updated":1})),
+        json!(["cursor-cli:x"]),
+    );
+    case.app
+        .set_sessions_hidden(vec!["codex:other".into()], true);
+    case.pump(|case| case.app.with_state(|s| s.hiding_sessions.is_empty()));
+    assert_eq!(
+        saved_hidden(&case),
+        Some(json!(["codex:other", "cursor-cli:x"]))
+    );
+    assert!(case.app.session_hidden("cursor:x"));
+    case.app
+        .set_sessions_hidden(vec!["cursor:x".into()], false);
+    assert_eq!(saved_hidden(&case), Some(json!(["codex:other"])));
+    assert!(case.called("uploader.sessions.exclude").is_empty());
+}
+
 fn agent_search_offers_roster_agents_and_shows_agent_chips(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -683,6 +798,18 @@ fn agent_prefix_refusals_show_unavailable_without_text_fallback(_: &tokio::runti
 }
 
 pub const TESTS: &[(&str, Test)] = &[
+    (
+        "an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turned_on",
+        an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turned_on,
+    ),
+    (
+        "an_old_cursor_hide_stays_while_its_exclusion_waits",
+        an_old_cursor_hide_stays_while_its_exclusion_waits,
+    ),
+    (
+        "other_hides_keep_an_old_cursor_hide_in_its_old_form",
+        other_hides_keep_an_old_cursor_hide_in_its_old_form,
+    ),
     (
         "agent_prefix_refusals_show_unavailable_without_text_fallback",
         agent_prefix_refusals_show_unavailable_without_text_fallback,

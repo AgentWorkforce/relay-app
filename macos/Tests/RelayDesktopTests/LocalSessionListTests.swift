@@ -61,7 +61,7 @@ final class LocalSessionListTests: XCTestCase {
         XCTAssertEqual(row.relay, cursor)
         XCTAssertFalse(try XCTUnwrap(row.upload).included)
         XCTAssertEqual(LocalSessionRow.relaySession(for: row.id, in: [cursor]), cursor)
-        XCTAssertEqual(LocalSessionRow.currentHiddenID("cursor-cli:\(id)"), row.id)
+        XCTAssertEqual(LocalSessionRow.retiredHiddenID("cursor-cli:\(id)"), row.id)
     }
 
     func testClaudeWebHistoryAndRelayDiscoveryAreOneRow() {
@@ -142,6 +142,27 @@ final class LocalSessionListTests: XCTestCase {
         }
         XCTAssertEqual(LocalSessionRow.currentHiddenID("codex:same"), "codex:same")
         XCTAssertEqual(LocalSessionRow.currentHiddenID("claude-cloud:cse_1"), "claude-cloud:cse_1")
+    }
+
+    func testHidesSavedUnderTheOldCursorIDWaitForTheirExclusion() {
+        XCTAssertNil(LocalSessionRow.retiredHiddenID("cursor:cursor-1"))
+        XCTAssertEqual(LocalSessionRow.currentHiddenID("cursor-cli:x"), "cursor-cli:x")
+        let saved = ["cursor-cli:x", "cursor:kept", "grok-open:g1", "codex:c1"]
+        let hidden = LocalSessionRow.currentHiddenIDs(saved)
+        XCTAssertEqual(hidden, ["codex:c1", "cursor:kept", "cursor:x", "grok:g1"])
+        XCTAssertEqual(LocalSessionRow.retiredHiddenIDs(saved), ["cursor:x"])
+        var more = hidden
+        more.insert("codex:new")
+        XCTAssertEqual(LocalSessionRow.savedHiddenIDs(more, saved: saved), ["codex:c1", "codex:new", "cursor-cli:x", "cursor:kept", "grok:g1"])
+        more.remove("cursor:x")
+        XCTAssertFalse(LocalSessionRow.savedHiddenIDs(more, saved: saved).contains { $0.hasSuffix(":x") })
+    }
+
+    func testACursorHideSavedBesideTheOldOneIsAnOrdinaryHide() {
+        let saved = ["cursor-cli:x", "cursor:x"]
+        XCTAssertEqual(LocalSessionRow.currentHiddenIDs(saved), ["cursor:x"])
+        XCTAssertTrue(LocalSessionRow.retiredHiddenIDs(saved).isEmpty)
+        XCTAssertEqual(LocalSessionRow.savedHiddenIDs(LocalSessionRow.currentHiddenIDs(saved), saved: saved), ["cursor:x"])
     }
 
     func testJoinsHistoryWithoutDroppingRelayOnlySessionsOrMixingHarnesses() {
