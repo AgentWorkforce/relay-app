@@ -87,7 +87,6 @@ struct RelayWorkspaceView: View {
     @State private var phonePath: [MobileConversationRoute] = []
     @State private var search = ""
     @State private var machineFilter = ""
-    @State private var showAll = false
     @State private var showHidden = false
     @State private var messageDraft = ""
     @FocusState private var messageFocused: Bool
@@ -104,6 +103,8 @@ struct RelayWorkspaceView: View {
     @State private var collapsedOverviewIDs: Set<String> = []
     @State private var commandDraft = ""
     @State private var newRecipient = ""
+    /// Why New message didn't open the typed recipient (an inactive or unknown agent).
+    @State private var composeNotice: String?
     @State private var showCompose = false
     @State private var showSpawn = false
     @State private var spawnNodeName = ""
@@ -247,7 +248,6 @@ struct RelayWorkspaceView: View {
                 selected = nil
                 phonePath = []
                 messageDraft = ""
-                showAll = false
                 showHidden = false
                 showSummarySearch = false
             }
@@ -290,7 +290,7 @@ struct RelayWorkspaceView: View {
         .onChange(of: client.channels) { _, channels in
             reconcileSelection(in: channels, source: .channel)
         }
-        .onChange(of: client.relayAgents.filter { showAll || $0.isHuman || $0.isReachable() }) { _, agents in
+        .onChange(of: client.relayAgents.filter { $0.isHuman || client.isLive($0) }) { _, agents in
             reconcileSelection(in: agents, source: .relay)
         }
         .onChange(of: client.sessionGeneration) { _, _ in
@@ -561,10 +561,6 @@ struct RelayWorkspaceView: View {
                 .buttonStyle(.plain).foregroundStyle(accent)
                 .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 .padding(.horizontal, 12).padding(.bottom, 10)
-                Picker("Agents", selection: $showAll) {
-                    Text("Active").tag(false)
-                    Text("All").tag(true)
-                }.pickerStyle(.segmented).padding(.horizontal, 12).padding(.bottom, 10)
             }
             List {
                 ForEach(filtered) { agent in
@@ -599,7 +595,7 @@ struct RelayWorkspaceView: View {
     }
     private func count(for page: WorkspacePage) -> Int {
         switch page {
-        case .agents: client.relayAgents.filter { showAll || $0.isReachable() }.count
+        case .agents: client.listedAgents.count
         case .messages: client.conversations.filter { client.hiddenConversationIDs.contains($0.id) == showHidden }.count
         }
     }
@@ -638,7 +634,7 @@ struct RelayWorkspaceView: View {
     private var filtered: [RelayAgent] {
         let agents: [RelayAgent]
         switch page {
-        case .agents: agents = client.relayAgents.filter { showAll || $0.isReachable() }
+        case .agents: agents = client.listedAgents
         case .messages: agents = client.conversations.filter { client.hiddenConversationIDs.contains($0.id) == showHidden }
         }
         let matching = agents.filter { agent in
@@ -655,7 +651,7 @@ struct RelayWorkspaceView: View {
         return agent.name
     }
     private var machines: [String] {
-        let agents = page == .agents ? client.relayAgents.filter { showAll || $0.isReachable() } : client.conversations
+        let agents = page == .agents ? client.listedAgents : client.conversations
         return MobileMachineFilter.options(agents.map(\.machine))
     }
     private var machinePicker: some View {
@@ -752,10 +748,6 @@ struct RelayWorkspaceView: View {
                     .buttonStyle(.plain).foregroundStyle(accent)
                     .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                     .padding(.horizontal, 16).padding(.top, 9)
-                    Picker("Agents", selection: $showAll) {
-                        Text("Active").tag(false)
-                        Text("All").tag(true)
-                    }.pickerStyle(.segmented).padding(.horizontal, 16).padding(.top, 9)
                 }
                 HStack {
                     Text(listTitle)
@@ -776,7 +768,7 @@ struct RelayWorkspaceView: View {
                                         }
                                         Spacer(minLength: 0)
                                         unreadIndicator(agent)
-                                        if agent.isReachable() {
+                                        if agent.isHuman ? agent.isReachable() : client.isLive(agent) {
                                             Circle().fill(.green).frame(width: 7, height: 7)
                                         }
                                         Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
@@ -889,7 +881,7 @@ struct RelayWorkspaceView: View {
                     }
                     Spacer(minLength: 0)
                     unreadIndicator(agent)
-                    if agent.isReachable() {
+                    if agent.isHuman ? agent.isReachable() : client.isLive(agent) {
                         Circle().fill(.green).frame(width: 6, height: 6)
                     }
                 }
@@ -991,7 +983,7 @@ struct RelayWorkspaceView: View {
     @ViewBuilder
     private func callButton(_ agent: RelayAgent) -> some View {
         if VoiceCallFeature.isEnabled, !agent.isHuman {
-            Button { voiceCalls.call(agent, client: client) } label: {
+            Button { if client.isLive(agent) { voiceCalls.call(agent, client: client) } } label: {
                 Label("Call", systemImage: "phone.fill").font(.caption.weight(.medium))
             }
             .buttonStyle(.bordered)
@@ -1045,6 +1037,8 @@ struct RelayWorkspaceView: View {
         }
     }
     private func openFork(_ agent: RelayAgent) {
+        // Only an active agent is a fork source (AgentPresence).
+        guard client.isLive(agent) else { return }
         forkName = SessionFork.suggestedName(for: agent.name, taken: Set(client.relayAgents.map(\.name)))
         forkTask = ""
         forkNotice = nil
@@ -2136,21 +2130,58 @@ struct RelayWorkspaceView: View {
     private var compose: some View {
         NavigationStack {
             Form {
-                TextField("Agent name or Relay address", text: $newRecipient)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Open conversation") {
-                    let endpoint = newRecipient.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^@", with: "", options: .regularExpression)
-                    guard !endpoint.isEmpty else { return }
-                    let agent = RelayAgent.recipient(endpoint, in: client.relayAgents + client.conversations)
-                    page = .messages; showCompose = false; newRecipient = ""
-                    selectAgent(agent)
-                    phonePath = [MobileConversationRoute(agent: agent)]
-                }.disabled(newRecipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Section {
+                    TextField("Agent name or Relay address", text: $newRecipient)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onChange(of: newRecipient) { _, _ in composeNotice = nil }
+                    Button("Open conversation") { openComposed(newRecipient) }
+                        .disabled(newRecipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } footer: {
+                    if let composeNotice {
+                        Text(composeNotice).foregroundStyle(.orange)
+                            .accessibilityIdentifier("New message notice")
+                    }
+                }
+                // Only active agents (and people) are offered; see AgentPresence.
+                let suggestions = AgentPresence.composeSuggestions(newRecipient, roster: client.relayAgents,
+                                                                   fleet: client.fleetAgents,
+                                                                   presenceKnown: client.presenceKnown)
+                if !suggestions.isEmpty {
+                    Section("Active") {
+                        ForEach(suggestions.prefix(20)) { agent in
+                            Button { openComposed(agent.address) } label: {
+                                HStack(spacing: 10) {
+                                    avatar(agent, size: 28)
+                                    Text(client.displayName(for: agent)).foregroundStyle(.primary)
+                                    Spacer(minLength: 0)
+                                    if !agent.machine.isEmpty {
+                                        Text("@\(agent.machine)").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .accessibilityIdentifier("New message suggestion \(agent.name)")
+                        }
+                    }
+                }
             }
             .navigationTitle("New message")
-            .toolbar { Button("Cancel") { showCompose = false } }
+            .toolbar { Button("Cancel") { showCompose = false; composeNotice = nil } }
             .keyboardDismissToolbar()
         }.frame(minWidth: sheetMinWidth(420), minHeight: 260)
+    }
+    private func openComposed(_ endpoint: String) {
+        let endpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "^@", with: "", options: .regularExpression)
+        guard !endpoint.isEmpty else { return }
+        switch AgentPresence.composeTarget(endpoint, roster: client.relayAgents, conversations: client.conversations,
+                                           fleet: client.fleetAgents, presenceKnown: client.presenceKnown) {
+        case .refused(let reason):
+            composeNotice = reason
+        case .open(let agent):
+            page = .messages; showCompose = false; newRecipient = ""; composeNotice = nil
+            selectAgent(agent)
+            phonePath = [MobileConversationRoute(agent: agent)]
+        }
     }
     /// iPad form sheets keep their width; on iPhone a sheet fills the screen,
     /// and a fixed minimum wider than the screen pushes its content off it.

@@ -41,13 +41,30 @@ enum UserFacingError {
         if error.status == 429 || error.retryAfterSeconds != nil || error.code == "dm_unavailable" {
             return retriesAutomatically ? busyRetrying : busy
         }
-        guard error.fromServer else { return error.message }
-        if let summary = error.summary { return summary }
+        guard error.fromServer else { return shown(error.message) }
+        if let summary = error.summary { return shown(summary) }
         switch error.status ?? 0 {
         case 401, 403: return signIn
         case 500...599: return serverTrouble
         default: return generic
         }
+    }
+
+    /// `text` without a scrubber's `[redacted]` marker. A redactor between a
+    /// node and this app can replace an error code it mistakes for a key (as
+    /// relay did with `spawn_fork_*` before relay#2218: `[redacted] @agent is
+    /// not an agent on this computer`). The marker tells a person nothing, so
+    /// it never reaches the screen; the rest of the sentence is kept. Text
+    /// that was nothing but markers becomes `generic`.
+    static func shown(_ text: String) -> String {
+        guard text.range(of: "[redacted]", options: .caseInsensitive) != nil else { return text }
+        let cleaned = text
+            .replacingOccurrences(of: #"\[redacted\]:?[ \t]*"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^[ \t:]+|[ \t]+$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^Details:\s*$\n?"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? generic : cleaned
     }
 
     /// The server asked the app to wait before trying again: a 429, any

@@ -139,4 +139,27 @@ final class ReadBackoffTests: XCTestCase {
         XCTAssertNil(delay(404, retryAfter: nil))
         XCTAssertNil(ReadBackoff.delay(after: URLError(.timedOut)))
     }
+
+    /// A scrubber's `[redacted]` marker (relay before #2218 turned a node's
+    /// `spawn_fork_not_found` code into one) never reaches the screen.
+    func testARedactionMarkerIsNeverShown() {
+        XCTAssertEqual(UserFacingError.shown("[redacted] @neon-exit-lead is not an agent on this computer"),
+                       "@neon-exit-lead is not an agent on this computer")
+        XCTAssertEqual(UserFacingError.shown("spawn_failed: [redacted]: credentials rejected [redacted]"),
+                       "spawn_failed: credentials rejected")
+        XCTAssertEqual(UserFacingError.shown("[REDACTED]"), UserFacingError.generic)
+        XCTAssertEqual(UserFacingError.shown("No marker here."), "No marker here.")
+        let own = RelayAPIError(message: "[redacted] @neon-exit-lead is not an agent on this computer")
+        XCTAssertEqual(UserFacingError.message(for: own), "@neon-exit-lead is not an agent on this computer")
+        let summarized = RelayAPIError(message: "raw", fromServer: true, summary: "[redacted] The agent did not stop")
+        XCTAssertEqual(summarized.localizedDescription, "The agent did not stop")
+        // A spawn failure the app worded: the sentence, and Details without the marker.
+        let detail = SpawnFailure.message("[redacted]", node: "sf-mac-mini", name: "helper", harness: "claude")
+        XCTAssertEqual(detail, "sf-mac-mini did not start helper.")
+        let failure = SpawnFailure.error("[redacted] @neon-exit-lead is not an agent on this computer",
+                                         node: "sf-mac-mini", name: "neon-exit-lead-fork", harness: "claude",
+                                         fromServer: false)
+        XCTAssertFalse(UserFacingError.message(for: failure)!.contains("[redacted]"))
+        XCTAssertTrue(UserFacingError.message(for: failure)!.hasPrefix("sf-mac-mini no longer has this agent."))
+    }
 }

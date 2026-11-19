@@ -82,17 +82,12 @@ enum SessionFork {
         !agent.isHuman && agent.source != .channel && !agent.name.isEmpty
     }
 
-    /// Whether `agent` still runs on its computer, judged from the current
-    /// roster and the nodes' live-agent lists, never from the copy a row or
-    /// an open conversation was built from: a registration that stood down
-    /// is not a fork source, and its computer would answer
-    /// `spawn_fork_not_found`.
-    static func isLive(_ agent: RelayAgent, roster: [RelayAgent], fleet: [RelayAgent], at now: Date = Date()) -> Bool {
-        if fleet.contains(where: { $0.name == agent.name && $0.attachable && (agent.node.isEmpty || $0.node == agent.node) }) {
-            return true
-        }
-        guard agent.source != .drive, let current = roster.first(where: { $0.name == agent.name }) else { return false }
-        return current.isReachable(at: now)
+    /// Whether `agent` still runs on its computer: `AgentPresence.isActive`,
+    /// the same rule every agent picker uses. A registration that stood down
+    /// is not a fork source; its computer would answer `spawn_fork_not_found`.
+    static func isLive(_ agent: RelayAgent, roster: [RelayAgent], fleet: [RelayAgent],
+                       presenceKnown: Bool = true, at now: Date = Date()) -> Bool {
+        AgentPresence.isActive(agent, roster: roster, fleet: fleet, presenceKnown: presenceKnown, at: now)
     }
 
     /// `live`: `isLive(_:roster:fleet:at:)` for `agent`.

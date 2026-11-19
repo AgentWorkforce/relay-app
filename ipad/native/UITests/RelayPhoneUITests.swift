@@ -29,32 +29,27 @@ final class RelayPhoneUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Agents"].waitForExistence(timeout: 120))
     }
 
-    func testAgentsDefaultToActiveFilter() throws {
+    /// The Agents list shows active agents only; there is no All filter
+    /// that brings stood-down agents back.
+    func testAgentsHaveNoInactiveFilter() {
         let app = XCUIApplication()
+        app.launchArguments = ["-RelayUITestConversations", "-RelayUITestReset", "-RelayUITestDepartedPeer"]
         app.launch()
-        guard app.buttons["Agents"].waitForExistence(timeout: 15) else {
-            throw XCTSkip("Sign in to the test workspace first")
-        }
-        app.buttons["Agents"].firstMatch.tap()
-        let active = app.buttons["Active"]
-        XCTAssertTrue(active.waitForExistence(timeout: 15))
-        XCTAssertTrue(active.isSelected)
-        XCTAssertFalse(app.buttons["All"].isSelected)
+        XCTAssertTrue(app.staticTexts["builder"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["All"].exists)
+        XCTAssertFalse(app.staticTexts["reviewer"].exists)
     }
 
-    func testRosterExcludesOwnIdentityAndForwardingNamesEvenInAll() {
+    func testRosterExcludesOwnIdentityAndForwardingNames() {
         let app = XCUIApplication()
         app.launchArguments = ["-RelayUITestConversations", "-RelayUITestReset"]
         app.launch()
         XCTAssertTrue(app.staticTexts["reviewer"].firstMatch.waitForExistence(timeout: 15))
-        for showAll in [false, true] {
-            if showAll { app.buttons["All"].tap() }
-            XCTAssertTrue(app.staticTexts["builder"].firstMatch.exists)
-            XCTAssertTrue(app.staticTexts["Sam Lee"].firstMatch.exists)
-            XCTAssertFalse(app.staticTexts["ui-test-person"].exists)
-            XCTAssertFalse(app.staticTexts["My Own Profile"].exists)
-            XCTAssertFalse(app.staticTexts["reviewer-before-rename"].exists)
-        }
+        XCTAssertTrue(app.staticTexts["builder"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["Sam Lee"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["ui-test-person"].exists)
+        XCTAssertFalse(app.staticTexts["My Own Profile"].exists)
+        XCTAssertFalse(app.staticTexts["reviewer-before-rename"].exists)
     }
 
     func testWorkspaceHasTwoTabsAndLogoStaysLeading() {
@@ -90,13 +85,11 @@ final class RelayPhoneUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["sam-lee"].exists)
     }
 
-    func testMessagesExcludeDepartedAgentsEvenWithAllRosterSelected() {
+    func testMessagesExcludeDepartedAgents() {
         let app = XCUIApplication()
         app.launchArguments = ["-RelayUITestConversations", "-RelayUITestReset", "-RelayUITestDepartedPeer"]
         app.launch()
-        XCTAssertTrue(app.buttons["All"].waitForExistence(timeout: 15))
-        app.buttons["All"].tap()
-        XCTAssertTrue(app.staticTexts["reviewer"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Messages"].waitForExistence(timeout: 15))
         app.buttons["Messages"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["builder"].firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["reviewer"].exists)

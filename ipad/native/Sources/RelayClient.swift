@@ -377,6 +377,9 @@ private enum SecureStore {
     /// False until the first roster request of this session has answered,
     /// so the lists say they are loading instead of being empty.
     @Published var rosterLoaded = false
+    /// True once a roster read of this session has succeeded; until then no
+    /// agent is hidden or refused for being inactive (`AgentPresence`).
+    @Published private(set) var presenceKnown = false
     @Published var fleetAgents: [RelayAgent] = []
     /// Agents the online nodes report having spawned, by name, with the harness
     /// they run: every reporting node, in node order.
@@ -1000,6 +1003,7 @@ private enum SecureStore {
             conversationAgentMetadata = [:]
             conversationRoster = ConversationRoster()
             rosterLoaded = false
+            presenceKnown = false
             conversationAgentRetryAfter = [:]
             latestConversationThreads = []
             conversations = []
@@ -1065,6 +1069,7 @@ private enum SecureStore {
         signingOut = false
         relayAgents = []
         rosterLoaded = false
+        presenceKnown = false
         fleetAgents = []
         spawnedSessions = [:]
         spawnNodes = []
@@ -1167,6 +1172,7 @@ private enum SecureStore {
             guard generation == refreshGeneration, paired else { return }
             applyRoster(roster)
             rosterLoaded = true
+            presenceKnown = true
             StartupTrace.firstRosterShown()
             let nodes = try objects(await nodeData)
             guard generation == refreshGeneration, paired else { return }
@@ -1561,7 +1567,7 @@ private enum SecureStore {
     }
     func searchRoster(_ query: String, scope: String) async -> [RelayAgent] {
         let lower = query.lowercased()
-        let agents = scope == "active" ? relayAgents.filter { $0.isReachable() } : relayAgents
+        let agents = scope == "active" ? listedAgents : relayAgents
         return agents.filter { lower.isEmpty || $0.name.lowercased().contains(lower) || $0.machine.lowercased().contains(lower) }
     }
     func searchSummaries(_ query: String, cursor: String? = nil) async throws -> SummarySearchPage {
@@ -2063,7 +2069,11 @@ private enum SecureStore {
     /// Whether `agent` runs on its computer now, by the latest roster and node
     /// lists. Fork and Call are offered only for live agents.
     func isLive(_ agent: RelayAgent) -> Bool {
-        SessionFork.isLive(agent, roster: relayAgents, fleet: fleetAgents)
+        AgentPresence.isActive(agent, roster: relayAgents, fleet: fleetAgents, presenceKnown: presenceKnown)
+    }
+    /// The Agents list (`AgentPresence.listed`).
+    var listedAgents: [RelayAgent] {
+        AgentPresence.listed(relayAgents, fleet: fleetAgents, presenceKnown: presenceKnown)
     }
     func forkAvailability(for agent: RelayAgent) -> SessionFork.Availability {
         SessionFork.availability(for: agent, nodes: forkNodes, live: isLive(agent),

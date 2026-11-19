@@ -21,12 +21,11 @@ enum SpawnFailure {
         return shown.isEmpty ? summary : "\(summary)\nDetails: \(shown)"
     }
 
-    /// A scrubber between the node and this app (not the app itself) can
-    /// replace the node's error code with `[redacted]`, as it did with
-    /// `[redacted] @planner is not an agent on this computer`. The marker
-    /// says nothing to a person, so the Details line drops it.
+    /// The Details line without a scrubber's `[redacted]` markers
+    /// (`UserFacingError.shown`); empty when nothing else was said.
     static func withoutRedactionMarker(_ detail: String) -> String {
-        detail.replacingOccurrences(of: #"^\[redacted\]:?\s*"#, with: "", options: .regularExpression)
+        let shown = UserFacingError.shown(detail)
+        return shown == UserFacingError.generic && detail != UserFacingError.generic ? "" : shown
     }
 
     /// The node no longer has the fork's source agent: by its code, or by
