@@ -1189,6 +1189,13 @@ LaunchAgent `<bundle id>.core`; it is never taken over and never takes over
 product that replaced a marked build of that bundle id earlier and still
 remembers it leaves the id alone while an unmarked build of it is installed or
 running: its core is not booted out and its settings are not merged.
+Its core never writes the shared `~/.local/bin/agent-relay-probe`, which
+Agent Relay's hooks and MCP helpers run: its own helpers and hooks run its
+own copy, `<data directory>/bin/agent-relay-probe` (`probe_copy::keep_own`).
+The core knows it coexists because its bundle's `Info.plist` has no marker
+(`executable_identity::built_to_coexist`, read at start); a profile that
+takes over keeps the shared copy, upgrading it but never replacing another
+build of its release there, as Agent Relay's own core does.
 `--coexist` is refused for `com.agentrelay.desktop`, and the default profile
 refuses `DESKTOP_COEXIST`. GTK (Linux and Windows) has no product takeover, so
 the setting changes only the Mac app.

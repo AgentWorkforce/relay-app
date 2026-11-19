@@ -257,6 +257,9 @@ unregisters the LaunchAgent, which stops the core until Agent Relay opens again.
 
 The core keeps `~/.local/bin/agent-relay-probe` no older than itself (never over
 a copy another developer signed) so the command line runs the same uploader.
+Only a core on the default socket replaces another build of its own release
+there. A site profile built to coexist never writes it and keeps its own copy
+in its data directory.
 Packaging checks that the core serves `serve` and that the uploader
 commands it runs support `--json`, `--selected-sessions-only` and
 `sessions preview`; the check runs on hosts that match the build target.

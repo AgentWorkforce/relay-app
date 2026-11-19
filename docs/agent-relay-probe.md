@@ -228,7 +228,9 @@ collector and launches the bundled one, which the desktop does on its next
 status read after an update. The same release from another build revision is
 outdated only for the build whose core is the default one: its desktop reads
 status that way and runs `start --replace-same-release`. A site profile on its
-own core (`DESKTOP_COEXIST`) shares the collector directory, so it leaves a
+own core (every Mac site profile, built to coexist or not) shares the
+collector directory when it signs in to the same site, account and workspace,
+so it leaves a
 collector another build of its release launched alone instead of the two
 replacing each other's. Replacement uses the collector's
 generation-scoped cooperative stop and waits through a long capture, subject
