@@ -142,7 +142,9 @@ agents, route work and relay results.
 
 Proactive stall-watching: all Grok bots actively monitor in-flight work so
 nothing stalls. They check on tasks and agents that haven't reported, follow up
-on blocked items, and surface problems to Khaliq without waiting to be asked.
+on blocked items, and surface problems to the owner without waiting to be asked.
+When a Grok bot checks on work in this repo, answer with its current state from
+the ledger.
 
 Rules:
 - Never print or send secrets.
