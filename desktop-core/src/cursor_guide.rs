@@ -273,8 +273,15 @@ pub fn answer(
 }
 
 /// How long one run of the hook may spend asking Core, inside the timeout
-/// its `hooks.json` entries give Cursor.
-const BUDGET: Duration = Duration::from_secs(4);
+/// its `hooks.json` entries give Cursor: above the announce timeout, so a
+/// new chat's first identity call can wait the whole of it for Core to put
+/// the chat on the relay. Only an announcement takes that long.
+pub(crate) const BUDGET: Duration =
+    crate::cursor_dispatch::ANNOUNCE_TIMEOUT.saturating_add(Duration::from_secs(1));
+/// How long the hook waits for Core's status: `sessionStart` asks only this,
+/// so Cursor's start of a chat never waits on the announce timeout.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const _: () = assert!(STATUS_TIMEOUT.as_millis() < BUDGET.as_millis());
 
 /// Agent Relay's core on this build's session socket, asked from `started`.
 struct SessionSocket {
@@ -305,12 +312,8 @@ impl SessionSocket {
 
 impl Relay for SessionSocket {
     fn attesting(&self) -> bool {
-        self.ask(
-            crate::cursor_dispatch::STATUS_ROUTE,
-            b"{}",
-            Duration::from_secs(2),
-        )
-        .is_ok_and(|data| data["attesting"] == true)
+        self.ask(crate::cursor_dispatch::STATUS_ROUTE, b"{}", STATUS_TIMEOUT)
+            .is_ok_and(|data| data["attesting"] == true)
     }
 
     fn announce(&self, call: &Value) -> Result<(), String> {

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub(crate) const WORKSPACE: &str = "50587328-441d-4acb-b8f3-dbe1b3c5de99";
-const CAST: &str = "https://cast.agentrelay.com";
+pub(crate) const CAST: &str = "https://cast.agentrelay.com";
 const KEY: &str = "rk_live_cloudcloud";
 pub(crate) const REGISTERED: &str = "0C6B1F0E-2F2A-4B7E-9D3C-5A1E8F7B6C4D";
 const UNREGISTERED: &str = "11111111-2222-4333-8444-555555555555";
@@ -112,7 +112,7 @@ impl DirectDelivery for NoDirect {
     }
 }
 
-fn registration(name: &str, target: Target) -> Registration {
+pub(crate) fn registration(name: &str, target: Target) -> Registration {
     serde_json::from_value(json!({
         "name": name, "agentID": format!("agent-{name}"), "target": target,
         "title": name, "baseURL": CAST, "workspaceKey": KEY,
@@ -135,7 +135,9 @@ fn fixture() -> Fixture {
 }
 
 /// The fixture with the session directory `sessions` builds for its home.
-fn fixture_with(sessions: impl FnOnce(&std::path::Path) -> Arc<dyn SessionDirectory>) -> Fixture {
+pub(crate) fn fixture_with(
+    sessions: impl FnOnce(&std::path::Path) -> Arc<dyn SessionDirectory>,
+) -> Fixture {
     let home = tempfile::tempdir().unwrap();
     let local = agent_relay_node::relay::local::LocalConfig::from_env(&|_| None, home.path());
     let helper = crate::probe_copy::destination(home.path());
@@ -223,7 +225,7 @@ fn fixture_with(sessions: impl FnOnce(&std::path::Path) -> Arc<dyn SessionDirect
 }
 
 impl Fixture {
-    async fn negotiate(&self, capabilities: Value) {
+    pub(crate) async fn negotiate(&self, capabilities: Value) {
         *self.cloud.capabilities.lock().unwrap() = capabilities;
         crate::desktop_identity::Identities::new(self.core.clone()).refresh_mcp_links().await;
     }
@@ -239,7 +241,7 @@ impl Fixture {
         self.outbound.handle(pid, uid, &request).await
     }
 
-    fn last_put(&self) -> Value {
+    pub(crate) fn last_put(&self) -> Value {
         let calls = self.cloud.calls.lock().unwrap();
         let (_, _, body) = calls.iter().rev().find(|(m, _, _)| m == "PUT").unwrap();
         body.clone().unwrap()
