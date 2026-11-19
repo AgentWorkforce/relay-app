@@ -3,7 +3,6 @@ use agent_relay_node::relay::store::SessionKind;
 /// A session kind as rows and details name it.
 pub fn kind_label(kind: SessionKind) -> &'static str {
     match kind {
-        SessionKind::Droid => "Factory Droid",
         SessionKind::Codex => "Codex",
         SessionKind::ClaudeTerminal => "Claude Code",
         SessionKind::ClaudeCloud => "Claude app",

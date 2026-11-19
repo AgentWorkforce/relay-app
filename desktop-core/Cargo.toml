@@ -28,13 +28,12 @@ test-site = []
 service-callers-dev-attest = []
 
 [dependencies]
-# Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main d1b81ab7, after 7cac6b0a: #2228 (a hand-registered Codex chat run by a
-# stdio `codex app-server` stays present while a trusted Codex of this user
-# holds the chat's writer lock; before, the next presence pass marked it
-# missing and it stopped heartbeating).
-# Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "d1b81ab76f89d4a92cb796d5f5746183ee517761", default-features = false }
+# INTERIM review-only pin, never to land: relay review/codex-turn-end-current-main
+# fa8b9426, the turn-end advisory API (#2166) merged with relay main eb55a0ca
+# (7cac6b0a question escalation included; d1b81ab7 #2228 headless Codex presence
+# NOT included). Before landing, replace with reviewed relay main at or after
+# d1b81ab7 containing the turn-end API. Move desktop-core and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "fa8b942614370cb64c17597fe6862b3f89f17eb2", default-features = false }
 # relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
