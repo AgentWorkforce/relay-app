@@ -75,7 +75,11 @@ impl CloudAccess for Account {
             let site = account.site_url;
             let workspace = &account.workspace_id;
             let telemetry = (path == crate::history::operator_policy::access_me_path(workspace))
-                .then(|| self.operator_policy.workspace_policies().applied_revision(workspace));
+                .then(|| {
+                    self.operator_policy
+                        .workspace_policies()
+                        .applied_revision(workspace)
+                });
             let answer = async {
                 let (bearer, kept) = self.request_bearer(&site).await?;
                 match send(&site, &bearer, method, &path, body.clone(), telemetry).await {
@@ -85,7 +89,8 @@ impl CloudAccess for Account {
                         // it could not answer for is kept.
                         let renewed = self.renew(&site, &bearer).await?;
                         let retried =
-                            send(&site, &renewed.access_token, method, &path, body, telemetry).await;
+                            send(&site, &renewed.access_token, method, &path, body, telemetry)
+                                .await;
                         if matches!(retried, Err(CloudError::Rejected)) {
                             self.note_refused(&renewed);
                         }

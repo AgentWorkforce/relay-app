@@ -33,7 +33,11 @@ impl WorkspacePolicies {
     }
 
     /// Records `applied` as handed to the core, from `revision`.
-    pub fn settings_applied(&self, applied: Option<SettingsPolicy>, revision: Option<(String, i64)>) {
+    pub fn settings_applied(
+        &self,
+        applied: Option<SettingsPolicy>,
+        revision: Option<(String, i64)>,
+    ) {
         *self
             .settings_failure
             .lock()

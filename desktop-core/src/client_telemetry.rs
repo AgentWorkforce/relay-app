@@ -95,7 +95,10 @@ mod tests {
         };
         assert_eq!(
             user_agent(),
-            format!("AgentRelayDesktop/{} ({platform})", agent_relay_node::VERSION)
+            format!(
+                "AgentRelayDesktop/{} ({platform})",
+                agent_relay_node::VERSION
+            )
         );
     }
 
@@ -114,13 +117,19 @@ mod tests {
         assert!(version
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-')));
-        assert!(["macos", "linux", "windows"].contains(&platform), "{platform}");
+        assert!(
+            ["macos", "linux", "windows"].contains(&platform),
+            "{platform}"
+        );
     }
 
     #[test]
     fn a_release_cloud_would_ignore_is_trimmed_to_one_it_reads() {
         assert_eq!(release("2026.11.15"), "2026.11.15");
-        assert_eq!(release("2026.11.15-dev_local build"), "2026.11.15-devlocalbuild");
+        assert_eq!(
+            release("2026.11.15-dev_local build"),
+            "2026.11.15-devlocalbuild"
+        );
         assert_eq!(release(&"9".repeat(50)), "9".repeat(40));
     }
 
