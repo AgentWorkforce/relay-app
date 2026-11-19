@@ -4892,7 +4892,9 @@ async fn access_me_tells_cloud_the_release_platform_and_applied_policy_revision(
             .collect()
     };
     eventually("the revision told", || {
-        reads().iter().any(|(_, revision)| revision.as_deref() == Some("10"))
+        reads()
+            .iter()
+            .any(|(_, revision)| revision.as_deref() == Some("10"))
     })
     .await;
     assert_eq!(harness.core.settings()["spawn_max_agents"], 4);
@@ -4903,10 +4905,32 @@ async fn access_me_tells_cloud_the_release_platform_and_applied_policy_revision(
     } else {
         "linux"
     };
-    let agent = format!("AgentRelayDesktop/{} ({platform})", agent_relay_node::VERSION);
+    let agent = format!(
+        "AgentRelayDesktop/{} ({platform})",
+        agent_relay_node::VERSION
+    );
     let reads = reads();
-    assert_eq!(reads[0].1, None, "nothing was applied before the first read");
-    assert!(reads.iter().all(|(ua, _)| ua.as_deref() == Some(agent.as_str())), "{reads:?}");
+    assert_eq!(
+        reads[0].1, None,
+        "nothing was applied before the first read"
+    );
+    // Once told, the revision is told on every read after.
+    let told = reads
+        .iter()
+        .position(|(_, revision)| revision.as_deref() == Some("10"))
+        .unwrap();
+    assert!(
+        reads[told..]
+            .iter()
+            .all(|(_, revision)| revision.as_deref() == Some("10")),
+        "{reads:?}"
+    );
+    assert!(
+        reads
+            .iter()
+            .all(|(ua, _)| ua.as_deref() == Some(agent.as_str())),
+        "{reads:?}"
+    );
     let exchange = {
         let state = harness.cloud.state.lock().unwrap();
         state
@@ -4916,6 +4940,29 @@ async fn access_me_tells_cloud_the_release_platform_and_applied_policy_revision(
             .and_then(|r| r.user_agent.clone())
     };
     assert_eq!(exchange.as_deref(), Some(agent.as_str()));
+    // Every other Cloud call keeps relay-node's own User-Agent and tells no
+    // revision.
+    let state = harness.cloud.state.lock().unwrap();
+    let others: Vec<_> = state
+        .requests
+        .iter()
+        .filter(|r| r.path.starts_with("/cloud/api/v1/"))
+        .filter(|r| {
+            !r.path.ends_with("/access/me") && r.path != "/cloud/api/v1/auth/enrollment/token"
+        })
+        .collect();
+    assert!(!others.is_empty());
+    let relay_node_agent = format!("AgentRelayDesktop/{}", agent_relay_node::VERSION);
+    for request in others {
+        assert_eq!(request.policy_revision, None, "{}", request.path);
+        assert_eq!(
+            request.user_agent.as_deref(),
+            Some(relay_node_agent.as_str()),
+            "{}",
+            request.path
+        );
+    }
+    drop(state);
     harness.stop().await;
 }
 
