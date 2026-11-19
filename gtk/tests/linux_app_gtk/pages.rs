@@ -84,6 +84,7 @@ fn delivery(chat: &agent_relay_app::ui::messages::Chat) -> String {
 fn cursor_messaging_and_history_share_the_upload_control(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
+    case.app.show_window();
     let id = "e142445f-f5d7-4b0a-a4d7-02ab80d4833f";
     let key = format!("cursor:{id}");
     let history = upload_row("cursor", id, "test, 1,2", "/w/cursor", false, "not_shared");
@@ -112,6 +113,8 @@ fn cursor_messaging_and_history_share_the_upload_control(runtime: &tokio::runtim
     let open: gtk::Button = named(&page.list, &format!("open-session {key}")).remove(0);
     open.emit_clicked();
     case.pump(|case| !case.called("sessions.transcript").is_empty());
+    page.transcript.details.set_active(true);
+    case.settle();
     assert!(!labels(&page.transcript.root).contains(&"Indexing".into()));
     assert!(page.transcript.save.is_visible());
     assert!(page.transcript.save.is_sensitive());
