@@ -3,6 +3,7 @@ use super::app::App;
 use crate::models::{
     additional_hidden_key_for_sessions, current_hidden_keys, relay_session_for, same_hidden_session,
 };
+use crate::prefs::Preferences;
 use agent_relay_desktop_core::contract::account::SessionKeysParams;
 use gtk4::glib;
 use std::{collections::BTreeSet, time::Duration};
@@ -11,32 +12,28 @@ mod pending;
 
 const HIDDEN: &str = "hiddenSessions.v1";
 const SHOW: &str = "showHiddenSessions.v1";
+fn saved_hidden(prefs: &Preferences) -> Vec<String> {
+    prefs
+        .get(HIDDEN)
+        .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+        .unwrap_or_default()
+}
+/// Saves the hidden list in its current form at launch, so a dropped
+/// hide cannot come back from the saved one.
+pub(super) fn with_current_hidden(mut prefs: Preferences) -> Preferences {
+    let saved = saved_hidden(&prefs);
+    let current = current_hidden_keys(&saved);
+    if current != saved.into_iter().collect::<BTreeSet<_>>() {
+        let _ = prefs.set(HIDDEN, serde_json::json!(current));
+    }
+    prefs
+}
 impl App {
     pub fn hidden_sessions(&self) -> BTreeSet<String> {
         current_hidden_keys(&self.saved_hidden_sessions())
     }
     fn saved_hidden_sessions(&self) -> Vec<String> {
-        self.prefs()
-            .get(HIDDEN)
-            .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
-            .unwrap_or_default()
-    }
-    /// Saves the hidden list in its current form at launch, so a dropped
-    /// hide cannot come back from the saved one.
-    pub(super) fn save_current_hidden_sessions(&self) {
-        let current = self.hidden_sessions();
-        if current
-            != self
-                .saved_hidden_sessions()
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-        {
-            let _ = self
-                .inner
-                .prefs
-                .borrow_mut()
-                .set(HIDDEN, serde_json::json!(current));
-        }
+        saved_hidden(&self.prefs())
     }
     pub(super) fn migrate_hidden_sessions(
         &self,
