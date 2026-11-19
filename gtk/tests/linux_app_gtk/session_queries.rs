@@ -585,6 +585,55 @@ fn unhiding_claude_web_session_removes_target_and_history_aliases(
         .with_state(|state| state.session_query.hidden_confirmed.is_empty()));
 }
 
+fn a_hide_saved_under_the_old_cursor_key_is_dropped_and_sharing_is_left_alone(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let case = Case::seeded(
+        runtime,
+        |core| {
+            core.answer("uploader.sessions.query", Answer::Value(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})));
+            core.answer(
+                "uploader.sessions.exclude",
+                Answer::Value(json!({"updated":1})),
+            );
+        },
+        Arc::new(FakeService::default()),
+        |prefs| {
+            prefs
+                .set(
+                    "hiddenSessions.v1",
+                    json!(["cursor-cli:x", "cursor:y", "grok-open:g"]),
+                )
+                .unwrap();
+        },
+    );
+    let current = std::collections::BTreeSet::from(["cursor:y".to_owned(), "grok:g".to_owned()]);
+    assert_eq!(case.app.hidden_sessions(), current);
+    assert_eq!(
+        Preferences::load(case.prefs_path.clone()).get("hiddenSessions.v1"),
+        Some(&json!(["cursor:y", "grok:g"]))
+    );
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        case.app.with_state(|s| {
+            !s.refreshing_sessions
+                && s.sessions
+                    .iter()
+                    .any(|row| row.session_id == "x" && row.included)
+        })
+    });
+    case.settle();
+    assert!(!case.app.session_hidden("cursor:x"));
+    assert!(case
+        .called("uploader.sessions.exclude")
+        .iter()
+        .all(|params| params["session_keys"] != json!(["cursor:x"])));
+    assert!(case.app.with_state(|s| s
+        .sessions
+        .iter()
+        .any(|row| row.session_id == "x" && row.included)));
+}
+
 fn agent_search_offers_roster_agents_and_shows_agent_chips(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -683,6 +732,10 @@ fn agent_prefix_refusals_show_unavailable_without_text_fallback(_: &tokio::runti
 }
 
 pub const TESTS: &[(&str, Test)] = &[
+    (
+        "a_hide_saved_under_the_old_cursor_key_is_dropped_and_sharing_is_left_alone",
+        a_hide_saved_under_the_old_cursor_key_is_dropped_and_sharing_is_left_alone,
+    ),
     (
         "agent_prefix_refusals_show_unavailable_without_text_fallback",
         agent_prefix_refusals_show_unavailable_without_text_fallback,

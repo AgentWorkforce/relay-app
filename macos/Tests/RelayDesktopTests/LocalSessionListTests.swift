@@ -61,7 +61,7 @@ final class LocalSessionListTests: XCTestCase {
         XCTAssertEqual(row.relay, cursor)
         XCTAssertFalse(try XCTUnwrap(row.upload).included)
         XCTAssertEqual(LocalSessionRow.relaySession(for: row.id, in: [cursor]), cursor)
-        XCTAssertEqual(LocalSessionRow.currentHiddenID("cursor-cli:\(id)"), row.id)
+        XCTAssertFalse(LocalSessionRow.currentHiddenIDs(["cursor-cli:\(id)"]).contains(row.id))
     }
 
     func testClaudeWebHistoryAndRelayDiscoveryAreOneRow() {
@@ -142,6 +142,13 @@ final class LocalSessionListTests: XCTestCase {
         }
         XCTAssertEqual(LocalSessionRow.currentHiddenID("codex:same"), "codex:same")
         XCTAssertEqual(LocalSessionRow.currentHiddenID("claude-cloud:cse_1"), "claude-cloud:cse_1")
+    }
+
+    func testHidesSavedUnderTheOldCursorIDAreDropped() {
+        let id = "e142445f-f5d7-4b0a-a4d7-02ab80d4833f"
+        let hidden = LocalSessionRow.currentHiddenIDs(["cursor-cli:\(id)", "cursor:kept", "grok-open:g1", "codex:c1"])
+        XCTAssertEqual(hidden, ["cursor:kept", "grok:g1", "codex:c1"])
+        XCTAssertEqual(LocalSessionRow.currentHiddenID("cursor-cli:\(id)"), "cursor-cli:\(id)")
     }
 
     func testJoinsHistoryWithoutDroppingRelayOnlySessionsOrMixingHarnesses() {

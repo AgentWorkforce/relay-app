@@ -582,7 +582,12 @@ final class AppModel {
         self.defaults = defaults
         self.keepsAgentsConnectedAfterQuit = defaults.object(forKey: Self.keepsAgentsConnectedKey) as? Bool ?? true
         self.sessionColumns = SessionColumnLayout(data: defaults.data(forKey: SessionColumnLayout.preferenceKey))
-        self.hiddenSessionIDs = Set((defaults.stringArray(forKey: "hiddenSessions.v1") ?? []).map(LocalSessionRow.currentHiddenID))
+        let storedHidden = defaults.stringArray(forKey: "hiddenSessions.v1") ?? []
+        let hidden = LocalSessionRow.currentHiddenIDs(storedHidden)
+        // Observers do not run in init: store the current list now so a
+        // dropped hide cannot come back from the saved one.
+        if hidden.sorted() != storedHidden.sorted() { defaults.set(hidden.sorted(), forKey: "hiddenSessions.v1") }
+        self.hiddenSessionIDs = hidden
         self.showHiddenSessions = defaults.bool(forKey: "showHiddenSessions.v1")
         self.detectCapy = detectCapy
         self.showsCapySetup = CapySetup.shows(installed: detectCapy(),

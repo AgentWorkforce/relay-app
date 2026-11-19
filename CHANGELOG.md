@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Cursor chats you hid before the last update show again.** On macOS and Linux, a Cursor chat hidden while it was stuck at Indexing, before the update that gave Cursor chats their upload controls, now shows in the session list again. Its sharing stays off until you turn it on, and turning it on now stays on; before, the old hide turned sharing off again within a second, with nothing on screen to say why. A Cursor chat you hide from now on stays hidden.
+
 ## v2026.11.16
 
 - **An agent's questions can come to you over the relay.** On macOS, Linux and Windows, the core has a new `question_escalation` setting, off by default; `agent-relay-probe settings question_escalation=on` turns it on (and `=off` turns it off again). While it is on, a question a Claude Code session asks with AskUserQuestion (through Agent Relay's Claude Code hook, `claude_session_hook`) or a spawned Codex session asks is sent as a direct message, `[Question <ref> from @agent on host] ...`, to the question inbox, by default your own person identity, instead of waiting on a dialog, and the session keeps working. Reply `answer <ref> <number or text>` and the answer is typed back into that session; only the inbox can answer, and a question left unanswered for 30 minutes expires and the session carries on without it. Interactive Codex, Cursor, Copilot, Grok and OpenCode sessions have no hook before a question is shown, so the core reports question escalation as unavailable for them. There is no switch for it in Settings yet.

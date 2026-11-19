@@ -1246,6 +1246,31 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.sessions.first?.included ?? true)
     }
 
+    func testHidesSavedUnderTheOldCursorIDAreDroppedFromTheStoredList() {
+        defaults.set(["cursor-cli:x", "cursor:y", "grok-open:g"], forKey: "hiddenSessions.v1")
+        let model = model()
+        XCTAssertEqual(model.hiddenSessionIDs, ["cursor:y", "grok:g"])
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["cursor:y", "grok:g"])
+    }
+
+    func testADroppedCursorHideDoesNotStopSharingTheSession() async {
+        defaults.set(["cursor-cli:x"], forKey: "hiddenSessions.v1")
+        core.on("uploader.sessions.list") { _ in
+            ["sharing_mode": "new", "sessions": [["source": "cursor", "session_id": "x", "title": "Chat", "is_agent": false, "included": true, "status": "shared"]]]
+        }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let listed = await eventually { model.sessions.contains { $0.id == "cursor:x" } }
+        XCTAssertTrue(listed)
+        model.reconcileHiddenSessions()
+        await Task.yield()
+        XCTAssertTrue(model.hiddenSessionIDs.isEmpty)
+        XCTAssertEqual(core.callCount("uploader.sessions.exclude"), 0)
+        XCTAssertTrue(model.sessions.first(where: { $0.id == "cursor:x" })?.included == true)
+    }
+
     func testFailedHideReturnsSessionToTableWithError() async {
         core.on("uploader.sessions.exclude") { _ in throw FakeCore.Failure(kind: "internal", message: "Cannot stop uploads") }
         core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))

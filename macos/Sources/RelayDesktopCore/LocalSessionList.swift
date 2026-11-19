@@ -109,12 +109,22 @@ public struct LocalSessionRow: Identifiable, Equatable {
 
     /// Row ids a relay-only session had before it joined its transcript by
     /// upload key; hidden sessions saved under them stay hidden.
-    private static let renamedIDs = [("grok-open:", "grok:"), ("opencode-open:", "opencode:"), ("muse-open:", "muse:"), ("cursor-cli:", "cursor:")]
+    private static let renamedIDs = [("grok-open:", "grok:"), ("opencode-open:", "opencode:"), ("muse-open:", "muse:")]
+
+    /// Row ids whose hides are dropped rather than carried over. Cursor chats
+    /// under them often showed as stuck rows, so people hid them for that.
+    private static let droppedHiddenPrefixes = ["cursor-cli:"]
 
     /// The current row id for a hidden session saved under an older one.
     public static func currentHiddenID(_ id: String) -> String {
         for (old, new) in renamedIDs where id.hasPrefix(old) { return new + id.dropFirst(old.count) }
         return id
+    }
+
+    /// The current row ids for a saved hidden list, without dropped hides.
+    /// Dropping a hide restores visibility only; sharing stays off.
+    public static func currentHiddenIDs(_ ids: [String]) -> Set<String> {
+        Set(ids.filter { id in !droppedHiddenPrefixes.contains { id.hasPrefix($0) } }.map(currentHiddenID))
     }
 
     /// The host-aware id added beside an older hidden target id. Keeping both

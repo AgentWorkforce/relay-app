@@ -3,7 +3,7 @@ use super::{session_key, session_project, session_title};
 use crate::contract::account::UploadSession;
 use agent_relay_node::relay::contract::agents::LocalSession;
 use chrono::{Datelike, TimeZone, Utc};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalSessionRow {
@@ -282,8 +282,11 @@ const RENAMED_ROW_KEYS: &[(&str, &str)] = &[
     ("grok-open:", "grok:"),
     ("opencode-open:", "opencode:"),
     ("muse-open:", "muse:"),
-    ("cursor-cli:", "cursor:"),
 ];
+
+/// Row keys whose hides are dropped rather than carried over. Cursor chats
+/// under them often showed as stuck rows, so people hid them for that.
+const DROPPED_HIDDEN_PREFIXES: &[&str] = &["cursor-cli:"];
 
 /// The current row key for a hidden session saved under an older one.
 pub fn current_hidden_key(key: &str) -> String {
@@ -291,6 +294,19 @@ pub fn current_hidden_key(key: &str) -> String {
         .iter()
         .find_map(|(old, new)| key.strip_prefix(old).map(|id| format!("{new}{id}")))
         .unwrap_or_else(|| key.to_owned())
+}
+
+/// The current row keys for a saved hidden list, without dropped hides.
+/// Dropping a hide restores visibility only; sharing stays off.
+pub fn current_hidden_keys(keys: &[String]) -> BTreeSet<String> {
+    keys.iter()
+        .filter(|key| {
+            !DROPPED_HIDDEN_PREFIXES
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        })
+        .map(|key| current_hidden_key(key))
+        .collect()
 }
 
 /// The host-aware key added beside an older hidden target key. Keeping both
@@ -402,11 +418,7 @@ mod tests {
         let id = "01a15bca-891b-7ce2-9318-d0683ee0163a";
         let row = merge_local_sessions(&[], &[local("grok-open", id)]).remove(0);
         assert_eq!(current_hidden_key(&format!("grok-open:{id}")), row.key());
-        for (kind, id) in [
-            ("opencode-open", "ses_1"),
-            ("muse-open", "m1"),
-            ("cursor-cli", "cursor-1"),
-        ] {
+        for (kind, id) in [("opencode-open", "ses_1"), ("muse-open", "m1")] {
             let row = merge_local_sessions(&[], &[local(kind, id)]).remove(0);
             assert_eq!(current_hidden_key(&format!("{kind}:{id}")), row.key());
         }
@@ -415,6 +427,15 @@ mod tests {
             current_hidden_key("claude-cloud:cse_1"),
             "claude-cloud:cse_1"
         );
+    }
+    #[test]
+    fn hides_saved_under_the_old_cursor_key_are_dropped() {
+        let saved = ["cursor-cli:x", "cursor:kept", "grok-open:g1", "codex:c1"].map(String::from);
+        assert_eq!(
+            current_hidden_keys(&saved),
+            BTreeSet::from(["codex:c1", "cursor:kept", "grok:g1"].map(String::from))
+        );
+        assert_eq!(current_hidden_key("cursor-cli:x"), "cursor-cli:x");
     }
     #[test]
     fn joins_by_harness_and_keeps_sessions_without_transcripts() {

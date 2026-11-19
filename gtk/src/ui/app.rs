@@ -149,6 +149,7 @@ impl App {
         app.theme_changed(app.inner.styling.theme());
         app.inner.window.set_title(Some(&crate::build_profile::window_title()));
         app.prepare_zoom();
+        app.save_current_hidden_sessions();
         app.inner.window.set_hide_on_close(true);
         app.follow(events);
         app.render();
