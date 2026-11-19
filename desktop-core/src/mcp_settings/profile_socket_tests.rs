@@ -633,7 +633,12 @@ fn an_own_copy_that_cannot_be_written_does_not_stop_copilot_hook_setup() {
     fs::create_dir_all(&config.app_data_dir).unwrap();
     let blocked = crate::probe_copy::own_destination(&config.app_data_dir);
     fs::write(blocked.parent().unwrap(), "not a directory").unwrap();
-    let core = home.join("Agent Relay Helper");
+    // Windows runs a file by its extension, not its mode.
+    let core = home.join(if cfg!(windows) {
+        "Agent Relay Helper.exe"
+    } else {
+        "Agent Relay Helper"
+    });
     fs::write(&core, "synthetic core executable").unwrap();
     private_fs::set_mode(&core, 0o700).unwrap();
     let app = profile_installer(home, &config, true).with_copilot_executable(Some(core.clone()));
@@ -641,7 +646,16 @@ fn an_own_copy_that_cannot_be_written_does_not_stop_copilot_hook_setup() {
     assert!(app.helper.copilot_ready());
     #[cfg(target_os = "macos")]
     {
-        app.set_copilot_hooks(true).unwrap();
+        // The whole Copilot write: it sets up the hooks and then the
+        // observer, which `copilot_hooks_ready` also needs.
+        let hosted = providers::HostedConfig {
+            endpoint: binding().endpoint().unwrap(),
+            headers: BTreeMap::from([("Authorization".into(), "Bearer copilot-grant".into())]),
+            bearer_token_file: None,
+            copilot_stdio: None,
+            cursor_stdio: None,
+        };
+        app.write_copilot(&hosted).unwrap();
         assert!(app.copilot_hooks_ready());
     }
     assert_eq!(app.copilot_helper(), core);
