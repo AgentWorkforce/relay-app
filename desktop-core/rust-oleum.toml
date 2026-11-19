@@ -36,12 +36,12 @@ rust_roots = ["src"]
 "src/history/delivery/sessions.rs" = 600
 "src/history/delivery/worker.rs" = 1019
 "src/history/destination.rs" = 1122
-"src/history/probe.rs" = 613
-"src/history/probe/bridge.rs" = 805
+"src/history/probe.rs" = 603
+"src/history/probe/bridge.rs" = 784
 "src/history/probe/collector.rs" = 846
 "src/history/probe/flush.rs" = 570
 "src/history/probe/live.rs" = 758
-"src/history/uploader.rs" = 913
+"src/history/uploader.rs" = 909
 "src/telemetry.rs" = 781
 
 [baseline.cyclomatic]

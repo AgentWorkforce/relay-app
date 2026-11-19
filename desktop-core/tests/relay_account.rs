@@ -178,7 +178,7 @@ impl ProbeRunner for FakeProbe {
         .find(|(flag, _)| args.iter().any(|arg| arg == flag))
         .map_or("new", |(_, mode)| mode);
         let has = |flag: &str| args.iter().any(|arg| arg == flag);
-        let unchosen = has("--sharing-is-app-default") && !has("--withhold-uploads");
+        let unchosen = has("--sharing-is-app-default");
         let connected = |site: &str| {
             let mut install = FakeProbe::connected(site);
             install["sharing_mode"] = json!(mode);

@@ -607,6 +607,25 @@ async fn a_default_sharing_mode_is_suggested_only_once_read_since_sign_in() {
     assert_eq!(policy.suggested_sharing(WORKSPACE), None);
 }
 
+/// After a re-sign-in, Cloud answering an older revision than the cached one
+/// is refused, and the refused answer is not a read of the cached document:
+/// nothing is suggested from it.
+#[tokio::test]
+async fn an_older_revision_after_sign_in_suggests_nothing() {
+    let (_dir, policy) = policies();
+    let cloud = FakeCloud::answering(vec![
+        suggesting("defaults", "all", 5),
+        suggesting("defaults", "new", 3),
+    ]);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(policy.suggested_sharing(WORKSPACE).is_some());
+    policy.sign_in(WORKSPACE);
+    policy.refresh(&cloud, WORKSPACE).await;
+    assert!(!policy.withholds(Some(WORKSPACE)));
+    assert_eq!(policy.workspace_policy(WORKSPACE).revision, 5);
+    assert_eq!(policy.suggested_sharing(WORKSPACE), None);
+}
+
 /// A document cached by an earlier run, or another person's session, never
 /// produces a suggestion until this run reads it again.
 #[tokio::test]

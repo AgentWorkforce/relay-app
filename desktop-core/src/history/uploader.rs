@@ -495,15 +495,6 @@ pub fn target_arguments(target: &Target) -> Vec<String> {
     args
 }
 
-/// The `cloud install` flag that asks for `mode`.
-pub fn install_flag(mode: SharingMode) -> &'static str {
-    match mode {
-        SharingMode::All => "--include-existing",
-        SharingMode::New => "--new-sessions-only",
-        SharingMode::Selected => "--selected-sessions-only",
-    }
-}
-
 /// `uploader.status`'s answer from the probe's `status --json` answer, with
 /// the derived fields ([`with_derived`]) and the install's `directory`
 /// merged in.
