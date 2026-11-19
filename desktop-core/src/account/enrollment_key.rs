@@ -444,10 +444,7 @@ fn post(url: &str, site: &str, body: &Value) -> Result<Reply, Unanswered> {
         .post(url)
         .set("Accept", "application/json")
         .set("Origin", site)
-        .set(
-            "User-Agent",
-            &format!("AgentRelayDesktop/{}", agent_relay_node::VERSION),
-        )
+        .set("User-Agent", &crate::client_telemetry::user_agent())
         .send_json(body)
     {
         Ok(response) | Err(ureq::Error::Status(_, response)) => response,

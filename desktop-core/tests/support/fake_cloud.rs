@@ -24,6 +24,9 @@ pub struct Recorded {
     pub path: String,
     pub bearer: Option<String>,
     pub analytics: Option<String>,
+    pub user_agent: Option<String>,
+    /// `X-Agent-Relay-Policy-Revision`.
+    pub policy_revision: Option<String>,
     pub body: Value,
     /// When the request arrived.
     pub at: std::time::Instant,
@@ -85,6 +88,8 @@ pub struct State {
     /// Fields the enrollment exchange's 200 adds to the session, such as
     /// `managed` and `workspace_policy`.
     pub enrollment_extra: Value,
+    /// What `GET /workspaces/{ws}/access/me` answers; not served when `None`.
+    pub access_me: Option<Value>,
     /// Sent as `Location` with any 3xx answer.
     pub redirect_location: Option<String>,
     /// The resolve names this relaygate: the workspace is gate-only.
@@ -152,6 +157,7 @@ impl Default for State {
             enrollment_slow_downs: 0,
             enrollment_cut_short: CutShort::No,
             enrollment_extra: json!({}),
+            access_me: None,
             redirect_location: None,
             relaygate_url: None,
             self_token_refusals: Default::default(),
@@ -300,6 +306,7 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
     let mut length = 0usize;
     let mut bearer = None;
     let mut analytics = None;
+    let (mut user_agent, mut policy_revision) = (None, None);
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).await.is_err() {
@@ -314,6 +321,8 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
             "content-length" => length = value.trim().parse().unwrap_or(0),
             "authorization" => bearer = value.trim().strip_prefix("Bearer ").map(str::to_string),
             "x-agent-relay-analytics" => analytics = Some(value.trim().to_string()),
+            "user-agent" => user_agent = Some(value.trim().to_string()),
+            "x-agent-relay-policy-revision" => policy_revision = Some(value.trim().to_string()),
             _ => {}
         }
     }
@@ -330,6 +339,8 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
             path: path.clone(),
             bearer: bearer.clone(),
             analytics,
+            user_agent,
+            policy_revision,
             body: body.clone(),
             at: std::time::Instant::now(),
         });
@@ -403,6 +414,14 @@ fn route(
     let authorized = bearer.is_some_and(|b| state.valid.iter().any(|v| v == b));
     let api = path.strip_prefix("/cloud/api/v1").unwrap_or(path);
     match (method, api) {
+        ("GET", p)
+            if authorized
+                && state.access_me.is_some()
+                && p.starts_with("/workspaces/")
+                && p.ends_with("/access/me") =>
+        {
+            (200, state.access_me.clone().unwrap_or_default())
+        }
         ("POST", "/auth/device/start") => (
             200,
             json!({"device_code": "secret-device-code", "user_code": "ABCD-EFGH",

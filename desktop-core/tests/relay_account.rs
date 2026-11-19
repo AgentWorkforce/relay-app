@@ -4860,6 +4860,65 @@ async fn a_managed_enrollment_key_seeds_the_workspace_policy() {
     harness.stop().await;
 }
 
+/// Cloud's fleet view hears this computer's release and platform on every
+/// `access/me` read and on the enrollment exchange, and the workspace policy
+/// revision once one is applied: the first read, before any, carries none,
+/// and a newly applied revision is read again at once rather than in 15
+/// minutes.
+#[tokio::test]
+async fn access_me_tells_cloud_the_release_platform_and_applied_policy_revision() {
+    let harness = Harness::start_with(|cloud, setup| {
+        cloud.state.lock().unwrap().access_me = Some(json!({
+            "workspace_policy": {
+                "version": 2, "revision": 10, "managed": false, "consent": [],
+                "sections": {"spawn": {"locked": {"spawn_max_agents": 4}, "defaults": {}}}
+            }
+        }));
+        *setup.supervise_every.lock().unwrap() = Some(Duration::from_millis(100));
+    })
+    .await;
+    let mut client = harness.client().await;
+    let file = enrollment_key_file(&harness, ENROLLMENT_KEY);
+    client
+        .ok("account.sign_in", enrollment_sign_in(&file))
+        .await;
+    let reads = || -> Vec<(Option<String>, Option<String>)> {
+        let state = harness.cloud.state.lock().unwrap();
+        state
+            .requests
+            .iter()
+            .filter(|r| r.path == format!("/cloud/api/v1/workspaces/{WORKSPACE}/access/me"))
+            .map(|r| (r.user_agent.clone(), r.policy_revision.clone()))
+            .collect()
+    };
+    eventually("the revision told", || {
+        reads().iter().any(|(_, revision)| revision.as_deref() == Some("10"))
+    })
+    .await;
+    assert_eq!(harness.core.settings()["spawn_max_agents"], 4);
+    let platform = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
+    };
+    let agent = format!("AgentRelayDesktop/{} ({platform})", agent_relay_node::VERSION);
+    let reads = reads();
+    assert_eq!(reads[0].1, None, "nothing was applied before the first read");
+    assert!(reads.iter().all(|(ua, _)| ua.as_deref() == Some(agent.as_str())), "{reads:?}");
+    let exchange = {
+        let state = harness.cloud.state.lock().unwrap();
+        state
+            .requests
+            .iter()
+            .find(|r| r.path == "/cloud/api/v1/auth/enrollment/token")
+            .and_then(|r| r.user_agent.clone())
+    };
+    assert_eq!(exchange.as_deref(), Some(agent.as_str()));
+    harness.stop().await;
+}
+
 /// Wrong, revoked and already exchanged keys all read the same: the person
 /// learns only to ask for a new key. The file is kept for the admin to see.
 #[tokio::test]

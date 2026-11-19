@@ -127,7 +127,9 @@ impl Account {
                     agent_relay_node::relay::state::now_ms(),
                 )
             });
-        if fresh && self.operator_policy.due(&workspace) {
+        // A newly applied revision is read again at once, so Cloud hears it.
+        let report = self.operator_policy.workspace_policies().take_report_due();
+        if fresh && (report || self.operator_policy.due(&workspace)) {
             self.refresh_operator_policy(&workspace).await;
         }
         self.enforce_operator_policy().await;
@@ -158,24 +160,26 @@ impl Account {
         let Some(core) = self.core() else {
             return;
         };
-        let wanted = match self.uploader.target().and_then(|t| t.workspace_id) {
+        let cache = self.operator_policy.workspace_policies();
+        // With the revision it comes from, which Cloud is told once applied.
+        let (wanted, revision) = match self.uploader.target().and_then(|t| t.workspace_id) {
             Some(workspace) => {
-                let Some(read) = self.operator_policy.workspace_policy_read(&workspace) else {
+                let Some(entry) = cache.entry(&workspace) else {
                     return;
                 };
-                let policy = crate::workspace_policy::settings::settings_policy(&read);
-                crate::workspace_policy::settings::applies(&policy).then_some(policy)
+                let policy = crate::workspace_policy::settings::settings_policy(&entry.policy);
+                let wanted = crate::workspace_policy::settings::applies(&policy).then_some(policy);
+                (wanted, Some((workspace, entry.revision)))
             }
-            None if self.env_token.is_none() && self.load_session().is_none() => None,
+            None if self.env_token.is_none() && self.load_session().is_none() => (None, None),
             // Signed in with no workspace attached yet: nothing changes.
             None => return,
         };
-        let cache = self.operator_policy.workspace_policies();
         if !cache.settings_changed(&wanted) {
-            return;
+            return cache.revision_applied(revision);
         }
         match core.apply_settings_policy(wanted.clone()) {
-            Ok(()) => cache.settings_applied(wanted),
+            Ok(()) => cache.settings_applied(wanted, revision),
             // Tried again on the next supervision tick, signed in or out; the
             // warning shows once per failure, not on every tick.
             Err(error) => {
