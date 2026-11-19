@@ -3,12 +3,15 @@
 //!
 //! The copy is only ever upgraded: a newer one, from a newer app, may be
 //! running this computer's collector. Another build of the same release,
-//! with different contents, is replaced too, but only by a build on the
-//! default core socket: a site profile built to coexist beside Agent Relay
-//! (`DESKTOP_COEXIST`) shares this one copy, and two builds of one release
-//! must not take turns replacing it. On macOS a copy not signed like this
-//! binary is never run to read its version and never replaced: it is not
-//! one this app installed.
+//! with different contents, is replaced only by a build on the default core
+//! socket. A site profile that takes over Agent Relay, on its own socket,
+//! keeps this copy too, upgrading it but never replacing another build of
+//! its release. A site profile built to coexist beside Agent Relay
+//! (`DESKTOP_COEXIST`, `executable_identity::built_to_coexist`) never writes
+//! it, whatever its release, because the stock app's hooks and helpers run
+//! it: it keeps its own copy in its app data instead (`own_destination`,
+//! `keep_own`). On macOS a copy not signed like this binary is never run to
+//! read its version and never replaced: it is not one this app installed.
 
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -133,15 +136,27 @@ pub fn same_release(installed: Option<&Release>, bundled: Option<&Release>) -> b
     matches!((installed, bundled), (Some(installed), Some(bundled)) if installed == bundled)
 }
 
-/// `~/.local/bin/agent-relay-probe` (`agent-relay-probe.exe` on Windows,
-/// which runs only files with a `PATHEXT` extension).
-pub fn destination(home: &Path) -> PathBuf {
-    let name = if cfg!(windows) {
+/// The copy's file name: `agent-relay-probe.exe` on Windows, which runs
+/// only files with a `PATHEXT` extension, `agent-relay-probe` elsewhere.
+pub fn file_name() -> &'static str {
+    if cfg!(windows) {
         "agent-relay-probe.exe"
     } else {
         "agent-relay-probe"
-    };
-    home.join(".local").join("bin").join(name)
+    }
+}
+
+/// `~/.local/bin/agent-relay-probe` (`.exe` on Windows, `file_name`).
+pub fn destination(home: &Path) -> PathBuf {
+    home.join(".local").join("bin").join(file_name())
+}
+
+/// A site profile built to coexist: its own copy, in its own
+/// `bin` directory under its app data, so it never writes the shared
+/// `destination` and its DLLs and their list (Windows) never meet another
+/// build's.
+pub fn own_destination(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("bin").join(file_name())
 }
 
 fn sha256(path: &Path) -> Option<String> {
@@ -439,6 +454,27 @@ pub fn install_if_needed(
     result.is_ok()
 }
 
+/// Makes `destination`, one installation's own copy (`own_destination`), a
+/// copy of `source`, with the DLLs it needs on Windows, whatever release
+/// either reports: no other build runs it, so it follows this build, down
+/// as well as up. Whether it is now one. Blocking.
+pub fn keep_own(source: &Path, destination: &Path) -> bool {
+    let Some(directory) = destination.parent().filter(|_| source.is_file()) else {
+        return false;
+    };
+    let current = sha256(source).is_some_and(|hash| sha256(destination) == Some(hash));
+    fs::create_dir_all(directory)
+        .and_then(|()| install_libraries(&libraries(source), destination))
+        .and_then(|_| {
+            if current {
+                Ok(())
+            } else {
+                copy_into(source, destination, 0o755)
+            }
+        })
+        .is_ok()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -589,7 +625,8 @@ pub(crate) mod tests {
 
     /// Another build of the same release, with other contents, replaces the
     /// copy when this build owns it (`replace_same_release`); the same
-    /// bytes are kept, and a coexisting build of that release leaves it.
+    /// bytes are kept, and a site profile's build of that release (on its
+    /// own socket, `replace_same_release` false) leaves it.
     #[test]
     #[cfg(unix)]
     fn another_build_of_the_same_release_replaces_the_copy() {
@@ -777,5 +814,47 @@ pub(crate) mod tests {
             true,
             |_, _| true
         ));
+        assert!(!keep_own(
+            &dir.path().join("none"),
+            &dir.path().join("dest")
+        ));
+        assert!(!dir.path().join("dest").exists());
+    }
+
+    /// A site profile built to coexist keeps its own copy in its app data,
+    /// never in the shared directory.
+    #[test]
+    fn the_own_copy_lives_in_the_app_data_not_the_shared_directory() {
+        let home = Path::new("home");
+        let app_data = home.join("app-data");
+        assert_eq!(
+            own_destination(&app_data),
+            app_data.join("bin").join(file_name())
+        );
+        assert_ne!(own_destination(&app_data), destination(home));
+        assert_eq!(
+            destination(home).file_name(),
+            own_destination(&app_data).file_name()
+        );
+    }
+
+    /// A build's own copy is created in an empty directory and follows its
+    /// build whichever way the release moves: no other build runs it.
+    #[test]
+    #[cfg(unix)]
+    fn the_own_copy_follows_its_build_up_and_down() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let destination = own_destination(&dir.path().join("app-data"));
+        for version in ["2026.11.2", "2026.11.3", "2026.11.1", "2026.11.1"] {
+            let bundled = fake(dir.path(), "bundled", version, None);
+            assert!(keep_own(&bundled, &destination), "{version}");
+            assert_eq!(release_of(&destination), Some(release(version)));
+            assert_eq!(fs::read(&destination).unwrap(), fs::read(&bundled).unwrap());
+            assert_eq!(
+                fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
     }
 }

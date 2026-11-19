@@ -200,11 +200,15 @@ impl Installer {
     /// A site profile build's core serves its own sockets (`build-app.sh`
     /// gives it `core.<bundle id>.sock`), so the helper and hook commands
     /// written for the person's agents name them, under its own entry name
-    /// beside Agent Relay's. On the default socket, Agent Relay's own, the
-    /// entries stay as they were.
+    /// beside Agent Relay's. They run the shared `~/.local/bin` copy, unless
+    /// the build coexists with Agent Relay (`own_copy`, this binary, when
+    /// `executable_identity::built_to_coexist`): then they run its own copy
+    /// of it in its app data, and the shared one stays the stock app's. On
+    /// the default socket, Agent Relay's own, the entries stay as they were.
     pub(crate) fn with_core_sockets(
         mut self,
         config: &agent_relay_node::relay::daemon::Config,
+        own_copy: Option<&Path>,
     ) -> Self {
         use agent_relay_node::relay::{outbound, paths, peer};
         if config.paths.socket != paths::default_socket(&config.home) {
@@ -215,6 +219,9 @@ impl Installer {
                 &session,
                 crate::claude_attestation::server_for(config),
             );
+            if let Some(executable) = own_copy {
+                self.helper.set_own_copy(executable, &config.app_data_dir);
+            }
         }
         self
     }
@@ -347,20 +354,38 @@ impl Installer {
 
 /// Only the exact current hosted endpoint or an existing desktop-managed
 /// helper may be migrated. A same-name server on another origin stays intact.
+/// A site profile build's helper (one naming a `--socket`) is also its own
+/// when it names the same core through another executable: a build that
+/// coexists moves its entries from the shared `~/.local/bin` copy to its own
+/// (`probe_copy`). Any other profile's entries already run the shared copy.
 fn managed_helper(existing: &str, expected: &str) -> bool {
     [" --site ", " \"--site\" "].iter().any(|separator| {
         existing
             .split_once(separator)
             .zip(expected.split_once(separator))
             .is_some_and(|((old, _), (new, _))| old == new || current_form(old) == new)
-    })
+    }) || (helper_socket(expected).is_some()
+        && desktop_helper(existing)
+        && helper_socket(existing) == helper_socket(expected))
 }
 
 /// A desktop-managed helper another build on this computer wrote: a site
 /// profile build's names its own core with `--socket` and Agent Relay's names
-/// none. Neither build migrates or removes the other's entry.
+/// none, and the two run different executables. Neither build migrates or
+/// removes the other's entry.
 fn other_build(existing: &str, expected: &str) -> bool {
-    managed_helper(existing, expected) && helper_socket(existing) != helper_socket(expected)
+    desktop_helper(existing) && helper_socket(existing) != helper_socket(expected)
+}
+
+/// Whether `helper` is the desktop's `<executable> mcp-headers --site …`
+/// form (or the earlier `relay mcp-headers` one), whatever its executable.
+fn desktop_helper(helper: &str) -> bool {
+    [" --site ", " \"--site\" "].iter().any(|separator| {
+        helper.split_once(separator).is_some_and(|(program, _)| {
+            let program = current_form(program);
+            program.ends_with(" mcp-headers") || program.ends_with(" \"mcp-headers\"")
+        })
+    })
 }
 
 fn helper_socket(helper: &str) -> Option<&str> {

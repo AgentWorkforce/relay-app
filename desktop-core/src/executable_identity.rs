@@ -172,6 +172,57 @@ pub fn capture_at_start() {
     let _ = at_start();
     #[cfg(target_os = "macos")]
     let _ = bundle_at_start();
+    #[cfg(target_os = "macos")]
+    let _ = coexists_at_start();
+}
+
+/// Whether this process runs from a Mac app built to coexist with Agent
+/// Relay (`build-app.sh --coexist`, a site profile's `DESKTOP_COEXIST`): a
+/// release app bundle without the Agent Relay family marker
+/// ([`bundle_built_to_coexist`]), read once at process start. Such a build
+/// keeps its own command-line copy and never writes the shared one
+/// (`probe_copy`). Linux and Windows builds have no product marker and never
+/// coexist (the GTK app runs every profile's core on the default socket), so
+/// there it is always `false`.
+pub fn built_to_coexist() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        coexists_at_start()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn coexists_at_start() -> bool {
+    static COEXISTS: OnceLock<bool> = OnceLock::new();
+    *COEXISTS.get_or_init(|| {
+        std::env::current_exe().is_ok_and(|executable| bundle_built_to_coexist(&executable))
+    })
+}
+
+/// Whether the `.app` bundle holding `executable` was built to coexist: its
+/// `Contents/Info.plist` (XML, as the build writes it) names the bundle but
+/// carries no `AgentRelayProduct`, the marker `build-app.sh` writes into
+/// every release build except one made with `--coexist` (and the development
+/// build, which keeps no command-line copy at all). The core runs from the
+/// bundle (`Contents/Helpers`) under either LaunchAgent, so a coexisting
+/// build always finds its `Info.plist`. Anything unreadable, or no bundle at
+/// all, is not coexisting: the build then keeps the shared copy as before,
+/// never replacing another build of its release there.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn bundle_built_to_coexist(executable: &Path) -> bool {
+    let Some(bundle) = executable
+        .ancestors()
+        .find(|dir| dir.extension().is_some_and(|ext| ext == "app"))
+    else {
+        return false;
+    };
+    bundle_identifier(executable).is_some()
+        && fs::read_to_string(bundle.join("Contents/Info.plist"))
+            .is_ok_and(|info| !info.contains("<key>AgentRelayProduct</key>"))
 }
 
 /// Whether a service manager starts this process again after it exits:
@@ -391,6 +442,48 @@ mod tests {
             bundle_identifier(&dir.path().join("agent-relay-probe")),
             None
         );
+    }
+
+    /// The three Mac builds a core can run from: Agent Relay itself and a
+    /// site profile that takes it over both carry the family marker; only a
+    /// site profile built to coexist (`--coexist`) has none.
+    #[test]
+    fn only_an_unmarked_bundle_is_built_to_coexist() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = |name: &str, marker: Option<&str>| {
+            let contents = dir.path().join(format!("{name}.app/Contents"));
+            fs::create_dir_all(contents.join("Helpers")).unwrap();
+            let marker = marker
+                .map(|id| format!("\t<key>AgentRelayProduct</key>\n\t<string>{id}</string>\n"))
+                .unwrap_or_default();
+            fs::write(
+                contents.join("Info.plist"),
+                format!("<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>CFBundleIdentifier</key>\n\t<string>com.example.{name}</string>\n{marker}</dict>\n</plist>\n"),
+            )
+            .unwrap();
+            contents.join("Helpers/Agent Relay Helper")
+        };
+        // Stock and a site profile that takes over stock: marked.
+        assert!(!bundle_built_to_coexist(&bundle(
+            "stock",
+            Some("com.agentrelay.desktop")
+        )));
+        assert!(!bundle_built_to_coexist(&bundle(
+            "takeover",
+            Some("com.example.takeover")
+        )));
+        // A site profile built to coexist: no marker.
+        assert!(bundle_built_to_coexist(&bundle("coexist", None)));
+        // Nothing to read is never coexisting: no bundle, no Info.plist, or
+        // one that does not name its bundle.
+        assert!(!bundle_built_to_coexist(
+            &dir.path().join("agent-relay-probe")
+        ));
+        let bare = dir.path().join("Bare.app/Contents/Helpers");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(!bundle_built_to_coexist(&bare.join("Agent Relay Helper")));
+        fs::write(dir.path().join("Bare.app/Contents/Info.plist"), "bplist00").unwrap();
+        assert!(!bundle_built_to_coexist(&bare.join("Agent Relay Helper")));
     }
 
     /// The upgrade over a running 2026.11.9: the 2026.11.12 app replaces
