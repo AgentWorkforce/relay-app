@@ -109,12 +109,46 @@ public struct LocalSessionRow: Identifiable, Equatable {
 
     /// Row ids a relay-only session had before it joined its transcript by
     /// upload key; hidden sessions saved under them stay hidden.
-    private static let renamedIDs = [("grok-open:", "grok:"), ("opencode-open:", "opencode:"), ("muse-open:", "muse:"), ("cursor-cli:", "cursor:")]
+    private static let renamedIDs = [("grok-open:", "grok:"), ("opencode-open:", "opencode:"), ("muse-open:", "muse:")]
+
+    /// A hide saved under the id Cursor rows had before 2026.11.16, and the
+    /// id the row has now. Such a retired hide keeps the chat hidden until one
+    /// exclusion of the current id has succeeded; then it is dropped, so the chat
+    /// shows again with sharing off. Before that, a hide under the old id never
+    /// stored an exclusion.
+    private static let retiredHiddenPrefix = (old: "cursor-cli:", new: "cursor:")
 
     /// The current row id for a hidden session saved under an older one.
     public static func currentHiddenID(_ id: String) -> String {
         for (old, new) in renamedIDs where id.hasPrefix(old) { return new + id.dropFirst(old.count) }
         return id
+    }
+
+    /// The current row id of a hide saved under a retired id.
+    public static func retiredHiddenID(_ saved: String) -> String? {
+        guard saved.hasPrefix(retiredHiddenPrefix.old) else { return nil }
+        return retiredHiddenPrefix.new + saved.dropFirst(retiredHiddenPrefix.old.count)
+    }
+
+    /// The current row ids of a saved hidden list, retired hides included.
+    public static func currentHiddenIDs(_ saved: [String]) -> Set<String> {
+        Set(saved.map { retiredHiddenID($0) ?? currentHiddenID($0) })
+    }
+
+    /// The current row ids of the retired hides in a saved hidden list that
+    /// still wait for their exclusion. One saved beside its current id is an
+    /// ordinary hide.
+    public static func retiredHiddenIDs(_ saved: [String]) -> Set<String> {
+        Set(saved.compactMap(retiredHiddenID).filter { !saved.contains($0) })
+    }
+
+    /// The list to save for `hidden`, given the list saved now: a retired hide
+    /// still waiting keeps its old id, so it is not saved as a new hide.
+    public static func savedHiddenIDs(_ hidden: Set<String>, saved: [String]) -> [String] {
+        let retired = retiredHiddenIDs(saved)
+        return hidden.map { id -> String in
+            retired.contains(id) ? retiredHiddenPrefix.old + id.dropFirst(retiredHiddenPrefix.new.count) : id
+        }.sorted()
     }
 
     /// The host-aware id added beside an older hidden target id. Keeping both

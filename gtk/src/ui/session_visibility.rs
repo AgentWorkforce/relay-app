@@ -1,7 +1,8 @@
 //! Local visibility preferences and the sharing shutdown required by hiding.
 use super::app::App;
 use crate::models::{
-    additional_hidden_key_for_sessions, current_hidden_key, relay_session_for, same_hidden_session,
+    additional_hidden_key_for_sessions, current_hidden_keys, relay_session_for,
+    retired_hidden_keys, same_hidden_session, saved_hidden_keys,
 };
 use agent_relay_desktop_core::contract::account::SessionKeysParams;
 use gtk4::glib;
@@ -13,13 +14,22 @@ const HIDDEN: &str = "hiddenSessions.v1";
 const SHOW: &str = "showHiddenSessions.v1";
 impl App {
     pub fn hidden_sessions(&self) -> BTreeSet<String> {
+        current_hidden_keys(&self.saved_hidden_sessions())
+    }
+    fn saved_hidden_sessions(&self) -> Vec<String> {
         self.prefs()
             .get(HIDDEN)
             .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
             .unwrap_or_default()
-            .iter()
-            .map(|key| current_hidden_key(key))
-            .collect()
+    }
+    /// Every write of the hidden list goes here, so a retired hide still
+    /// waiting for its exclusion keeps its old key.
+    fn save_hidden_sessions(&self, hidden: &BTreeSet<String>) -> std::io::Result<()> {
+        let saved = saved_hidden_keys(hidden, &self.saved_hidden_sessions());
+        self.inner
+            .prefs
+            .borrow_mut()
+            .set(HIDDEN, serde_json::json!(saved))
     }
     pub(super) fn migrate_hidden_sessions(
         &self,
@@ -35,11 +45,7 @@ impl App {
             return;
         }
         stored.extend(additions);
-        let _ = self
-            .inner
-            .prefs
-            .borrow_mut()
-            .set(HIDDEN, serde_json::json!(stored));
+        let _ = self.save_hidden_sessions(&stored);
     }
     pub fn session_hidden(&self, key: &str) -> bool {
         self.hidden_sessions().contains(key)
@@ -97,14 +103,7 @@ impl App {
         } else {
             stored.retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)));
         }
-        if stored != previous
-            && self
-                .inner
-                .prefs
-                .borrow_mut()
-                .set(HIDDEN, serde_json::json!(stored))
-                .is_err()
-        {
+        if stored != previous && self.save_hidden_sessions(&stored).is_err() {
             return;
         }
         if stored != previous {
@@ -182,15 +181,14 @@ impl App {
         });
     }
     fn finish_hiding_session(&self, key: &str, error: Option<String>) {
-        let rolled_back = error.is_some();
-        if error.is_some() {
+        // A retired hide is dropped once its exclusion succeeds: the chat
+        // shows again, its sharing stays off and no exclusion follows.
+        let retired = retired_hidden_keys(&self.saved_hidden_sessions()).contains(key);
+        let rolled_back = error.is_some() || retired;
+        if rolled_back {
             let mut hidden = self.hidden_sessions();
             hidden.retain(|stored| !same_hidden_session(stored, key));
-            let _ = self
-                .inner
-                .prefs
-                .borrow_mut()
-                .set(HIDDEN, serde_json::json!(hidden));
+            let _ = self.save_hidden_sessions(&hidden);
         }
         self.update_state(|state| {
             state.hiding_sessions.remove(key);
