@@ -6,6 +6,8 @@
 #   release.sh beta|stable [--profile <id>]              newest ready candidate for that channel
 #   release.sh beta|stable [--run <id>] [--profile <id>] a specific prepare-only run (e.g. a hotfix candidate)
 #   release.sh prepare beta|stable <ref> [--profile <id>]   build a candidate from <ref> now (hotfix branch)
+#   release.sh beta|stable --run <id> [--profile <id>] --approval-message <msg id>
+#                                                         promote on a delegated approval (see below)
 #
 # --profile <id> is the opaque id of a site profile (its desktop-<id> GitHub
 # Environment); no --profile means the default public profile. It is passed to
@@ -33,6 +35,14 @@
 # triggers a fresh Desktop Release build.) A stable promote uploads the
 # promoted CHANGELOG.md as an artifact; it is saved to ~/state/promoted/ for
 # the lead to land on main.
+#
+# --approval-message <msg id> is a delegated approval: the relay message id of
+# an allowlisted agent's own direct message to the lead. It needs --run, and
+# the promote goes ahead only on a permit from
+# /opt/agent-host/delegation-decide.py for exactly this channel, run and
+# profile; anything else refuses with exit 4 before any state write, dispatch
+# or tag. It is legacy-orchestrator only: in cloud mode it is refused. Without
+# it nothing changes.
 set -euo pipefail
 # gh reads the current token from /run/agent-host/gh-token via /usr/local/bin/gh;
 # an inherited GH_TOKEN (possibly stale) must not shadow it.
@@ -40,6 +50,12 @@ unset GH_TOKEN GITHUB_TOKEN
 # Activate after provisioning the Cloud-owned credential and a prepare smoke run.
 # A Cloud refusal never falls back to host orchestration.
 if [ "${DESKTOP_RELEASE_ORCHESTRATOR:-legacy}" = cloud ]; then
+  # The Cloud flow parks stable for the owner's own answer and takes no permit.
+  for arg in "$@"; do
+    case "$arg" in
+      --approval-message|--approval-message=*) echo "refusing: a delegated approval (--approval-message) is legacy-orchestrator only, and DESKTOP_RELEASE_ORCHESTRATOR=cloud" >&2; exit 4 ;;
+    esac
+  done
   exec /opt/agent-host/cloud-release.sh "$@"
 fi
 REPO=AgentWorkforce/relay-app
@@ -60,7 +76,7 @@ git fetch -q origin main
 git fetch -q --tags origin 2>/dev/null || echo "warning: tag fetch failed (a local tag differs from origin?)" >&2
 
 PREPARE_USAGE="usage: release.sh prepare beta|stable <ref> [--profile <id>]"
-USAGE="usage: release.sh beta|stable [--run <id>] [--profile <id>]"
+USAGE="usage: release.sh beta|stable [--run <id>] [--profile <id>] [--approval-message <msg id> (needs --run)]"
 if [ "${1:-}" = prepare ]; then
   channel=${2:?channel}; ref=${3:?ref}
   profile=""
@@ -68,6 +84,7 @@ if [ "${1:-}" = prepare ]; then
   while [ $# -gt 0 ]; do
     case "$1" in
       --profile) [ -n "${2:-}" ] || { echo "--profile needs an id; $PREPARE_USAGE" >&2; exit 2; }; profile=$2; shift 2 ;;
+      --approval-message|--approval-message=*) echo "--approval-message is for a beta|stable promote, not prepare; $PREPARE_USAGE" >&2; exit 2 ;;
       *) echo "unknown argument $1; $PREPARE_USAGE" >&2; exit 2 ;;
     esac
   done
@@ -83,15 +100,21 @@ fi
 
 channel=${1:?$USAGE}
 case "$channel" in beta|stable) ;; *) echo "channel must be beta or stable" >&2; exit 2 ;; esac
-run_id=""; profile=""
+run_id=""; profile=""; approval=""
 shift
 while [ $# -gt 0 ]; do
   case "$1" in
     --run) [ -n "${2:-}" ] || { echo "--run needs a run id; $USAGE" >&2; exit 2; }; run_id=$2; shift 2 ;;
     --profile) [ -n "${2:-}" ] || { echo "--profile needs an id; $USAGE" >&2; exit 2; }; profile=$2; shift 2 ;;
+    --approval-message) [ -n "${2:-}" ] || { echo "--approval-message needs a message id; $USAGE" >&2; exit 2; }; approval=$2; shift 2 ;;
     *) echo "unknown argument $1; $USAGE" >&2; exit 2 ;;
   esac
 done
+if [ -n "$approval" ]; then
+  [[ "$approval" =~ ^[1-9][0-9]{15,19}$ ]] || { echo "--approval-message needs a relay message id (16 to 20 digits), not $approval; $USAGE" >&2; exit 2; }
+  # A delegated approval names one candidate run; the newest-ready pick is not one.
+  [ -n "$run_id" ] || { echo "--approval-message needs --run <id>; $USAGE" >&2; exit 2; }
+fi
 
 if [ -z "$run_id" ]; then
   /opt/agent-host/tick.sh --refresh >/dev/null 2>&1 || true   # refresh candidate statuses (never dispatches)
@@ -156,6 +179,35 @@ if [ -z "$profile" ] && git rev-parse -q --verify "refs/tags/released-v$version"
 fi
 behind=$(git rev-list --count "$sha..origin/main")
 echo "promoting v$version ($channel${profile:+, profile $profile}) from run $run_id, source $sha ($behind commits behind main)"
+
+# A delegated approval: the profile is final here and nothing has been written
+# or dispatched yet. The validator spends the message id on a permit, so it
+# runs only once the candidate itself checked out. Anything but a permit for
+# exactly this action and target refuses.
+if [ -n "$approval" ]; then
+  decide=/opt/agent-host/delegation-decide.py
+  [ -x "$decide" ] || { echo "refusing: --approval-message needs $decide, which is not installed" >&2; exit 4; }
+  action=release-$channel
+  target="$channel run $run_id profile ${profile:--}"
+  rc=0
+  permit=$("$decide" --action "$action" --target "$target" --message-id "$approval" --repo "$REPO") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    why=$(jq -r 'select(type == "object") | "\(.reason // "no reason"): \(.detail // "")"' <<<"$permit" 2>/dev/null || true)
+    echo "refusing: delegation-decide.py exited $rc for message $approval${why:+ ($why)}" >&2
+    exit 4
+  fi
+  if ! jq -e -s 'length == 1 and (.[0] | type == "object")' <<<"$permit" >/dev/null 2>&1; then
+    echo "refusing: delegation-decide.py did not print one JSON object for message $approval" >&2
+    exit 4
+  fi
+  if ! jq -e --arg m "$approval" --arg a "$action" --arg t "$target" \
+      '.decision == "permit" and .messageId == $m and .action == $a and .target == $t' <<<"$permit" >/dev/null; then
+    why=$(jq -r '[.decision, .reason, .detail, .action, .target, .messageId] | map(select(. != null) | tostring) | join("; ")' <<<"$permit" 2>/dev/null || true)
+    echo "refusing: no permit for $action \"$target\" from message $approval (got: ${why:-nothing})" >&2
+    exit 4
+  fi
+  echo "delegated approval: permit for $(jq -r '.agent // "unknown"' <<<"$permit"), message $approval, audit seq $(jq -r '.auditSeq // "unknown"' <<<"$permit")"
+fi
 
 # The intent is recorded before the promote is dispatched, so a release
 # killed while it watches the run can be rerun: the same command finds the
