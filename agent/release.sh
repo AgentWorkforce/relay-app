@@ -42,7 +42,9 @@
 # /opt/agent-host/delegation-decide.py for exactly this channel, run and
 # profile; anything else refuses with exit 4 before any state write, dispatch
 # or tag. It is legacy-orchestrator only: in cloud mode it is refused. Without
-# it nothing changes.
+# it nothing changes. A profile id given with it must be lowercase letters and
+# digits. The row keeps the permit's message id, so a delegated promote killed
+# later is resumed by rerunning the same command with the same message id.
 set -euo pipefail
 # gh reads the current token from /run/agent-host/gh-token via /usr/local/bin/gh;
 # an inherited GH_TOKEN (possibly stale) must not shadow it.
@@ -114,6 +116,8 @@ if [ -n "$approval" ]; then
   [[ "$approval" =~ ^[1-9][0-9]{15,19}$ ]] || { echo "--approval-message needs a relay message id (16 to 20 digits), not $approval; $USAGE" >&2; exit 2; }
   # A delegated approval names one candidate run; the newest-ready pick is not one.
   [ -n "$run_id" ] || { echo "--approval-message needs --run <id>; $USAGE" >&2; exit 2; }
+  # "-" stands for the default profile in the permit's target.
+  [ -z "$profile" ] || [[ "$profile" =~ ^[a-z0-9]+$ ]] || { echo "--approval-message needs a profile id of lowercase letters and digits, not $profile; $USAGE" >&2; exit 2; }
 fi
 
 if [ -z "$run_id" ]; then
@@ -183,8 +187,18 @@ echo "promoting v$version ($channel${profile:+, profile $profile}) from run $run
 # A delegated approval: the profile is final here and nothing has been written
 # or dispatched yet. The validator spends the message id on a permit, so it
 # runs only once the candidate itself checked out. Anything but a permit for
-# exactly this action and target refuses.
+# exactly this action and target refuses. A promote this run of the command
+# resumes (the row is promoting or tagging) under the same message id already
+# spent its permit on the promoting write, so it is not asked for again.
+spent=""
 if [ -n "$approval" ]; then
+  # A profile taken from the row is held to the same form as --profile.
+  [ -z "$profile" ] || [[ "$profile" =~ ^[a-z0-9]+$ ]] || { echo "refusing: run $run_id carries profile $profile, which is not lowercase letters and digits; a delegated approval cannot name it" >&2; exit 4; }
+  spent=$(jq -r --argjson id "$run_id" '[.[] | select(.run_id == $id and (.status == "promoting" or .status == "tagging"))] | last | .approval_message // empty' "$state")
+fi
+if [ -n "$approval" ] && [ "$resuming" != 0 ] && [ "$spent" = "$approval" ]; then
+  echo "delegated approval: resuming run $run_id under the permit already spent for message $approval"
+elif [ -n "$approval" ]; then
   decide=/opt/agent-host/delegation-decide.py
   [ -x "$decide" ] || { echo "refusing: --approval-message needs $decide, which is not installed" >&2; exit 4; }
   action=release-$channel
@@ -241,10 +255,12 @@ if [ -z "$promote" ]; then
   fi
   # The profile goes on the row with the promote intent. One the row did not
   # already carry came from the command line: profile_source "cli" lets a
-  # failed promote drop it again.
-  write_state --argjson id "$run_id" --arg at "$since" --arg v "$version" --arg sha "$sha" --arg pr "$profile" \
+  # failed promote drop it again. A delegated promote records the message id
+  # its permit was spent for (checked above), so a rerun can resume it.
+  write_state --argjson id "$run_id" --arg at "$since" --arg v "$version" --arg sha "$sha" --arg pr "$profile" --arg am "$approval" \
     '(.[] | select(.run_id == $id)) |= (.status = "promoting" | .promote_since = $at | .version = $v | .sha = $sha
-      | if $pr == "" or .profile == $pr then . else .profile = $pr | .profile_source = "cli" end)'
+      | if $pr == "" or .profile == $pr then . else .profile = $pr | .profile_source = "cli" end
+      | if $am == "" then . else .approval_message = $am end)'
   pflag=(); [ -z "$profile" ] || pflag=(-f "profile=$profile")
   gh workflow run desktop-promote.yml -R "$REPO" --ref main -f candidate-run-id="$run_id" -f version="$version" -f channel="$channel" ${pflag[@]+"${pflag[@]}"}
   for _ in $(seq 1 12); do
@@ -268,8 +284,9 @@ if ! gh run watch "$promote" -R "$REPO" --exit-status --interval 20 >/dev/null; 
     completed/success) ;;
     completed/*)
       # A profile the command line supplied is dropped with the attempt, so a
-      # wrong --profile does not stick to the candidate.
-      write_state --argjson id "$run_id" '(.[] | select(.run_id == $id)) |= (.status = "ready" | del(.promote_since) | del(.promote_run_id)
+      # wrong --profile does not stick to the candidate; so is the attempt's
+      # spent message id, so a later promote cannot resume under it.
+      write_state --argjson id "$run_id" '(.[] | select(.run_id == $id)) |= (.status = "ready" | del(.promote_since) | del(.promote_run_id) | del(.approval_message)
         | if .profile_source == "cli" then del(.profile) | del(.profile_source) else . end)'
       echo "promote run $promote $pconcl: https://github.com/$REPO/actions/runs/$promote (candidate back to ready; rerun to promote again)" >&2
       exit 1 ;;

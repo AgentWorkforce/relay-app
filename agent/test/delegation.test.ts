@@ -20,7 +20,7 @@ const RUN = 40000000001;
 const MSG = "250000000000000001";
 const SHA = "a".repeat(40);
 
-interface Outcome { status: number | null; stdout: string; stderr: string; calls: string[]; decideArgv: string[] | null; rows: Array<Record<string, unknown>>; bridge: string | null }
+interface Outcome { status: number | null; stdout: string; stderr: string; calls: string[]; decideArgv: string[] | null; before: Array<Record<string, unknown>>; rows: Array<Record<string, unknown>>; bridge: string | null }
 
 interface Options {
   args: string[];
@@ -92,6 +92,7 @@ exit "$DECIDE_EXIT"
       status: result.status, stdout: result.stdout, stderr: result.stderr,
       calls: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : [],
       decideArgv: argv(join(root, "decide.argv")),
+      before: rows,
       rows: JSON.parse(readFileSync(state, "utf8")) as Array<Record<string, unknown>>,
       bridge: existsSync(join(root, "bridge.argv")) ? argv(join(root, "bridge.argv"))!.join("|") : null,
     };
@@ -112,7 +113,7 @@ function refused(o: Outcome, label: string) {
   assert.equal(o.status, 4, `${label}: ${o.stderr}`);
   assert.ok(!dispatched(o), `${label}: no dispatch (${o.calls.join("; ")})`);
   assert.ok(!tagged(o), `${label}: no tag`);
-  assert.equal(o.rows[0]?.status, "ready", `${label}: the row is untouched`);
+  assert.deepEqual(o.rows, o.before, `${label}: the rows are untouched`);
   assert.match(o.stderr, /refusing/, label);
 }
 
@@ -219,4 +220,88 @@ test("delegations.json is a lane file", async () => {
 
 test("delegations.json ships as version 2 with the owner and no delegations", () => {
   assert.deepEqual(JSON.parse(source("delegations.json")), { version: 2, owners: ["khaliq-gant"], delegations: [] });
+});
+
+const row = (over: Record<string, unknown> = {}) => ({ channel: "stable", sha: SHA, run_id: RUN, dispatched_at: "2026-11-19T00:00:00Z", status: "ready", version: "2026.11.99", auto: false, profile: null, ...over });
+const deny = JSON.stringify({ decision: "deny", reason: "already_spent", detail: "used", messageId: MSG });
+
+test("a refusal for a run not in candidates.json writes no row", () => {
+  const o = release({ args: delegated, rows: [], decideExit: 10, decideOut: deny });
+  refused(o, "no row");
+  assert.deepEqual(o.rows, []);
+});
+
+test("a permitted promote records the message id on the row", () => {
+  const o = release({ args: delegated, rows: [row()], decideOut: permit() });
+  assert.equal(o.status, 0, o.stderr);
+  assert.equal(o.rows[0]?.approval_message, MSG);
+  assert.equal(o.rows[0]?.status, "published");
+});
+
+for (const status of ["promoting", "tagging"]) {
+  test(`a ${status} row with the same message id resumes without the validator`, () => {
+    const o = release({ args: delegated, rows: [row({ status, promote_since: "2026-11-19T01:00:00Z", approval_message: MSG })], decideExit: 10, decideOut: deny });
+    assert.equal(o.status, 0, o.stderr);
+    assert.equal(o.decideArgv, null);
+    assert.ok(!o.calls.includes("decide"), o.calls.join("; "));
+    assert.match(o.stdout, new RegExp(`resuming run ${RUN} under the permit already spent for message ${MSG}`));
+    assert.match(o.stdout, /resuming promote run 777/);
+    assert.ok(!dispatched(o), o.calls.join("; "));
+    assert.ok(o.calls.some((c) => c.startsWith("git tag -a released-v2026.11.99")), o.calls.join("; "));
+    assert.equal(o.rows[0]?.status, "published");
+    assert.equal(o.rows[0]?.approval_message, MSG);
+  });
+}
+
+test("a promoting row with another message id asks the validator and is refused on a deny", () => {
+  const o = release({ args: delegated, rows: [row({ status: "promoting", promote_since: "2026-11-19T01:00:00Z", approval_message: "250000000000000002" })], decideExit: 10, decideOut: deny });
+  refused(o, "other id");
+  assert.ok(o.calls.includes("decide"));
+  assert.equal(o.decideArgv?.[5], MSG);
+});
+
+test("a promoting row with no recorded message id asks the validator", () => {
+  const o = release({ args: delegated, rows: [row({ status: "promoting", promote_since: "2026-11-19T01:00:00Z" })], decideExit: 10, decideOut: deny });
+  refused(o, "no stored id");
+  assert.ok(o.calls.includes("decide"));
+});
+
+test("a rerun without the flag resumes a delegated promote as before", () => {
+  const o = release({ args: ["stable", "--run", String(RUN)], rows: [row({ status: "promoting", promote_since: "2026-11-19T01:00:00Z", approval_message: MSG })], decideExit: 10, decideOut: deny });
+  assert.equal(o.status, 0, o.stderr);
+  assert.equal(o.decideArgv, null);
+  assert.match(o.stdout, /resuming promote run 777/);
+  assert.ok(!dispatched(o), o.calls.join("; "));
+});
+
+test("--profile - with the flag is a usage error before the validator and nothing is dispatched", () => {
+  const o = release({ args: [...delegated, "--profile", "-"], rows: [row()], decideOut: permit() });
+  assert.equal(o.status, 2, o.stderr);
+  assert.match(o.stderr, /lowercase letters and digits/);
+  assert.equal(o.decideArgv, null);
+  assert.ok(!dispatched(o), o.calls.join("; "));
+  assert.deepEqual(o.rows, o.before);
+});
+
+test("a row profile that is not lowercase letters and digits refuses before the validator", () => {
+  const o = release({ args: delegated, rows: [row({ profile: "-" })], decideOut: permit({ target: `stable run ${RUN} profile -` }) });
+  refused(o, "row profile");
+  assert.equal(o.decideArgv, null);
+});
+
+test("a delegated beta promote asks for release-beta and refuses a release-stable permit", () => {
+  const beta = ["beta", "--run", String(RUN), "--approval-message", MSG];
+  const target = `beta run ${RUN} profile -`;
+  const o = release({ args: beta, rows: [row({ channel: "beta" })], decideOut: permit({ action: "release-beta", target }) });
+  assert.equal(o.status, 0, o.stderr);
+  assert.deepEqual(o.decideArgv, ["--action", "release-beta", "--target", target, "--message-id", MSG, "--repo", "AgentWorkforce/relay-app"]);
+  assert.match(o.calls.find((c) => c.startsWith("gh workflow run desktop-promote.yml")) ?? "", /-f channel=beta$/);
+  refused(release({ args: beta, rows: [row({ channel: "beta" })], decideOut: permit({ action: "release-stable", target }) }), "stable permit for beta");
+});
+
+test("the lead prompt keeps the permit-only sentences", () => {
+  const prompt = source("lead-prompt.md");
+  for (const phrase of ["only through a delegation-decide.py permit", "it counts only with a permit", "the script refuses without a permit", "Delegated stable is legacy-orchestrator only"]) {
+    assert.ok(prompt.includes(phrase), phrase);
+  }
 });
