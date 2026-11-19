@@ -258,9 +258,8 @@ if [ -z "$promote" ]; then
   # failed promote drop it again. A delegated promote records the message id
   # its permit was spent for (checked above), so a rerun can resume it.
   write_state --argjson id "$run_id" --arg at "$since" --arg v "$version" --arg sha "$sha" --arg pr "$profile" --arg am "$approval" \
-    '(.[] | select(.run_id == $id)) |= (.status = "promoting" | .promote_since = $at | .version = $v | .sha = $sha
-      | if $pr == "" or .profile == $pr then . else .profile = $pr | .profile_source = "cli" end
-      | if $am == "" then . else .approval_message = $am end)'
+    '(.[] | select(.run_id == $id)) |= (.status = "promoting" | .promote_since = $at | .version = $v | .sha = $sha | if $am == "" then . else .approval_message = $am end
+      | if $pr == "" or .profile == $pr then . else .profile = $pr | .profile_source = "cli" end)'
   pflag=(); [ -z "$profile" ] || pflag=(-f "profile=$profile")
   gh workflow run desktop-promote.yml -R "$REPO" --ref main -f candidate-run-id="$run_id" -f version="$version" -f channel="$channel" ${pflag[@]+"${pflag[@]}"}
   for _ in $(seq 1 12); do
