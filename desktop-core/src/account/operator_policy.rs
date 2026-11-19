@@ -127,10 +127,13 @@ impl Account {
                     agent_relay_node::relay::state::now_ms(),
                 )
             });
-        // A newly applied revision is read again at once, so Cloud hears it.
-        let report = self.operator_policy.workspace_policies().take_report_due();
-        if fresh && (report || self.operator_policy.due(&workspace)) {
-            self.refresh_operator_policy(&workspace).await;
+        // A newly applied revision is read again at once, so Cloud hears it;
+        // while the session is not fresh it waits for the next fresh tick.
+        if fresh {
+            let report = self.operator_policy.workspace_policies().take_report_due();
+            if report || self.operator_policy.due(&workspace) {
+                self.refresh_operator_policy(&workspace).await;
+            }
         }
         self.enforce_operator_policy().await;
     }
