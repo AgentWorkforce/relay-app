@@ -74,6 +74,7 @@ impl App {
                 .iter()
                 .filter(|key| {
                     !state.hiding_sessions.contains(*key)
+                        && !state.session_query.hidden_retry_waiting.contains(*key)
                         && (!state.session_query.hidden_confirmed.contains(*key)
                             || state
                                 .sessions
@@ -116,7 +117,10 @@ impl App {
             self.update_state(|s| {
                 s.session_query
                     .hidden_confirmed
-                    .retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)))
+                    .retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)));
+                s.session_query
+                    .hidden_retry_waiting
+                    .retain(|stored| !keys.iter().any(|key| same_hidden_session(stored, key)));
             });
             self.render_sessions();
             return;
@@ -126,6 +130,7 @@ impl App {
             self.update_state(|state| {
                 state.hiding_sessions.insert(key.clone());
                 state.session_query.hidden_confirmed.remove(&key);
+                state.session_query.hidden_retry_waiting.remove(&key);
                 state.session_selection.remove(&key);
             });
             let session =
@@ -174,16 +179,35 @@ impl App {
             if app.with_state(|s| s.generation) != generation {
                 return;
             }
-            app.update_state(|s| s.session_query.hidden_retry_scheduled = false);
+            app.update_state(|s| {
+                s.session_query.hidden_retry_scheduled = false;
+                s.session_query.hidden_retry_waiting.clear();
+            });
             if app.with_state(|s| s.core_connected) {
                 app.reconcile_hidden_sessions();
             }
         });
     }
+    /// A retired hide whose exclusion failed stays hidden and saved in its
+    /// old form, with no error on a row nobody sees. The exclusion is sent
+    /// again when the backoff timer fires or at the next connection.
+    fn keep_retired_hide(&self, key: &str) {
+        self.update_state(|s| {
+            s.hiding_sessions.remove(key);
+            s.session_query.hidden_retry_waiting.insert(key.into());
+        });
+        self.retry_hidden_sessions();
+        self.render_sessions();
+    }
     fn finish_hiding_session(&self, key: &str, error: Option<String>) {
-        // A retired hide is dropped once its exclusion succeeds: the chat
-        // shows again, its sharing stays off and no exclusion follows.
+        // A retired hide is dropped once its exclusion succeeds, and only
+        // then: the chat shows again, its sharing stays off and no exclusion
+        // follows.
         let retired = retired_hidden_keys(&self.saved_hidden_sessions()).contains(key);
+        if retired && error.is_some() {
+            self.keep_retired_hide(key);
+            return;
+        }
         let rolled_back = error.is_some() || retired;
         if rolled_back {
             let mut hidden = self.hidden_sessions();

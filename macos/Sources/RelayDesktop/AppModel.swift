@@ -185,6 +185,9 @@ final class AppModel {
     @ObservationIgnored private var hiddenConfirmed: Set<String> = []
     @ObservationIgnored private var hiddenRetryTask: Task<Void, Never>?
     @ObservationIgnored private var hiddenRetryAttempt = 0
+    /// Retired hides whose exclusion failed: a reconcile skips them until the
+    /// backoff timer fires or the connection is replaced.
+    @ObservationIgnored private var hiddenRetryWaiting: Set<String> = []
     @ObservationIgnored private var sessionQueryRevision = 0
     private(set) var sessionVerificationPending = false
     @ObservationIgnored private var sessionKnownRevision: Int?
@@ -1566,6 +1569,7 @@ final class AppModel {
         hiddenRetryTask?.cancel()
         hiddenRetryTask = nil
         hiddenRetryAttempt = 0
+        hiddenRetryWaiting = []
     }
 
     private func resetUploader() {
@@ -1971,7 +1975,7 @@ final class AppModel {
             !sessions.contains { $0.id == key && $0.included }
                 && LocalSessionRow.relaySession(for: key, in: relay.sessions)?.registration == nil
         }
-        let keys = hiddenSessionIDs.subtracting(hiddenConfirmed).subtracting(hidingSessionIDs)
+        let keys = hiddenSessionIDs.subtracting(hiddenConfirmed).subtracting(hidingSessionIDs).subtracting(hiddenRetryWaiting)
         guard !keys.isEmpty else { return }
         Task { await setSessionsHidden(keys: keys.filter { hiddenSessionIDs.contains($0) }, hidden: true) }
     }
@@ -1985,8 +1989,23 @@ final class AppModel {
             do { try await Task.sleep(nanoseconds: delay) } catch { return }
             guard let self, revision == self.connectionRevision else { return }
             self.hiddenRetryTask = nil
+            self.hiddenRetryWaiting = []
             self.reconcileHiddenSessions()
         }
+    }
+
+    /// A retired hide whose exclusion failed stays hidden and saved in its
+    /// old form, with no error on a row nobody sees. The exclusion is sent
+    /// again when the backoff timer fires or at the next connection.
+    private func keepRetiredHide(_ key: String) -> Bool {
+        guard isRetiredHide(key) else { return false }
+        hiddenRetryWaiting.insert(key)
+        retryHiddenSessions()
+        return true
+    }
+
+    private func isRetiredHide(_ key: String) -> Bool {
+        LocalSessionRow.retiredHiddenIDs(defaults.stringArray(forKey: "hiddenSessions.v1") ?? []).contains(key)
     }
 
     /// Hiding stops sharing without deleting an existing cloud copy. Unhiding
@@ -1996,10 +2015,12 @@ final class AppModel {
         if !hidden {
             hiddenSessionIDs = hiddenSessionIDs.filter { stored in !keys.contains { LocalSessionRow.sameHiddenSession(stored, $0) } }
             hiddenConfirmed = hiddenConfirmed.filter { stored in !keys.contains { LocalSessionRow.sameHiddenSession(stored, $0) } }
+            hiddenRetryWaiting = hiddenRetryWaiting.filter { stored in !keys.contains { LocalSessionRow.sameHiddenSession(stored, $0) } }
             return
         }
         if !keys.isSubset(of: hiddenSessionIDs) { hiddenSessionIDs.formUnion(keys); hiddenRetryAttempt = 0 }
         hidingSessionIDs.formUnion(keys)
+        hiddenRetryWaiting.subtract(keys)
         let revision = connectionRevision
         for key in keys {
             defer { if revision == connectionRevision { hidingSessionIDs.remove(key) } }
@@ -2008,6 +2029,7 @@ final class AppModel {
                 await relay.settled(session.id)
                 guard revision == connectionRevision else { continue }
                 if let error = relay.errors[session.id] {
+                    if keepRetiredHide(key) { continue }
                     hiddenSessionIDs = hiddenSessionIDs.filter { !LocalSessionRow.sameHiddenSession($0, key) }
                     uploadErrors[key] = "Could not hide session: " + error
                     continue
@@ -2035,9 +2057,10 @@ final class AppModel {
                 selectionRevision += 1
                 sessions = sessions.map { $0.id == key ? $0.withInclusion(false) : $0 }
                 uploadErrors[key] = nil
-                // A retired hide is dropped once its exclusion succeeds: the
-                // chat shows again, its sharing stays off and no exclusion follows.
-                if LocalSessionRow.retiredHiddenIDs(defaults.stringArray(forKey: "hiddenSessions.v1") ?? []).contains(key) {
+                // A retired hide is dropped once its exclusion succeeds, and
+                // only then: the chat shows again, its sharing stays off and
+                // no exclusion follows.
+                if isRetiredHide(key) {
                     hiddenSessionIDs = hiddenSessionIDs.filter { !LocalSessionRow.sameHiddenSession($0, key) }
                 }
             } catch let error as CoreError where error.kind == ErrorKind.notSignedIn.rawValue || error.kind == ErrorKind.busy.rawValue || error.kind == CoreError.closed.kind {
@@ -2046,6 +2069,7 @@ final class AppModel {
                 retryHiddenSessions()
             } catch {
                 guard revision == connectionRevision else { continue }
+                if keepRetiredHide(key) { continue }
                 hiddenSessionIDs = hiddenSessionIDs.filter { !LocalSessionRow.sameHiddenSession($0, key) }
                 uploadErrors[key] = "Could not hide session: " + error.localizedDescription
             }

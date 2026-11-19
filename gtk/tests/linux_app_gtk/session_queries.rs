@@ -610,6 +610,281 @@ fn cursor_x_exclusions(case: &Case) -> usize {
         .count()
 }
 
+fn cursor_x_included(case: &Case) -> Option<bool> {
+    case.app.with_state(|s| {
+        s.sessions
+            .iter()
+            .find(|row| row.source == "cursor" && row.session_id == "x")
+            .map(|row| row.included)
+    })
+}
+
+/// The exclusion of cursor:x fails with `error` the first time and succeeds
+/// after that.
+fn fails_once(error: RpcError) -> (Answer, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let answer = Answer::with(move |_| {
+        let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
+        let error = error.clone();
+        async move {
+            if first {
+                Err(error)
+            } else {
+                Ok(json!({"updated":1}))
+            }
+        }
+    });
+    (answer, calls)
+}
+
+/// A failed attempt keeps the old hide as it was saved, hidden, without a
+/// row error and unconfirmed, and nothing is sent again before the backoff.
+fn assert_old_cursor_hide_kept(case: &Case) {
+    assert_eq!(saved_hidden(case), Some(json!(["cursor-cli:x"])));
+    assert!(case.app.session_hidden("cursor:x"));
+    assert!(case.app.with_state(|s| {
+        !s.upload_errors.contains_key("cursor:x")
+            && !s.session_query.hidden_confirmed.contains("cursor:x")
+            && s.session_query.hidden_retry_waiting.contains("cursor:x")
+    }));
+    let queries = case.called("uploader.sessions.query").len();
+    let exclusions = cursor_x_exclusions(case);
+    case.app.refresh_uploader(true);
+    case.pump(|case| {
+        case.called("uploader.sessions.query").len() > queries
+            && case.app.with_state(|s| !s.refreshing_sessions)
+    });
+    assert_eq!(
+        cursor_x_exclusions(case),
+        exclusions,
+        "A session read does not send the exclusion again before the backoff"
+    );
+    assert!(case.app.with_state(|s| s.hiding_sessions.is_empty()));
+}
+
+/// The backoff sends the exclusion again; once it succeeds the hide is
+/// dropped and the chat shows with sharing off.
+fn assert_old_cursor_hide_dropped_after_retry(case: &Case) {
+    case.pump(|case| {
+        saved_hidden(case) == Some(json!([]))
+            && case.app.with_state(|s| s.hiding_sessions.is_empty())
+    });
+    assert!(!case.app.session_hidden("cursor:x"));
+    assert_eq!(cursor_x_included(case), Some(false));
+    assert!(case
+        .app
+        .with_state(|s| !s.upload_errors.contains_key("cursor:x")));
+}
+
+fn a_failed_exclusion_keeps_an_old_cursor_hide_and_tries_again_later(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let (exclude, calls) = fails_once(RpcError::new(ErrorKind::Internal, "Cannot stop uploads"));
+    let case = old_cursor_hide(runtime, exclude, json!(["cursor-cli:x"]));
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        calls.load(Ordering::SeqCst) == 1
+            && case.app.with_state(|s| {
+                s.hiding_sessions.is_empty()
+                    && s.session_query.hidden_retry_waiting.contains("cursor:x")
+            })
+    });
+    assert_old_cursor_hide_kept(&case);
+    assert_eq!(cursor_x_exclusions(&case), 1);
+    assert_old_cursor_hide_dropped_after_retry(&case);
+    assert_eq!(cursor_x_exclusions(&case), 2);
+}
+
+fn a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later(
+    runtime: &tokio::runtime::Runtime,
+) {
+    let registered = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let unregisters = Arc::new(AtomicUsize::new(0));
+    let (listed, unregistered, seen) =
+        (registered.clone(), registered.clone(), unregisters.clone());
+    // The uploader answers only after the chat's relay registration is
+    // known, so the hide takes the chat off the relay first.
+    let (read, local_read) = tokio::sync::watch::channel(false);
+    let (status_read, query_read) = (local_read.clone(), local_read);
+    let case = Case::seeded(
+        runtime,
+        move |core| {
+            core.answer(
+                "uploader.sessions.query",
+                Answer::with(move |_| {
+                    let mut read = query_read.clone();
+                    async move {
+                        read.wait_for(|read| *read).await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Ok(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null}))
+                    }
+                }),
+            );
+            core.answer(
+                "uploader.status",
+                Answer::with(move |_| {
+                    let mut read = status_read.clone();
+                    async move {
+                        read.wait_for(|read| *read).await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Ok(uploader())
+                    }
+                }),
+            );
+            core.answer(
+                "sessions.list",
+                Answer::with(move |_| {
+                    let registration = if listed.load(Ordering::SeqCst) {
+                        json!({"name":"chat","address":"chat@desk","added_by_session":false,"push":null})
+                    } else {
+                        Value::Null
+                    };
+                    read.send_replace(true);
+                    async move {
+                        Ok(json!({"sessions":[local_session("cursor-cli","x","Chat",true,registration)]}))
+                    }
+                }),
+            );
+            core.answer(
+                "agents.unregister",
+                Answer::with(move |_| {
+                    let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
+                    if !first {
+                        unregistered.store(false, Ordering::SeqCst);
+                    }
+                    async move {
+                        if first {
+                            Err(RpcError::new(ErrorKind::Internal, "Relay is unavailable"))
+                        } else {
+                            Ok(json!({"removed":true}))
+                        }
+                    }
+                }),
+            );
+            core.answer("uploader.sessions.exclude", json!({"updated":1}));
+        },
+        Arc::new(FakeService::default()),
+        |prefs| {
+            prefs
+                .set("hiddenSessions.v1", json!(["cursor-cli:x"]))
+                .unwrap()
+        },
+    );
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        unregisters.load(Ordering::SeqCst) == 1
+            && case.app.with_state(|s| {
+                s.hiding_sessions.is_empty()
+                    && s.session_query.hidden_retry_waiting.contains("cursor:x")
+            })
+    });
+    assert_eq!(cursor_x_exclusions(&case), 0);
+    assert_old_cursor_hide_kept(&case);
+    assert_eq!(unregisters.load(Ordering::SeqCst), 1);
+    assert_old_cursor_hide_dropped_after_retry(&case);
+    assert_eq!(unregisters.load(Ordering::SeqCst), 2);
+    assert_eq!(cursor_x_exclusions(&case), 1);
+    assert!(!registered.load(Ordering::SeqCst));
+}
+
+fn an_ordinary_hide_still_rolls_back_on_a_failed_exclusion(runtime: &tokio::runtime::Runtime) {
+    let case = old_cursor_hide(
+        runtime,
+        fail(ErrorKind::Internal, "Cannot stop uploads"),
+        json!(["cursor-cli:x"]),
+    );
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        cursor_x_exclusions(case) == 1
+            && case.app.with_state(|s| {
+                s.hiding_sessions.is_empty()
+                    && s.session_query.hidden_retry_waiting.contains("cursor:x")
+            })
+    });
+    case.app
+        .set_sessions_hidden(vec!["codex:other".into()], true);
+    case.pump(|case| case.app.with_state(|s| s.hiding_sessions.is_empty()));
+    assert!(!case.app.session_hidden("codex:other"));
+    assert_eq!(
+        case.app
+            .with_state(|s| s.upload_errors.get("codex:other").cloned()),
+        Some("Could not hide session: Cannot stop uploads".into())
+    );
+    assert!(case.app.session_hidden("cursor:x"));
+    assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
+    assert!(case
+        .app
+        .with_state(|s| !s.upload_errors.contains_key("cursor:x")));
+}
+
+fn an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide(
+    runtime: &tokio::runtime::Runtime,
+) {
+    use std::sync::atomic::AtomicU64;
+    let policy = Arc::new(AtomicU64::new(10));
+    let held = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (status_revision, release, seen) = (policy.clone(), held.clone(), calls.clone());
+    let case = Case::seeded(
+        runtime,
+        move |core| {
+            core.answer("uploader.sessions.query", Answer::Value(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})));
+            core.answer(
+                "uploader.status",
+                Answer::with(move |_| {
+                    let mut status = uploader();
+                    status["upload_policy_revision"] =
+                        json!(status_revision.load(Ordering::SeqCst));
+                    async move { Ok(status) }
+                }),
+            );
+            core.answer(
+                "uploader.sessions.exclude",
+                Answer::with(move |_| {
+                    let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
+                    let held = release.clone();
+                    async move {
+                        if first {
+                            held.notified().await;
+                        }
+                        Ok(json!({"updated":1}))
+                    }
+                }),
+            );
+        },
+        Arc::new(FakeService::default()),
+        |prefs| {
+            prefs
+                .set("hiddenSessions.v1", json!(["cursor-cli:x"]))
+                .unwrap()
+        },
+    );
+    case.set_state(workspace_snapshot());
+    case.pump(|case| {
+        calls.load(Ordering::SeqCst) == 1
+            && case
+                .app
+                .with_state(|s| s.session_query.upload_policy_revision == Some(10))
+    });
+    let observed = policy.fetch_add(1, Ordering::SeqCst) + 1;
+    case.app.refresh_uploader(false);
+    case.pump(|case| {
+        case.app
+            .with_state(|s| s.session_query.upload_policy_revision == Some(observed as i64))
+    });
+    held.notify_one();
+    case.pump(|case| case.app.with_state(|s| s.hiding_sessions.is_empty()));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
+    assert!(case.app.session_hidden("cursor:x"));
+    assert!(case
+        .app
+        .with_state(|s| !s.session_query.hidden_confirmed.contains("cursor:x")));
+    assert_old_cursor_hide_dropped_after_retry(&case);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
 fn an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turned_on(
     runtime: &tokio::runtime::Runtime,
 ) {
@@ -636,6 +911,11 @@ fn an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turne
     assert_eq!(cursor_x_exclusions(&case), 1);
     assert!(!case.app.session_hidden("cursor:x"));
     assert!(case.app.session_hidden("cursor:y"));
+    assert_eq!(
+        cursor_x_included(&case),
+        Some(false),
+        "The chat shows again with sharing off"
+    );
     // The core now reports sharing on, as after the person turned it on.
     let before = case.called("uploader.sessions.query").len();
     case.app.refresh_uploader(true);
@@ -809,6 +1089,22 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "other_hides_keep_an_old_cursor_hide_in_its_old_form",
         other_hides_keep_an_old_cursor_hide_in_its_old_form,
+    ),
+    (
+        "a_failed_exclusion_keeps_an_old_cursor_hide_and_tries_again_later",
+        a_failed_exclusion_keeps_an_old_cursor_hide_and_tries_again_later,
+    ),
+    (
+        "a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later",
+        a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later,
+    ),
+    (
+        "an_ordinary_hide_still_rolls_back_on_a_failed_exclusion",
+        an_ordinary_hide_still_rolls_back_on_a_failed_exclusion,
+    ),
+    (
+        "an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide",
+        an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide,
     ),
     (
         "agent_prefix_refusals_show_unavailable_without_text_fallback",

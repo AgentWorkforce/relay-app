@@ -15,6 +15,9 @@ pub struct SessionQueryState {
     pub upload_policy_revision: Option<i64>,
     pub hidden_retry_scheduled: bool,
     pub hidden_retry_attempt: u32,
+    /// Retired hides whose exclusion failed: a reconcile skips them until the
+    /// backoff timer fires or the connection is replaced.
+    pub hidden_retry_waiting: std::collections::BTreeSet<String>,
     pub archived_keys: Option<std::collections::BTreeSet<String>>,
     pub local_sessions: Option<Vec<LocalSession>>,
 }
@@ -27,6 +30,7 @@ impl super::super::State {
         self.session_query.upload_policy_revision = None;
         self.session_query.hidden_retry_scheduled = false;
         self.session_query.hidden_retry_attempt = 0;
+        self.session_query.hidden_retry_waiting.clear();
         self.session_query.presentation_revision = None;
         self.session_query.known_revision = None;
         self.session_query.cursor = None;

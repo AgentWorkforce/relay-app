@@ -5,6 +5,7 @@
 
 mod agent_kind;
 mod agent_names;
+mod hidden_keys;
 mod local_sessions;
 mod session_activity;
 mod session_project;
@@ -13,6 +14,7 @@ mod uploads;
 
 pub use agent_kind::*;
 pub use agent_names::*;
+pub use hidden_keys::*;
 pub use local_sessions::*;
 pub use session_activity::*;
 pub use session_project::*;
