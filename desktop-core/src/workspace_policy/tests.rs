@@ -486,8 +486,31 @@ fn a_repeated_settings_failure_is_reported_once() {
     // Signed out, the lift fails with the same words: still reported.
     assert!(cache.settings_failure_is_new(&None, "another failure"));
     assert!(!cache.settings_failure_is_new(&None, "another failure"));
-    cache.settings_applied(None);
+    cache.settings_applied(None, None);
     assert!(cache.settings_failure_is_new(&None, "another failure"));
+}
+
+/// The revision the core holds is told only for its own workspace, and a
+/// change to it is due to be told once; a lift at sign-out tells nothing.
+#[test]
+fn an_applied_revision_is_told_for_its_workspace_once_it_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = WorkspacePolicies::new(dir.path());
+    assert_eq!(cache.applied_revision(WORKSPACE), None);
+    assert!(!cache.take_report_due());
+    cache.settings_applied(None, Some((WORKSPACE.to_string(), 4)));
+    assert_eq!(cache.applied_revision(WORKSPACE), Some(4));
+    assert_eq!(cache.applied_revision("ws_other"), None);
+    assert!(cache.take_report_due());
+    assert!(!cache.take_report_due());
+    // The same revision again (nothing to hand over) is not news.
+    cache.revision_applied(Some((WORKSPACE.to_string(), 4)));
+    assert!(!cache.take_report_due());
+    cache.revision_applied(Some((WORKSPACE.to_string(), 5)));
+    assert!(cache.take_report_due());
+    cache.settings_applied(None, None);
+    assert_eq!(cache.applied_revision(WORKSPACE), None);
+    assert!(!cache.take_report_due());
 }
 
 

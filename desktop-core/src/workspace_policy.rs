@@ -33,8 +33,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
+mod applied;
 pub mod keys;
 pub mod settings;
 
@@ -477,6 +479,11 @@ pub struct WorkspacePolicies {
     /// policy it was handing over, so it is reported once rather than on
     /// every tick.
     settings_failure: Mutex<Option<(Option<SettingsPolicy>, String)>>,
+    /// The workspace and policy revision whose settings the core holds, told
+    /// to Cloud on that workspace's `access/me`; `None` until one applies.
+    applied_revision: Mutex<Option<(String, i64)>>,
+    /// The applied revision changed since `access/me` was last read for it.
+    report_due: AtomicBool,
     /// The policy an enrollment key's exchange answered with, and the sign-in
     /// attempt it belongs to, until that attempt connects a workspace.
     enrollment_seed: Mutex<Option<(u64, WorkspacePolicy)>>,
@@ -501,6 +508,8 @@ impl WorkspacePolicies {
             saved: Mutex::new(saved),
             applied_settings: Mutex::new(None),
             settings_failure: Mutex::new(None),
+            applied_revision: Mutex::new(None),
+            report_due: AtomicBool::new(false),
             enrollment_seed: Mutex::new(None),
             read: Mutex::new(BTreeSet::new()),
         }
@@ -531,43 +540,6 @@ impl WorkspacePolicies {
                 self.record(workspace_id, Fetched::Seed(Box::new(policy)));
             }
         }
-    }
-
-    /// Records `message` as the latest failure to hand `wanted` over;
-    /// answers whether it differs from the one before (worth showing): a
-    /// failure for another policy, a lift included, is new even with the same
-    /// message.
-    pub fn settings_failure_is_new(&self, wanted: &Option<SettingsPolicy>, message: &str) -> bool {
-        let mut last = self
-            .settings_failure
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let failure = (wanted.clone(), message.to_string());
-        let new = last.as_ref() != Some(&failure);
-        *last = Some(failure);
-        new
-    }
-
-    /// Whether `wanted` differs from the settings policy last handed to the
-    /// core in this run.
-    pub fn settings_changed(&self, wanted: &Option<SettingsPolicy>) -> bool {
-        let applied = self
-            .applied_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        applied.as_ref() != Some(wanted)
-    }
-
-    /// Records `applied` as handed to the core.
-    pub fn settings_applied(&self, applied: Option<SettingsPolicy>) {
-        *self
-            .settings_failure
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        *self
-            .applied_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(applied);
     }
 
     /// The cached entry for `workspace_id`.

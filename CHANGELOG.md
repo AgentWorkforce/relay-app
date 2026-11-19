@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Your organization's fleet view shows which release and policy each computer runs.** On macOS, Linux and Windows, when Agent Relay reads your organization's policy it now tells Agent Relay Cloud its release, its platform (macOS, Linux or Windows) and the workspace policy revision it applied, so admins can see in the fleet view which computers are current. A newly applied revision is reported about a minute later rather than at the next 15-minute read. The enrollment key sign-in names the platform the same way. Nothing changes in the app.
+
 ## v2026.11.16
 
 - **An agent's questions can come to you over the relay.** On macOS, Linux and Windows, the core has a new `question_escalation` setting, off by default; `agent-relay-probe settings question_escalation=on` turns it on (and `=off` turns it off again). While it is on, a question a Claude Code session asks with AskUserQuestion (through Agent Relay's Claude Code hook, `claude_session_hook`) or a spawned Codex session asks is sent as a direct message, `[Question <ref> from @agent on host] ...`, to the question inbox, by default your own person identity, instead of waiting on a dialog, and the session keeps working. Reply `answer <ref> <number or text>` and the answer is typed back into that session; only the inbox can answer, and a question left unanswered for 30 minutes expires and the session carries on without it. Interactive Codex, Cursor, Copilot, Grok and OpenCode sessions have no hook before a question is shown, so the core reports question escalation as unavailable for them. There is no switch for it in Settings yet.
