@@ -19,6 +19,48 @@ final class SessionForkTests: XCTestCase {
         XCTAssertNil(SessionFork.harness(for: agent("helper", kind: "opencode")))
     }
 
+    func testGrokSessionsForkWhereTheComputerOffersIt() {
+        let grokNode = RelaySpawnNode(name: "studio-mac-desktop", harnesses: ["claude", "codex", "grok"],
+                                      forkHarnesses: ["claude", "codex", "grok"], machine: "Studio-Mac")
+        for kind in ["grok", "grok-open"] {
+            let session = agent("scout", kind: kind)
+            XCTAssertEqual(SessionFork.harness(for: session), "grok")
+            XCTAssertEqual(SessionFork.availability(for: session, nodes: [grokNode], live: true),
+                           .available(harness: "grok", nodes: [grokNode]))
+            // A computer that forks only Claude and Codex is reported, not hidden.
+            XCTAssertEqual(SessionFork.availability(for: session, nodes: [studio], live: true),
+                           .unavailable("\(session.machine) isn't online with a version of Agent Relay that can fork sessions. Update Agent Relay on it, then try again."))
+        }
+    }
+
+    func testANameContainingGrokIsNotAStatedHarness() {
+        let named = RelayAgent(relay: ["name": "devopsgrok", "status": "active"])
+        XCTAssertEqual(named.cli, "grok")
+        XCTAssertEqual(named.statedCLI, "")
+        XCTAssertNil(SessionFork.harness(for: named, roster: [named]))
+        XCTAssertEqual(SessionFork.availability(for: named, nodes: [studio], live: true, roster: [named]),
+                       .unavailable("Only Claude, Codex and Grok sessions can be forked."))
+    }
+
+    func testAGrokBotKindIsNotAForkHarness() {
+        let grokNode = RelaySpawnNode(name: "studio-mac-desktop", harnesses: ["claude", "codex", "grok"],
+                                      forkHarnesses: ["claude", "codex", "grok"], machine: "Studio-Mac")
+        for kind in ["grok-bot", "Grok Bot", "grok_bot", "grokbot"] {
+            let bot = RelayAgent(relay: ["name": "helper", "status": "active", "metadata": ["session_kind": kind]])
+            XCTAssertEqual(bot.statedCLI, "", kind)
+            XCTAssertNil(SessionFork.harness(for: bot, roster: [bot]), kind)
+            XCTAssertEqual(SessionFork.availability(for: bot, nodes: [grokNode], live: true, roster: [bot]),
+                           .unavailable("Only Claude, Codex and Grok sessions can be forked."), kind)
+        }
+        // The icon still comes from the record's cli.
+        let icon = RelayAgent(relay: ["name": "helper", "status": "active", "metadata": ["session_kind": "grok-bot"]])
+        XCTAssertEqual(icon.cli, "grok")
+        // A bot kind anywhere wins over another hint.
+        let mixed = RelayAgent(relay: ["name": "helper", "status": "active",
+                                       "metadata": ["session_kind": "grok-bot", "provider": "grok"]])
+        XCTAssertEqual(mixed.statedCLI, "")
+    }
+
     func testEveryInstallationOnTheAgentsMachineThatForksIsACandidate() {
         let planner = agent("planner", kind: "claude-terminal")
         XCTAssertEqual(SessionFork.availability(for: planner, nodes: [studio, second, old], live: true),
@@ -34,7 +76,7 @@ final class SessionForkTests: XCTestCase {
         }
         XCTAssertTrue(reason.contains("Studio Mac"))
         XCTAssertEqual(SessionFork.availability(for: agent("helper", kind: "opencode"), nodes: [studio], live: true),
-                       .unavailable("Only Claude and Codex sessions can be forked."))
+                       .unavailable("Only Claude, Codex and Grok sessions can be forked."))
     }
 
     private let lab = RelaySpawnNode(name: "lab-desktop", harnesses: ["claude", "codex"],
@@ -75,7 +117,7 @@ final class SessionForkTests: XCTestCase {
         let agent = spawnedRecord("events-shim-merge")
         XCTAssertNil(SessionFork.harness(for: agent, roster: [agent]))
         XCTAssertEqual(SessionFork.availability(for: agent, nodes: [lab], live: true, roster: [agent]),
-                       .unavailable("Only Claude and Codex sessions can be forked."))
+                       .unavailable("Only Claude, Codex and Grok sessions can be forked."))
         // A name is not evidence of the harness either.
         let named = RelayAgent(relay: ["name": "claude-helper", "status": "active"])
         XCTAssertEqual(named.cli, "claude")
@@ -132,7 +174,7 @@ final class SessionForkTests: XCTestCase {
         XCTAssertNil(SessionFork.harness(for: record, roster: [record], spawned: spawned))
         XCTAssertEqual(SessionFork.availability(for: record, nodes: [lab, annex], live: true, roster: [record],
                                                 spawned: spawned),
-                       .unavailable("Only Claude and Codex sessions can be forked."))
+                       .unavailable("Only Claude, Codex and Grok sessions can be forked."))
         // The roster's statement then decides, and both nodes stay candidates.
         let current = agent("shim", kind: "claude-terminal")
         XCTAssertEqual(SessionFork.availability(for: record, nodes: [lab, annex], live: true, roster: [current],
