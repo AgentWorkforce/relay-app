@@ -109,7 +109,7 @@ public struct LocalSessionRow: Identifiable, Equatable {
 
     /// Row ids a relay-only session had before it joined its transcript by
     /// upload key; hidden sessions saved under them stay hidden.
-    private static let renamedIDs = [("grok-open:", "grok:"), ("opencode-open:", "opencode:"), ("muse-open:", "muse:")]
+    private static let renamedIDs = [("grok-open:", "grok:"), ("opencode-open:", "opencode:"), ("muse-open:", "muse:"), ("cursor-cli:", "cursor:")]
 
     /// The current row id for a hidden session saved under an older one.
     public static func currentHiddenID(_ id: String) -> String {

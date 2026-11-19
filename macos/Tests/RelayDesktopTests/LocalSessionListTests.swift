@@ -49,6 +49,21 @@ final class LocalSessionListTests: XCTestCase {
         XCTAssertEqual(SessionKind.claudeCloud.iconSource, "claude")
     }
 
+    func testCursorHistoryAndRelayDiscoveryAreOneUploadableRow() throws {
+        let id = "e142445f-f5d7-4b0a-a4d7-02ab80d4833f"
+        let cursor = session(.cursorCli, id)
+        let history = upload("cursor", id)
+        let rows = LocalSessionRow.merge(uploads: [history], sessions: [cursor])
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(row.id, "cursor:\(id)")
+        XCTAssertEqual(row.upload, history)
+        XCTAssertEqual(row.relay, cursor)
+        XCTAssertFalse(try XCTUnwrap(row.upload).included)
+        XCTAssertEqual(LocalSessionRow.relaySession(for: row.id, in: [cursor]), cursor)
+        XCTAssertEqual(LocalSessionRow.currentHiddenID("cursor-cli:\(id)"), row.id)
+    }
+
     func testClaudeWebHistoryAndRelayDiscoveryAreOneRow() {
         let id = "cse_019a7SvoqfvBg4Z6zbjanBat"
         let targetID = "session_019a7SvoqfvBg4Z6zbjanBat"
