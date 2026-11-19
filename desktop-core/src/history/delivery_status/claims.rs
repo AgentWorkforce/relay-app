@@ -104,14 +104,18 @@ pub const UPDATE_REQUIRED: &str =
 /// as builds from before revisions were recorded did. One that recorded
 /// another revision is another build of this release, and is outdated only
 /// when `replace_same_release`: this build owns the default core
-/// (`site_choices::default_core`), the same rule as the command-line copy
-/// (`probe_copy`). A release version carries no revision, so without it a new
-/// candidate of the version already installed would keep the previous
-/// build's collector running; a site profile built to coexist
-/// (`DESKTOP_COEXIST`) that shares this collector directory never replaces
-/// it, so two builds of one release never take turns replacing each other's
-/// collector. Two builds that both report the revision `unknown` (built
-/// outside Git) count as one build. A newer build's collector is never
+/// (`site_choices::default_core`), the same rule as the shared command-line
+/// copy (`probe_copy`). A release version carries no revision, so without it
+/// a new candidate of the version already installed would keep the previous
+/// build's collector running. A site profile, which runs its own core on its
+/// own socket, shares this collector directory only when signed in to the
+/// same site, account and workspace, and never replaces another build of its
+/// release there, so two builds of one release never take turns replacing
+/// each other's collector. One collector serves the directory, so a site
+/// profile's core still replaces an older one there, even a profile built to
+/// coexist, which never writes the shared command-line copy at all. Two
+/// builds that both report the revision `unknown` (built outside Git) count
+/// as one build. A newer build's collector is never
 /// outdated: replacing it would downgrade uploads.
 pub fn outdated(directory: &Path, replace_same_release: bool) -> bool {
     let Some(runtime) = runtime(directory) else {

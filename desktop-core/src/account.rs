@@ -1812,9 +1812,9 @@ pub fn with_account(
     let choices =
         site_choices::for_build(built_in_site_url(), project.is_some(), &config.env, version);
     telemetry_config.project = project.filter(|_| choices.telemetry_project);
-    account.command_line_copy = choices
-        .command_line_copy
-        .then(|| site_choices::command_line_copy(executable, config));
+    let coexists = crate::executable_identity::built_to_coexist();
+    account.command_line_copy = site_choices::command_line_copy(executable, config, coexists)
+        .filter(|_| choices.command_line_copy);
     account.launch_at_login_after_sign_in = !headless;
     let locations = Arc::new(crate::session_locations::SessionLocations::new(
         plugin::session_location_config(config),

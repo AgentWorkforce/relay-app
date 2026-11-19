@@ -26,22 +26,31 @@ pub(super) struct SiteChoices {
 /// Whether this build's core is the default one, on the default core
 /// socket. Only such a build replaces another build of its own release, at
 /// the command-line copy (`probe_copy`) and at a workspace's collector
-/// (`delivery_status::outdated`): a site profile built to coexist
-/// (`DESKTOP_COEXIST`) runs its own core on its own socket and shares both,
-/// so two builds of one release never take turns replacing them.
+/// (`delivery_status::outdated`): a site profile runs its own core on its
+/// own socket (`build-app.sh` gives it `core.<bundle id>.sock`), and two
+/// builds of one release never take turns replacing what they share.
 pub(super) fn default_core(config: &agent_relay_node::relay::daemon::Config) -> bool {
     config.paths.socket == agent_relay_node::relay::paths::default_socket(&config.home)
 }
 
-/// This binary, where its command-line copy goes, and whether this build
-/// replaces another build of its own release there: only when its core is
-/// the default one (`default_core`).
+/// This binary, where its shared command-line copy goes, and whether this
+/// build replaces another build of its own release there: only when its
+/// core is the default one (`default_core`). A site profile on its own
+/// socket keeps the shared copy too, upgrading it but never replacing a
+/// build of its own release. A site profile built to coexist (`coexists`,
+/// `executable_identity::built_to_coexist`) never writes it: it runs its own
+/// copy in its app data (`mcp_settings::Installer::with_core_sockets`), and
+/// the shared one stays the stock app's. `None` for that build.
 pub(super) fn command_line_copy(
     executable: PathBuf,
     config: &agent_relay_node::relay::daemon::Config,
-) -> (PathBuf, PathBuf, bool) {
-    let destination = crate::probe_copy::destination(&config.home);
-    (executable, destination, default_core(config))
+    coexists: bool,
+) -> Option<(PathBuf, PathBuf, bool)> {
+    let default_core = default_core(config);
+    (default_core || !coexists).then(|| {
+        let destination = crate::probe_copy::destination(&config.home);
+        (executable, destination, default_core)
+    })
 }
 
 /// Brings the command-line copy `command_line_copy` describes up to date,

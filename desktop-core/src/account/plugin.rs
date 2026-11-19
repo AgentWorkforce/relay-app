@@ -55,9 +55,15 @@ fn provider_installer(
             &std::env::current_exe().unwrap_or_default(),
         )
     } else {
+        let executable = std::env::current_exe().ok();
         installer
-            .with_copilot_executable(std::env::current_exe().ok())
-            .with_core_sockets(config)
+            .with_copilot_executable(executable.clone())
+            .with_core_sockets(
+                config,
+                executable
+                    .as_deref()
+                    .filter(|_| crate::executable_identity::built_to_coexist()),
+            )
     });
     sessions.configure_copilot_helper(installer.copilot_helper());
     installer

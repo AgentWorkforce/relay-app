@@ -2,6 +2,7 @@
 //! installs a helper/configuration into the person's production directories.
 use super::*;
 mod codex;
+use agent_relay_node::platform::exe;
 use agent_relay_node::relay::daemon::Config;
 use codex::CodexScope;
 use sha2::{Digest, Sha256};
@@ -136,12 +137,16 @@ pub(super) struct Helper {
     /// The Claude and Codex entry name of a site profile build, so its entry
     /// sits beside Agent Relay's [`NAME`] rather than replacing it.
     server: Option<String>,
+    /// What the helper is copied from: a development build's, and a build
+    /// whose core is not the default one's (`set_own_copy`).
     source: Option<PathBuf>,
     root: Option<PathBuf>,
     digest: Option<String>,
     ready: AtomicBool,
     checked: AtomicBool,
     codex: Option<CodexScope>,
+    /// Held while the own copy is made, so two callers never write it at once.
+    copying: std::sync::Mutex<()>,
 }
 
 impl Helper {
@@ -158,16 +163,13 @@ impl Helper {
             ready: AtomicBool::new(true),
             checked: AtomicBool::new(true),
             codex: None,
+            copying: Default::default(),
         }
     }
 
     fn development(root: &Path, socket: &Path, source: &Path, codex: Option<CodexScope>) -> Self {
         let digest = digest(source);
-        let name = if cfg!(windows) {
-            "agent-relay-probe.exe"
-        } else {
-            "agent-relay-probe"
-        };
+        let name = crate::probe_copy::file_name();
         Self {
             path: root
                 .join("mcp/bin")
@@ -183,6 +185,7 @@ impl Helper {
             ready: AtomicBool::new(false),
             checked: AtomicBool::new(false),
             codex,
+            copying: Default::default(),
         }
     }
 
@@ -198,6 +201,33 @@ impl Helper {
             self.session = Some(session.into());
             self.server = Some(server);
         }
+    }
+    /// A site profile built to coexist runs its own copy of
+    /// `source` in its app data (`probe_copy::own_destination`), never the
+    /// shared `~/.local/bin` one, which the stock app's hooks and helpers run.
+    pub(super) fn set_own_copy(&mut self, source: &Path, app_data_dir: &Path) {
+        if !self.development_scope() {
+            self.path = crate::probe_copy::own_destination(app_data_dir);
+            self.source = Some(source.into());
+            self.ready.store(false, Ordering::Release);
+            self.checked.store(false, Ordering::Release);
+        }
+    }
+    /// Brings the own copy up to date once, then whether it runs.
+    fn keep_own(&self, source: &Path) -> bool {
+        let _copying = self
+            .copying
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.ready.load(Ordering::Acquire) || !exe::is_executable(&self.path) {
+            let ready = crate::probe_copy::keep_own(source, &self.path);
+            self.ready.store(ready, Ordering::Release);
+        }
+        self.checked.store(true, Ordering::Release);
+        self.ready.load(Ordering::Acquire) && exe::is_executable(&self.path)
+    }
+    fn own_copy(&self) -> Option<&Path> {
+        self.source.as_deref().filter(|_| !self.development_scope())
     }
     /// The Claude and Codex entry this build writes and owns.
     pub fn server(&self) -> &str {
@@ -256,8 +286,7 @@ impl Helper {
     /// names, a site profile build's.
     pub(super) fn cursor_guide_hook(&self) -> Option<(String, Option<&Path>)> {
         let socket = self.session.as_deref();
-        let command =
-            super::cursor_guide::command(&self.path, self.development_scope(), socket)?;
+        let command = super::cursor_guide::command(&self.path, self.development_scope(), socket)?;
         Some((command, socket))
     }
     /// The probe executable, which Cursor's MCP entry runs as its helper.
@@ -270,8 +299,10 @@ impl Helper {
         self.session.as_deref()
     }
     pub fn usable(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
-            && agent_relay_node::platform::exe::is_executable(&self.path)
+        if let Some(source) = self.own_copy().filter(|_| self.pending()) {
+            return self.keep_own(source);
+        }
+        self.ready.load(Ordering::Acquire) && exe::is_executable(&self.path)
     }
     pub fn pending(&self) -> bool {
         !self.checked.load(Ordering::Acquire)
@@ -294,6 +325,9 @@ impl Helper {
         let Some(source) = &self.source else {
             return true;
         };
+        if let Some(source) = self.own_copy() {
+            return self.keep_own(source);
+        }
         if !self.valid() || !self.codex.as_ref().is_some_and(CodexScope::ensure) {
             self.checked.store(true, Ordering::Release);
             return false;
