@@ -282,6 +282,7 @@ const RENAMED_ROW_KEYS: &[(&str, &str)] = &[
     ("grok-open:", "grok:"),
     ("opencode-open:", "opencode:"),
     ("muse-open:", "muse:"),
+    ("cursor-cli:", "cursor:"),
 ];
 
 /// The current row key for a hidden session saved under an older one.
@@ -401,7 +402,11 @@ mod tests {
         let id = "01a15bca-891b-7ce2-9318-d0683ee0163a";
         let row = merge_local_sessions(&[], &[local("grok-open", id)]).remove(0);
         assert_eq!(current_hidden_key(&format!("grok-open:{id}")), row.key());
-        for (kind, id) in [("opencode-open", "ses_1"), ("muse-open", "m1")] {
+        for (kind, id) in [
+            ("opencode-open", "ses_1"),
+            ("muse-open", "m1"),
+            ("cursor-cli", "cursor-1"),
+        ] {
             let row = merge_local_sessions(&[], &[local(kind, id)]).remove(0);
             assert_eq!(current_hidden_key(&format!("{kind}:{id}")), row.key());
         }

@@ -36,12 +36,10 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 13ace287, after ed9bfee5: #2206 (a spawned Grok leader idle for a day
-# is ended and taken off the relay), #2213 (workspace leaders: a leader's
-# direct message is native input; settings.get lists them, read only) and
-# #2218 (a spawn can fork a Grok session; not on Windows).
+# main 52fc1197 (#2223): joins local Cursor sessions to upload history and
+# preserves their Archived classification when upgrading.
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "13ace287f03167f614ea3f74b4de49f47a591411", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "52fc1197888da2635b2bcad5b0c0ce5072e315da", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:

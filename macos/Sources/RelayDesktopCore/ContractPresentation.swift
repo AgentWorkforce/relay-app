@@ -199,10 +199,9 @@ extension Target {
     public var uploadKey: String? {
         switch kind {
         // Every route names a session by its harness's own id.
-        case .codex, .claudeTerminal, .grok, .grokOpen, .opencode, .opencodeOpen, .museOpen, .devin, .copilot:
+        case .codex, .claudeTerminal, .grok, .grokOpen, .opencode, .opencodeOpen, .museOpen, .devin, .copilot, .cursorCli:
             return "\(kind.source):\(id)"
-        // Cursor CLI transcripts are not collected yet.
-        case .claudeCloud, .openclaw, .hermes, .droid, .pi, .omp, .cursorCli, .unknown: return nil
+        case .claudeCloud, .openclaw, .hermes, .droid, .pi, .omp, .unknown: return nil
         }
     }
 }

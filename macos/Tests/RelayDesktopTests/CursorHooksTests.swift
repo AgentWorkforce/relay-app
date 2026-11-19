@@ -33,7 +33,8 @@ final class CursorHooksTests: XCTestCase {
         XCTAssertEqual(kind, .cursorCli)
         XCTAssertEqual(kind.label, "Cursor CLI")
         XCTAssertEqual(kind.source, "cursor")
-        XCTAssertNil(Target(id: "6e0af963-e21c-4fb8-a8e8-7f34765b6d64", kind: kind).uploadKey)
+        XCTAssertEqual(Target(id: "6e0af963-e21c-4fb8-a8e8-7f34765b6d64", kind: kind).uploadKey,
+                       "cursor:6e0af963-e21c-4fb8-a8e8-7f34765b6d64")
     }
 
     func testCopilotSessionsAreLabelledAndKeyedLikeRelayNode() throws {

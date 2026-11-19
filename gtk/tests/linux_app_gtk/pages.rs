@@ -81,6 +81,66 @@ fn delivery(chat: &agent_relay_app::ui::messages::Chat) -> String {
 
 // My sessions.
 
+fn cursor_messaging_and_history_share_the_upload_control(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.show_window();
+    let id = "e142445f-f5d7-4b0a-a4d7-02ab80d4833f";
+    let key = format!("cursor:{id}");
+    let history = upload_row("cursor", id, "test, 1,2", "/w/cursor", false, "not_shared");
+    case.app.update_state(|state| {
+        state
+            .sessions
+            .push(serde_json::from_value(history.clone()).unwrap());
+        state.local_sessions.push(
+            serde_json::from_value(local_session(
+                "cursor-cli",
+                id,
+                "test, 1,2",
+                true,
+                Value::Null,
+            ))
+            .unwrap(),
+        );
+    });
+    case.app.render_page();
+    let shell = case.app.shell().unwrap();
+    let page = &shell.pages.sessions;
+    assert_eq!(
+        page.row_keys().iter().filter(|k| k.ends_with(id)).count(),
+        1
+    );
+    let open: gtk::Button = named(&page.list, &format!("open-session {key}")).remove(0);
+    open.emit_clicked();
+    case.pump(|case| !case.called("sessions.transcript").is_empty());
+    page.transcript.details.set_active(true);
+    case.settle();
+    assert!(!labels(&page.transcript.root).contains(&"Indexing".into()));
+    assert!(page.transcript.save.is_visible());
+    assert!(page.transcript.save.is_sensitive());
+    assert!(!page.transcript.save.is_active());
+    assert!(case.called("uploader.sessions.include").is_empty());
+    let mut selected = history;
+    selected["included"] = json!(true);
+    selected["status"] = json!("shared");
+    let mut listed = sessions();
+    listed["sessions"].as_array_mut().unwrap().push(selected);
+    case.answer("uploader.sessions.list", listed);
+    page.transcript
+        .save
+        .emit_by_name::<bool>("state-set", &[&true]);
+    case.pump(|case| !case.called("uploader.sessions.include").is_empty());
+    assert_eq!(
+        case.called("uploader.sessions.include")[0],
+        json!({"session_keys": [key]})
+    );
+    case.pump(|case| case.app.with_state(|state| {
+        state.sessions.iter().any(|session| session.session_id == id && session.included)
+            && state.busy_uploads.is_empty()
+    }));
+    assert!(page.transcript.save.is_active());
+}
+
 fn sessions_show_uploads_and_mutate_through_the_core(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -3193,6 +3253,10 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "receive_messages_retires_reads_before_acknowledgement",
         receive_messages_retires_reads_before_acknowledgement,
+    ),
+    (
+        "cursor_messaging_and_history_share_the_upload_control",
+        cursor_messaging_and_history_share_the_upload_control,
     ),
     (
         "sessions_show_uploads_and_mutate_through_the_core",
