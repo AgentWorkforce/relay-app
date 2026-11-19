@@ -236,7 +236,12 @@ final class AppModel {
     }
     var sessionGrouping: LocalSessionGrouping = .none
     private(set) var hiddenSessionIDs: Set<String> = [] {
-        didSet { defaults.set(Array(hiddenSessionIDs).sorted(), forKey: "hiddenSessions.v1"); if oldValue != hiddenSessionIDs { sessionQueryChanged() } }
+        didSet {
+            // A retired hide still waiting for its exclusion keeps its old id.
+            let saved = defaults.stringArray(forKey: "hiddenSessions.v1") ?? []
+            defaults.set(LocalSessionRow.savedHiddenIDs(hiddenSessionIDs, saved: saved), forKey: "hiddenSessions.v1")
+            if oldValue != hiddenSessionIDs { sessionQueryChanged() }
+        }
     }
     private(set) var hidingSessionIDs: Set<String> = []
     var showHiddenSessions = false {
@@ -582,12 +587,7 @@ final class AppModel {
         self.defaults = defaults
         self.keepsAgentsConnectedAfterQuit = defaults.object(forKey: Self.keepsAgentsConnectedKey) as? Bool ?? true
         self.sessionColumns = SessionColumnLayout(data: defaults.data(forKey: SessionColumnLayout.preferenceKey))
-        let storedHidden = defaults.stringArray(forKey: "hiddenSessions.v1") ?? []
-        let hidden = LocalSessionRow.currentHiddenIDs(storedHidden)
-        // Observers do not run in init: store the current list now so a
-        // dropped hide cannot come back from the saved one.
-        if hidden.sorted() != storedHidden.sorted() { defaults.set(hidden.sorted(), forKey: "hiddenSessions.v1") }
-        self.hiddenSessionIDs = hidden
+        self.hiddenSessionIDs = LocalSessionRow.currentHiddenIDs(defaults.stringArray(forKey: "hiddenSessions.v1") ?? [])
         self.showHiddenSessions = defaults.bool(forKey: "showHiddenSessions.v1")
         self.detectCapy = detectCapy
         self.showsCapySetup = CapySetup.shows(installed: detectCapy(),
@@ -2035,6 +2035,11 @@ final class AppModel {
                 selectionRevision += 1
                 sessions = sessions.map { $0.id == key ? $0.withInclusion(false) : $0 }
                 uploadErrors[key] = nil
+                // A retired hide is dropped once its exclusion succeeds: the
+                // chat shows again, its sharing stays off and no exclusion follows.
+                if LocalSessionRow.retiredHiddenIDs(defaults.stringArray(forKey: "hiddenSessions.v1") ?? []).contains(key) {
+                    hiddenSessionIDs = hiddenSessionIDs.filter { !LocalSessionRow.sameHiddenSession($0, key) }
+                }
             } catch let error as CoreError where error.kind == ErrorKind.notSignedIn.rawValue || error.kind == ErrorKind.busy.rawValue || error.kind == CoreError.closed.kind {
                 guard revision == connectionRevision else { continue }
                 uploadErrors[key] = "Waiting to stop uploads…"

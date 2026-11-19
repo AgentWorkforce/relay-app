@@ -14,7 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
-- **Cursor chats you hid before the last update show again.** On macOS and Linux, a Cursor chat hidden while it was stuck at Indexing, before the update that gave Cursor chats their upload controls, now shows in the session list again. Its sharing stays off until you turn it on, and turning it on now stays on; before, the old hide turned sharing off again within a second, with nothing on screen to say why. A Cursor chat you hide from now on stays hidden.
+- **Cursor chats you hid before 2026.11.16 show again, with sharing off.** On macOS and Linux, every Cursor chat hidden before 2026.11.16, for whatever reason, shows in the session list again once Agent Relay has turned its sharing off, which it does the first time the app is open, signed in and connected after this update. Until then the chat stays hidden. Its sharing then stays off until you turn it on, and turning it on now stays on; before, the old hide turned sharing off again within a second, with nothing on screen to say why. A Cursor chat you hide from now on stays hidden. If you changed your hidden sessions while running 2026.11.16, an old Cursor hide stays hidden; turn on Show hidden in the table display settings and choose Unhide session to show it.
 
 ## v2026.11.16
 

@@ -1246,29 +1246,69 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.sessions.first?.included ?? true)
     }
 
-    func testHidesSavedUnderTheOldCursorIDAreDroppedFromTheStoredList() {
-        defaults.set(["cursor-cli:x", "cursor:y", "grok-open:g"], forKey: "hiddenSessions.v1")
-        let model = model()
-        XCTAssertEqual(model.hiddenSessionIDs, ["cursor:y", "grok:g"])
-        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["cursor:y", "grok:g"])
+    private func cursorXExclusions() -> Int {
+        core.calls.filter { $0.method == "uploader.sessions.exclude" && $0.params["session_keys"] as? [String] == ["cursor:x"] }.count
     }
 
-    func testADroppedCursorHideDoesNotStopSharingTheSession() async {
-        defaults.set(["cursor-cli:x"], forKey: "hiddenSessions.v1")
+    func testAnOldCursorHideTurnsSharingOffOnceThenShowsAndSharingCanBeTurnedOn() async {
+        defaults.set(["cursor-cli:x", "cursor:y", "grok-open:g"], forKey: "hiddenSessions.v1")
         core.on("uploader.sessions.list") { _ in
-            ["sharing_mode": "new", "sessions": [["source": "cursor", "session_id": "x", "title": "Chat", "is_agent": false, "included": true, "status": "shared"]]]
+            ["sharing_mode": "new", "sessions": [["source": "cursor", "session_id": "x", "title": "Chat", "is_agent": false, "included": true, "status": "uploaded"]]]
         }
-        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        core.on("uploader.sessions.exclude") { _ in ["updated": 0] }
         let model = model()
+        XCTAssertEqual(model.hiddenSessionIDs, ["cursor:x", "cursor:y", "grok:g"])
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["cursor-cli:x", "cursor:y", "grok-open:g"], "Nothing is rewritten at launch")
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
         await model.bootstrapIfNeeded()
         defer { model.shutdown() }
-        let listed = await eventually { model.sessions.contains { $0.id == "cursor:x" } }
-        XCTAssertTrue(listed)
+        let dropped = await eventually {
+            self.defaults.stringArray(forKey: "hiddenSessions.v1") == ["cursor:y", "grok:g"] && model.hidingSessionIDs.isEmpty
+        }
+        XCTAssertTrue(dropped)
+        XCTAssertEqual(cursorXExclusions(), 1)
+        XCTAssertFalse(model.hiddenSessionIDs.contains("cursor:x"))
+        XCTAssertTrue(model.hiddenSessionIDs.contains("cursor:y"))
+        // The core now reports sharing on, as after the person turned it on.
+        await model.firstSessionPage()
+        let shared = await eventually { model.sessions.first(where: { $0.id == "cursor:x" })?.included == true }
+        XCTAssertTrue(shared)
         model.reconcileHiddenSessions()
         await Task.yield()
-        XCTAssertTrue(model.hiddenSessionIDs.isEmpty)
-        XCTAssertEqual(core.callCount("uploader.sessions.exclude"), 0)
+        XCTAssertEqual(cursorXExclusions(), 1)
         XCTAssertTrue(model.sessions.first(where: { $0.id == "cursor:x" })?.included == true)
+    }
+
+    func testAnOldCursorHideStaysWhileItsExclusionWaits() async {
+        defaults.set(["cursor-cli:x"], forKey: "hiddenSessions.v1")
+        core.on("uploader.sessions.exclude") { _ in throw FakeCore.Failure(kind: "busy", message: "Session history is preparing.") }
+        let model = model()
+        defer { model.shutdown() }
+        await model.setSessionsHidden(keys: ["cursor:x"], hidden: true) // signed out: waits
+        XCTAssertEqual(core.callCount("uploader.sessions.exclude"), 0)
+        XCTAssertTrue(model.hiddenSessionIDs.contains("cursor:x"))
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["cursor-cli:x"])
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        await model.bootstrapIfNeeded()
+        let tried = await eventually { self.cursorXExclusions() >= 1 && model.hidingSessionIDs.isEmpty }
+        XCTAssertTrue(tried)
+        XCTAssertTrue(model.hiddenSessionIDs.contains("cursor:x"))
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["cursor-cli:x"])
+        let restored = AppModel(manageSystemServices: false, defaults: defaults)
+        XCTAssertTrue(restored.hiddenSessionIDs.contains("cursor:x"))
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["cursor-cli:x"])
+    }
+
+    func testOtherHidesKeepAnOldCursorHideInItsOldForm() async {
+        defaults.set(["cursor-cli:x"], forKey: "hiddenSessions.v1")
+        let model = model()
+        defer { model.shutdown() }
+        await model.setSessionsHidden(keys: ["codex:other"], hidden: true)
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["codex:other", "cursor-cli:x"])
+        XCTAssertTrue(model.hiddenSessionIDs.contains("cursor:x"))
+        await model.setSessionsHidden(keys: ["cursor:x"], hidden: false)
+        XCTAssertEqual(defaults.stringArray(forKey: "hiddenSessions.v1"), ["codex:other"])
+        XCTAssertEqual(core.callCount("uploader.sessions.exclude"), 0)
     }
 
     func testFailedHideReturnsSessionToTableWithError() async {

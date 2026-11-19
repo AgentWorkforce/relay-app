@@ -122,7 +122,7 @@ impl App {
                 state: RefCell::new(State::new(options.install_kind)),
                 bridge,
                 runtime: options.runtime,
-                prefs: RefCell::new(super::session_visibility::with_current_hidden(options.prefs)),
+                prefs: RefCell::new(options.prefs),
                 service: options.service,
                 desktop: options.desktop,
                 tray: options.tray,
