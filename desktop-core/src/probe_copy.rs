@@ -462,7 +462,9 @@ pub fn keep_own(source: &Path, destination: &Path) -> bool {
     let Some(directory) = destination.parent().filter(|_| source.is_file()) else {
         return false;
     };
-    let current = sha256(source).is_some_and(|hash| sha256(destination) == Some(hash));
+    // The same bytes that cannot run are copied again, which makes them run.
+    let current =
+        sha256(source).is_some_and(|hash| sha256(destination) == Some(hash)) && runs(destination);
     fs::create_dir_all(directory)
         .and_then(|()| install_libraries(&libraries(source), destination))
         .and_then(|_| {
@@ -473,6 +475,19 @@ pub fn keep_own(source: &Path, destination: &Path) -> bool {
             }
         })
         .is_ok()
+}
+
+/// Whether `path` has an execute bit.
+#[cfg(not(windows))]
+fn runs(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+}
+
+/// Windows has no execute bit: a copy with the right bytes runs.
+#[cfg(windows)]
+fn runs(_path: &Path) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -856,5 +871,23 @@ pub(crate) mod tests {
                 0o755
             );
         }
+    }
+
+    /// An own copy with the build's bytes that cannot run is made to run.
+    #[test]
+    #[cfg(unix)]
+    fn an_own_copy_with_the_same_bytes_that_cannot_run_is_made_to_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let destination = own_destination(&dir.path().join("app-data"));
+        let bundled = fake(dir.path(), "bundled", "2026.11.2", None);
+        assert!(keep_own(&bundled, &destination));
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(keep_own(&bundled, &destination));
+        assert_eq!(fs::read(&destination).unwrap(), fs::read(&bundled).unwrap());
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
     }
 }
