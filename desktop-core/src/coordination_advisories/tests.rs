@@ -496,6 +496,28 @@ fn a_listing_parses_at_most_ten_rows_each_once() {
 }
 
 #[test]
+fn recipient_priority_and_delivery_fields_preserve_turn_end_notes() {
+    let baseline = parse(&json!({"contract": CONTRACT, "advisories": [row("a1")]}))
+        .unwrap()
+        .into_iter()
+        .map(|a| line(&a))
+        .collect::<Vec<_>>();
+    for priority in [1, 2, 3] {
+        let mut upgraded = row("a1");
+        upgraded["priority"] = json!(priority);
+        upgraded["delivery"] =
+            json!({"dm": "delivered", "deliveredAt": "2026-11-12T10:05:00.000Z"});
+        let parsed =
+            parse(&json!({"contract": CONTRACT, "advisories": [upgraded], "nextCursor": null}))
+                .unwrap();
+        assert_eq!(
+            parsed.into_iter().map(|a| line(&a)).collect::<Vec<_>>(),
+            baseline
+        );
+    }
+}
+
+#[test]
 fn a_listing_that_is_not_the_contract_is_refused_and_bad_rows_are_dropped() {
     assert!(parse(&json!({"contract": "coordination-advisories/2", "advisories": []})).is_none());
     assert!(parse(&json!({"error": "advisories_disabled"})).is_none());
