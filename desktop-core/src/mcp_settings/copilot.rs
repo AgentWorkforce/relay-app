@@ -152,7 +152,7 @@ impl Installer {
                 "Development Copilot hooks are outside the private provider profile".into(),
             );
         }
-        if enabled && (!self.helper.ensure() || !self.helper.copilot_usable()) {
+        if enabled && !self.helper.copilot_ready() {
             return Err("Copilot hook setup is waiting for Agent Relay’s command-line helper. Repair this provider after it is installed.".into());
         }
         let result = self.copilot_settings().set_enabled(enabled);
