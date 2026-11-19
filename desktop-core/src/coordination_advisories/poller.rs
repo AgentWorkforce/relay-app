@@ -6,6 +6,15 @@ impl Advisories {
     /// One poll over `sessions`, the live sessions the core can reach at a
     /// turn's end: at most [`SESSIONS_PER_TICK`] of them, then the acks due.
     pub async fn poll(&self, sessions: &[Target], now: Instant) {
+        self.poll_selected(sessions, None, now).await;
+    }
+
+    pub(super) async fn poll_selected(
+        &self,
+        sessions: &[Target],
+        selected: Option<&[Target]>,
+        now: Instant,
+    ) {
         if !self.enabled() {
             return;
         }
@@ -19,6 +28,8 @@ impl Advisories {
             return;
         }
         let Some(token) = self.tokens.token().await else {
+            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status =
+                "Read access unavailable; urgent advisories cannot be fetched.";
             return;
         };
         let due = {
@@ -27,7 +38,9 @@ impl Advisories {
             if !state.belong_to(Some(&token.principal)) {
                 return;
             }
-            if state.paused_until.is_some_and(|until| now < until) {
+            if state.paused_until.is_some_and(|until| now < until)
+                || state.rate_until.is_some_and(|until| now < until)
+            {
                 Vec::new()
             } else {
                 state.paused_until = None;
@@ -37,6 +50,7 @@ impl Advisories {
                     .cycle()
                     .skip(start)
                     .take(sessions.len())
+                    .filter(|target| selected.is_none_or(|due| due.contains(target)))
                     .filter(|target| {
                         state
                             .sessions
@@ -83,6 +97,10 @@ impl Advisories {
                     backoff.failures += 1;
                     backoff.until = Some(now + wait);
                 }
+                Listing::Throttled => {
+                    self.state().rate_until = Some(now + SESSION_BACKOFF);
+                    break;
+                }
                 Listing::Unauthorized | Listing::Off => {
                     if listing == Listing::Unauthorized {
                         token_refused = true;
@@ -93,7 +111,7 @@ impl Advisories {
                 }
             }
         }
-        if !token_refused {
+        if !token_refused && selected.is_none() {
             self.send_due_acks(&token, now).await;
         }
     }
@@ -150,6 +168,9 @@ impl Advisories {
 
     /// Acks every shown advisory whose retry is due.
     pub(super) async fn send_due_acks(&self, token: &ReadToken, now: Instant) {
+        if self.state().rate_until.is_some_and(|until| now < until) {
+            return;
+        }
         // Save shown IDs before acknowledging them; a normal restart resumes
         // retries without showing the message again. No credentials are saved.
         self.checkpoint_receipts(&token.principal);
@@ -186,8 +207,10 @@ impl Advisories {
             let ack = self.api.ack(token, target, id).await;
             self.acked(&token.principal, target, id, ack, now);
             sent += 1;
-            if ack == Ack::Unauthorized {
-                self.tokens.refused(token);
+            if matches!(ack, Ack::Unauthorized | Ack::Throttled) {
+                if ack == Ack::Unauthorized {
+                    self.tokens.refused(token);
+                }
                 break;
             }
         }
@@ -228,6 +251,10 @@ impl Advisories {
                 taken.retry_at = None;
             }
             Ack::Forbidden => taken.retry_at = Some(now + ACK_FORBIDDEN_RETRY),
+            Ack::Throttled => {
+                taken.retry_at = Some(now + SESSION_BACKOFF);
+                state.rate_until = Some(now + SESSION_BACKOFF);
+            }
             // Authentication recovery says nothing about whether the
             // advisory can be acknowledged; it must not exhaust an ended
             // session's bounded transport-error retries.

@@ -59,6 +59,7 @@ const LABEL: &str = "Agent Relay coordination advisories";
 
 /// How often the poller runs.
 pub const POLL_EVERY: Duration = Duration::from_secs(60);
+pub const URGENT_POLL_EVERY: Duration = Duration::from_secs(30);
 /// The most sessions asked in one tick; the rest wait for the next.
 pub const SESSIONS_PER_TICK: usize = 8;
 /// The most advisories one answer may carry (the contract's bound).
@@ -116,6 +117,7 @@ mod receipts;
 mod rows;
 mod settings;
 mod tokens;
+mod urgent;
 
 pub use client::*;
 pub use rows::*;
@@ -180,6 +182,7 @@ struct State {
     sessions: HashMap<Target, Backoff>,
     /// No listing before this.
     paused_until: Option<Instant>,
+    rate_until: Option<Instant>,
     /// Where the next tick starts in the session list.
     cursor: usize,
     /// Whom the cache belongs to.
@@ -192,6 +195,7 @@ impl State {
         self.taken.clear();
         self.sessions.clear();
         self.paused_until = None;
+        self.rate_until = None;
         self.principal = None;
     }
 
@@ -234,6 +238,7 @@ pub struct Advisories {
     this: Weak<Advisories>,
     app_data_dir: PathBuf,
     enabled: AtomicBool,
+    notifications_enabled: AtomicBool,
     /// Held across saving the setting, publishing it and clearing the cache,
     /// so overlapping changes leave the saved and the live setting the same.
     setting: Mutex<()>,
@@ -241,6 +246,8 @@ pub struct Advisories {
     api: Arc<dyn AdvisoryApi>,
     state: Mutex<State>,
     receipt_save: Mutex<()>,
+    urgent: Mutex<urgent::Journal>,
+    urgent_run: tokio::sync::Mutex<()>,
 }
 
 impl Advisories {
@@ -253,6 +260,9 @@ impl Advisories {
             this: this.clone(),
             app_data_dir: app_data_dir.to_path_buf(),
             enabled: AtomicBool::new(load(app_data_dir)),
+            notifications_enabled: AtomicBool::new(
+                settings::load_saved(app_data_dir).notifications_enabled,
+            ),
             setting: Mutex::new(()),
             tokens,
             api,
@@ -261,6 +271,8 @@ impl Advisories {
                 ..State::default()
             }),
             receipt_save: Mutex::new(()),
+            urgent: Mutex::new(urgent::Journal::load(app_data_dir)),
+            urgent_run: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -269,10 +281,55 @@ impl Advisories {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    pub fn notifications_enabled(&self) -> bool {
+        self.notifications_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn report(&self) -> crate::contract::coordination::CoordinationAdvisoriesState {
+        let notification_status = if !self.enabled() {
+            "Coordination notes are off.".into()
+        } else if !self.notifications_enabled() {
+            "Urgent system notifications are off.".into()
+        } else {
+            let status = self.urgent_status();
+            if status == "idle" {
+                "Waiting for validated priority-one advisories.".into()
+            } else {
+                status
+            }
+        };
+        crate::contract::coordination::CoordinationAdvisoriesState {
+            enabled: self.enabled(),
+            notifications_enabled: self.notifications_enabled(),
+            notification_status,
+        }
+    }
+
+    pub fn set_notifications_enabled(&self, enabled: bool) -> Result<(), String> {
+        let _one = self.setting.lock().unwrap_or_else(|p| p.into_inner());
+        if enabled && !self.enabled() {
+            return Err("Turn on coordination notes before urgent system alerts.".into());
+        }
+        settings::save_choices(&self.app_data_dir, self.enabled(), enabled)?;
+        self.notifications_enabled.store(enabled, Ordering::SeqCst);
+        // Enabling a new notification preference must wait for a fresh
+        // server eligibility decision, rather than using an older cache.
+        if enabled {
+            for rows in self.state().waiting.values_mut() {
+                for row in rows {
+                    row.notify_eligible = false;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Saves the setting; off forgets everything waiting, so nothing is
     /// handed out after.
     pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
-        self.set_enabled_with(enabled, save)
+        self.set_enabled_with(enabled, |directory, enabled| {
+            settings::save_choices(directory, enabled, self.notifications_enabled())
+        })
     }
 
     /// [`Advisories::set_enabled`], saving with `save`.
@@ -344,8 +401,10 @@ pub fn reached(sessions: &[agent_relay_node::relay::sessions::DiscoveredSession]
 /// Polls every [`POLL_EVERY`] while the setting is on and someone is signed
 /// in, over the last discovery pass's live sessions, until the daemon stops.
 pub(crate) async fn watch(core: Arc<Core>, advisories: Arc<Advisories>) {
-    let mut ticks = tokio::time::interval(POLL_EVERY);
+    let mut ticks = tokio::time::interval(URGENT_POLL_EVERY);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut schedule = PollSchedule::default();
+    let delivery = urgent::Local(core.clone());
     loop {
         ticks.tick().await;
         if !advisories.enabled() {
@@ -353,10 +412,62 @@ pub(crate) async fn watch(core: Arc<Core>, advisories: Arc<Advisories>) {
         }
         // Signed out, the poll only drops what the last account had cached.
         let sessions = match core.plugins.cloud.account() {
-            Some(_) => reached(&agent_relay_node::relay::local_methods::discovered_sessions(&core)),
+            Some(_) => {
+                let mut targets: Vec<_> =
+                    agent_relay_node::relay::local_methods::discovered_sessions(&core)
+                        .into_iter()
+                        .filter(|s| s.live)
+                        .map(|s| s.target)
+                        .collect();
+                targets.sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
+                targets.dedup();
+                targets
+            }
             None => Vec::new(),
         };
-        advisories.poll(&sessions, Instant::now()).await;
+        let now = Instant::now();
+        let fast: HashSet<Target> = advisories
+            .state()
+            .waiting
+            .iter()
+            .filter(|(_, rows)| rows.iter().any(Advisory::urgent))
+            .map(|(target, _)| target.clone())
+            .collect();
+        let due = schedule.due(&sessions, &fast, now);
+        advisories.poll_selected(&sessions, Some(&due), now).await;
+        advisories.deliver_urgent(&delivery, now).await;
+        advisories.send_shown(now).await;
+    }
+}
+
+#[derive(Default)]
+struct PollSchedule {
+    checked: HashMap<Target, Instant>,
+}
+
+impl PollSchedule {
+    fn due(&mut self, live: &[Target], fast: &HashSet<Target>, now: Instant) -> Vec<Target> {
+        self.checked.retain(|target, _| live.contains(target));
+        let mut due: Vec<_> = live
+            .iter()
+            .filter(|target| {
+                self.checked.get(*target).is_none_or(|last| {
+                    now.duration_since(*last)
+                        >= if fast.contains(*target) {
+                            URGENT_POLL_EVERY
+                        } else {
+                            POLL_EVERY
+                        }
+                })
+            })
+            .cloned()
+            .collect();
+        due.sort_by_key(|target| self.checked.get(target).copied());
+        due.truncate(SESSIONS_PER_TICK);
+        for target in &due {
+            self.checked.insert(target.clone(), now);
+        }
+        due
     }
 }
 
@@ -370,10 +481,11 @@ pub(crate) fn for_account(
     let origin = agent_relay_node::relay::local::is_development(config)
         .then(|| config.env.get(ORIGIN_VARIABLE).cloned())
         .flatten();
+    let tokens: Arc<dyn TokenSource> = Arc::new(HistoryReadTokens::new(cloud, origin));
     Advisories::new(
         &config.app_data_dir,
-        Arc::new(HistoryReadTokens::new(cloud, origin)),
-        Arc::new(HttpApi),
+        tokens.clone(),
+        Arc::new(PacedApi::new(Arc::new(HttpApi), tokens)),
     )
 }
 

@@ -244,7 +244,6 @@ async fn coordination_call(
     method: &str,
     raw: Value,
 ) -> Option<Result<Value, RpcError>> {
-    use crate::contract::coordination::CoordinationAdvisoriesState;
     use agent_relay_node::relay::protocol::ErrorKind;
     let advisories = account.coordination_advisories.get().cloned();
     let unavailable = || {
@@ -257,9 +256,7 @@ async fn coordination_call(
         method::CoordinationAdvisoriesStatus::NAME => Some(
             answer::<method::CoordinationAdvisoriesStatus, _>(raw, |_| async move {
                 let advisories = advisories.ok_or_else(unavailable)?;
-                Ok(CoordinationAdvisoriesState {
-                    enabled: advisories.enabled(),
-                })
+                Ok(advisories.report())
             })
             .await,
         ),
@@ -268,15 +265,28 @@ async fn coordination_call(
                 let advisories = advisories.ok_or_else(unavailable)?;
                 let saved = tokio::task::spawn_blocking(move || {
                     advisories.set_enabled(request.enabled)?;
-                    Ok::<_, String>(advisories.enabled())
+                    Ok::<_, String>(advisories.report())
                 })
                 .await
                 .unwrap_or_else(|_| {
                     Err("The coordination advisories setting could not be saved.".into())
                 });
-                saved
-                    .map(|enabled| CoordinationAdvisoriesState { enabled })
-                    .map_err(|message| RpcError::new(ErrorKind::StoreFailed, message))
+                saved.map_err(|message| RpcError::new(ErrorKind::StoreFailed, message))
+            })
+            .await,
+        ),
+        method::CoordinationNotificationsSet::NAME => Some(
+            answer::<method::CoordinationNotificationsSet, _>(raw, |request| async move {
+                let advisories = advisories.ok_or_else(unavailable)?;
+                tokio::task::spawn_blocking(move || {
+                    advisories.set_notifications_enabled(request.enabled)?;
+                    Ok::<_, String>(advisories.report())
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    Err("The urgent notification setting could not be saved.".into())
+                })
+                .map_err(|message| RpcError::new(ErrorKind::StoreFailed, message))
             })
             .await,
         ),

@@ -347,6 +347,9 @@ pub struct State {
     /// asked for while it answers.
     pub coordination_advisories: Option<bool>,
     pub coordination_advisories_wanted: PendingValue<bool>,
+    pub coordination_notifications: Option<bool>,
+    pub coordination_notifications_wanted: PendingValue<bool>,
+    pub coordination_notification_status: Option<String>,
     /// The shown statuses: the core's last answer under the changes on their way.
     pub claude_delivery: Option<ClaudeDeliveryStatus>,
     pub claude_delivery_pending: PendingStatuses<ClaudeDeliveryStatus>,

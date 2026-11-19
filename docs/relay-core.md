@@ -649,8 +649,41 @@ dropped in the core. `identity_hash` joins a person to `roster.list`'s
 | `telemetry.record` | `{"operation","outcome","failure"?,"count"?,"mode"?,"surface"?,"agent_kind"?,"already_registered"?,"is_reply"?}` | `{}`; an unknown value is `invalid_params`. `update_install` success waits up to two seconds for the telemetry sender before replying, so a hosted core can be released after the reply. Desktop update callers bound each awaited telemetry RPC to three seconds; GTK awaits it off the UI thread. | 2c |
 | `login_item.set` (Linux) | `{"enabled"}` | `{}`; `refused` on macOS, where `SMAppService` is the app's | 2c |
 | `login_item.status` (Linux) | — | `{"enabled"}`; `refused` on macOS | 3 |
-| `coordination_advisories.status` | — | `{"enabled"}`: whether sessions are handed teammates' overlapping work as their turn ends; off by default; `refused` from a core built without an account | turn-end advisories |
-| `coordination_advisories.set` | `{"enabled"}` | `{"enabled"}` as saved in the app's data folder; off forgets every advisory waiting; `refused` from a core built without an account, `store_failed` when it cannot be saved | turn-end advisories |
+| `coordination_advisories.status` | — | `{"enabled","notifications_enabled","notification_status"}`: whether agents receive urgent or turn-end notes about teammates' overlapping work; off by default; `refused` from a core built without an account | turn-end advisories |
+| `coordination_advisories.set` | `{"enabled"}` | The same state as `.status`, as saved in the app's data folder; off forgets every advisory waiting; `refused` from a core built without an account, `store_failed` when it cannot be saved | turn-end advisories |
+
+
+| `coordination_advisories.notifications.set` | `{"enabled"}` | The same state as `.status`; a separate persisted human OS notification preference, off by default. Enabling requires coordination notes on; a failed save returns `store_failed`. | urgent coordination |
+
+Coordination ranking comes from the pipeline. Only an explicit high-urgency,
+priority-one row enters local immediate delivery; older responses without a
+priority continue through turn-end notes. The in-process core notice is authored
+by `coordination service`, labelled as untrusted automated text, and targets the
+exact live registration. It never uses native human input. Accepted or uncertain
+handoffs are not acknowledged as delivered and are not blindly handed to a
+turn-end hook as well. A refused or unregistered target retains turn-end fallback.
+
+Human notices additionally require the person's separate local preference and
+the pipeline's `notifyEligible` quality gate. Legacy or absent eligibility is
+false. The existing `notify` topic reaches macOS UserNotifications, Linux
+Gio.Notification and Windows toast consumers. Requests are batched, deduplicated
+per advisory and account on this device across restarts, and capped at three
+batches per hour. Receipt storage failure stops new side effects. The status
+reports a request, not proof that a banner was displayed or read. The app must
+be running and the OS must permit its notifications. Agent Relay has no separate
+quiet hours or snooze; the OS's Focus/Do Not Disturb controls apply.
+
+The service currently offers GET and ACK, with no push/wake contract. Desktop
+checks normal live sessions every 60 seconds and known pending priority-one
+sessions every 30 seconds, at most eight sessions per tick with oldest checked
+first. A new priority-one alert therefore still waits for normal discovery, the
+advisor's own interval, and rotation when more sessions are due. This is not an
+instant delivery guarantee. Read and ACK traffic share a two-starts-per-second
+budget; 429 pauses traffic for two minutes. The current HTTP adapter does not
+expose `Retry-After` headers. Tokens are reused until renewal is needed.
+
+The quality gate must stay off for alert types without adequate real-data
+evaluation; transport tests do not establish alert precision, recall or lead time.
 
 Telemetry goes to PostHog through `/i/v0/e/` on the configured release host only
 for the production site in a release build. Events use `desktop:<installation

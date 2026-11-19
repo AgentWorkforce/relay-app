@@ -5,7 +5,10 @@
 use super::app::App;
 use super::settings_page::pending_toggle_row;
 use super::widgets::settings_divider;
-use crate::models::{COORDINATION_ADVISORIES_DETAIL, COORDINATION_ADVISORIES_TITLE};
+use crate::models::{
+    COORDINATION_ADVISORIES_DETAIL, COORDINATION_ADVISORIES_TITLE,
+    COORDINATION_NOTIFICATIONS_DETAIL, COORDINATION_NOTIFICATIONS_TITLE,
+};
 use agent_relay_desktop_core::contract::coordination::CoordinationAdvisoriesParams;
 use agent_relay_desktop_core::contract::method;
 use agent_relay_node::relay::contract::NoParams;
@@ -22,7 +25,11 @@ impl App {
             App::load_coordination_advisories,
             |app, result| {
                 if let Ok(state) = result {
-                    app.update_state(|s| s.coordination_advisories = Some(state.enabled));
+                    app.update_state(|s| {
+                        s.coordination_advisories = Some(state.enabled);
+                        s.coordination_notifications = Some(state.notifications_enabled);
+                        s.coordination_notification_status = Some(state.notification_status);
+                    });
                     app.settings_changed();
                 }
             },
@@ -46,7 +53,7 @@ impl App {
             COORDINATION_ADVISORIES_DETAIL,
             "system-users-symbolic",
             enabled,
-            true,
+            !pending && !self.with_state(|s| s.coordination_notifications_wanted.is_pending()),
             pending,
             move |enabled| {
                 if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
@@ -54,6 +61,74 @@ impl App {
                 }
             },
         ));
+        self.append_coordination_notifications_row(group);
+    }
+
+    fn append_coordination_notifications_row(&self, group: &gtk::Box) {
+        let Some((enabled, pending, available, status)) = self.with_state(|s| {
+            Some((
+                s.coordination_notifications_wanted
+                    .shown(s.coordination_notifications?),
+                s.coordination_notifications_wanted.is_pending(),
+                s.coordination_advisories == Some(true)
+                    && !s.coordination_advisories_wanted.is_pending(),
+                s.coordination_notification_status.clone(),
+            ))
+        }) else {
+            return;
+        };
+        let detail = status
+            .map(|s| format!("{COORDINATION_NOTIFICATIONS_DETAIL} {s}"))
+            .unwrap_or_else(|| COORDINATION_NOTIFICATIONS_DETAIL.into());
+        let weak = self.downgrade();
+        settings_divider(group, 62);
+        group.append(&pending_toggle_row(
+            COORDINATION_NOTIFICATIONS_TITLE,
+            &detail,
+            "notifications-symbolic",
+            enabled,
+            available && !pending,
+            pending,
+            move |enabled| {
+                if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
+                    app.change_coordination_notifications(enabled);
+                }
+            },
+        ));
+    }
+
+    fn change_coordination_notifications(&self, enabled: bool) {
+        let token = self.update_state(|s| {
+            s.settings_error = None;
+            s.coordination_notifications_wanted.begin(enabled)
+        });
+        self.render_settings();
+        self.call::<method::CoordinationNotificationsSet>(
+            CoordinationAdvisoriesParams { enabled },
+            move |app, result| {
+                let latest = app.update_state(|s| {
+                    if let Ok(saved) = &result {
+                        s.coordination_advisories = Some(saved.enabled);
+                        s.coordination_notifications = Some(saved.notifications_enabled);
+                        s.coordination_notification_status =
+                            Some(saved.notification_status.clone());
+                    }
+                    let latest = s.coordination_notifications_wanted.finish(token);
+                    if latest {
+                        if let Err(error) = &result {
+                            s.settings_error = Some(format!(
+                                "Agent Relay could not change urgent system notifications: {}",
+                                error.message
+                            ));
+                        }
+                    }
+                    latest
+                });
+                if latest {
+                    app.settings_changed();
+                }
+            },
+        );
     }
 
     /// The choice shows at once; the last click wins, and only its failure
@@ -70,6 +145,9 @@ impl App {
                 let latest = app.update_state(|state| {
                     if let Ok(saved) = &result {
                         state.coordination_advisories = Some(saved.enabled);
+                        state.coordination_notifications = Some(saved.notifications_enabled);
+                        state.coordination_notification_status =
+                            Some(saved.notification_status.clone());
                     }
                     let latest = state.coordination_advisories_wanted.finish(token);
                     if latest {

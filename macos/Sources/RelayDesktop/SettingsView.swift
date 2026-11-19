@@ -1056,9 +1056,26 @@ struct RelaySettingsSection: View {
                         systemImage: "person.2",
                         notice: model.settingErrors[CoordinationAdvisoriesCopy.settingKey],
                         isPending: model.isCoordinationAdvisoriesPending,
+                        locked: model.isCoordinationAdvisoriesPending || model.isCoordinationNotificationsPending,
                         isOn: Binding(
                             get: { model.coordinationAdvisories ?? false },
                             set: { value in Task { await model.setCoordinationAdvisories(value) } }
+                        )
+                    )
+                }
+                if model.coordinationNotifications != nil {
+                    SettingsDivider()
+                    SettingsToggleRow(
+                        title: CoordinationAdvisoriesCopy.notificationsTitle,
+                        detail: CoordinationAdvisoriesCopy.notificationsDetail,
+                        systemImage: "bell.badge",
+                        notice: model.settingErrors[CoordinationAdvisoriesCopy.notificationsKey] ?? model.coordinationNotificationStatus,
+                        noticeIsStatus: model.settingErrors[CoordinationAdvisoriesCopy.notificationsKey] == nil,
+                        isPending: model.isCoordinationNotificationsPending,
+                        locked: model.coordinationAdvisories != true || model.isCoordinationAdvisoriesPending || model.isCoordinationNotificationsPending,
+                        isOn: Binding(
+                            get: { model.coordinationNotifications ?? false },
+                            set: { value in Task { await model.setCoordinationNotifications(value) } }
                         )
                     )
                 }
