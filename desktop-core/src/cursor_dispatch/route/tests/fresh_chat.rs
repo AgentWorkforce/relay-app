@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 /// A chat no one has registered yet.
-const FRESH: &str = "7e2b9c41-3d5a-4f6e-8b1c-2a9d0e4f6b13";
+pub(super) const FRESH: &str = "7e2b9c41-3d5a-4f6e-8b1c-2a9d0e4f6b13";
 
 /// Core's session discovery listing `FRESH` live, as it does once Cursor's
 /// `beforeSubmitPrompt` hook recorded the conversation, or not at all.
@@ -41,7 +41,7 @@ impl SessionDirectory for Discovery {
 /// Relaycast as registration sees it: `POST /v1/agents` creates the agent,
 /// after `delay`, and anything else is not found. Every request line is
 /// recorded.
-struct Relaycast {
+pub(super) struct Relaycast {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
     task: tokio::task::JoinHandle<()>,
@@ -133,7 +133,7 @@ impl Relaycast {
 
 /// Cursor attested, the workspace on `relaycast`, and Core's discovery
 /// listing `FRESH` live when `listed`. Nothing has registered `FRESH`.
-async fn fresh(listed: bool) -> (Fixture, Relaycast) {
+pub(super) async fn fresh(listed: bool) -> (Fixture, Relaycast) {
     fresh_on(listed, Relaycast::start().await).await
 }
 
@@ -168,7 +168,7 @@ fn cursor_registrations(f: &Fixture) -> Vec<Registration> {
     })
 }
 
-async fn admit(f: &Fixture, pid: i32, table: FakeProcesses) -> Result<(), &'static str> {
+pub(super) async fn admit(f: &Fixture, pid: i32, table: FakeProcesses) -> Result<(), &'static str> {
     let deadline = Instant::now() + crate::cursor_dispatch::ANNOUNCE_BUDGET;
     admitted(&account(f), &f.core, pid, FRESH, Arc::new(table), deadline).await
 }
@@ -196,6 +196,18 @@ async fn a_new_chat_s_first_identity_call_puts_it_on_the_relay() {
     assert_eq!(
         accepted(&account, &f.core, HOOK_PID, FRESH, &holding(&f, FRESH)),
         Ok(Chat::Registered)
+    );
+    // Cloud already holds the chat's identity when the call is admitted.
+    let identities = f.last_put()["identities"].clone();
+    let fresh = identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|identity| identity["native_session"]["id"] == FRESH);
+    assert_eq!(
+        fresh.map(|identity| identity["agent_id"].clone()),
+        Some(json!("agent-fresh")),
+        "{identities}"
     );
 
     // The announcement is kept, and the helper signs the call as the chat.
@@ -292,7 +304,7 @@ async fn announce_slowly(
     budget: Duration,
     ago: Duration,
     slow: Duration,
-) -> (Result<(), &'static str>, Relaycast) {
+) -> (Result<(), &'static str>, Fixture, Relaycast) {
     let (f, relaycast) = fresh_on(true, Relaycast::slow(slow).await).await;
     let started = Instant::now() - ago;
     let deadline = started + budget.saturating_sub(REGISTER_MARGIN);
@@ -312,7 +324,7 @@ async fn announce_slowly(
         assert_eq!(intents.len(), 1);
         assert!(super::super::registered(&f.core, FRESH).is_some());
     }
-    (kept, relaycast)
+    (kept, f, relaycast)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -324,12 +336,25 @@ async fn a_registration_slower_than_the_old_budget_still_admits_the_call() {
     assert!(ago + slow < crate::cursor_dispatch::ANNOUNCE_BUDGET - REGISTER_MARGIN);
 
     let budget = crate::cursor_dispatch::ANNOUNCE_BUDGET;
-    let (kept, relaycast) = announce_slowly(budget, ago, slow).await;
+    let (kept, _, relaycast) = announce_slowly(budget, ago, slow).await;
     assert_eq!(kept, Ok(()));
     assert_eq!(relaycast.registrations(), 1);
 
     // The old budget gave up on the same registration and refused the call.
-    let (kept, relaycast) = announce_slowly(OLD_BUDGET, ago, slow).await;
+    let (kept, f, relaycast) = announce_slowly(OLD_BUDGET, ago, slow).await;
     assert_eq!(kept, Err("cursor_chat_unknown"));
+    assert_eq!(relaycast.registrations(), 1);
+
+    // The registration goes on past that deadline and lands for the next
+    // call, which is admitted without asking Relaycast again.
+    let landed = tokio::time::timeout(slow + Duration::from_secs(10), async {
+        while super::super::registered(&f.core, FRESH).is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(landed.is_ok(), "the registration never landed");
+    assert_eq!(cursor_registrations(&f).len(), 1);
+    assert_eq!(admit(&f, HOOK_PID, holding(&f, FRESH)).await, Ok(()));
     assert_eq!(relaycast.registrations(), 1);
 }

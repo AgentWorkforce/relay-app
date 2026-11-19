@@ -241,7 +241,7 @@ impl Fixture {
         self.outbound.handle(pid, uid, &request).await
     }
 
-    fn last_put(&self) -> Value {
+    pub(crate) fn last_put(&self) -> Value {
         let calls = self.cloud.calls.lock().unwrap();
         let (_, _, body) = calls.iter().rev().find(|(m, _, _)| m == "PUT").unwrap();
         body.clone().unwrap()

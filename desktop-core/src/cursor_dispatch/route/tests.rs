@@ -418,5 +418,6 @@ fn cursor_routes_ride_on_the_hook_paths_the_pinned_core_forwards() {
 }
 
 mod control;
+mod core_log;
 mod fresh_chat;
 mod routes;

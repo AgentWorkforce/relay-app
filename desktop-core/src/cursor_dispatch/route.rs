@@ -296,9 +296,11 @@ async fn register(core: &Arc<Core>, sid: &str, deadline: Instant) -> Result<(), 
         let identities = Identities::new(core.clone());
         tokio::spawn(async move { identities.sync_desktop_identities().await })
     };
-    let synced = tokio::time::timeout_at(deadline.into(), syncing)
-        .await
-        .is_ok();
+    // A sync task that panicked did not sync.
+    let synced = matches!(
+        tokio::time::timeout_at(deadline.into(), syncing).await,
+        Ok(Ok(()))
+    );
     agent_relay_node::relay::diagnostics::write(format_args!(
         "[cursor-dispatch] put a chat on the relay in {} ms (identity synced: {synced})",
         started.elapsed().as_millis()
