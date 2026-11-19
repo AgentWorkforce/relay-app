@@ -1380,6 +1380,7 @@ mod tests {
             include_existing: false,
             sharing_mode: Some(crate::contract::account::SharingMode::Selected),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         save_json(&home.path().join("config.json"), &config).unwrap();
         let events = || {
@@ -1592,6 +1593,7 @@ mod tests {
             include_existing: false,
             sharing_mode: Some(crate::contract::account::SharingMode::Selected),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let fake = Fake(std::cell::RefCell::new(vec![]));
         let capture_calls = std::cell::Cell::new(0);
@@ -1961,6 +1963,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         // An empty database still owes one bootstrap scan before it is caught up.
         assert!(backlog_pending(dir.path(), &config));
@@ -2272,6 +2275,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let failed = deliver_with_receiver(&db_path, &config, &Unreached, &|| false).unwrap_err();
         assert_eq!(capture_error_class(&failed), "upload_preparation_failed");
@@ -2375,6 +2379,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let failed = deliver_with_receiver(&db_path, &config, &Unreached, &|| false).unwrap_err();
         let store = failed
@@ -2458,6 +2463,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let receiver = PausingReceiver {
             conn: &conn,
@@ -2548,6 +2554,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         deliver_with_receiver(&db_path, &config, &Accepting, &|| false).unwrap();
         // The drain's own status says the job is caught up, so the loop
@@ -2675,6 +2682,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let receiver = Serialized {
             in_flight: std::sync::atomic::AtomicUsize::new(0),
@@ -2723,6 +2731,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let block = |failure: &str| {
             conn.execute(
@@ -3103,6 +3112,7 @@ mod tests {
                 include_existing: true,
                 sharing_mode: None,
                 acknowledge_uninspected_schedules: false,
+                sharing_unchosen: false,
             };
             let block = || {
                 conn.execute(
@@ -3417,6 +3427,7 @@ mod tests {
             include_existing: true,
             sharing_mode: None,
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         let stop = StopWatch::start(dir.path(), "drain");
         let status = deliver_with_receiver(&db, &config, &StoppingReceiver(dir.path()), &|| {

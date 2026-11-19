@@ -103,6 +103,9 @@ pub struct StatusView {
     /// The person may delete their sessions from Cloud; when the operator
     /// withdraws it, every delete control is removed.
     pub can_delete_from_cloud: bool,
+    /// The sharing mode the organization suggests while the person has not
+    /// chosen one; shown only, never applied.
+    pub suggested_sharing: Option<SharingMode>,
 }
 
 impl StatusView {
@@ -195,6 +198,7 @@ impl StatusView {
             uploads_withheld: status.uploads_withheld,
             uploads_operator_run: uploads_operator_run_in(&status.enforced_settings),
             can_delete_from_cloud: delete_allowed_in(&status.enforced_settings),
+            suggested_sharing: status.suggested_sharing_mode,
         }
     }
 }

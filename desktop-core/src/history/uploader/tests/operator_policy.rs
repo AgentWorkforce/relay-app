@@ -304,3 +304,32 @@ async fn only_a_switch_that_re_sends_all_history_asks_first_and_a_preview_change
         Some(SharingMode::All)
     );
 }
+
+/// The organization's default mode is suggested only for an install still on
+/// the app's default, and the person's own choice, even of the mode already
+/// applied, ends the suggestion.
+#[tokio::test]
+async fn a_default_mode_is_suggested_only_while_the_install_is_unchosen() {
+    let (dir, probe, uploader, policy) = uploader(json!({
+        "workspace_id": "w1", "revision": 1, "fetched_at": 1, "settings": {},
+    }));
+    let document = crate::workspace_policy::parse_document(&json!({
+        "version": 2, "revision": 1,
+        "sections": { "capture": { "defaults": { "sharing_mode": "new" } } },
+    }))
+    .unwrap();
+    let fetched = crate::workspace_policy::Fetched::Policy(Box::new(document));
+    policy.workspace_policies().record("w1", fetched);
+    assert_eq!(uploader.suggested_sharing_mode(), None, "chosen");
+
+    uploader.attach(Install::from_json(&json!({
+        "site_url": "https://example.test", "account_id": "u1", "workspace_id": "w1",
+        "directory": dir.path().to_str().unwrap(), "sharing_mode": "all",
+        "sharing_unchosen": true,
+    })));
+    assert_eq!(uploader.suggested_sharing_mode(), Some(SharingMode::New));
+
+    uploader.sharing_set(SharingMode::All, true).await.unwrap();
+    assert_eq!(uploader.suggested_sharing_mode(), None);
+    assert_eq!(probe.names(), ["sharing set"]);
+}

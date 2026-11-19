@@ -93,6 +93,7 @@ mod tests {
             include_existing: mode == SharingMode::All,
             sharing_mode: Some(mode),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         }
     }
 

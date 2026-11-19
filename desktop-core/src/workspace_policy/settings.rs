@@ -54,7 +54,7 @@ mod tests {
             "version": 2, "revision": 4, "managed": true,
             "consent": ["accept_spawns"],
             "sections": {
-                "capture": {"locked": {"sharing_mode": "new"}, "defaults": {}},
+                "capture": {"locked": {"upload_control": "operator"}, "defaults": {"sharing_mode": "new"}},
                 "spawn": {"locked": {"accept_spawns": true}, "defaults": {"spawn_max_agents": 4}},
                 "join": {"locked": {"auto_join_repositories": ["acme/*"]}, "defaults": {}},
                 "delivery": {"locked": {"inbound_default": "hold", "admin_senders": ["lead"]}, "defaults": {}},
@@ -62,6 +62,11 @@ mod tests {
             }
         }))
         .unwrap();
+        // A capture default is kept for the uploader and still never
+        // reaches the settings.
+        assert!(policy
+            .default(crate::workspace_policy::Key::SharingMode)
+            .is_some());
         let settings = settings_policy(&policy);
         assert_eq!(
             Value::Object(settings.locked.clone()),

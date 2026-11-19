@@ -69,6 +69,11 @@ impl Account {
         if policy.withholds(Some(workspace)) {
             install.push("--withhold-uploads".into());
         }
+        // No sign-in surface lets the person pick a mode, so the requested
+        // one is the app's default; a fresh install records it as unchosen.
+        if enforced.is_none() {
+            install.push("--sharing-is-app-default".into());
+        }
         (install, enforced)
     }
 
@@ -213,7 +218,7 @@ impl Account {
         let mut applied = Applied::default();
         self.resume_withheld_uploads(&workspace, &mut applied).await;
         self.resume_operator_uploads(&workspace, &mut applied).await;
-        self.apply_operator_sharing(&workspace, install.sharing_mode, &mut applied)
+        self.apply_operator_sharing(&workspace, &install, &mut applied)
             .await;
         if let Some(core) = self.core() {
             if applied.changed {
@@ -252,19 +257,22 @@ impl Account {
         }
     }
 
-    /// Switches the install to the enforced sharing mode, remembering the
-    /// `current` one, or gives the remembered mode back once none is
-    /// enforced.
+    /// Switches the install to the enforced sharing mode, remembering its
+    /// current one, or gives the remembered mode back once none is enforced.
+    /// An install still on the app's default is set even to the mode it
+    /// already has, so it counts as chosen and no suggestion returns once
+    /// the lock is lifted.
     async fn apply_operator_sharing(
         &self,
         workspace: &str,
-        current: Option<SharingMode>,
+        install: &Install,
         applied: &mut Applied,
     ) {
         let policy = &self.operator_policy;
+        let current = install.sharing_mode;
         match policy.enforced_sharing(Some(workspace)) {
-            Some(mode) if current != Some(mode) => {
-                if let Some(current) = current {
+            Some(mode) if current != Some(mode) || install.sharing_unchosen => {
+                if let Some(current) = current.filter(|current| *current != mode) {
                     policy.remember(workspace, SHARING_MODE, json!(current));
                 }
                 applied.record(self.uploader.sharing_set_unchecked(mode).await);

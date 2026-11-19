@@ -194,10 +194,12 @@ impl Key {
     }
 
     /// Whether the key may appear in `tier`: capture keys and the
-    /// server-computed `admin_senders` are locked only.
+    /// server-computed `admin_senders` are locked only, except a default
+    /// `sharing_mode`, which the desktop only ever suggests and never
+    /// applies.
     pub fn allowed_in(self, tier: Tier) -> bool {
         match self.section() {
-            SectionName::Capture => tier == Tier::Locked,
+            SectionName::Capture => tier == Tier::Locked || self == Key::SharingMode,
             _ if self == Key::AdminSenders => tier == Tier::Locked,
             _ => true,
         }

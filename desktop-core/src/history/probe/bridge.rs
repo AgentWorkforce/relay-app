@@ -520,6 +520,7 @@ fn sharing_entry(directory: &Path, config: &Config) -> Value {
         "account_id": config.account_id,
         "workspace_id": config.workspace_id,
         "sharing_mode": mode(config),
+        "sharing_unchosen": config.sharing_unchosen,
         "change_pending": directory.join("sharing-change.json").exists(),
         "upgrade_required": false,
     })
@@ -699,7 +700,13 @@ fn change_with_cloud(
     // Reject stale keys while the collector is still running. Rebuild the plan
     // under collector.lock after stopping so newly captured sessions are seen.
     let was_running = collector::running(directory)?;
-    let config = read_config(directory)?;
+    let mut config = read_config(directory)?;
+    // Any mode the person sets is their choice, even the one already applied,
+    // so the install stops counting as unchosen before the short-circuit.
+    if requested.is_some() && config.sharing_unchosen {
+        config.sharing_unchosen = false;
+        save_json(&directory.join("config.json"), &config)?;
+    }
     if !delete
         && sharing_plan::already_applied(
             directory,
@@ -734,7 +741,9 @@ fn change_with_cloud(
         }
         let _guard = lock(directory)?;
         recover(directory)?;
-        let config = read_config(directory)?;
+        let mut config = read_config(directory)?;
+        // A replayed older plan may have written the flag back.
+        config.sharing_unchosen &= requested.is_none();
         let conn = db(directory)?;
         let mut plan = selection_validation::plan(
             &conn,
@@ -1212,6 +1221,7 @@ mod tests {
             include_existing: mode == SharingMode::All,
             sharing_mode: Some(mode),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         save_json(&directory.join("config.json"), &config).unwrap();
     }
@@ -1414,6 +1424,7 @@ mod tests {
             include_existing: mode == SharingMode::All,
             sharing_mode: Some(mode),
             acknowledge_uninspected_schedules: false,
+            sharing_unchosen: false,
         };
         save_json(&dir.path().join("config.json"), &config).unwrap();
         (dir, config)
@@ -2971,6 +2982,41 @@ mod tests {
         assert_ne!(fresh.generation, caught_up.generation);
         assert_eq!(fresh.journal_cursor, 0);
         assert_eq!(fresh.acknowledged_cursor, 0);
+    }
+
+    /// Setting a mode is a choice even when it is the mode already applied,
+    /// and a config written before the flag existed counts as chosen.
+    #[test]
+    fn sharing_set_clears_unchosen_even_when_the_mode_is_unchanged() {
+        let Some(_home) = crate::history::probe::live::tests::isolated_home(
+            "history::probe::bridge::tests::sharing_set_clears_unchosen_even_when_the_mode_is_unchanged",
+        ) else {
+            return;
+        };
+        let (dir, config) = fixture(SharingMode::Selected);
+        let saved = fs::read_to_string(dir.path().join("config.json")).unwrap();
+        assert!(
+            !saved.contains("sharing_unchosen"),
+            "written only when true"
+        );
+        assert_eq!(
+            sharing_entry(dir.path(), &config)["sharing_unchosen"],
+            false
+        );
+        let unchosen = Config {
+            sharing_unchosen: true,
+            ..config
+        };
+        save_json(&dir.path().join("config.json"), &unchosen).unwrap();
+        assert_eq!(
+            sharing_entry(dir.path(), &unchosen)["sharing_unchosen"],
+            true
+        );
+        change(dir.path(), Some(SharingMode::Selected), &[], true).unwrap();
+        let chosen = read_config(dir.path()).unwrap();
+        assert!(!chosen.sharing_unchosen);
+        assert_eq!(chosen.job_id, unchosen.job_id, "nothing else changed");
+        assert_eq!(mode(&chosen), SharingMode::Selected);
     }
     #[test]
     fn reapplying_all_with_cloud_deleted_sessions_is_not_already_applied() {

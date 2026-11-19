@@ -65,6 +65,12 @@ pub struct Config {
     pub sharing_mode: Option<SharingMode>,
     #[serde(default)]
     pub acknowledge_uninspected_schedules: bool,
+    /// Whether `sharing_mode` is still the app's own default rather than a
+    /// choice the person made. Only a fresh install with nothing saved sets
+    /// it, and any sharing choice clears it, so an install written before the
+    /// field existed counts as chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sharing_unchosen: bool,
 }
 
 /// What `config` shares.

@@ -81,6 +81,7 @@ fn config(delivery_account: String, job_id: String) -> Config {
         include_existing: false,
         sharing_mode: None,
         acknowledge_uninspected_schedules: false,
+        sharing_unchosen: false,
     }
 }
 
