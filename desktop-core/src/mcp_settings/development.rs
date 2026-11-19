@@ -276,6 +276,16 @@ impl Helper {
                 .is_some_and(|path| agent_relay_node::platform::exe::is_executable(path))
         }
     }
+    /// Whether Copilot's hooks can be set up now. Outside development they
+    /// run the core executable, never the probe copy, so a probe copy that
+    /// could not be written does not hold them back.
+    pub(super) fn copilot_ready(&self) -> bool {
+        if self.development_scope() {
+            self.ensure() && self.copilot_usable()
+        } else {
+            self.copilot_usable()
+        }
+    }
     pub fn cursor_hook(&self) -> String {
         agent_relay_node::relay::cursor_cli::CursorSettings::command_for(
             &self.path,

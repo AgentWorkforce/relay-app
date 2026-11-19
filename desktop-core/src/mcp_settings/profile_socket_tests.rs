@@ -400,19 +400,46 @@ fn a_profile_built_to_coexist_alone_runs_its_own_copy() {
     );
 }
 
-/// A site profile built to coexist: its entry written when it ran the
-/// shared copy moves to its own copy; the stock app's entry stays as it was.
+/// A site profile built to coexist: its entries and hooks written when it
+/// ran the shared copy move to its own copy; the stock app's stay as they
+/// were.
 #[test]
 fn a_coexisting_profiles_entry_on_the_shared_copy_moves_to_its_own() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path();
-    let (config, _) = profile(home, "moves");
+    let (config, session) = profile(home, "moves");
     let shared = probe(home);
     let b = binding();
     let stock = b.helper(&shared).unwrap();
     let before = b.helper_at(&shared, Some(&config.paths.socket)).unwrap();
     let app = profile_installer(home, &config, true);
     fs::create_dir_all(&app.claude.home).unwrap();
+    // Claude: the stock app's hook and this build's on the shared copy.
+    let hook_group = |command: String, matcher: String| {
+        serde_json::json!({"matcher": matcher, "hooks": [
+            {"type": "command", "command": command, "timeout": 5}
+        ]})
+    };
+    let stock_hook = hook_group(
+        format!("{} claude-attestation-hook", word(&shared)),
+        crate::claude_attestation::MATCHER.into(),
+    );
+    let old_hook = hook_group(
+        format!(
+            "{} claude-attestation-hook --socket {}",
+            word(&shared),
+            word(&session)
+        ),
+        crate::claude_attestation::matcher_for(SERVER),
+    );
+    fs::write(
+        app.claude.home.join("settings.json"),
+        serde_json::to_vec(&serde_json::json!({"hooks": {
+            "PreToolUse": [stock_hook.clone(), old_hook],
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
     fs::write(
         home.join(".claude.json"),
         serde_json::to_vec(&serde_json::json!({"mcpServers": {
@@ -457,7 +484,82 @@ fn a_coexisting_profiles_entry_on_the_shared_copy_moves_to_its_own() {
         codex["mcp_servers"][SERVER]["http_headers_helper"].as_str(),
         Some(theirs.as_str())
     );
+    let settings: Value =
+        serde_json::from_slice(&fs::read(app.claude.home.join("settings.json")).unwrap()).unwrap();
+    let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(groups[0], stock_hook, "{settings}");
+    let hook = app.claude_hook_command().unwrap();
+    assert!(hook.starts_with(&format!("{} ", word(&own))), "{hook}");
+    let profile_hooks: Vec<&str> = groups
+        .iter()
+        .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+        .filter_map(|hook| hook["command"].as_str())
+        .filter(|command| command.contains(" --socket "))
+        .collect();
+    assert_eq!(profile_hooks, [hook.as_str()], "{settings}");
+    assert!(
+        claude_hook::current_for(&settings, &hook, &app.helper.hook_build().unwrap()),
+        "{settings}"
+    );
+    #[cfg(not(windows))]
+    cursor_guide_hook_moves_to_the_own_copy(home, &app, &shared, &session, &own);
     assert_shared_untouched(home);
+}
+
+/// Cursor: the guide hook this build wrote for the shared copy moves to its
+/// own copy, and the stock app's stays as it was.
+#[cfg(not(windows))]
+fn cursor_guide_hook_moves_to_the_own_copy(
+    home: &Path,
+    app: &Installer,
+    shared: &Path,
+    session: &Path,
+    own: &Path,
+) {
+    let stock = format!("{} cursor-guide-hook", word(shared));
+    let old = format!(
+        "{} cursor-guide-hook --socket {}",
+        word(shared),
+        word(session)
+    );
+    let entries = serde_json::json!([
+        {"command": stock, "timeout": 20},
+        {"command": old, "timeout": 20},
+    ]);
+    let mut hooks = serde_json::Map::new();
+    for event in crate::cursor_guide::EVENTS {
+        hooks.insert(event.into(), entries.clone());
+    }
+    let file = home.join(".cursor/hooks.json");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(
+        &file,
+        serde_json::to_vec(&serde_json::json!({"version": 1, "hooks": hooks})).unwrap(),
+    )
+    .unwrap();
+    app.set_cursor_hooks(true).unwrap();
+    let ours = format!("{} cursor-guide-hook --socket {}", word(own), word(session));
+    let hooks: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    for event in crate::cursor_guide::EVENTS {
+        let found: Vec<&Value> = hooks["hooks"][event]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| {
+                entry["command"]
+                    .as_str()
+                    .is_some_and(|command| command.contains(" cursor-guide-hook"))
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                &serde_json::json!({"command": stock, "timeout": 20}),
+                &serde_json::json!({"command": ours, "timeout": 20}),
+            ],
+            "{event}: {hooks}"
+        );
+    }
 }
 
 /// A site profile not built to coexist (it takes over Agent Relay): its
@@ -517,4 +619,31 @@ fn a_profile_not_built_to_coexist_keeps_its_entry_on_the_shared_copy() {
     );
     assert!(!crate::probe_copy::own_destination(&config.app_data_dir).exists());
     assert_shared_untouched(home);
+}
+
+/// A site profile built to coexist whose own copy cannot be written still
+/// sets up Copilot's hooks: they run the core executable, never that copy.
+#[test]
+fn an_own_copy_that_cannot_be_written_does_not_stop_copilot_hook_setup() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let (config, _) = profile(home, "copilot");
+    let _ = fs::remove_dir_all(short("copilot"));
+    // A file where the own copy's directory goes, so it is never written.
+    fs::create_dir_all(&config.app_data_dir).unwrap();
+    let blocked = crate::probe_copy::own_destination(&config.app_data_dir);
+    fs::write(blocked.parent().unwrap(), "not a directory").unwrap();
+    let core = home.join("Agent Relay Helper");
+    fs::write(&core, "synthetic core executable").unwrap();
+    private_fs::set_mode(&core, 0o700).unwrap();
+    let app = profile_installer(home, &config, true).with_copilot_executable(Some(core.clone()));
+    assert!(!app.helper.ensure());
+    assert!(app.helper.copilot_ready());
+    #[cfg(target_os = "macos")]
+    {
+        app.set_copilot_hooks(true).unwrap();
+        assert!(app.copilot_hooks_ready());
+    }
+    assert_eq!(app.copilot_helper(), core);
+    let _ = fs::remove_dir_all(short("copilot"));
 }
