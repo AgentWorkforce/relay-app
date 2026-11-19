@@ -29,10 +29,13 @@ service-callers-dev-attest = []
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 52fc1197 (#2223): joins local Cursor sessions to upload history and
-# preserves their Archived classification when upgrading.
+# main 7cac6b0a, after 52fc1197: #2214 (question escalation: with
+# question_escalation on, a Claude Code or spawned Codex session's question
+# goes as a DM to question_escalation_inbox and the answer is typed back;
+# off by default) and #2200 (a busy write without Retry-After no longer
+# shortens a socket write pause).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "52fc1197888da2635b2bcad5b0c0ce5072e315da", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "7cac6b0ad81ac09514fffd8f2f3dca24952f9cc8", default-features = false }
 # relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
