@@ -8,6 +8,7 @@ pub mod browser_login;
 mod attestation_route;
 pub mod claude_attestation;
 pub mod claude_keychain;
+pub mod client_telemetry;
 pub mod cloud_api;
 pub mod cloud_chat;
 pub mod command_line;
