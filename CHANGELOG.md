@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Grok sessions can be forked.** On macOS and Linux, a computer now accepts a fork of one of its Grok sessions: the new Grok agent starts with a copy of that session's conversation, in the same folder, and the original carries on untouched. Grok makes the copy itself, so a Grok too old to fork sessions answers `spawn_fork_unavailable` and asks you to run `grok update`, and a session Grok no longer has answers `spawn_fork_not_found`. If a fork fails after Grok made the copy, the copy is removed again where Grok supports it. For every harness, a fork whose session folder has been deleted now answers `spawn_fork_not_found` without the folder's path, and fork failure codes are no longer replaced by "[redacted]" on their way to the app that asked. The iPhone and iPad app offers Fork for Grok agents in a later build; until then it still says only Claude and Codex sessions can be forked. Windows cannot spawn Grok agents, so nothing changes there.
+
 ## v2026.11.15
 
 - **A workspace leader's direct messages reach agents as their own input.** On macOS, Linux and Windows, when your workspace names leaders, a leader's direct message to an agent this computer spawned now arrives as native input, with a line naming the leader, while spawned agents take native input; to a Claude Code session with teammate native input on, it arrives as a user turn. Anywhere else it stays a peer message. Agent Relay reads the workspace's leaders from Relaycast and matches them by agent id, never by name. A leader's channel and group messages stay peer messages, and a leader cannot answer approvals, fork an agent or release one. `settings.get` lists the leaders as `workspace_leaders`, read only.
