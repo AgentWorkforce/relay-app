@@ -285,8 +285,15 @@ impl Harness {
     }
 
     async fn start_with(prepare: impl FnOnce(&FakeCloud, &Harnessing)) -> Harness {
-        let cloud = FakeCloud::start().await;
         let temp = tempfile::tempdir().unwrap();
+        Self::start_in(temp, prepare).await
+    }
+
+    async fn start_in(
+        temp: tempfile::TempDir,
+        prepare: impl FnOnce(&FakeCloud, &Harnessing),
+    ) -> Harness {
+        let cloud = FakeCloud::start().await;
         let home = temp.path().to_path_buf();
         let probe = Arc::new(FakeProbe::default());
         let setup = Harnessing {
@@ -371,7 +378,7 @@ impl Harness {
         )
         .with_choices_path(app_data_dir.join("tool-integrations.json"));
         let _ = account.mcp_config.set(Arc::new(installer));
-        let plugins = Plugins {
+        let mut plugins = Plugins {
             cloud: account.clone() as Arc<dyn CloudAccess>,
             extensions: vec![Arc::new(
                 agent_relay_desktop_core::account::plugin::AccountMethods(account.clone()),
@@ -379,6 +386,11 @@ impl Harness {
             account: Some(account.clone().into_plugin()),
             ..Plugins::default()
         };
+        agent_relay_desktop_core::account::plugin::coordination_advisories(
+            &config,
+            &mut plugins,
+            &account,
+        );
         let (core, signals) = Core::with_plugins(config, plugins);
         let task = tokio::spawn(daemon::run(core.clone(), bound, signals));
         Harness {
@@ -452,6 +464,13 @@ impl Harness {
     async fn stop(self) {
         self.core.request_shutdown();
         let _ = self.task.await;
+    }
+
+    /// Restart only this test's fake core, keeping its actual data directory.
+    async fn restart(self) -> Harness {
+        self.core.request_shutdown();
+        self.task.await.unwrap().unwrap();
+        Self::start_in(self._temp, |_, _| {}).await
     }
 }
 
@@ -1926,6 +1945,8 @@ async fn the_bridge_lists_every_account_method_and_the_sign_in_topic() {
         "login_item.status",
         "chat.send",
         "contractors.status",
+        "coordination_advisories.status",
+        "coordination_advisories.set",
     ] {
         assert!(methods.contains(&method), "{method}");
     }
@@ -1936,6 +1957,64 @@ async fn the_bridge_lists_every_account_method_and_the_sign_in_topic() {
     assert!(!methods.contains(&"credential_proxy.status"));
     let preview = client.ok("uploader.sessions.preview", json!({})).await;
     assert_eq!(preview, json!({"sessions": []}));
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn coordination_advisory_rpcs_report_saved_changes_and_survive_a_restart() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await,
+        json!({"enabled": false})
+    );
+    assert_eq!(
+        client
+            .ok("coordination_advisories.set", json!({"enabled": true}))
+            .await,
+        json!({"enabled": true})
+    );
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await,
+        json!({"enabled": true})
+    );
+    // A failed save must be an RPC error, never an echo of the requested
+    // setting, and must leave the live setting unchanged.
+    let path = harness.home.join("app-data/coordination-advisories.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let (kind, _) = client
+        .error("coordination_advisories.set", json!({"enabled": false}))
+        .await;
+    assert_eq!(kind, "store_failed");
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await,
+        json!({"enabled": true})
+    );
+    std::fs::remove_dir(&path).unwrap();
+    client
+        .ok("coordination_advisories.set", json!({"enabled": true}))
+        .await;
+    drop(client);
+    let harness = harness.restart().await;
+    let mut client = harness.client().await;
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await,
+        json!({"enabled": true})
+    );
+    assert_eq!(
+        client
+            .ok("coordination_advisories.set", json!({"enabled": false}))
+            .await,
+        json!({"enabled": false})
+    );
+    drop(client);
+    let harness = harness.restart().await;
+    let mut client = harness.client().await;
+    assert_eq!(
+        client.ok("coordination_advisories.status", json!({})).await,
+        json!({"enabled": false})
+    );
     harness.stop().await;
 }
 

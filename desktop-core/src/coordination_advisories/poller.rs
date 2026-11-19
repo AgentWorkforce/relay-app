@@ -53,16 +53,19 @@ impl Advisories {
         };
         let mut token = token;
         let mut renewed = false;
+        let mut token_refused = false;
         for target in &due {
             let mut listing = self.api.list(&token, target).await;
             if listing == Listing::Unauthorized && !renewed {
                 // One new token, once a tick: never a loop.
                 renewed = true;
+                token_refused = true;
                 self.tokens.refused(&token);
                 match self.tokens.token().await {
                     Some(fresh) => {
                         token = fresh;
                         listing = self.api.list(&token, target).await;
+                        token_refused = listing == Listing::Unauthorized;
                     }
                     None => listing = Listing::Off,
                 }
@@ -82,6 +85,7 @@ impl Advisories {
                 }
                 Listing::Unauthorized | Listing::Off => {
                     if listing == Listing::Unauthorized {
+                        token_refused = true;
                         self.tokens.refused(&token);
                     }
                     self.state().paused_until = Some(now + ROUTE_OFF_BACKOFF);
@@ -89,7 +93,9 @@ impl Advisories {
                 }
             }
         }
-        self.send_due_acks(&token, now).await;
+        if !token_refused {
+            self.send_due_acks(&token, now).await;
+        }
     }
 
     /// Records what the pipeline lists for `target` now, for `principal`:
@@ -146,19 +152,21 @@ impl Advisories {
     pub(super) async fn send_due_acks(&self, token: &ReadToken, now: Instant) {
         // Save shown IDs before acknowledging them; a normal restart resumes
         // retries without showing the message again. No credentials are saved.
-        if !self.checkpoint_receipts(&token.principal) {
-            return;
-        }
+        self.checkpoint_receipts(&token.principal);
         let due: Vec<(Target, String)> = {
             let mut state = self.state();
             // Another account's token never acks this one's notes.
             if state.principal.as_ref() != Some(&token.principal) {
                 return;
             }
+            // A failed new checkpoint must not stall retries for receipts
+            // already saved. Newly shown, unsaved notes still wait for disk.
+            let saved = receipts::saved(&state, &token.principal);
             let mut due = Vec::new();
             for (target, taken) in state.taken.iter_mut() {
                 for (id, taken) in taken.iter_mut() {
                     if taken.shown
+                        && saved.contains(&(target.clone(), id.clone()))
                         && !taken.acked
                         && !taken.sending
                         && taken.retry_at.is_none_or(|at| at <= now)
@@ -170,15 +178,30 @@ impl Advisories {
             }
             due
         };
-        for (target, id) in due {
+        let mut sent = 0;
+        for (target, id) in &due {
             if self.tokens.principal().as_ref() != Some(&token.principal) {
                 break;
             }
-            let ack = self.api.ack(token, &target, &id).await;
+            let ack = self.api.ack(token, target, id).await;
+            self.acked(&token.principal, target, id, ack, now);
+            sent += 1;
             if ack == Ack::Unauthorized {
                 self.tokens.refused(token);
+                break;
             }
-            self.acked(&token.principal, &target, &id, ack, now);
+        }
+        // A refused token stops the batch. Release only claims that were
+        // never sent, so a later fresh token can retry them.
+        {
+            let mut state = self.state();
+            if state.principal.as_ref() == Some(&token.principal) {
+                for (target, id) in due.iter().skip(sent) {
+                    if let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(id)) {
+                        taken.sending = false;
+                    }
+                }
+            }
         }
         self.checkpoint_receipts(&token.principal);
     }
@@ -205,7 +228,11 @@ impl Advisories {
                 taken.retry_at = None;
             }
             Ack::Forbidden => taken.retry_at = Some(now + ACK_FORBIDDEN_RETRY),
-            Ack::Unauthorized | Ack::Failed => {
+            // Authentication recovery says nothing about whether the
+            // advisory can be acknowledged; it must not exhaust an ended
+            // session's bounded transport-error retries.
+            Ack::Unauthorized => taken.retry_at = Some(now + ACK_RETRY),
+            Ack::Failed => {
                 let wait = ACK_RETRY
                     .saturating_mul(1 << taken.failures.min(6))
                     .min(ACK_RETRY_MAX);
