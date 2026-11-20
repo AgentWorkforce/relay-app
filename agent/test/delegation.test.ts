@@ -234,17 +234,21 @@ test("delegations.json ships as version 2 with the owner and the one grant", () 
         grantedAt: "2026-11-19T10:21:40Z",
         reason: "The owner's own Relay message of 2026-11-19 approved a one-entry grant for iosgrok.",
         scope: "owner-equivalent",
-        ownsSpawned: true,
+        ownsSpawned: false,
         ownerMessageId: "249116914056548352",
       },
     ],
   });
 });
 
-test("every grant is by an owner and lasts at most 30 days", () => {
+// This reads only what the file says about itself: it cannot tell who really
+// approved a grant. The owner's own message does that, at the landing.
+test("every grant names an owner in grantedBy, lasts at most 30 days and owns no spawned agents", () => {
   const doc = JSON.parse(source("delegations.json"));
   for (const grant of doc.delegations) {
     assert.ok(doc.owners.includes(grant.grantedBy), grant.agent);
+    // Spawn ownership is its own decision by the owner; no grant turns it on in passing.
+    assert.equal(grant.ownsSpawned, false, grant.agent);
     const granted = Date.parse(grant.grantedAt);
     const expires = Date.parse(grant.expiresAt);
     assert.ok(granted < expires && expires <= granted + 30 * 86_400_000, grant.agent);
