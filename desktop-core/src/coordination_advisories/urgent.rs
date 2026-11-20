@@ -72,10 +72,20 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// Why a journal could not be loaded.
+enum Fault {
+    /// The file could not be opened or read: kept blocked, never set aside.
+    Io,
+    /// Read in full, but too large, not JSON, an unknown version or invalid.
+    Unreadable,
+}
+
 impl Journal {
     pub(super) fn load(directory: &Path) -> Self {
         use std::io::Read;
-        let read = || -> Result<Saved, ()> {
+        // `Unreadable` only for a file read in full whose content is bad; an I/O
+        // error on the file keeps the journal blocked (its receipts may be fine).
+        let read = || -> Result<Saved, Fault> {
             let file = match std::fs::File::open(directory.join(FILE)) {
                 Ok(file) => file,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -84,24 +94,24 @@ impl Journal {
                         ..Saved::default()
                     })
                 }
-                Err(_) => return Err(()),
+                Err(_) => return Err(Fault::Io),
             };
-            if file.metadata().map_err(|_| ())?.len() > MAX_BYTES {
-                return Err(());
+            if file.metadata().map_err(|_| Fault::Io)?.len() > MAX_BYTES {
+                return Err(Fault::Unreadable);
             }
             let mut bytes = Vec::new();
             file.take(MAX_BYTES + 1)
                 .read_to_end(&mut bytes)
-                .map_err(|_| ())?;
+                .map_err(|_| Fault::Io)?;
             if bytes.len() as u64 > MAX_BYTES {
-                return Err(());
+                return Err(Fault::Unreadable);
             }
-            let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| ())?;
+            let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| Fault::Unreadable)?;
             if saved.version != 1
                 || saved.agents.len() + saved.humans.iter().map(|b| b.ids.len()).sum::<usize>()
                     > MAX_RECORDS
             {
-                return Err(());
+                return Err(Fault::Unreadable);
             }
             if saved
                 .agents
@@ -112,7 +122,7 @@ impl Journal {
                     .iter()
                     .any(|b| b.ids.is_empty() || b.ids.iter().any(|id| !plain_id(id)))
             {
-                return Err(());
+                return Err(Fault::Unreadable);
             }
             Ok(saved)
         };
@@ -126,15 +136,19 @@ impl Journal {
             // aside rather than blocking urgent delivery on every launch.
             // Starting fresh can repeat a note that was in doubt; that is
             // preferred to never delivering one again.
-            Err(()) if std::fs::rename(directory.join(FILE), directory.join(BAD_FILE)).is_ok() => Self {
+            Err(Fault::Unreadable)
+                if std::fs::rename(directory.join(FILE), directory.join(BAD_FILE)).is_ok() =>
+            {
+                Self {
                 saved: Saved {
                     version: 1,
                     ..Saved::default()
                 },
-                status: "Urgent receipt storage could not be read; it was set aside and started again.",
-                blocked: false,
-            },
-            Err(()) => Self {
+                    status: "Urgent receipt storage could not be read; it was set aside and started again.",
+                    blocked: false,
+                }
+            }
+            Err(_) => Self {
                 saved: Saved::default(),
                 status: "Urgent delivery unavailable: receipt storage cannot be read.",
                 blocked: true,
@@ -361,6 +375,10 @@ impl Advisories {
             return;
         };
         let epoch = unix_now();
+        // A new pass: last pass's one-off status (sent, hourly cap, a save
+        // that failed then, a journal set aside) no longer applies. Read
+        // access is the poll's to clear.
+        self.reset_urgent_status_if(|status| !status.starts_with("Read access unavailable"));
         self.deliver_human(delivery, principal.clone(), &candidates, epoch)
             .await;
         for (target, advisory) in &candidates {

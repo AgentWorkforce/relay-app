@@ -664,6 +664,10 @@ async fn a_pass_stopped_after_its_reservation_undoes_it() {
         .agent_receipt(&principal, &t, "p1")
         .is_none());
     assert_eq!(advisories.urgent.lock().unwrap().saved.agents.len(), before.agents.len());
+    // The undo is on disk too: a restart does not find the reservation.
+    assert!(Journal::load(_dir.path())
+        .agent_receipt(&principal, &t, "p1")
+        .is_none());
 }
 
 #[tokio::test]
@@ -719,4 +723,81 @@ async fn read_access_unavailable_survives_the_urgent_pass_and_clears_when_reads_
     tokens.0.store(false, Ordering::SeqCst);
     advisories.poll(&[t], now).await;
     assert!(!advisories.urgent_status().starts_with("Read access unavailable"));
+}
+
+#[test]
+fn an_unknown_version_journal_is_set_aside_and_a_failed_move_stays_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE), br#"{"version":2,"agents":[],"humans":[]}"#).unwrap();
+    let fresh = Journal::load(dir.path());
+    assert!(!fresh.blocked);
+    assert!(fresh.status.contains("set aside"));
+    assert!(dir.path().join(BAD_FILE).exists());
+    assert!(!dir.path().join(FILE).exists());
+    // The set-aside path is taken by a non-empty directory: the move fails,
+    // so the journal stays blocked and the bad file stays where it was.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE), b"broken").unwrap();
+    std::fs::create_dir(dir.path().join(BAD_FILE)).unwrap();
+    std::fs::write(dir.path().join(BAD_FILE).join("keep"), b"x").unwrap();
+    let blocked = Journal::load(dir.path());
+    assert!(blocked.blocked);
+    assert!(dir.path().join(FILE).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_io_error_on_a_valid_journal_keeps_it_blocked_and_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(FILE);
+    std::fs::write(&path, br#"{"version":1,"agents":[],"humans":[]}"#).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&path).is_ok() {
+        // Running as a user that ignores file modes (root): nothing to test.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        return;
+    }
+    let journal = Journal::load(dir.path());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(journal.blocked);
+    assert!(path.exists());
+    assert!(!dir.path().join(BAD_FILE).exists());
+}
+
+#[tokio::test]
+async fn each_urgent_pass_clears_last_passes_one_off_status_but_not_read_access() {
+    let (_dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    advisories.poll(&[t.clone()], now).await;
+    advisories.urgent.lock().unwrap().status = "System notification hourly limit reached.";
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert_eq!(advisories.urgent_status(), "idle");
+    advisories.urgent.lock().unwrap().status =
+        "Read access unavailable; urgent advisories cannot be fetched.";
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert!(advisories.urgent_status().starts_with("Read access unavailable"));
+    drop(api);
+}
+
+#[tokio::test]
+async fn a_session_in_its_own_backoff_counts_as_checked() {
+    let (_dir, _api, advisories) = setup();
+    let (a, b) = (target(A), target(B));
+    let now = Instant::now();
+    advisories.poll(&[a.clone(), b.clone()], now).await;
+    advisories
+        .state()
+        .sessions
+        .entry(a.clone())
+        .or_default()
+        .until = Some(now + Duration::from_secs(600));
+    let live = [a.clone(), b.clone()];
+    let mut answered = advisories.poll_selected(&live, Some(&live), now).await;
+    answered.sort_by(|x, y| x.id.cmp(&y.id));
+    assert_eq!(answered, vec![a.clone(), b.clone()]);
+    let mut schedule = PollSchedule::default();
+    schedule.checked_at(&answered, now);
+    assert!(schedule.due(&live, &HashSet::new(), now + Duration::from_secs(1)).is_empty());
 }

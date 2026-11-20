@@ -38,7 +38,7 @@ impl Advisories {
         };
         // Read access works again: drop a stale fetch or setting status.
         self.reset_urgent_status_if(|status| status.starts_with("Read access unavailable"));
-        let due = {
+        let (due, backed_off) = {
             let mut state = self.state();
             // The account changed while the token was fetched.
             if !state.belong_to(Some(&token.principal)) {
@@ -47,9 +47,23 @@ impl Advisories {
             if state.paused_until.is_some_and(|until| now < until)
                 || state.rate_until.is_some_and(|until| now < until)
             {
-                Vec::new()
+                (Vec::new(), Vec::new())
             } else {
                 state.paused_until = None;
+                // Selected but in their own backoff: as good as checked, so
+                // they do not keep a slot from healthy sessions every tick.
+                let backed_off: Vec<Target> = selected
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|target| {
+                        state
+                            .sessions
+                            .get(*target)
+                            .and_then(|b| b.until)
+                            .is_some_and(|until| until > now)
+                    })
+                    .cloned()
+                    .collect();
                 let start = state.cursor % sessions.len().max(1);
                 let ready: Vec<Target> = sessions
                     .iter()
@@ -68,9 +82,10 @@ impl Advisories {
                     .cloned()
                     .collect();
                 state.cursor = start + SESSIONS_PER_TICK.min(sessions.len());
-                ready
+                (ready, backed_off)
             }
         };
+        answered.extend(backed_off);
         let mut token = token;
         let mut renewed = false;
         let mut token_refused = false;
