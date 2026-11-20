@@ -114,6 +114,47 @@ pub(super) fn restore(state: &mut State, principal: &Principal) {
     }
 }
 
+/// IDs that already have a durable shown receipt for this account.
+pub(super) fn saved(state: &State, principal: &Principal) -> HashSet<(Target, String)> {
+    let scope = Scope::from(principal);
+    let now = unix_now();
+    state
+        .receipts
+        .iter()
+        .filter(|r| r.scope == scope && valid(r, now))
+        .map(|r| (r.target.clone(), r.advisory_id.clone()))
+        .collect()
+}
+
+/// Keep the newest receipts within both bounds, rather than refusing every
+/// checkpoint once old scopes fill the file. Evicted IDs remain retryable
+/// in the live cache, and may be saved by a later checkpoint as ACKs drain.
+fn bounded(mut rows: Vec<Receipt>) -> Option<(Saved, Vec<u8>)> {
+    rows.sort_by_key(|r| r.shown_at);
+    let mut size = serde_json::to_vec(&Saved {
+        version: 1,
+        receipts: Vec::new(),
+    })
+    .ok()?
+    .len();
+    let mut kept = Vec::new();
+    for row in rows.into_iter().rev().take(MAX_RECEIPTS) {
+        let extra = serde_json::to_vec(&row).ok()?.len() + usize::from(!kept.is_empty());
+        if size + extra > MAX_FILE_BYTES as usize {
+            break;
+        }
+        size += extra;
+        kept.push(row);
+    }
+    kept.reverse();
+    let saved = Saved {
+        version: 1,
+        receipts: kept,
+    };
+    let bytes = serde_json::to_vec(&saved).ok()?;
+    Some((saved, bytes))
+}
+
 impl Advisories {
     /// Serialize checkpoints so an older snapshot cannot overwrite a newer ACK.
     /// Called in the background, never by pending/take/shown.
@@ -156,19 +197,9 @@ impl Advisories {
                 }
             }
         }
-        if rows.len() > MAX_RECEIPTS {
-            return false;
-        }
-        let saved = Saved {
-            version: 1,
-            receipts: rows,
-        };
-        let Ok(bytes) = serde_json::to_vec(&saved) else {
+        let Some((saved, bytes)) = bounded(rows) else {
             return false;
         };
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return false;
-        }
         // Hooks only hold `state` briefly; never make them wait for filesystem I/O.
         drop(state);
         if agent_relay_node::platform::fs::create_private_dir_all(&self.app_data_dir).is_err()
@@ -198,6 +229,50 @@ mod tests {
             advisory_id: "example-advisory".into(),
             shown_at: unix_now(),
         }
+    }
+
+    #[test]
+    fn overflowing_receipt_count_keeps_the_newest_instead_of_refusing_to_save() {
+        let now = unix_now();
+        let rows = (0..MAX_RECEIPTS + 1)
+            .map(|i| Receipt {
+                advisory_id: format!("receipt-{i}"),
+                shown_at: now - i as u64,
+                ..receipt()
+            })
+            .collect();
+        let (saved, bytes) = bounded(rows).unwrap();
+        assert_eq!(saved.receipts.len(), MAX_RECEIPTS);
+        assert_eq!(saved.receipts.last().unwrap().advisory_id, "receipt-0");
+        assert!(!saved
+            .receipts
+            .iter()
+            .any(|r| r.advisory_id == format!("receipt-{MAX_RECEIPTS}")));
+        assert!(bytes.len() <= MAX_FILE_BYTES as usize);
+    }
+
+    #[test]
+    fn overflowing_receipt_bytes_also_evicts_the_oldest() {
+        let now = unix_now();
+        let rows = (0..MAX_RECEIPTS)
+            .map(|i| {
+                let mut row = receipt();
+                row.advisory_id = format!("receipt-{i}");
+                row.shown_at = now - i as u64;
+                row.scope.site = format!("https://{}.example", "a".repeat(2000));
+                row.scope.workspace_id = "w".repeat(512);
+                row.scope.user_id = Some("u".repeat(512));
+                assert!(valid(&row, now));
+                row
+            })
+            .collect();
+        let (saved, bytes) = bounded(rows).unwrap();
+        assert!(!saved.receipts.is_empty() && saved.receipts.len() < MAX_RECEIPTS);
+        assert_eq!(saved.receipts.last().unwrap().advisory_id, "receipt-0");
+        assert!(bytes.len() <= MAX_FILE_BYTES as usize);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), bytes).unwrap();
+        assert_eq!(load(dir.path()).len(), saved.receipts.len());
     }
 
     #[test]

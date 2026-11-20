@@ -318,6 +318,9 @@ final class AppModel {
     /// answered, as a core built without an account never does.
     private(set) var coordinationAdvisories: Bool?
     private(set) var isCoordinationAdvisoriesPending = false
+    private(set) var coordinationNotifications: Bool?
+    private(set) var coordinationNotificationStatus: String?
+    private(set) var isCoordinationNotificationsPending = false
     var launchAtLogin = false
     private(set) var loginItemNeedsApproval = false
     /// Quitting leaves the core running unless the person turned this off;
@@ -2553,17 +2556,18 @@ final class AppModel {
     func loadSettings() async {
         let revision = connectionRevision
         if let loaded = try? await client.settingsGet(), revision == connectionRevision { confirmedSettings = loaded }
-        if !isCoordinationAdvisoriesPending,
+        if !isCoordinationAdvisoriesPending, !isCoordinationNotificationsPending,
            let state = try? await client.coordinationAdvisoriesStatus(),
-           revision == connectionRevision, !isCoordinationAdvisoriesPending {
-            coordinationAdvisories = state.enabled
+           revision == connectionRevision, !isCoordinationAdvisoriesPending, !isCoordinationNotificationsPending {
+            applyCoordinationState(state)
         }
     }
 
     /// Turns the turn-end advisories on or off. The choice shows at once; a
     /// failure reverts it and keeps the core's sentence in `settingErrors`.
     func setCoordinationAdvisories(_ enabled: Bool) async {
-        guard let previous = coordinationAdvisories, previous != enabled else { return }
+        guard let previous = coordinationAdvisories, previous != enabled,
+              !isCoordinationAdvisoriesPending, !isCoordinationNotificationsPending else { return }
         let revision = connectionRevision
         settingErrors[CoordinationAdvisoriesCopy.settingKey] = nil
         coordinationAdvisories = enabled
@@ -2572,11 +2576,36 @@ final class AppModel {
         do {
             let state = try await client.coordinationAdvisoriesSet(CoordinationAdvisoriesParams(enabled: enabled))
             guard revision == connectionRevision else { return }
-            coordinationAdvisories = state.enabled
+            applyCoordinationState(state)
         } catch {
             guard revision == connectionRevision else { return }
             coordinationAdvisories = previous
             settingErrors[CoordinationAdvisoriesCopy.settingKey] = error.localizedDescription
+        }
+    }
+
+    private func applyCoordinationState(_ state: CoordinationAdvisoriesState) {
+        coordinationAdvisories = state.enabled
+        coordinationNotifications = state.notificationsEnabled
+        coordinationNotificationStatus = state.notificationStatus
+    }
+
+    func setCoordinationNotifications(_ enabled: Bool) async {
+        guard let previous = coordinationNotifications, previous != enabled,
+              !isCoordinationNotificationsPending, !isCoordinationAdvisoriesPending else { return }
+        let revision = connectionRevision
+        settingErrors[CoordinationAdvisoriesCopy.notificationsKey] = nil
+        coordinationNotifications = enabled
+        isCoordinationNotificationsPending = true
+        defer { isCoordinationNotificationsPending = false }
+        do {
+            let state = try await client.coordinationAdvisoriesNotificationsSet(CoordinationAdvisoriesParams(enabled: enabled))
+            guard revision == connectionRevision else { return }
+            applyCoordinationState(state)
+        } catch {
+            guard revision == connectionRevision else { return }
+            coordinationNotifications = previous
+            settingErrors[CoordinationAdvisoriesCopy.notificationsKey] = error.localizedDescription
         }
     }
 

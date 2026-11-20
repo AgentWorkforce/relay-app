@@ -23,6 +23,9 @@ fn advisory(id: &str, urgency: &'static str) -> Advisory {
     Advisory {
         id: id.into(),
         urgency,
+        priority: None,
+        dm_delivered: false,
+        notify_eligible: false,
         message: format!("Another agent may be working near src/{id}."),
         peer_source: "codex".into(),
         peer_session_id: "peer-session".into(),
@@ -56,6 +59,8 @@ struct FakeTokens {
     refused: AtomicUsize,
     /// Signed out.
     none: AtomicBool,
+    /// A refusal cannot be renewed, while the person remains signed in.
+    no_renewal: AtomicBool,
     /// Who is signed in; alice when unset.
     user: Mutex<Option<String>>,
 }
@@ -71,7 +76,12 @@ impl TokenSource for FakeTokens {
     fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
         self.asked.fetch_add(1, Ordering::SeqCst);
         let principal = self.principal();
+        let cannot_renew =
+            self.no_renewal.load(Ordering::SeqCst) && self.refused.load(Ordering::SeqCst) > 0;
         Box::pin(async move {
+            if cannot_renew {
+                return None;
+            }
             Some(ReadToken {
                 principal: principal?,
                 ..token()
@@ -286,6 +296,152 @@ async fn a_failed_receipt_write_keeps_the_ack_retryable() {
     std::fs::remove_dir(&path).unwrap();
     w.advisories.send_shown(now).await;
     assert_eq!(w.api.acked(), ["a1"]);
+}
+
+#[tokio::test]
+async fn a_failed_new_checkpoint_does_not_block_previously_saved_acks() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    w.advisories.state().belong_to(Some(&principal("alice")));
+    w.advisories.listed(
+        &principal("alice"),
+        &session,
+        vec![advisory("saved", "low")],
+        now,
+    );
+    let shown = w.advisories.take_at(&session, now).unwrap();
+    w.advisories.mark_shown(&session, &shown.ids);
+    assert!(w.advisories.checkpoint_receipts(&principal("alice")));
+    w.advisories.listed(
+        &principal("alice"),
+        &session,
+        vec![advisory("unsaved", "low")],
+        now,
+    );
+    let shown = w.advisories.take_at(&session, now).unwrap();
+    w.advisories.mark_shown(&session, &shown.ids);
+    let path = w._dir.path().join("coordination-advisory-receipts.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked(), ["saved"]);
+    assert!(!w.advisories.state().taken[&session]["unsaved"].sending);
+    std::fs::remove_dir(&path).unwrap();
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked(), ["saved", "unsaved"]);
+}
+
+#[tokio::test]
+async fn more_than_the_receipt_cap_drains_instead_of_blocking_every_ack() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    {
+        let mut state = w.advisories.state();
+        state.belong_to(Some(&principal("alice")));
+        let taken = state.taken.entry(session).or_default();
+        for i in 0..4097 {
+            let mut row = Taken::new(now);
+            row.shown = true;
+            taken.insert(format!("receipt-{i}"), row);
+        }
+    }
+    // Each pass sends a bounded batch; the whole backlog still drains.
+    let mut passes = 0;
+    while w.api.acked().len() < 4097 {
+        let before = w.api.acked().len();
+        w.advisories.send_shown(now).await;
+        let sent = w.api.acked().len() - before;
+        assert!(sent > 0 && sent <= poller::MAX_ACKS_PER_PASS, "sent {sent}");
+        passes += 1;
+        assert!(passes <= 4097, "the backlog never drained");
+    }
+    assert!(receipts::load(w._dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn refused_listing_tokens_never_send_acks_with_or_without_a_failed_renewal() {
+    for cannot_renew in [false, true] {
+        let w = world(true);
+        let now = Instant::now();
+        {
+            let mut state = w.advisories.state();
+            state.belong_to(Some(&principal("alice")));
+            let mut row = Taken::new(now);
+            row.shown = true;
+            state
+                .taken
+                .entry(codex())
+                .or_default()
+                .insert("a1".into(), row);
+        }
+        assert!(w.advisories.checkpoint_receipts(&principal("alice")));
+        w.tokens.no_renewal.store(cannot_renew, Ordering::SeqCst);
+        w.api.answer(&claude(), vec![Listing::Unauthorized]);
+        w.advisories.poll(&[claude()], now).await;
+        assert!(w.api.acked().is_empty());
+        assert_eq!(w.advisories.state().taken[&codex()]["a1"].failures, 0);
+    }
+}
+
+#[tokio::test]
+async fn a_refused_ack_stops_the_batch_and_releases_its_unsent_claims() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    {
+        let mut state = w.advisories.state();
+        state.belong_to(Some(&principal("alice")));
+        for id in ["a1", "a2", "a3"] {
+            let mut row = Taken::new(now);
+            row.shown = true;
+            state
+                .taken
+                .entry(session.clone())
+                .or_default()
+                .insert(id.into(), row);
+        }
+    }
+    *w.api.acks.lock().unwrap() = vec![Ack::Unauthorized];
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked().len(), 1);
+    assert!(w.advisories.state().taken[&session]
+        .values()
+        .all(|r| !r.sending && r.failures == 0));
+    *w.api.acks.lock().unwrap() = vec![Ack::Done];
+    w.advisories.send_shown(now + ACK_RETRY).await;
+    assert!(w.advisories.state().taken[&session]
+        .values()
+        .all(|r| r.acked));
+}
+
+#[tokio::test]
+async fn unauthorized_acks_do_not_use_up_an_ended_sessions_error_budget() {
+    let w = world(true);
+    let session = claude();
+    let now = Instant::now();
+    {
+        let mut state = w.advisories.state();
+        state.belong_to(Some(&principal("alice")));
+        let mut row = Taken::new(now);
+        row.shown = true;
+        state
+            .taken
+            .entry(session.clone())
+            .or_default()
+            .insert("a1".into(), row);
+    }
+    *w.api.acks.lock().unwrap() = vec![Ack::Unauthorized];
+    for i in 0..ENDED_ACK_FAILURES + 1 {
+        w.advisories.poll(&[], now + ACK_RETRY * i).await;
+    }
+    assert_eq!(w.advisories.state().taken[&session]["a1"].failures, 0);
+    *w.api.acks.lock().unwrap() = vec![Ack::Done];
+    w.advisories
+        .poll(&[], now + ACK_RETRY * (ENDED_ACK_FAILURES + 1))
+        .await;
+    assert!(w.advisories.state().taken[&session]["a1"].acked);
 }
 
 #[test]
@@ -1476,4 +1632,62 @@ async fn an_ended_session_gives_up_its_ack_after_a_few_failures() {
     }
     assert_eq!(w.api.acked().len(), ENDED_ACK_FAILURES as usize);
     assert!(w.advisories.state().taken.is_empty());
+}
+
+#[tokio::test]
+async fn a_listing_429_pauses_both_lists_and_acks_for_the_device() {
+    let w = world(true);
+    let now = Instant::now();
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+    );
+    w.advisories.poll(&[claude()], now).await;
+    let ids = w.advisories.take_at(&claude(), now).unwrap().ids;
+    assert!(w.advisories.mark_shown(&claude(), &ids));
+    w.api.answer(&claude(), vec![Listing::Throttled]);
+    w.advisories.poll(&[claude()], now).await;
+    w.advisories
+        .poll(&[codex()], now + Duration::from_secs(1))
+        .await;
+    w.advisories.send_shown(now + Duration::from_secs(1)).await;
+    assert_eq!(w.api.lists(), 2);
+    assert!(w.api.acked().is_empty());
+    w.api.answer(&claude(), vec![Listing::Advisories(vec![])]);
+    w.advisories.poll(&[claude()], now + SESSION_BACKOFF).await;
+    assert_eq!(w.api.acked(), vec!["a1"]);
+}
+
+#[tokio::test]
+async fn an_ack_429_releases_the_unsent_batch_without_spending_failure_budgets() {
+    let w = world(true);
+    let now = Instant::now();
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![
+            advisory("a1", "low"),
+            advisory("a2", "low"),
+        ])],
+    );
+    w.advisories.poll(&[claude()], now).await;
+    let ids = w.advisories.take_at(&claude(), now).unwrap().ids;
+    assert!(w.advisories.mark_shown(&claude(), &ids));
+    *w.api.acks.lock().unwrap() = vec![Ack::Throttled];
+    w.advisories.send_shown(now).await;
+    assert_eq!(w.api.acked().len(), 1);
+    for taken in w
+        .advisories
+        .state()
+        .taken
+        .values()
+        .flat_map(|rows| rows.values())
+    {
+        assert!(!taken.sending);
+        assert_eq!(taken.failures, 0);
+    }
+    w.advisories.send_shown(now + Duration::from_secs(1)).await;
+    assert_eq!(w.api.acked().len(), 1);
+    *w.api.acks.lock().unwrap() = vec![Ack::Done];
+    w.advisories.send_shown(now + SESSION_BACKOFF).await;
+    assert_eq!(w.api.acked().len(), 3);
 }

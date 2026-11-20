@@ -9,7 +9,14 @@ impl Advisories {
             return None;
         }
         let current = self.tokens.principal();
+        // Serialize ownership with an urgent reservation. Both paths hold
+        // state before consulting the urgent journal, so neither can take
+        // an ID after the other has claimed its delivery.
         let mut state = self.state();
+        let provider_owned = current
+            .as_ref()
+            .map(|p| self.provider_owned(p, target))
+            .unwrap_or_default();
         // Signed out, or another account: what was cached is not theirs.
         if current.is_none() || !state.belong_to(current.as_ref()) {
             return None;
@@ -21,13 +28,19 @@ impl Advisories {
         // Every line, the footer and the line breaks fit in MAX_TEXT; what
         // does not fit waits for the next turn.
         let mut size = FOOTER.len();
+        let mut overflow = false;
         for advisory in waiting {
+            if provider_owned.contains(&advisory.id) {
+                kept.push(advisory);
+                continue;
+            }
             let line = line(&advisory);
-            if size + line.len() + 1 <= MAX_TEXT && kept.is_empty() {
+            if size + line.len() + 1 <= MAX_TEXT && !overflow {
                 size += line.len() + 1;
                 ids.push(advisory.id.clone());
                 lines.push(line);
             } else {
+                overflow = true;
                 kept.push(advisory);
             }
         }

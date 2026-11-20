@@ -8,6 +8,13 @@ pub struct Advisory {
     pub id: String,
     /// `high` or `low`.
     pub urgency: &'static str,
+    /// Additive M3-7 ranking, supplied by the pipeline; absent/unknown is
+    /// never promoted to an urgent local injection or a system notice.
+    pub priority: Option<u8>,
+    /// An older server-side DM already accepted this advisory.
+    pub dm_delivered: bool,
+    /// Server-side evaluation gate. Missing is false, including old APIs.
+    pub notify_eligible: bool,
     pub message: String,
     pub peer_source: String,
     pub peer_session_id: String,
@@ -58,10 +65,22 @@ pub(super) fn advisory(row: &Value) -> Option<Advisory> {
     Some(Advisory {
         id: id.to_string(),
         urgency,
+        priority: row["priority"]
+            .as_u64()
+            .filter(|p| (1..=3).contains(p))
+            .map(|p| p as u8),
+        dm_delivered: row["delivery"]["dm"].as_bool().unwrap_or(false),
+        notify_eligible: row["notifyEligible"].as_bool().unwrap_or(false),
         message,
         peer_source: peer_source.to_string(),
         peer_session_id: peer_session_id.to_string(),
     })
+}
+
+impl Advisory {
+    pub fn urgent(&self) -> bool {
+        self.priority == Some(1) && self.urgency == "high"
+    }
 }
 
 /// A listing's advisories: at most [`MAX_ROWS`], each once, oldest first as
