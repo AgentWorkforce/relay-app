@@ -125,6 +125,13 @@ final class AgentIconViewTests: XCTestCase {
     }
 
     /// Amp draws its bundled logo as a template mark, not the terminal fallback.
+    func testAntigravityUsesItsOwnColourArtwork() throws {
+        XCTAssertEqual(AgentIconView.name(for: "antigravity"), "Antigravity")
+        let artwork = try XCTUnwrap(AgentIconView.artwork(for: "antigravity"))
+        XCTAssertFalse(artwork.isTemplate)
+        XCTAssertGreaterThan(artwork.size.width, 0)
+    }
+
     func testAmpResolvesToItsBundledMark() throws {
         XCTAssertEqual(AgentIconView.name(for: "amp"), "Amp")
         let amp = try XCTUnwrap(AgentIconView.artwork(for: "amp"))
