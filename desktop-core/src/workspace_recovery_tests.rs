@@ -31,6 +31,10 @@ struct FakeState {
     new_status: u16,
     resolve_status: u16,
     refresh_status: u16,
+    /// The access token a refresh answers with.
+    refresh_access: String,
+    /// Resolve requests are dropped unanswered (Cloud unreachable).
+    drop_resolve: bool,
     resolved: Value,
     new_workspace_id: String,
     hold: Option<&'static str>,
@@ -59,6 +63,8 @@ impl Fake {
             new_status: 200,
             resolve_status: 200,
             refresh_status: 200,
+            refresh_access: "renewed-access".into(),
+            drop_resolve: false,
             resolved: json!({"data":{"relaycastApiKey": NEW, "relaycastWorkspaceId":"rw_review",
                 "cloudWorkspaceId":CLOUD_ID, "urls":{"relaycastUrl":site}}}),
             new_workspace_id: "rw_review".into(),
@@ -108,12 +114,15 @@ impl Fake {
                         enter.notify_one();
                         release.notified().await;
                     }
+                    if path.ends_with("/resolve") && shared.lock().unwrap().drop_resolve {
+                        return;
+                    }
                     let (status, body) = {
                         let s = shared.lock().unwrap();
                         if path.ends_with("/auth/token/refresh") {
                             (
                                 s.refresh_status,
-                                json!({"accessToken":"renewed-access","refreshToken":"renewed-refresh","accessTokenExpiresAt":"2099-01-01T00:00:00Z"}),
+                                json!({"accessToken":s.refresh_access,"refreshToken":"renewed-refresh","accessTokenExpiresAt":"2099-01-01T00:00:00Z"}),
                             )
                         } else if path.ends_with("/resolve") {
                             (s.resolve_status, s.resolved.clone())
@@ -193,11 +202,14 @@ struct Harness {
 }
 impl Harness {
     async fn new() -> Self {
+        Self::with_env(BTreeMap::new()).await
+    }
+    /// `new`, with `env` as the account's and the core's environment.
+    async fn with_env(env: BTreeMap<String, String>) -> Self {
         let fake = Fake::start().await;
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let app_data_dir = home.join("app");
-        let env = BTreeMap::new();
         let account = Arc::new(
             Account::new(
                 &env,
@@ -778,3 +790,7 @@ async fn recovery_without_a_gate_url_is_unchanged() {
     assert!(h.cloud_key_is(NEW));
     assert_eq!(h.fake.count("/resolve"), 1);
 }
+
+/// The session bridge against the same fake Cloud and Relaycast.
+#[path = "session_bridge_tests.rs"]
+mod session_bridge;

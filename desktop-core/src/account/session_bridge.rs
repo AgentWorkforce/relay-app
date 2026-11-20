@@ -7,18 +7,25 @@
 //! predates it keeps working.
 //!
 //! With `AGENT_RELAY_DESKTOP_SESSION_BRIDGE` on (it is off by default),
-//! Desktop also checks the move took the binding with it:
+//! Desktop also checks the move took the binding with it. Whether this
+//! computer is on the control plane is read from the kept session itself
+//! (its access token has the control plane's prefix), never from memory,
+//! so it holds after a restart and when another process sharing the store
+//! did the refresh:
 //!
-//! - it notices a rotation that crossed from a Cloud pair to a control
-//!   plane pair (the new access token has the control plane's prefix and
-//!   the old one did not);
-//! - it then reads the account workspace's resolve once with the new
-//!   bearer. The Relaycast workspace is meant to stay where it was, under
-//!   the same key and with no gate, so the answer must match the stored
-//!   binding. A mismatch is reported, never adopted: the binding is left
-//!   as it is;
-//! - for the rest of that sign-in, refused-key recovery does not adopt a
-//!   resolve that moves the Relaycast origin or names a gate.
+//! - supervision reads the account workspace's resolve once with the
+//!   control plane bearer: on the first tick that finds such a session
+//!   (after a start, a crossing, or a sign-in), and again after it was
+//!   replaced by a Cloud session or none. The Relaycast workspace is meant
+//!   to stay where it was, under the same key and with no gate, so the
+//!   answer must match the stored binding. A mismatch is reported, never
+//!   adopted: the binding is left as it is. A check Cloud could not answer
+//!   is tried [`CHECK_ATTEMPTS`] times in all, then reported;
+//! - refused-key recovery needs nothing more: it already refuses a resolve
+//!   that moves the Relaycast origin or names a gate
+//!   (`cloud_api::resolve_workspace_for_recovery`), on the control plane
+//!   as on Cloud;
+//! - the rotation that crosses over is announced once.
 //!
 //! The person's identity (user and workspace) is already compared with the
 //! kept account by the auth health check (`health`), so it is not repeated
@@ -28,11 +35,12 @@
 //! read and recovery adopts what it always adopted.
 
 use super::Account;
+use agent_relay_node::relay::cloud_session::CloudError;
 use agent_relay_node::relay::state::Level;
 use agent_relay_node::relay::store::{CloudSession, CloudWorkspace};
 use agent_relay_node::relay::workspace::{validated_base_url, Secret};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// The setting that turns the check on. Off unless it says so.
 pub const FLAG: &str = "AGENT_RELAY_DESKTOP_SESSION_BRIDGE";
@@ -40,19 +48,19 @@ pub const FLAG: &str = "AGENT_RELAY_DESKTOP_SESSION_BRIDGE";
 /// How control plane access tokens begin; Cloud's do not.
 const CONTROL_ACCESS_PREFIX: &str = "sh_at_";
 
-/// How many times an unanswered binding check is tried again.
-const CHECK_ATTEMPTS: u32 = 3;
+/// How many times in all a binding check Cloud could not answer is tried.
+pub(crate) const CHECK_ATTEMPTS: u32 = 3;
 
-/// The bridge's state on one account.
+/// The bridge's state on one account. Only bookkeeping for the binding
+/// check lives here; whether the account is on the control plane is read
+/// from the store.
 #[derive(Debug, Default)]
 pub(crate) struct Bridge {
     enabled: bool,
-    /// A crossing was seen and its binding check has not run yet.
-    pending: AtomicBool,
-    /// Binding checks left for the pending crossing.
-    attempts_left: AtomicU32,
-    /// The sign-out epoch a crossing was seen in, plus one; zero for none.
-    crossed_in: AtomicU64,
+    /// The last tick found a control plane session kept for this site.
+    seen_control: AtomicBool,
+    /// Binding check tries left for that session; zero once it is done.
+    checks_left: AtomicU32,
 }
 
 impl Bridge {
@@ -136,21 +144,6 @@ pub(crate) fn binding_kept(
     }
 }
 
-/// Whether recovery after a crossing may adopt `after`: a new key is what
-/// recovery is for, but not a new origin or a gate.
-pub(crate) fn recovery_allowed(
-    before: &CloudWorkspace,
-    after: &CloudWorkspace,
-) -> Result<(), Mismatch> {
-    if after.gate_url.is_some() && before.gate_url.is_none() {
-        return Err(Mismatch::Gate);
-    }
-    if !same_origin(&before.base_url, &after.base_url) {
-        return Err(Mismatch::Origin);
-    }
-    Ok(())
-}
-
 fn same_origin(a: &str, b: &str) -> bool {
     match (validated_base_url(a), validated_base_url(b)) {
         (Some(a), Some(b)) => a == b,
@@ -159,21 +152,13 @@ fn same_origin(a: &str, b: &str) -> bool {
 }
 
 impl Account {
-    /// After a rotation `old` -> `new` was kept: notes a crossing to the
-    /// control plane and wakes supervision to check the binding. Nothing
-    /// when the bridge is off.
+    /// After a rotation `old` -> `new` was kept: announces a crossing to
+    /// the control plane and wakes supervision, whose next tick checks the
+    /// binding. Nothing when the bridge is off.
     pub(super) fn note_rotation(&self, old: &CloudSession, new: &CloudSession) {
         if !self.session_bridge.is_enabled() || !crossed_to_control(old, new) {
             return;
         }
-        let epoch = self.epoch.load(Ordering::SeqCst);
-        self.session_bridge
-            .crossed_in
-            .store(epoch.wrapping_add(1), Ordering::SeqCst);
-        self.session_bridge
-            .attempts_left
-            .store(CHECK_ATTEMPTS, Ordering::SeqCst);
-        self.session_bridge.pending.store(true, Ordering::SeqCst);
         if let Some(core) = self.core() {
             core.hub.activity(
                 Level::Info,
@@ -183,22 +168,30 @@ impl Account {
         self.wake.notify_one();
     }
 
-    /// Whether a crossing was seen since the last sign-out.
-    pub(super) fn crossed_this_sign_in(&self) -> bool {
-        self.session_bridge.is_enabled()
-            && self.session_bridge.crossed_in.load(Ordering::SeqCst)
-                == self.epoch.load(Ordering::SeqCst).wrapping_add(1)
+    /// The kept session for this site, when the bridge is on and the
+    /// control plane issued it.
+    fn control_session(&self) -> Option<CloudSession> {
+        if !self.session_bridge.is_enabled() {
+            return None;
+        }
+        self.load_session()
+            .filter(|s| s.site_url == self.site_url && is_control_issued(&s.access_token))
     }
 
-    /// Supervision's part: one read-only resolve after a crossing, compared
-    /// with the stored binding. Reports a mismatch; changes nothing.
-    pub(super) async fn check_bridged_binding(&self) {
-        if !self.session_bridge.is_enabled()
-            || !self.session_bridge.pending.swap(false, Ordering::SeqCst)
-        {
+    /// Supervision's part: one read-only resolve for a control plane
+    /// session not yet checked, compared with the stored binding. Reports
+    /// a mismatch; changes nothing.
+    pub(crate) async fn check_bridged_binding(&self) {
+        let bridge = &self.session_bridge;
+        let Some(session) = self.control_session() else {
+            bridge.seen_control.store(false, Ordering::SeqCst);
             return;
+        };
+        if !bridge.seen_control.swap(true, Ordering::SeqCst) {
+            bridge.checks_left.store(CHECK_ATTEMPTS, Ordering::SeqCst);
         }
-        if !self.crossed_this_sign_in() {
+        let left = bridge.checks_left.load(Ordering::SeqCst);
+        if left == 0 {
             return;
         }
         let Some(core) = self.core() else { return };
@@ -208,50 +201,26 @@ impl Account {
         let Some(account_workspace) = before.account_workspace_id.clone() else {
             return;
         };
-        let Some(session) = self.load_session().filter(|s| s.site_url == self.site_url) else {
-            return;
-        };
-        if !is_control_issued(&session.access_token) {
-            return;
-        }
-        match crate::cloud_api::resolve_workspace(&session.site_url, &session.access_token, &account_workspace).await {
-            Ok(after) => {
-                if let Err(mismatch) = binding_kept(&before, &after) {
-                    core.hub.activity(Level::Warning, mismatch.to_string());
-                }
+        let answer = crate::cloud_api::resolve_workspace(
+            &session.site_url,
+            &session.access_token,
+            &account_workspace,
+        )
+        .await;
+        let report = match answer {
+            Ok(after) => binding_kept(&before, &after).err().map(|m| m.to_string()),
+            Err(crate::cloud_api::ResolveError::Cloud(CloudError::Unreachable)) if left > 1 => {
+                bridge.checks_left.store(left - 1, Ordering::SeqCst);
+                return;
             }
-            Err(crate::cloud_api::ResolveError::Cloud(
-                agent_relay_node::relay::cloud_session::CloudError::Unreachable,
-            )) => {
-                // Try again on a later tick, a few times at most.
-                let left = self.session_bridge.attempts_left.load(Ordering::SeqCst);
-                if left > 1 {
-                    self.session_bridge.attempts_left.store(left - 1, Ordering::SeqCst);
-                    self.session_bridge.pending.store(true, Ordering::SeqCst);
-                }
-            }
-            Err(error) => core.hub.activity(Level::Warning, format!(
+            Err(error) => Some(format!(
                 "Your organization moved to its new Agent Relay control plane, but its workspace could not be checked: {error}"
             )),
+        };
+        bridge.checks_left.store(0, Ordering::SeqCst);
+        if let Some(report) = report {
+            core.hub.activity(Level::Warning, report);
         }
-    }
-
-    /// Recovery's guard after a crossing: `Err` (already reported) when
-    /// `after` would move the Relaycast origin or make the install
-    /// gate-only.
-    pub(super) fn guard_bridged_recovery(
-        &self,
-        before: &CloudWorkspace,
-        after: &CloudWorkspace,
-    ) -> Result<(), Mismatch> {
-        if !self.crossed_this_sign_in() {
-            return Ok(());
-        }
-        recovery_allowed(before, after).inspect_err(|mismatch| {
-            if let Some(core) = self.core() {
-                core.hub.activity(Level::Warning, mismatch.to_string());
-            }
-        })
     }
 }
 

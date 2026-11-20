@@ -73,7 +73,7 @@ impl Account {
             }
             Err(_) => return None,
         };
-        if !self.may_adopt_resolve(&core, epoch, refused, &before, &resolved) {
+        if self.epoch.load(Ordering::SeqCst) != epoch || core.discover().as_ref() != Some(refused) {
             return None;
         }
         let replacement = Workspace {
@@ -113,23 +113,6 @@ impl Account {
         }
         core.rediscover_workspace();
         Some((replacement, info))
-    }
-
-    /// Whether a resolve read for recovery may still be adopted: the
-    /// sign-in and the refused workspace are unchanged, and after a move to
-    /// the control plane it neither moves the Relaycast origin nor goes
-    /// gate-only (`session_bridge`, which reports it).
-    fn may_adopt_resolve(
-        &self,
-        core: &Core,
-        epoch: u64,
-        refused: &Workspace,
-        before: &CloudWorkspace,
-        resolved: &CloudWorkspace,
-    ) -> bool {
-        self.epoch.load(Ordering::SeqCst) == epoch
-            && core.discover().as_ref() == Some(refused)
-            && self.guard_bridged_recovery(before, resolved).is_ok()
     }
 
     fn recovery_context(

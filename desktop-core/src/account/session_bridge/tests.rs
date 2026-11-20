@@ -1,8 +1,6 @@
-//! The bridge check's decisions, with throwaway tokens only.
+//! The bridge check's decisions, with throwaway tokens only. Its work
+//! against a fake Cloud is in `workspace_recovery_tests::session_bridge`.
 use super::*;
-use crate::account::Account;
-use crate::history::uploader::{ProcessRunner, Uploader};
-use std::sync::Arc;
 
 fn session(access: &str) -> CloudSession {
     CloudSession {
@@ -22,21 +20,6 @@ fn binding() -> CloudWorkspace {
         account_workspace_id: Some("00000000-0000-4000-8000-000000000001".into()),
         ..CloudWorkspace::default()
     }
-}
-
-fn account(env: &[(&str, &str)]) -> Account {
-    let env: BTreeMap<String, String> = env
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    let temp = std::env::temp_dir().join("desktop-session-bridge-test");
-    Account::new(
-        &env,
-        &temp,
-        Arc::new(Uploader::new(Arc::new(ProcessRunner::new(
-            temp.join("unused-probe"),
-        )))),
-    )
 }
 
 #[test]
@@ -103,60 +86,6 @@ fn a_changed_binding_names_what_changed() {
         binding_kept(&binding(), &workspace),
         Err(Mismatch::Workspace)
     );
-}
-
-#[test]
-fn recovery_may_take_a_new_key_but_not_a_new_origin_or_a_gate() {
-    let key = CloudWorkspace {
-        key: Secret::new("rk_live_other-test-only".to_string()),
-        ..binding()
-    };
-    assert_eq!(recovery_allowed(&binding(), &key), Ok(()));
-    let origin = CloudWorkspace {
-        base_url: "https://elsewhere.example.test".into(),
-        ..binding()
-    };
-    assert_eq!(recovery_allowed(&binding(), &origin), Err(Mismatch::Origin));
-    let gate = CloudWorkspace {
-        gate_url: Some("https://gate.example.test".into()),
-        ..binding()
-    };
-    assert_eq!(recovery_allowed(&binding(), &gate), Err(Mismatch::Gate));
-}
-
-#[test]
-fn off_a_crossing_is_not_noted_and_recovery_is_unguarded() {
-    let account = account(&[]);
-    account.note_rotation(&session("cloud-access"), &session("sh_at_control"));
-    assert!(!account.crossed_this_sign_in());
-    assert!(!account.session_bridge.pending.load(Ordering::SeqCst));
-    let origin = CloudWorkspace {
-        base_url: "https://elsewhere.example.test".into(),
-        ..binding()
-    };
-    assert_eq!(account.guard_bridged_recovery(&binding(), &origin), Ok(()));
-}
-
-#[test]
-fn on_a_crossing_is_noted_for_this_sign_in_only() {
-    let account = account(&[(FLAG, "1")]);
-    account.note_rotation(&session("cloud-access"), &session("cloud-access-2"));
-    assert!(!account.crossed_this_sign_in());
-    account.note_rotation(&session("cloud-access"), &session("sh_at_control"));
-    assert!(account.crossed_this_sign_in());
-    assert!(account.session_bridge.pending.load(Ordering::SeqCst));
-    let origin = CloudWorkspace {
-        base_url: "https://elsewhere.example.test".into(),
-        ..binding()
-    };
-    assert_eq!(
-        account.guard_bridged_recovery(&binding(), &origin),
-        Err(Mismatch::Origin)
-    );
-    // A sign-out starts a new epoch: the crossing no longer applies.
-    account.epoch.fetch_add(1, Ordering::SeqCst);
-    assert!(!account.crossed_this_sign_in());
-    assert_eq!(account.guard_bridged_recovery(&binding(), &origin), Ok(()));
 }
 
 #[test]
