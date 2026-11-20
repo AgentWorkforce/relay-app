@@ -20,7 +20,7 @@ export default defineLayeredAgent({
   accountId: process.env.LAYERED_AGENT_ACCOUNT_ID,
   // x64: Relayflows ships runtimes only for x64 Linux and Apple silicon.
   arch: "x64",
-  instanceType: "t3.large",
+  instanceType: "m7i.2xlarge",
   // Pinned (Canonical 24.04, serial 20261023), so Canonical's moving
   // "current" pointer does not make every deploy full.
   // A new image is a deliberate change of this id: a full deploy, dispatched
