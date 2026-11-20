@@ -71,6 +71,9 @@ or denied by the verified machine owner for that single request only.
 
 Connecting or a queued message is not a delivery confirmation. A failed or
 uncertain connection asks you to check message status before trying again.
+Resend only if the message is not marked Delivered; the app never resends on
+its own. The failed notice can be dismissed; it comes back when the computer
+reports a different state or the notice clears and returns.
 The offline `MobileHandoffUITests` exercise these states without a production
 account; the Mobile CI workflow saves their screenshots with the test results.
 

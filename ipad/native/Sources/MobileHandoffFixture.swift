@@ -35,7 +35,8 @@ enum MobileHandoffFixture {
         if state.sent != nil, scenario != "queued" {
             metadata["mobile_handoff_state"] = scenario
             if scenario == "failed" {
-                metadata["mobile_handoff_error"] = "Claude's mobile connection could not be confirmed. Check the message status before sending again."
+                // The core's generic wording, which the app replaces with guidance.
+                metadata["mobile_handoff_error"] = MobileHandoffNotice.unconfirmedDetail
             }
         }
         let agent: JSONObject = ["name": "reviewer", "status": "active", "address": "reviewer@test-mini-123",

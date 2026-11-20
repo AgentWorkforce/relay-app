@@ -1129,12 +1129,25 @@ struct RelayWorkspaceView: View {
                 case .row: EmptyView()
                 }
             }.padding(.horizontal, 16).frame(height: 70)
-            if let notice = client.handoffNotice(for: agent) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(notice.title, systemImage: notice.state == .failed ? "exclamationmark.circle" : "arrow.triangle.2.circlepath")
-                        .font(.caption.weight(.medium))
-                        .accessibilityIdentifier("Mobile handoff status")
-                    if !notice.detail.isEmpty { Text(notice.detail).font(.caption) }
+            if let notice = client.visibleHandoffNotice(for: agent) {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(notice.title, systemImage: notice.state == .failed ? "exclamationmark.circle" : "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.medium))
+                            .accessibilityIdentifier("Mobile handoff status")
+                        if !notice.displayDetail.isEmpty { Text(notice.displayDetail).font(.caption) }
+                        if let hint = notice.displayHint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if notice.state == .failed {
+                        Button { client.dismissHandoffNotice(for: agent) } label: {
+                            Image(systemName: "xmark").font(.caption.weight(.semibold))
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Dismiss mobile handoff notice")
+                        .accessibilityIdentifier("Dismiss mobile handoff notice")
+                    }
                 }
                 .foregroundStyle(notice.state == .failed ? Color.orange : Color.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

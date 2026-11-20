@@ -458,6 +458,8 @@ private enum SecureStore {
     private let workspaceKeyRecovery = WorkspaceKeyRecovery()
     private var peopleRefreshTask: Task<Void, Never>?
     private var conversationAgentMetadata: [String: RelayAgent] = [:]
+    /// Failed handoff notices the person dismissed; in memory only.
+    @Published private var handoffDismissals = MobileHandoffDismissals()
     private var conversationRoster = ConversationRoster()
     private var conversationAgentRetryAfter: [String: Date] = [:]
     private var latestConversationThreads: [JSONObject] = []
@@ -1006,6 +1008,7 @@ private enum SecureStore {
             conversationRefreshGeneration += 1
             conversationMetadataWorkerID = nil
             conversationAgentMetadata = [:]
+            handoffDismissals = MobileHandoffDismissals()
             conversationRoster = ConversationRoster()
             rosterLoaded = false
             conversationAgentRetryAfter = [:]
@@ -1101,6 +1104,7 @@ private enum SecureStore {
         sessionsMissingFromHistory = []
         summaryCredentialReady = false
         conversationAgentMetadata = [:]
+        handoffDismissals = MobileHandoffDismissals()
         conversationRoster = ConversationRoster()
         conversationAgentRetryAfter = [:]
         latestConversationThreads = []
@@ -1239,6 +1243,12 @@ private enum SecureStore {
             conversationAgentMetadata[agent.name] = agent
             conversationAgentRetryAfter.removeValue(forKey: agent.name)
         }
+        // A dismissed failure comes back once its agent publishes anything else.
+        let published = Dictionary(conversationAgentMetadata.values.compactMap { agent in
+            agent.mobileHandoff.map { (MobileHandoffDismissals.identity(name: agent.name, sessionID: agent.sessionID), $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        let retained = handoffDismissals.retaining(published: published)
+        if retained != handoffDismissals { handoffDismissals = retained }
         if conversationsInitialized {
             updateConversations(latestConversationThreads, metadata: conversationAgentMetadata)
         }
@@ -1862,6 +1872,19 @@ private enum SecureStore {
     /// Only server metadata can describe a handoff; viewing has no side effect.
     func handoffNotice(for agent: RelayAgent) -> MobileHandoffNotice? {
         (conversationAgentMetadata[agent.name] ?? agent).mobileHandoff
+    }
+    /// The notice to show: nil once the person dismissed this exact failure.
+    func visibleHandoffNotice(for agent: RelayAgent) -> MobileHandoffNotice? {
+        let current = conversationAgentMetadata[agent.name] ?? agent
+        guard let notice = current.mobileHandoff else { return nil }
+        let identity = MobileHandoffDismissals.identity(name: current.name, sessionID: current.sessionID)
+        return handoffDismissals.hides(notice, for: identity) ? nil : notice
+    }
+    /// Hides the current failed notice; it never resends anything.
+    func dismissHandoffNotice(for agent: RelayAgent) {
+        let current = conversationAgentMetadata[agent.name] ?? agent
+        guard let notice = current.mobileHandoff else { return }
+        handoffDismissals.dismiss(notice, for: MobileHandoffDismissals.identity(name: current.name, sessionID: current.sessionID))
     }
     func nativeContinuationNotice(for agent: RelayAgent) -> String? {
         (conversationAgentMetadata[agent.name] ?? agent).nativeContinuationNotice

@@ -142,7 +142,8 @@ final class MobileHandoffUITests: XCTestCase {
         let app = open(scenario: "failed")
         send(app)
         XCTAssertTrue(app.staticTexts["Could not continue Claude"].firstMatch.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Claude's mobile connection could not be confirmed. Check the message status before sending again."].exists)
+        XCTAssertTrue(app.staticTexts["Your last message may not have reached the session. Check the status under it and send it again only if it shows Queued or Sent, not Delivered."].exists)
+        XCTAssertTrue(app.buttons["Dismiss mobile handoff notice"].exists)
         XCTAssertFalse(app.buttons["Authorize"].exists)
         capture(app, "mobile-handoff-failure")
     }
