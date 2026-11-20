@@ -10,7 +10,7 @@
       "grantedAt": "2026-11-19T10:21:40Z",
       "reason": "The owner's own Relay message of 2026-11-19 approved a one-entry grant for iosgrok.",
       "scope": "owner-equivalent",
-      "ownsSpawned": true,
+      "ownsSpawned": false,
       "ownerMessageId": "249116914056548352"
     }
   ]
