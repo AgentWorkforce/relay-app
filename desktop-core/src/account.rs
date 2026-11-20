@@ -53,6 +53,7 @@ mod relay_node_credential;
 mod relay_node_token;
 mod service_callers;
 mod session;
+pub(crate) mod session_bridge;
 mod sign_out;
 mod site_choices;
 #[cfg(any(test, feature = "test-site"))]
@@ -224,6 +225,9 @@ pub struct Account {
     /// What the node's `relay_node_credential` hook answers, from memory
     /// (`relay_node_credential`).
     relay_node_held: Mutex<relay_node_credential::Held>,
+    /// The move to the control plane, checked only when its setting is on
+    /// (`session_bridge`).
+    pub(crate) session_bridge: session_bridge::Bridge,
 }
 
 /// Backoff for a Cloud call supervision repeats.
@@ -290,6 +294,7 @@ impl Account {
             relay_node_keychain: Arc::new(crate::relay_node_token::Os),
             relay_node_mint: Default::default(),
             relay_node_held: Mutex::default(),
+            session_bridge: session_bridge::Bridge::from_env(env),
         }
     }
 
@@ -520,6 +525,7 @@ impl Account {
             self.schedule_auth_health();
             self.sync_cloud_identities().await;
             self.schedule_relay_node_token();
+            self.check_bridged_binding().await;
         }
     }
 

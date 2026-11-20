@@ -76,6 +76,11 @@ impl Account {
         if self.epoch.load(Ordering::SeqCst) != epoch || core.discover().as_ref() != Some(refused) {
             return None;
         }
+        // After a move to the control plane, a resolve that would move the
+        // Relaycast origin or go gate-only is reported, not adopted.
+        if self.guard_bridged_recovery(&before, &resolved).is_err() {
+            return None;
+        }
         let replacement = Workspace {
             key: resolved.key.clone(),
             base_url: resolved.base_url.clone(),
