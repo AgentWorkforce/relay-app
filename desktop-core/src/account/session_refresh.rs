@@ -105,6 +105,7 @@ impl Account {
         {
             return Kept::Unrenewable;
         }
+        self.note_rotation(&session, &refreshed);
         Kept::Usable(refreshed)
     }
 
@@ -157,6 +158,7 @@ impl Account {
                 if self.epoch.load(Ordering::SeqCst) == epoch
                     && self.replace_session(&session, Some(&renewed)) =>
             {
+                self.note_rotation(&session, &renewed);
                 Ok(renewed)
             }
             Ok(_) => Err(CloudError::SignedOut),
