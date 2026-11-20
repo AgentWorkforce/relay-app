@@ -1179,12 +1179,18 @@ replacement only works between builds from the release that introduced the
 marker onward: an Agent Relay installed before it carries no marker and is
 not found, so update Agent Relay first, then open the profile's build.
 The headless macOS installer (`macos/install.sh`, any product's copy) uses
-the same marker: it refuses to install, update or roll back while an app in
-`/Applications` or `~/Applications` carries `AgentRelayProduct`, or while a
-marked product's core (`<bundle id>.core`, `.core.local`, `.core.session`)
-is loaded, since that core shares the helper copy and the agents' hooks with
-a headless one; a `--coexist` build does not stop it, and `--uninstall` is
-never refused.
+the same marker, since a marked product's core shares the helper copy and the
+agents' hooks with a headless one. It refuses to install, update or roll back
+while an app directly in `/Applications` or `~/Applications` has a bundle id
+as its `AgentRelayProduct`, or while a job labelled `<marker>.core`,
+`.core.local` or `.core.session` is loaded in `gui/<uid>` and the plist it was
+loaded from can be read and carries that marker: a fallback LaunchAgent, or
+the bundled job of a marked app run from anywhere else, such as `~/Downloads`.
+A loaded core whose plist is gone or unreadable (its app deleted, or its disk
+image ejected, before the user logged out) is not found, since nothing left
+says whose it is. With a headless core already installed, the refusal also
+offers `--uninstall`. A `--coexist` build does not stop it, and `--status`
+and `--uninstall` are never refused.
 
 A profile can opt out: with `DESKTOP_COEXIST` set to `true` (an internal or
 dev profile; see Site profiles) its build is made with `build-app.sh

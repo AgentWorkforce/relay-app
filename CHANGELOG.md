@@ -14,7 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
-- **The headless Mac installer no longer installs next to another Agent Relay app.** On macOS, `install-macos.sh` now refuses, and names the app, when another Agent Relay app, such as your site's own build, is installed in Applications or its background service is running, instead of installing a second core beside it that would change the helper and agent hooks that app uses. Use that app, or quit and delete it, then log out and in before installing the headless core. A dry run refuses the same way.
+- **The headless Mac installer no longer installs next to another Agent Relay app.** On macOS, `install-macos.sh` now refuses, and names the app or its background service, when another Agent Relay app, such as your site's own build, is installed in Applications or is running its background service from wherever the app is on the Mac, instead of installing a second core beside it that would change the helper and agent hooks that app uses. Use that app, or quit and delete it, then log out and in before installing the headless core; if the headless core is already installed, you can instead remove it with `install-macos.sh --uninstall`. A dry run refuses the same way.
 
 ## v2026.11.17
 

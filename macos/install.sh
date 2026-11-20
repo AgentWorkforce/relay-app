@@ -28,11 +28,9 @@
 #      hands over to it (daemon.rs), so the two must not both be set to start.
 #      Refuses too when any other marked Agent Relay app (a site profile's
 #      build: AgentRelayProduct in its Info.plist) is in an Applications
-#      folder, or the core of one is loaded: it has its own socket, but it
-#      shares the helper copy ~/.local/bin/agent-relay-probe and the agents'
-#      hook settings, which a headless core would change and --uninstall
-#      would not put back. A coexist build carries no marker and is no
-#      obstacle.
+#      folder, or the core of one is loaded from a plist that can still be
+#      read: it shares the helper copy ~/.local/bin/agent-relay-probe and
+#      the agents' hook settings. A coexist build carries no marker.
 #   2. Resolves the release (latest, or --version), downloads
 #      <ASSET_PREFIX>-<version>-macOS-<arch>-probe.tar.gz, checks it against
 #      the release's .sha256, and checks the core's Developer ID signature
@@ -890,8 +888,13 @@ if [ -z "$app_reason" ]; then
     if launchctl print "$DOMAIN/$app_label" < /dev/null >/dev/null 2>&1; then app_reason="the app's core ($app_label) is loaded"; break; fi
   done
 fi
+# With a headless core installed, removing it is the way to keep the app.
+uninstall_hint=""
+if [ -n "$current_version" ]; then
+  uninstall_hint="; or keep the app and remove the headless core already installed here ($current_version): run this installer with --uninstall"
+fi
 if [ -n "$app_reason" ]; then
-  die "$app_reason. The $PRODUCT_NAME app runs this core itself; use the app, or quit and delete it (then log out and in) before installing the headless core"
+  die "$app_reason. The $PRODUCT_NAME app runs this core itself; use the app, or quit and delete it (then log out and in) before installing the headless core$uninstall_hint"
 fi
 
 # Any other Agent Relay app, such as a site profile's build, has its own
@@ -899,30 +902,50 @@ fi
 # ~/.local/bin/agent-relay-probe (only ever upgraded, probe_copy.rs) and the
 # agents' hook settings with this one: a headless core beside it would change
 # both, and --uninstall puts neither back. Such an app is recognised as the
-# app does (ProductTakeover.swift), by its marker alone: build-app.sh writes
-# AgentRelayProduct, the bundle id, into a release build's Info.plist, and
-# its core's jobs are <bundle id>.core, .core.local and .core.session (the
-# bundled job and LaunchAgentService's fallbacks, which carry the marker
-# too). A coexist build (build-app.sh --coexist) and the development build
-# carry none and are left alone; so is a property list that cannot be read.
-# This copy of the script refuses beside any marked app, its own product's
+# app recognises it (ProductTakeover.swift), by its marker: build-app.sh
+# writes AgentRelayProduct, the bundle id, into a release build's Info.plist,
+# and its core's jobs are <bundle id>.core, .core.local and .core.session
+# (the bundled job and LaunchAgentService's fallbacks, which carry the marker
+# too). A marker that is not a bundle id counts as none, as it does there. A
+# coexist build (build-app.sh --coexist) and the development build carry
+# none and are left alone; so is a property list that cannot be read. This
+# copy of the script refuses beside any marked app, its own product's
 # included. --status and --uninstall never get here.
+# Found: a marked *.app in an Applications folder; a loaded fallback job
+# from ~/Library/LaunchAgents or SessionServices; any other loaded *.core,
+# .core.local or .core.session job whose plist (launchd's `path`) carries a
+# marker naming that label, such as the bundled job of an app run from
+# ~/Downloads. Not found: a loaded job whose plist is gone or unreadable (its
+# app deleted before logging out): nothing says whose it is.
 plist_string() { # file key: the value, or nothing when it cannot be read
   plutil -extract "$2" raw -o - "$1" < /dev/null 2>/dev/null | tr -d '[:space:]' || true
 }
 is_product_id() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'; }
+# Labels of loaded jobs that could be a core: the last word of each line
+# ("<pid> <last exit> <label>") of the `services` block of `launchctl print
+# $DOMAIN`. Not `launchctl list`: that lists the caller's session's domain,
+# which over SSH is not gui/<uid>.
+loaded_core_labels() {
+  launchctl print "$DOMAIN" < /dev/null 2>/dev/null | awk '
+    /^[[:space:]]*services = [{][[:space:]]*$/ { inside = 1; next }
+    inside && /^[[:space:]]*[}][[:space:]]*$/ { inside = 0; next }
+    inside && NF >= 3 { print $NF }' \
+    | grep -E '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\.core(\.local|\.session)?$' || true
+}
+job_plist() { # label -> the plist launchd loaded it from, or nothing
+  launchctl print "$DOMAIN/$1" < /dev/null 2>/dev/null \
+    | awk '$1 == "path" && $2 == "=" { sub(/^[[:space:]]*path = /, ""); print; exit }' || true
+}
 marked_reason=""
 for apps in "$SYSTEM_APPLICATIONS" "$HOME/Applications"; do
   for marked_app in "$apps"/*.app; do
     [ -f "$marked_app/Contents/Info.plist" ] || continue
     marker="$(plist_string "$marked_app/Contents/Info.plist" AgentRelayProduct)"
-    [ -n "$marker" ] || continue
+    is_product_id "$marker" || continue
     marked_reason="$marked_app is installed"
-    if is_product_id "$marker"; then
-      for marked_label in "$marker.core" "$marker.core.local" "$marker.core.session"; do
-        if launchctl print "$DOMAIN/$marked_label" < /dev/null >/dev/null 2>&1; then marked_reason="$marked_reason and its core ($marked_label) is loaded"; break; fi
-      done
-    fi
+    for marked_label in "$marker.core" "$marker.core.local" "$marker.core.session"; do
+      if launchctl print "$DOMAIN/$marked_label" < /dev/null >/dev/null 2>&1; then marked_reason="$marked_reason and its core ($marked_label) is loaded"; break; fi
+    done
     break 2
   done
 done
@@ -943,8 +966,24 @@ if [ -z "$marked_reason" ]; then
     done
   done
 fi
+if [ -z "$marked_reason" ]; then
+  # Labels are words of [A-Za-z0-9.-]: splitting them is safe.
+  for marked_label in $(loaded_core_labels); do
+    [ "$marked_label" != "$LABEL" ] || continue
+    case " $APP_LABELS " in *" $marked_label "*) continue ;; esac
+    marked_plist="$(job_plist "$marked_label")"
+    { [ -n "$marked_plist" ] && [ -f "$marked_plist" ]; } || continue
+    marker="$(plist_string "$marked_plist" AgentRelayProduct)"
+    is_product_id "$marker" || continue
+    case "$marked_label" in
+      "$marker.core"|"$marker.core.local"|"$marker.core.session") ;;
+      *) continue ;;
+    esac
+    marked_reason="the core of another Agent Relay app ($marked_label) is loaded from $marked_plist"; break
+  done
+fi
 if [ -n "$marked_reason" ]; then
-  die "$marked_reason. That Agent Relay app shares its agent hooks and helper with this core; use that app, or quit and delete it (then log out and in) before installing the headless core"
+  die "$marked_reason. That Agent Relay app shares its agent hooks and helper with this core; use that app, or quit and delete it (then log out and in) before installing the headless core$uninstall_hint"
 fi
 
 # gui/<uid> exists only while the user is logged in at the Mac (or by

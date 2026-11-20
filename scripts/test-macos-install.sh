@@ -4,8 +4,11 @@
 # Mac) with a fake release server and fake uname, sysctl, curl, shasum,
 # codesign, launchctl, plutil and sqlite3 on PATH, in a throwaway HOME:
 # refusals (not macOS, the app installed or loaded, another marked Agent Relay
-# app installed or its core loaded, but not a coexist build or an unreadable
-# Info.plist, no login session, --update with nothing installed), a first install and the LaunchAgent it writes, an idempotent
+# app installed or its core loaded, its bundle anywhere, but not a coexist
+# build, an unreadable Info.plist, a marker that is not a bundle id or a core
+# whose plist is gone; --update, --rollback and a reinstall beside either app
+# offering --uninstall, --status allowed; no login session, --update with
+# nothing installed), a first install and the LaunchAgent it writes, an idempotent
 # rerun, an update, a bad checksum, an unsigned core (never run), a stray
 # archive, a new version that never answers or that launchd refuses to
 # restart (rolled back), --rollback (only ever to an older version), a
@@ -193,7 +196,12 @@ esac
 EOF
 # A fake launchd for gui/<uid>: loaded jobs are files in state/, a job's start
 # runs the ProgramArguments its plist names (parsed as a real property list)
-# and records the version `current` points at as the running core.
+# and records the version `current` points at as the running core. A loaded
+# job's file holds the path of the plist it was loaded from (bootstrap writes
+# it; a test may), which `print gui/<uid>/<label>` reports as `path = ...`
+# when there is one; `print gui/<uid>` lists the loaded jobs in a `services`
+# block, one "<pid> <last exit> <label>" line per job as launchd prints it,
+# between blocks whose entries also end in .core but are not jobs.
 cat > "$root/bin/launchctl" <<EOF
 #!/usr/bin/env bash
 $stdin_check
@@ -202,6 +210,13 @@ state="$root/state"
 if [ -n "\${CURRENT_GUARD:-}" ] && [ ! -L "\$CURRENT_GUARD" ]; then
   echo "current absent at: launchctl \$*" >> "\$state/current-violations"
 fi
+job_print() { # loaded-job-file service-target
+  printf '%s = {\n\tactive count = 1\n' "\$2"
+  [ ! -s "\$1" ] || printf '\tpath = %s\n' "\$(head -n 1 "\$1")"
+  printf '\ttype = LaunchAgent\n\tstate = running\n\tstdout path = /dev/null\n'
+  [ ! -f "\$state/core-pid" ] || printf '\tpid = %s\n' "\$(cat "\$state/core-pid")"
+  printf '}\n'
+}
 start() {
   local args=()
   while IFS= read -r line; do args+=("\$line"); done < "\$state/job-args"
@@ -211,7 +226,15 @@ start() {
 case "\$1" in
   print)
     case "\$2" in
-      gui/$uid) [ ! -f "\$state/no-gui" ] ;;
+      gui/$uid)
+        [ ! -f "\$state/no-gui" ] || exit 113
+        printf 'gui/$uid = {\n\ttype = login\n\thandle = 100007\n\tservices = {\n'
+        printf '\t\t     541      - \tcom.apple.Finder\n'
+        for job in "\$state"/loaded-*; do
+          [ -f "\$job" ] || continue
+          printf '\t\t       0      - \t%s\n' "\${job##*/loaded-}"
+        done
+        printf '\t}\n\n\tunmanaged processes = {\n\t\tcom.example.unmanaged.core = {\n\t\t}\n\t}\n\n\tendpoints = {\n\t\t"com.example.endpoint.core" = {\n\t\t\tport = 0x1\n\t\t}\n\t}\n}\n' ;;
       gui/$uid/$label)
         if [ -f "\$state/load-on-second-print" ]; then
           checks="\$(cat "\$state/headless-print-checks" 2>/dev/null || echo 0)"
@@ -219,8 +242,8 @@ case "\$1" in
           [ "\$checks" -lt 2 ] || touch "\$state/loaded-$label"
         fi
         [ -f "\$state/loaded-$label" ] || exit 113
-        printf '\tstate = running\n'; [ ! -f "\$state/core-pid" ] || printf '\tpid = %s\n' "\$(cat "\$state/core-pid")" ;;
-      gui/$uid/*) [ -f "\$state/loaded-\${2##*/}" ] || exit 113; printf '\tstate = running\n'; [ ! -f "\$state/core-pid" ] || printf '\tpid = %s\n' "\$(cat "\$state/core-pid")" ;;
+        job_print "\$state/loaded-$label" "\$2" ;;
+      gui/$uid/*) [ -f "\$state/loaded-\${2##*/}" ] || exit 113; job_print "\$state/loaded-\${2##*/}" "\$2" ;;
       *) exit 113 ;;
     esac ;;
   enable) [ "\$2" = "gui/$uid/$label" ] ;;
@@ -232,7 +255,7 @@ with open(sys.argv[1], "rb") as f: p = plistlib.load(f)
 print(p["Label"]); print("\n".join(p["ProgramArguments"]))' "\$3")" || exit 5
     name="\${job%%\$'\n'*}"
     [ ! -f "\$state/loaded-\$name" ] || exit 5
-    touch "\$state/loaded-\$name"
+    printf '%s\n' "\$3" > "\$state/loaded-\$name"
     printf '%s\n' "\${job#*\$'\n'}" > "\$state/job-args"
     start ;;
   bootout)
@@ -399,6 +422,7 @@ app="$HOME/Applications/Agent Relay.app/Contents/Library/LaunchAgents"
 mkdir -p "$app" && touch "$app/com.agentrelay.desktop.core.plist"
 if bash "$INSTALL" > "$root/state/out" 2>&1; then fail "installed beside the app"; fi
 grep -q "Agent Relay.app is installed" "$root/state/out" || { cat "$root/state/out"; fail "the app refusal does not say why"; }
+grep -q "before installing the headless core\$" "$root/state/out" || { cat "$root/state/out"; fail "the app refusal offers more than the app with nothing installed"; }
 rm -rf "$HOME/Applications"
 touch "$root/state/loaded-com.agentrelay.desktop.core.local"
 if bash "$INSTALL" > "$root/state/out" 2>&1; then fail "installed beside the app's loaded core"; fi
@@ -409,8 +433,9 @@ pass "refuses while the app is installed or its core is loaded"
 
 # Another Agent Relay app, as build-app.sh makes it: an Info.plist and the
 # core's LaunchAgent in the bundle, both with the AgentRelayProduct marker
-# unless it is a coexist build.
-other_app() { # applications-folder app-name bundle-id marked|coexist
+# unless it is a coexist build; bad-marker writes a marker that is not a
+# bundle id ("yes").
+other_app() { # applications-folder app-name bundle-id marked|coexist|bad-marker
   local contents="$1/$2/Contents"
   mkdir -p "$contents/Library/LaunchAgents"
   python3 -I -c '
@@ -418,9 +443,10 @@ import plistlib, sys
 contents, bundle_id, kind = sys.argv[1:]
 info = {"CFBundleIdentifier": bundle_id, "CFBundleName": "Example Relay"}
 agent = {"Label": bundle_id + ".core", "ProgramArguments": ["agent-relay-probe", "serve"]}
-if kind == "marked":
-    info["AgentRelayProduct"] = bundle_id
-    agent["AgentRelayProduct"] = bundle_id
+if kind in ("marked", "bad-marker"):
+    marker = bundle_id if kind == "marked" else "yes"
+    info["AgentRelayProduct"] = marker
+    agent["AgentRelayProduct"] = marker
 with open(contents + "/Info.plist", "wb") as f: plistlib.dump(info, f)
 with open(contents + "/Library/LaunchAgents/" + bundle_id + ".core.plist", "wb") as f: plistlib.dump(agent, f)
 ' "$contents" "$3" "$4"
@@ -431,9 +457,12 @@ refused_beside() { # what [install options...]
   if bash "$INSTALL" "$@" > "$root/state/out" 2>&1; then cat "$root/state/out"; fail "installed beside $what"; fi
   ! grep -q "would run" "$root/state/out" || { cat "$root/state/out"; fail "said what it would install beside $what"; }
   grep -q "quit and delete it (then log out and in)" "$root/state/out" || { cat "$root/state/out"; fail "the refusal beside $what does not say what to do"; }
+  # Nothing is installed, so there is no headless core to remove.
+  ! grep -q -- "--uninstall" "$root/state/out" || { cat "$root/state/out"; fail "the refusal beside $what offers --uninstall with nothing installed"; }
   { [ ! -e "$prefix" ] && [ ! -e "$plist" ]; } || fail "a refused install beside $what left files behind"
 }
 installs_beside() { # what
+  local what="$1"
   : > "$root/state/stdin-violations"
   piped "$INSTALL" | STDIN_CHECK=1 bash -s -- --dry-run > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "a --dry-run beside $what failed"; }
   grep -q "would run: launchctl bootstrap gui/$uid $plist" "$root/state/out" || { cat "$root/state/out"; fail "a --dry-run beside $what did not reach the end"; }
@@ -492,8 +521,37 @@ rm -rf "$AGENT_RELAY_SYSTEM_APPLICATIONS" "$root/state/loaded-$other_id.core"
 mkdir -p "$HOME/Applications/Broken Relay.app/Contents"
 printf 'not a property list' > "$HOME/Applications/Broken Relay.app/Contents/Info.plist"
 installs_beside "an app with an unreadable Info.plist"
-rm -rf "$HOME/Applications" "$root/state/launchctl.log"
-pass "a coexist build or an unreadable Info.plist does not stop an install"
+rm -rf "$HOME/Applications"
+# A marker that is not a bundle id is no marker, as in ProductTakeover.swift.
+other_app "$AGENT_RELAY_SYSTEM_APPLICATIONS" "Example Relay.app" "$other_id" bad-marker
+installs_beside "an app whose AgentRelayProduct is not a bundle id"
+rm -rf "$AGENT_RELAY_SYSTEM_APPLICATIONS" "$root/state/launchctl.log"
+pass "a coexist build, an unreadable Info.plist or a marker that is not a bundle id does not stop an install"
+
+# A marked app run from outside the Applications folders: only its bundled
+# core, loaded from the bundle's own plist, gives it away.
+elsewhere="$root/Downloads"
+bundled="$elsewhere/Example Relay.app/Contents/Library/LaunchAgents/$other_id.core.plist"
+other_app "$elsewhere" "Example Relay.app" "$other_id" marked
+printf '%s\n' "$bundled" > "$root/state/loaded-$other_id.core"
+refused_beside "a marked app's bundled core loaded from outside the Applications folders"
+grep -Fq "another Agent Relay app ($other_id.core) is loaded from $bundled" "$root/state/out" || { cat "$root/state/out"; fail "the bundled-core refusal does not name the job"; }
+grep -q "^print gui/$uid\$" "$root/state/launchctl.log" || fail "the loaded jobs were not listed from gui/$uid"
+# A label that is not one of the marker's is some other job.
+mv "$root/state/loaded-$other_id.core" "$root/state/loaded-com.example.unrelated.core"
+installs_beside "a marked plist loaded under a label not derived from its marker"
+# Its plist gone (the app deleted before logging out): nothing says whose it is.
+mv "$root/state/loaded-com.example.unrelated.core" "$root/state/loaded-$other_id.core"
+rm -rf "$elsewhere"
+installs_beside "a loaded core whose plist is gone"
+: > "$root/state/loaded-$other_id.core"
+installs_beside "a loaded core with no plist path"
+# An unmarked (coexist) core loaded from elsewhere is no obstacle either.
+other_app "$elsewhere" "Example Relay.app" "$other_id" coexist
+printf '%s\n' "$bundled" > "$root/state/loaded-$other_id.core"
+installs_beside "a coexist build's core loaded from outside the Applications folders"
+rm -rf "$elsewhere" "$root/state/loaded-$other_id.core" "$root/state/launchctl.log"
+pass "refuses beside a marked app's bundled core loaded from elsewhere, not when its plist is gone or unmarked"
 
 touch "$root/state/no-gui"
 if bash "$INSTALL" > "$root/state/out" 2>&1; then fail "installed without a login session"; fi
@@ -560,6 +618,38 @@ grep -q "automatic login" "$root/state/out" || fail "the automatic login note is
 grep -q -- "--uninstall" "$root/state/out" || fail "the uninstall-before-the-app note is missing"
 no_secret "the first install"
 pass "first install loads com.agentrelay.desktop.core.headless running 1.0.0"
+
+# With the headless core installed, a marked app or the app still stops
+# --update, --rollback and a reinstall, and the refusal also offers removing
+# the headless core; --status is never refused and does not mention them.
+refused_installed() { # what [install options...]
+  local what="$1"; shift
+  if bash "$INSTALL" "$@" > "$root/state/out" 2>&1; then cat "$root/state/out"; fail "$* ran beside $what"; fi
+  grep -q "quit and delete it (then log out and in) before installing the headless core; or keep the app and remove the headless core already installed here (1.0.0): run this installer with --uninstall" "$root/state/out" \
+    || { cat "$root/state/out"; fail "the refusal of $* beside $what does not offer --uninstall"; }
+  { [ "$(current)" = 1.0.0 ] && [ -f "$root/state/loaded-$label" ]; } || fail "the refused $* beside $what changed the install"
+}
+before="$(starts)"
+other_app "$AGENT_RELAY_SYSTEM_APPLICATIONS" "Example Relay.app" "$other_id" marked
+for args in --update --rollback --dry-run; do
+  refused_installed "a marked app" "$args"
+  grep -q "Example Relay.app is installed" "$root/state/out" || { cat "$root/state/out"; fail "the refusal of $args does not name the marked app"; }
+done
+refused_installed "a marked app (reinstall)"
+bash "$INSTALL" --status > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--status failed beside a marked app"; }
+grep -q "installed: 1.0.0" "$root/state/out" || { cat "$root/state/out"; fail "--status beside a marked app does not report the install"; }
+! grep -q "Example Relay\|another Agent Relay app" "$root/state/out" || { cat "$root/state/out"; fail "--status mentioned the marked app"; }
+rm -rf "$AGENT_RELAY_SYSTEM_APPLICATIONS"
+mkdir -p "$app" && touch "$app/com.agentrelay.desktop.core.plist"
+refused_installed "the app" --update
+grep -q "Agent Relay.app is installed. The Agent Relay app runs this core itself" "$root/state/out" || { cat "$root/state/out"; fail "the app refusal of --update lost its wording"; }
+rm -rf "$HOME/Applications"
+[ "$(starts)" = "$before" ] || fail "a refused run beside another app restarted the core"
+# The installer's own job, loaded, is not another app's core.
+grep -q "^print gui/$uid\$" "$root/state/launchctl.log" || fail "the loaded jobs were not listed"
+bash "$INSTALL" --update > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--update beside only its own loaded job was refused"; }
+! grep -q "another Agent Relay app" "$root/state/out" || { cat "$root/state/out"; fail "--update took its own job for another app's core"; }
+pass "beside an installed headless core, a marked app or the app refuses --update, --rollback and a reinstall with --uninstall offered; --status is allowed"
 
 enrollment_key='sh_ek_installer-fixture-that-must-never-print'
 key_file="$root/state/enrollment-key-old-core"
