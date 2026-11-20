@@ -645,7 +645,8 @@ refused_installed "the app" --update
 grep -q "Agent Relay.app is installed. The Agent Relay app runs this core itself" "$root/state/out" || { cat "$root/state/out"; fail "the app refusal of --update lost its wording"; }
 rm -rf "$HOME/Applications"
 [ "$(starts)" = "$before" ] || fail "a refused run beside another app restarted the core"
-# The installer's own job, loaded, is not another app's core.
+# The installer's own loaded job is never taken for another app's core: its label does
+# not end in .core, .core.local or .core.session, so the loaded-jobs check skips it.
 grep -q "^print gui/$uid\$" "$root/state/launchctl.log" || fail "the loaded jobs were not listed"
 bash "$INSTALL" --update > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "--update beside only its own loaded job was refused"; }
 ! grep -q "another Agent Relay app" "$root/state/out" || { cat "$root/state/out"; fail "--update took its own job for another app's core"; }

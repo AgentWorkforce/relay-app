@@ -969,7 +969,6 @@ fi
 if [ -z "$marked_reason" ]; then
   # Labels are words of [A-Za-z0-9.-]: splitting them is safe.
   for marked_label in $(loaded_core_labels); do
-    [ "$marked_label" != "$LABEL" ] || continue
     case " $APP_LABELS " in *" $marked_label "*) continue ;; esac
     marked_plist="$(job_plist "$marked_label")"
     { [ -n "$marked_plist" ] && [ -f "$marked_plist" ]; } || continue
