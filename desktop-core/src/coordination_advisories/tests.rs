@@ -347,11 +347,16 @@ async fn more_than_the_receipt_cap_drains_instead_of_blocking_every_ack() {
             taken.insert(format!("receipt-{i}"), row);
         }
     }
-    w.advisories.send_shown(now).await;
-    assert_eq!(w.api.acked().len(), 4096);
-    assert_eq!(receipts::load(w._dir.path()).len(), 1);
-    w.advisories.send_shown(now).await;
-    assert_eq!(w.api.acked().len(), 4097);
+    // Each pass sends a bounded batch; the whole backlog still drains.
+    let mut passes = 0;
+    while w.api.acked().len() < 4097 {
+        let before = w.api.acked().len();
+        w.advisories.send_shown(now).await;
+        let sent = w.api.acked().len() - before;
+        assert!(sent > 0 && sent <= poller::MAX_ACKS_PER_PASS, "sent {sent}");
+        passes += 1;
+        assert!(passes <= 4097, "the backlog never drained");
+    }
     assert!(receipts::load(w._dir.path()).is_empty());
 }
 

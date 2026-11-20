@@ -21,4 +21,11 @@ final class CoordinationAdvisoriesCopyTests: XCTestCase {
         let params = try JSONEncoder().encode(CoordinationAdvisoriesParams(enabled: false))
         XCTAssertEqual(String(decoding: params, as: UTF8.self), #"{"enabled":false}"#)
     }
+
+    /// The request the urgent-notifications switch sends, as the core reads it.
+    func testNotificationsSwitchSendsItsMethodAndEnabledFlag() throws {
+        XCTAssertEqual(CoreMethod.coordinationAdvisoriesNotificationsSet, "coordination_advisories.notifications.set")
+        let on = try JSONEncoder().encode(CoordinationAdvisoriesParams(enabled: true))
+        XCTAssertEqual(String(decoding: on, as: UTF8.self), #"{"enabled":true}"#)
+    }
 }

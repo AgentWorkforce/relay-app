@@ -13,6 +13,8 @@ const MAX_RECORDS: usize = 4096;
 const RETENTION: u64 = 8 * 24 * 60 * 60;
 const HOUR: u64 = 60 * 60;
 const HUMAN_HOURLY_CAP: usize = 3;
+/// A note whose injection asked to be retried waits this long (seconds).
+const URGENT_RETRY_AFTER: u64 = 5 * 60;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 enum Attempt {
@@ -156,13 +158,14 @@ impl Journal {
         ok
     }
 
-    fn agent(&self, principal: &Principal, target: &Target, id: &str) -> Option<Attempt> {
+    /// The last recorded attempt for this note, and when (epoch seconds).
+    fn agent_receipt(&self, principal: &Principal, target: &Target, id: &str) -> Option<(Attempt, u64)> {
         let scope = receipts::Scope::from(principal);
         self.saved
             .agents
             .iter()
             .find(|r| r.scope == scope && &r.target == target && r.id == id)
-            .map(|r| r.attempt.clone())
+            .map(|r| (r.attempt.clone(), r.at))
     }
 
     fn set_agent(
@@ -205,6 +208,10 @@ pub(super) trait Delivery: Send + Sync {
     ) -> BoxFuture<'a, InjectOutcome>;
     fn notifications_available(&self) -> bool;
     fn notify(&self, title: &str, body: &str);
+    /// Whether a local notice can reach `target` at all (it is registered).
+    fn reaches(&self, _target: &Target) -> bool {
+        true
+    }
 }
 
 pub(super) struct Local(pub Arc<Core>);
@@ -217,16 +224,7 @@ impl Delivery for Local {
         text: &'a str,
     ) -> BoxFuture<'a, InjectOutcome> {
         Box::pin(async move {
-            let registration = self.0.store.read(|store| {
-                store
-                    .registrations
-                    .iter()
-                    .find(|r| {
-                        &r.target == target && r.missing_since.is_none() && r.archived_at.is_none()
-                    })
-                    .cloned()
-            });
-            match registration {
+            match registration(&self.0, target) {
                 Some(registration) => self.0.inject_local_notice(&registration, id, text).await,
                 None => InjectOutcome::Refused(
                     "This session is not registered for local agent notices.".into(),
@@ -240,6 +238,23 @@ impl Delivery for Local {
     fn notify(&self, title: &str, body: &str) {
         self.0.hub.notify(title, body, None);
     }
+    fn reaches(&self, target: &Target) -> bool {
+        registration(&self.0, target).is_some()
+    }
+}
+
+/// The live, unarchived registration a local notice for `target` goes to.
+pub(super) fn registration(
+    core: &Core,
+    target: &Target,
+) -> Option<agent_relay_node::relay::store::Registration> {
+    core.store.read(|store| {
+        store
+            .registrations
+            .iter()
+            .find(|r| &r.target == target && r.missing_since.is_none() && r.archived_at.is_none())
+            .cloned()
+    })
 }
 
 impl Advisories {
@@ -327,6 +342,7 @@ impl Advisories {
             return;
         };
         let epoch = unix_now();
+        self.reset_urgent_status();
         self.deliver_human(delivery, principal.clone(), &candidates, epoch)
             .await;
         for (target, advisory) in &candidates {
@@ -339,6 +355,15 @@ impl Advisories {
             if step.is_break() {
                 return;
             }
+        }
+    }
+
+    /// Clears the last pass's status, so a changed setting or a new pass
+    /// never shows a stale one; a blocked journal keeps its reason.
+    pub(super) fn reset_urgent_status(&self) {
+        let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+        if !journal.blocked {
+            journal.status = "idle";
         }
     }
 

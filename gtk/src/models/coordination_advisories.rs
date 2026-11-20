@@ -17,6 +17,24 @@ mod tests {
     const MAC_COPY: &str =
         include_str!("../../../macos/Sources/RelayDesktopCore/CoordinationAdvisoriesCopy.swift");
 
+    /// The request the urgent-notifications switch sends, as the core reads it.
+    #[test]
+    fn the_notifications_switch_sends_its_method_and_enabled_flag() {
+        use agent_relay_desktop_core::contract::coordination::CoordinationAdvisoriesParams;
+        use agent_relay_desktop_core::contract::method;
+        use agent_relay_node::relay::contract::Method;
+        assert_eq!(
+            method::CoordinationNotificationsSet::NAME,
+            "coordination_advisories.notifications.set"
+        );
+        for enabled in [true, false] {
+            assert_eq!(
+                serde_json::to_value(CoordinationAdvisoriesParams { enabled }).unwrap(),
+                serde_json::json!({ "enabled": enabled })
+            );
+        }
+    }
+
     #[test]
     fn the_copy_matches_the_mac_word_for_word() {
         assert!(

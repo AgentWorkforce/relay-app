@@ -15,20 +15,31 @@ impl Advisories {
         epoch: u64,
         now: Instant,
     ) -> ControlFlow<()> {
-        if advisory.dm_delivered {
+        // Mid-turn text needs the server's validated-quality decision, not
+        // only the turn-end switch, and a session a local notice can reach.
+        if advisory.dm_delivered || !advisory.notify_eligible || !delivery.reaches(target) {
             return ControlFlow::Continue(());
         }
-        let prior = self.urgent.lock().unwrap_or_else(|p| p.into_inner()).agent(
-            principal,
-            target,
-            &advisory.id,
-        );
-        if prior == Some(Attempt::Delivered) {
-            self.mark_urgent_shown(principal, target, &advisory.id, now);
-            return ControlFlow::Continue(());
-        }
-        if matches!(prior, Some(Attempt::Reserved | Attempt::Uncertain)) {
-            return ControlFlow::Continue(());
+        let prior = self
+            .urgent
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .agent_receipt(principal, target, &advisory.id);
+        match prior {
+            Some((Attempt::Delivered, _)) => {
+                self.mark_urgent_shown(principal, target, &advisory.id, now);
+                return ControlFlow::Continue(());
+            }
+            // Handed off (the core delivers it when the agent is free), in
+            // doubt, or refused: never injected again. A refused note still
+            // reaches the session at its turn's end.
+            Some((Attempt::Reserved | Attempt::Uncertain | Attempt::Accepted | Attempt::Refused, _)) => {
+                return ControlFlow::Continue(());
+            }
+            Some((Attempt::Retry, at)) if epoch.saturating_sub(at) < URGENT_RETRY_AFTER => {
+                return ControlFlow::Continue(());
+            }
+            _ => {}
         }
         let Some(before) = self.reserve_urgent(principal, target, advisory, epoch) else {
             return ControlFlow::Continue(());

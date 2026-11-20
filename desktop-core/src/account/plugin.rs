@@ -28,19 +28,21 @@ pub(super) fn mcp_installer(
     installer
 }
 
-/// The core's turn-end advisories: always registered (plugins are fixed at
-/// startup), handing out nothing while the setting is off. The account
-/// starts their poller with its other watchers.
-pub(super) fn coordination_advisories(
-    config: &agent_relay_node::relay::daemon::Config,
-    plugins: &mut agent_relay_node::relay::daemon::Plugins,
-    account: &Arc<Account>,
-) {
-    let cloud: std::sync::Weak<dyn agent_relay_node::relay::cloud_session::CloudAccess> =
-        Arc::downgrade(account) as _;
-    let advisories = crate::coordination_advisories::for_account(config, cloud);
-    plugins.turn_end_advisories = Some(advisories.clone());
-    let _ = account.coordination_advisories.set(advisories);
+impl Account {
+    /// The core's turn-end advisories: always registered (plugins are fixed at
+    /// startup), handing out nothing while the setting is off. The account
+    /// starts their poller with its other watchers.
+    pub fn register_coordination_advisories(
+        self: &Arc<Self>,
+        config: &agent_relay_node::relay::daemon::Config,
+        plugins: &mut agent_relay_node::relay::daemon::Plugins,
+    ) {
+        let cloud: std::sync::Weak<dyn agent_relay_node::relay::cloud_session::CloudAccess> =
+            Arc::downgrade(self) as _;
+        let advisories = crate::coordination_advisories::for_account(config, cloud);
+        plugins.turn_end_advisories = Some(advisories.clone());
+        let _ = self.coordination_advisories.set(advisories);
+    }
 }
 
 fn provider_installer(

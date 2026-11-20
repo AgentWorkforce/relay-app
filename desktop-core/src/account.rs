@@ -1826,7 +1826,7 @@ pub fn with_account(
     account.telemetry = Some(telemetry.clone());
     let account = account.shared();
     plugins.cloud = account.clone();
-    plugin::coordination_advisories(config, &mut plugins, &account);
+    account.register_coordination_advisories(config, &mut plugins);
     plugins.settings.push(telemetry);
     let app_data = &config.app_data_dir;
     plugins.settings.push(Arc::new(crate::contractor_access::Setting::new(app_data)));

@@ -317,6 +317,7 @@ impl Advisories {
         }
         settings::save_choices(&self.app_data_dir, self.enabled(), enabled)?;
         self.notifications_enabled.store(enabled, Ordering::SeqCst);
+        self.reset_urgent_status();
         // Enabling a new notification preference must wait for a fresh
         // server eligibility decision, rather than using an older cache.
         if enabled {
@@ -350,6 +351,8 @@ impl Advisories {
         if !enabled {
             state.clear();
         }
+        drop(state);
+        self.reset_urgent_status();
         Ok(())
     }
 
@@ -403,6 +406,23 @@ pub fn reached(sessions: &[agent_relay_node::relay::sessions::DiscoveredSession]
     targets
 }
 
+/// The live sessions worth a poll: those the core reaches at a turn's end,
+/// plus registered ones a local notice reaches. Other kinds take no poll
+/// slot or request budget.
+fn polled(core: &Core) -> Vec<Target> {
+    let discovered = agent_relay_node::relay::local_methods::discovered_sessions(core);
+    let mut targets = reached(&discovered);
+    targets.extend(
+        discovered
+            .into_iter()
+            .filter(|s| s.live && urgent::registration(core, &s.target).is_some())
+            .map(|s| s.target),
+    );
+    targets.sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
+    targets.dedup();
+    targets
+}
+
 /// Polls every [`POLL_EVERY`] while the setting is on and someone is signed
 /// in, over the last discovery pass's live sessions, until the daemon stops.
 pub(crate) async fn watch(core: Arc<Core>, advisories: Arc<Advisories>) {
@@ -417,17 +437,7 @@ pub(crate) async fn watch(core: Arc<Core>, advisories: Arc<Advisories>) {
         }
         // Signed out, the poll only drops what the last account had cached.
         let sessions = match core.plugins.cloud.account() {
-            Some(_) => {
-                let mut targets: Vec<_> =
-                    agent_relay_node::relay::local_methods::discovered_sessions(&core)
-                        .into_iter()
-                        .filter(|s| s.live)
-                        .map(|s| s.target)
-                        .collect();
-                targets.sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
-                targets.dedup();
-                targets
-            }
+            Some(_) => polled(&core),
             None => Vec::new(),
         };
         let now = Instant::now();

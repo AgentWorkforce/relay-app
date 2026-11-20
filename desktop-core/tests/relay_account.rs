@@ -386,11 +386,7 @@ impl Harness {
             account: Some(account.clone().into_plugin()),
             ..Plugins::default()
         };
-        agent_relay_desktop_core::account::plugin::coordination_advisories(
-            &config,
-            &mut plugins,
-            &account,
-        );
+        account.register_coordination_advisories(&config, &mut plugins);
         let (core, signals) = Core::with_plugins(config, plugins);
         let task = tokio::spawn(daemon::run(core.clone(), bound, signals));
         Harness {

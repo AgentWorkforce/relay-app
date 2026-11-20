@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Acknowledgements sent per pass, at most (each waits for the shared request pacing).
+pub(super) const MAX_ACKS_PER_PASS: usize = 16;
+
 impl Advisories {
     /// One poll over `sessions`, the live sessions the core can reach at a
     /// turn's end: at most [`SESSIONS_PER_TICK`] of them, then the acks due.
@@ -208,8 +211,13 @@ impl Advisories {
         // already saved. Newly shown, unsaved notes still wait for disk.
         let saved = receipts::saved(&state, principal);
         let mut due = Vec::new();
-        for (target, taken) in state.taken.iter_mut() {
+        // Bounded, so a backlog of paced acks never stalls the watch loop;
+        // the rest go on the next pass.
+        'claim: for (target, taken) in state.taken.iter_mut() {
             for (id, taken) in taken.iter_mut() {
+                if due.len() == MAX_ACKS_PER_PASS {
+                    break 'claim;
+                }
                 if taken.ack_due(now) && saved.contains(&(target.clone(), id.clone())) {
                     taken.sending = true;
                     due.push((target.clone(), id.clone()));

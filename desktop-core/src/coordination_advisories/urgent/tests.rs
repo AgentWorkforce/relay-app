@@ -151,15 +151,17 @@ async fn unproven_and_legacy_priorities_never_trigger_os_notices() {
     let now = Instant::now();
     advisories.poll(&[t.clone()], now).await;
     advisories.deliver_urgent(&sink, now).await;
-    assert_eq!(sink.calls.lock().unwrap().len(), 1);
+    // Without the server's validated-quality decision nothing is injected
+    // mid-turn either; every row waits for the turn's end.
+    assert!(sink.calls.lock().unwrap().is_empty());
     assert!(sink.notices.lock().unwrap().is_empty());
     let note = advisories.take_at(&t, now).unwrap();
-    assert_eq!(note.ids, vec!["legacy", "p2"]);
+    assert_eq!(note.ids, vec!["unproven", "legacy", "p2"]);
     assert!(advisories.urgent_status().contains("validated"));
 }
 
 #[tokio::test]
-async fn accepted_is_not_acknowledged_and_does_not_block_other_turn_end_notes() {
+async fn accepted_is_handed_off_once_not_acknowledged_and_does_not_block_other_turn_end_notes() {
     let (_dir, api, advisories) = setup();
     let sink = Sink::default();
     let t = target(A);
@@ -187,9 +189,9 @@ async fn accepted_is_not_acknowledged_and_does_not_block_other_turn_end_notes() 
             .iter()
             .map(|(_, id)| id.as_str())
             .collect::<Vec<_>>(),
-        vec!["p1", "p1"]
+        vec!["p1"]
     );
-    assert_eq!(*api.acked.lock().unwrap(), vec!["p1"]);
+    assert!(api.acked.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -382,7 +384,7 @@ async fn opting_into_notifications_requires_a_fresh_server_eligibility_decision(
     let sink = Sink::default();
     advisories.deliver_urgent(&sink, now).await;
     assert!(sink.notices.lock().unwrap().is_empty());
-    assert_eq!(sink.calls.lock().unwrap().len(), 1);
+    assert!(sink.calls.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -413,4 +415,192 @@ async fn a_turn_end_that_wins_during_human_notification_is_not_also_injected() {
     advisories.deliver_urgent(&sink, now).await;
     assert_eq!(*sink.2.lock().unwrap(), Some(vec!["race".to_string()]));
     assert!(api.acked.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn refused_is_terminal_and_retry_waits_out_its_backoff() {
+    for (outcome, again_now) in [
+        (InjectOutcome::Refused("gone".into()), false),
+        (InjectOutcome::Retry("later".into()), false),
+    ] {
+        let (_dir, api, advisories) = setup();
+        let sink = Sink::default();
+        let t = target(A);
+        let now = Instant::now();
+        *sink.outcome.lock().unwrap() = Some(outcome.clone());
+        api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+        advisories.poll(&[t.clone()], now).await;
+        advisories.deliver_urgent(&sink, now).await;
+        advisories.deliver_urgent(&sink, now).await;
+        assert_eq!(sink.calls.lock().unwrap().len(), 1, "{outcome:?} again: {again_now}");
+        // Long after the attempt, only a retry is tried again.
+        let principal = Tokens.principal().unwrap();
+        let old = unix_now() - URGENT_RETRY_AFTER - 1;
+        let attempt = advisories
+            .urgent
+            .lock()
+            .unwrap()
+            .agent_receipt(&principal, &t, "p1")
+            .unwrap()
+            .0;
+        advisories
+            .urgent
+            .lock()
+            .unwrap()
+            .set_agent(&principal, &t, "p1", attempt, old);
+        advisories.deliver_urgent(&sink, now).await;
+        let expected = if matches!(outcome, InjectOutcome::Retry(_)) { 2 } else { 1 };
+        assert_eq!(sink.calls.lock().unwrap().len(), expected, "{outcome:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_session_no_local_notice_reaches_is_never_reserved_or_injected() {
+    struct Unreached(Sink);
+    impl Delivery for Unreached {
+        fn inject<'a>(
+            &'a self,
+            target: &'a Target,
+            id: &'a str,
+            text: &'a str,
+        ) -> BoxFuture<'a, InjectOutcome> {
+            self.0.inject(target, id, text)
+        }
+        fn notifications_available(&self) -> bool {
+            true
+        }
+        fn notify(&self, title: &str, body: &str) {
+            self.0.notify(title, body);
+        }
+        fn reaches(&self, _: &Target) -> bool {
+            false
+        }
+    }
+    let (_dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    let sink = Unreached(Sink::default());
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.0.calls.lock().unwrap().is_empty());
+    let principal = Tokens.principal().unwrap();
+    assert!(advisories
+        .urgent
+        .lock()
+        .unwrap()
+        .agent_receipt(&principal, &t, "p1")
+        .is_none());
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
+}
+
+#[tokio::test]
+async fn with_advisories_off_an_urgent_pass_injects_and_notifies_nothing() {
+    let (_dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.enabled.store(false, Ordering::SeqCst);
+    let sink = Sink::default();
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.calls.lock().unwrap().is_empty());
+    assert!(sink.notices.lock().unwrap().is_empty());
+}
+
+/// A token source whose signed-in user can change mid-test.
+struct Switch(Mutex<&'static str>);
+impl Switch {
+    fn principal_for(user: &str) -> Principal {
+        Principal {
+            site: "https://test.example".into(),
+            workspace_id: "test-workspace".into(),
+            user_id: Some(user.into()),
+            generation: 1,
+        }
+    }
+}
+impl TokenSource for Switch {
+    fn principal(&self) -> Option<Principal> {
+        Some(Self::principal_for(&self.0.lock().unwrap()))
+    }
+    fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
+        let principal = self.principal().unwrap();
+        Box::pin(async move {
+            Some(ReadToken {
+                origin: "https://test.example".into(),
+                bearer: Secret::new("synthetic-read-token"),
+                workspace_id: principal.workspace_id.clone(),
+                principal,
+            })
+        })
+    }
+    fn refused(&self, _: &ReadToken) {}
+}
+
+fn switchable() -> (tempfile::TempDir, Arc<Api>, Arc<Switch>, Arc<Advisories>) {
+    let dir = tempfile::tempdir().unwrap();
+    let api = Arc::new(Api::default());
+    let tokens = Arc::new(Switch(Mutex::new("alice")));
+    let advisories = Advisories::new(dir.path(), tokens.clone(), api.clone());
+    advisories.set_enabled(true).unwrap();
+    advisories.set_notifications_enabled(true).unwrap();
+    (dir, api, tokens, advisories)
+}
+
+#[tokio::test]
+async fn alices_urgent_notes_are_never_injected_once_bob_is_signed_in() {
+    let (_dir, api, tokens, advisories) = switchable();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    *tokens.0.lock().unwrap() = "bob";
+    let sink = Sink::default();
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.calls.lock().unwrap().is_empty());
+    assert!(sink.notices.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_account_switch_during_a_pass_stops_it_before_the_next_note() {
+    struct Switching(Sink, Arc<Switch>);
+    impl Delivery for Switching {
+        fn inject<'a>(
+            &'a self,
+            target: &'a Target,
+            id: &'a str,
+            text: &'a str,
+        ) -> BoxFuture<'a, InjectOutcome> {
+            *self.1 .0.lock().unwrap() = "bob";
+            self.0.inject(target, id, text)
+        }
+        fn notifications_available(&self) -> bool {
+            false
+        }
+        fn notify(&self, _: &str, _: &str) {}
+    }
+    let (_dir, api, tokens, advisories) = switchable();
+    let (a, b) = (target(A), target(B));
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(a.clone(), vec![p1("first")]);
+    api.rows.lock().unwrap().insert(b.clone(), vec![p1("second")]);
+    advisories.poll(&[a, b], now).await;
+    let sink = Switching(Sink::default(), tokens);
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.0.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_changed_setting_clears_a_stale_urgent_status() {
+    let (_dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t], now).await;
+    advisories.set_notifications_enabled(false).unwrap();
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert_eq!(advisories.urgent_status(), "Urgent system notifications are off.");
+    advisories.set_notifications_enabled(true).unwrap();
+    assert_eq!(advisories.urgent_status(), "idle");
 }
