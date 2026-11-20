@@ -156,8 +156,60 @@ jobs:
             "${only_testing[@]}" \
             CODE_SIGNING_ALLOWED=NO
 
-      # MobileHandoff is the UI test bundle and MobileUnit the unit test
-      # bundle; either is absent when its step did not get to run.
+      # The sidebar toggle exists only at iPad width, so its UI test runs on
+      # an iPad simulator, from the same build, after the iPhone tests.
+      - name: Select an available iPad simulator
+        id: ipad_simulator
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          inventory = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          ipads = [device for runtime, devices in inventory["devices"].items()
+                   if ".iOS-" in runtime for device in devices
+                   if device.get("isAvailable") and device["name"].startswith("iPad")]
+          if not ipads:
+              raise SystemExit("No available iPad simulator installed")
+          ipad = ipads[0]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("udid=" + ipad["udid"] + "\n")
+          print("Testing on " + ipad["name"])
+          PY
+
+      - name: Boot the iPad simulator
+        if: ${{ !cancelled() && steps.ipad_simulator.outcome == 'success' }}
+        env:
+          SIMULATOR_UDID: ${{ steps.ipad_simulator.outputs.udid }}
+        run: |
+          if ! output=$(xcrun simctl boot "$SIMULATOR_UDID" 2>&1); then
+            if ! grep -q "current state: Booted" <<< "$output"; then
+              echo "$output"
+              exit 1
+            fi
+            echo "Simulator already booted"
+          fi
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Test the iPad sidebar toggle
+        if: ${{ !cancelled() && steps.ipad_simulator.outcome == 'success' }}
+        env:
+          SIMULATOR_UDID: ${{ steps.ipad_simulator.outputs.udid }}
+        run: |
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          xcodebuild test-without-building \
+            -project ipad/native/AgentRelayiPad.xcodeproj \
+            -scheme AgentRelayiPad \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/MobileSidebar.xcresult" \
+            -parallel-testing-enabled NO \
+            -skipPackagePluginValidation \
+            -only-testing:AgentRelayUITests/SidebarCollapseUITests \
+            CODE_SIGNING_ALLOWED=NO
+
+      # MobileHandoff and MobileSidebar are the UI test bundles and MobileUnit
+      # the unit test bundle; each is absent when its step did not get to run.
       - name: Export viewable interaction screenshots
         if: always()
         run: |
@@ -169,7 +221,7 @@ jobs:
               --output-path "$RUNNER_TEMP/$1-attachments" || return 1
           }
           failed=0
-          for bundle in MobileHandoff MobileUnit; do
+          for bundle in MobileHandoff MobileSidebar MobileUnit; do
             if [ -d "$RUNNER_TEMP/$bundle.xcresult" ]; then
               export_attachments "$bundle" || failed=1
             fi
@@ -193,7 +245,7 @@ jobs:
             fi
           }
           failed=0
-          for bundle in MobileHandoff MobileUnit; do
+          for bundle in MobileHandoff MobileSidebar MobileUnit; do
             if [ -d "$RUNNER_TEMP/$bundle.xcresult" ]; then
               export_diagnostics "$bundle" || failed=1
             fi
@@ -210,6 +262,10 @@ jobs:
             ${{ runner.temp }}/MobileHandoff-attachments
             ${{ runner.temp }}/MobileHandoff-diagnostics
             ${{ runner.temp }}/MobileHandoff-console.json
+            ${{ runner.temp }}/MobileSidebar.xcresult
+            ${{ runner.temp }}/MobileSidebar-attachments
+            ${{ runner.temp }}/MobileSidebar-diagnostics
+            ${{ runner.temp }}/MobileSidebar-console.json
             ${{ runner.temp }}/MobileUnit.xcresult
             ${{ runner.temp }}/MobileUnit-attachments
             ${{ runner.temp }}/MobileUnit-diagnostics
