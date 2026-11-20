@@ -59,6 +59,7 @@ mod site_choices;
 #[cfg(any(test, feature = "test-site"))]
 mod test_site;
 mod upload_failure;
+mod upload_supervision;
 mod watchers;
 mod validation;
 mod workspace_recovery;
@@ -526,34 +527,6 @@ impl Account {
             self.sync_cloud_identities().await;
             self.schedule_relay_node_token();
             self.check_bridged_binding().await;
-        }
-    }
-
-    /// Reports when a running uploader starts failing, fails for another
-    /// reason, or recovers; returns the failure it reports now.
-    fn track_upload_health(
-        &self,
-        status: &Value,
-        reported: Option<TelemetryFailure>,
-    ) -> Option<TelemetryFailure> {
-        match upload_health(status) {
-            None => reported,
-            Some(Some(failure)) => {
-                if reported != Some(failure) {
-                    self.track_upload_failure(failure, upload_legacy_schedule_jobs(status));
-                }
-                Some(failure)
-            }
-            Some(None) => {
-                if reported.is_some() {
-                    self.track(
-                        TelemetryOperation::UploadHealth,
-                        TelemetryOutcome::Succeeded,
-                        None,
-                    );
-                }
-                None
-            }
         }
     }
 

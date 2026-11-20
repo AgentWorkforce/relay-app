@@ -27,7 +27,7 @@ rust_roots = ["src"]
 [baseline]
 
 [baseline.file_loc]
-"src/account.rs" = 1598
+"src/account.rs" = 1578
 "src/cloud_chat.rs" = 1307
 "src/contractor_access.rs" = 916
 "src/history/cloud.rs" = 802
