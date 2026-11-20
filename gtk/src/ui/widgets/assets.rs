@@ -22,7 +22,11 @@ pub const MARK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mark.svg"));
 pub const SYMBOLIC: &[u8] = include_bytes!("../../../resources/linux/agent-relay-symbolic.svg");
 pub const WORDMARK: &[u8] = include_bytes!("../../../../assets/agent-relay-wordmark.svg");
 /// The harness marks the Mac app bundles, by file name.
-pub const AGENT_MARKS: [(&str, &[u8]); 20] = [
+pub const AGENT_MARKS: [(&str, &[u8]); 21] = [
+    (
+        "antigravity",
+        include_bytes!("../../../resources/linux/agents/antigravity.png"),
+    ),
     (
         "copilot",
         include_bytes!("../../../resources/linux/agents/copilot.svg"),
@@ -196,6 +200,7 @@ pub fn mark_file(source: &str) -> Option<&'static str> {
         "muse" | "muse-open" => "muse",
         "opencode-open" => "opencode",
         "amp" => "amp",
+        "antigravity" => "antigravity",
         _ => return None,
     })
 }
@@ -279,6 +284,7 @@ pub(super) fn mark_label(mark: &str) -> &'static str {
         "opencode" => "OpenCode",
         "openai" => "OpenAI",
         "amp" => "Amp",
+        "antigravity" => "Antigravity",
         _ => "Muse Code",
     }
 }

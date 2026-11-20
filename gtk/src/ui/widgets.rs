@@ -954,6 +954,9 @@ mod tests {
         assert_eq!(mark_file("Grok-Bot"), Some("grokbot"));
         assert_eq!(mark_label("grokbot"), "Grok Bot");
         assert!(!TEMPLATE_MARKS.contains(&"grokbot"));
+        assert_eq!(mark_file("Antigravity"), Some("antigravity"));
+        assert_eq!(mark_label("antigravity"), "Antigravity");
+        assert!(!TEMPLATE_MARKS.contains(&"antigravity"));
         assert_eq!(mark_file("Capy"), Some("capy"));
         assert_eq!(mark_file("cursor-cloud"), Some("cursor"));
         assert_eq!(mark_file("pi"), Some("pi"));

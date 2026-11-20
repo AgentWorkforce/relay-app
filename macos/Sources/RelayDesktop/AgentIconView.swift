@@ -39,6 +39,7 @@ struct AgentIconView: View {
         case "pi": return "Pi"
         case "omp": return "Oh My Pi"
         case "amp": return "Amp"
+        case "antigravity": return "Antigravity"
         default: return source.capitalized
         }
     }
@@ -89,9 +90,13 @@ struct AgentIconView: View {
                 images[name] = image
             }
         }
-        if let url = resources.url(forResource: "grokbot", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            images["grokbot"] = image
+        // grokbot.png; antigravity.png: Antigravity's mark, rasterized from
+        // its multi-colour SVG (blur filters NSImage's SVG reader drops).
+        for name in ["grokbot", "antigravity"] {
+            if let url = resources.url(forResource: name, withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                images[name] = image
+            }
         }
         for name in ["conductor", "paseo"] {
             if let url = resources.url(forResource: name, withExtension: "png"),
