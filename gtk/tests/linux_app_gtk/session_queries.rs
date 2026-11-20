@@ -591,12 +591,54 @@ fn saved_hidden(case: &Case) -> Option<Value> {
         .cloned()
 }
 
+/// The uploader's page with the one Cursor chat, cursor:x.
+fn cursor_x_page(included: bool) -> Value {
+    let status = if included { "shared" } else { "not_shared" };
+    json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",included,status)],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})
+}
+
+/// Answers as `exclude` does and, as the core does, records in `excluded`
+/// that cursor:x is no longer shared once an exclusion of it has succeeded.
+fn recording_exclusion(exclude: Answer, excluded: Arc<std::sync::atomic::AtomicBool>) -> Answer {
+    Answer::with(move |params: Value| {
+        let cursor_x = params["session_keys"] == json!(["cursor:x"]);
+        let reply: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, RpcError>> + Send>,
+        > = match &exclude {
+            Answer::Value(value) => Box::pin(std::future::ready(Ok(value.clone()))),
+            Answer::Fail(error) => Box::pin(std::future::ready(Err(error.clone()))),
+            Answer::With(answer) => answer(params),
+        };
+        let excluded = excluded.clone();
+        async move {
+            let reply = reply.await;
+            if cursor_x && reply.is_ok() {
+                excluded.store(true, Ordering::SeqCst);
+            }
+            reply
+        }
+    })
+}
+
+/// cursor:x is shared until an exclusion of it succeeds; the uploader's
+/// pages report it not shared after that.
 fn old_cursor_hide(runtime: &tokio::runtime::Runtime, exclude: Answer, saved: Value) -> Case {
+    let excluded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let read = excluded.clone();
     Case::seeded(
         runtime,
-        |core| {
-            core.answer("uploader.sessions.query", Answer::Value(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})));
-            core.answer("uploader.sessions.exclude", exclude);
+        move |core| {
+            core.answer(
+                "uploader.sessions.query",
+                Answer::with(move |_| {
+                    let page = cursor_x_page(!read.load(Ordering::SeqCst));
+                    async move { Ok(page) }
+                }),
+            );
+            core.answer(
+                "uploader.sessions.exclude",
+                recording_exclusion(exclude, excluded),
+            );
         },
         Arc::new(FakeService::default()),
         |prefs| prefs.set("hiddenSessions.v1", saved).unwrap(),
@@ -664,17 +706,17 @@ fn assert_old_cursor_hide_kept(case: &Case) {
 }
 
 /// The backoff sends the exclusion again; once it succeeds the hide is
-/// dropped and the chat shows with sharing off.
+/// dropped and the chat shows with sharing off, without a row error. The
+/// row may only arrive with the session read that follows the drop.
 fn assert_old_cursor_hide_dropped_after_retry(case: &Case) {
     case.pump(|case| {
         saved_hidden(case) == Some(json!([]))
-            && case.app.with_state(|s| s.hiding_sessions.is_empty())
+            && !case.app.session_hidden("cursor:x")
+            && cursor_x_included(case) == Some(false)
+            && case.app.with_state(|s| {
+                s.hiding_sessions.is_empty() && !s.upload_errors.contains_key("cursor:x")
+            })
     });
-    assert!(!case.app.session_hidden("cursor:x"));
-    assert_eq!(cursor_x_included(case), Some(false));
-    assert!(case
-        .app
-        .with_state(|s| !s.upload_errors.contains_key("cursor:x")));
 }
 
 fn a_failed_exclusion_keeps_an_old_cursor_hide_and_tries_again_later(
@@ -707,6 +749,8 @@ fn a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later(
     // known, so the hide takes the chat off the relay first.
     let (read, local_read) = tokio::sync::watch::channel(false);
     let (status_read, query_read) = (local_read.clone(), local_read);
+    let excluded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shared = excluded.clone();
     let case = Case::seeded(
         runtime,
         move |core| {
@@ -714,10 +758,11 @@ fn a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later(
                 "uploader.sessions.query",
                 Answer::with(move |_| {
                     let mut read = query_read.clone();
+                    let shared = shared.clone();
                     async move {
                         read.wait_for(|read| *read).await.unwrap();
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                        Ok(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null}))
+                        Ok(cursor_x_page(!shared.load(Ordering::SeqCst)))
                     }
                 }),
             );
@@ -762,7 +807,10 @@ fn a_failed_relay_turn_off_keeps_an_old_cursor_hide_and_tries_again_later(
                     }
                 }),
             );
-            core.answer("uploader.sessions.exclude", json!({"updated":1}));
+            core.answer(
+                "uploader.sessions.exclude",
+                recording_exclusion(json!({"updated":1}).into(), excluded),
+            );
         },
         Arc::new(FakeService::default()),
         |prefs| {
@@ -914,13 +962,28 @@ fn an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide(
 ) {
     use std::sync::atomic::AtomicU64;
     let policy = Arc::new(AtomicU64::new(10));
-    let held = Arc::new(Notify::new());
+    // The first exclusion answers when `held` is notified, the second when
+    // `held_again` is.
+    let (held, held_again) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
     let calls = Arc::new(AtomicUsize::new(0));
-    let (status_revision, release, seen) = (policy.clone(), held.clone(), calls.clone());
+    let excluded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (status_revision, release, release_again, seen, shared) = (
+        policy.clone(),
+        held.clone(),
+        held_again.clone(),
+        calls.clone(),
+        excluded.clone(),
+    );
     let case = Case::seeded(
         runtime,
         move |core| {
-            core.answer("uploader.sessions.query", Answer::Value(json!({"sessions":[upload_row("cursor","x","Chat","/work/relay",true,"shared")],"local_sessions":[],"revision":42,"unchanged":false,"verification_pending":false,"candidates_scanned":1,"next_cursor":null})));
+            core.answer(
+                "uploader.sessions.query",
+                Answer::with(move |_| {
+                    let page = cursor_x_page(!shared.load(Ordering::SeqCst));
+                    async move { Ok(page) }
+                }),
+            );
             core.answer(
                 "uploader.status",
                 Answer::with(move |_| {
@@ -932,16 +995,21 @@ fn an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide(
             );
             core.answer(
                 "uploader.sessions.exclude",
-                Answer::with(move |_| {
-                    let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
-                    let held = release.clone();
-                    async move {
-                        if first {
-                            held.notified().await;
+                recording_exclusion(
+                    Answer::with(move |_| {
+                        let call = seen.fetch_add(1, Ordering::SeqCst);
+                        let held = [&release, &release_again]
+                            .get(call)
+                            .map(|held| (*held).clone());
+                        async move {
+                            if let Some(held) = held {
+                                held.notified().await;
+                            }
+                            Ok(json!({"updated":1}))
                         }
-                        Ok(json!({"updated":1}))
-                    }
-                }),
+                    }),
+                    excluded,
+                ),
             );
         },
         Arc::new(FakeService::default()),
@@ -965,16 +1033,21 @@ fn an_exclusion_reply_after_a_policy_change_keeps_an_old_cursor_hide(
             .with_state(|s| s.session_query.upload_policy_revision == Some(observed as i64))
     });
     held.notify_one();
-    case.pump(|case| case.app.with_state(|s| s.hiding_sessions.is_empty()));
+    // The reply has been handled once the chat is no longer being hidden,
+    // or once a session read that followed it has sent the exclusion again
+    // under the new policy; that one waits for `held_again`.
+    case.pump(|case| {
+        calls.load(Ordering::SeqCst) == 2 || case.app.with_state(|s| s.hiding_sessions.is_empty())
+    });
     assert!(case
         .app
         .with_state(|s| !s.upload_errors.contains_key("cursor:x")));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(saved_hidden(&case), Some(json!(["cursor-cli:x"])));
     assert!(case.app.session_hidden("cursor:x"));
     assert!(case
         .app
         .with_state(|s| !s.session_query.hidden_confirmed.contains("cursor:x")));
+    held_again.notify_one();
     assert_old_cursor_hide_dropped_after_retry(&case);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -1013,19 +1086,18 @@ fn an_old_cursor_hide_turns_sharing_off_once_then_shows_and_sharing_can_be_turne
     case.set_state(workspace_snapshot());
     case.pump(|case| cursor_x_exclusions(case) == 1 && cursor_x_included(case) == Some(true));
     held.notify_one();
+    // The chat shows again with sharing off.
     case.pump(|case| {
         saved_hidden(case) == Some(json!(["cursor:y", "grok:g"]))
+            && !case.app.session_hidden("cursor:x")
+            && cursor_x_included(case) == Some(false)
             && case.app.with_state(|s| s.hiding_sessions.is_empty())
     });
     assert_eq!(cursor_x_exclusions(&case), 1);
-    assert!(!case.app.session_hidden("cursor:x"));
     assert!(case.app.session_hidden("cursor:y"));
-    assert_eq!(
-        cursor_x_included(&case),
-        Some(false),
-        "The chat shows again with sharing off"
-    );
     // The core now reports sharing on, as after the person turned it on.
+    case.core
+        .answer("uploader.sessions.query", cursor_x_page(true));
     let before = case.called("uploader.sessions.query").len();
     case.app.refresh_uploader(true);
     case.pump(|case| {
