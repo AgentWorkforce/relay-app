@@ -218,8 +218,37 @@ test("delegations.json is a lane file", async () => {
   assert.ok(agent.files.some((f) => f.name === "delegations.json" && f.source !== "kit"));
 });
 
-test("delegations.json ships as version 2 with the owner and no delegations", () => {
-  assert.deepEqual(JSON.parse(source("delegations.json")), { version: 2, owners: ["khaliq-gant"], delegations: [] });
+// The whole file is pinned: a grant is added, renewed or removed only by a
+// reviewed landing that changes this test with it.
+test("delegations.json ships as version 2 with the owner and the one grant", () => {
+  const doc = JSON.parse(source("delegations.json"));
+  assert.deepEqual(doc, {
+    version: 2,
+    owners: ["khaliq-gant"],
+    delegations: [
+      {
+        agent: "iosgrok",
+        agentId: "241657388808208384",
+        expiresAt: "2026-12-19T00:00:00Z",
+        grantedBy: "khaliq-gant",
+        grantedAt: "2026-11-19T10:21:40Z",
+        reason: "The owner's own Relay message of 2026-11-19 approved a one-entry grant for iosgrok.",
+        scope: "owner-equivalent",
+        ownsSpawned: true,
+        ownerMessageId: "249116914056548352",
+      },
+    ],
+  });
+});
+
+test("every grant is by an owner and lasts at most 30 days", () => {
+  const doc = JSON.parse(source("delegations.json"));
+  for (const grant of doc.delegations) {
+    assert.ok(doc.owners.includes(grant.grantedBy), grant.agent);
+    const granted = Date.parse(grant.grantedAt);
+    const expires = Date.parse(grant.expiresAt);
+    assert.ok(granted < expires && expires <= granted + 30 * 86_400_000, grant.agent);
+  }
 });
 
 const row = (over: Record<string, unknown> = {}) => ({ channel: "stable", sha: SHA, run_id: RUN, dispatched_at: "2026-11-19T00:00:00Z", status: "ready", version: "2026.11.99", auto: false, profile: null, ...over });
