@@ -4,6 +4,7 @@
 
 use super::*;
 use agent_relay_node::relay::inject::InjectOutcome;
+use std::ops::ControlFlow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FILE: &str = "coordination-urgent-receipts.json";
@@ -322,11 +323,38 @@ impl Advisories {
         let Some(principal) = self.tokens.principal() else {
             return;
         };
-        let candidates: Vec<(Target, Advisory)> = {
-            let state = self.state();
-            if state.principal.as_ref() != Some(&principal) {
+        let Some(candidates) = self.urgent_candidates(&principal) else {
+            return;
+        };
+        let epoch = unix_now();
+        self.deliver_human(delivery, principal.clone(), &candidates, epoch)
+            .await;
+        for (target, advisory) in &candidates {
+            if !self.urgent_still_current(&principal) {
                 return;
             }
+            let step = self
+                .deliver_urgent_agent(delivery, &principal, target, advisory, epoch, now)
+                .await;
+            if step.is_break() {
+                return;
+            }
+        }
+    }
+
+    /// The switch is still on and the same account is still signed in.
+    fn urgent_still_current(&self, principal: &Principal) -> bool {
+        self.enabled() && self.tokens.principal().as_ref() == Some(principal)
+    }
+
+    /// The urgent rows waiting for this account's sessions; `None` when the
+    /// cache belongs to another account.
+    fn urgent_candidates(&self, principal: &Principal) -> Option<Vec<(Target, Advisory)>> {
+        let state = self.state();
+        if state.principal.as_ref() != Some(principal) {
+            return None;
+        }
+        Some(
             state
                 .waiting
                 .iter()
@@ -335,87 +363,8 @@ impl Advisories {
                         .filter(|a| a.urgent())
                         .map(move |a| (target.clone(), a.clone()))
                 })
-                .collect()
-        };
-        let epoch = unix_now();
-        self.deliver_human(delivery, principal.clone(), &candidates, epoch)
-            .await;
-        for (target, advisory) in &candidates {
-            if !self.enabled() || self.tokens.principal().as_ref() != Some(&principal) {
-                return;
-            }
-            if advisory.dm_delivered {
-                continue;
-            }
-            let prior = self.urgent.lock().unwrap_or_else(|p| p.into_inner()).agent(
-                &principal,
-                target,
-                &advisory.id,
-            );
-            if prior == Some(Attempt::Delivered) {
-                self.mark_urgent_shown(&principal, target, &advisory.id, now);
-                continue;
-            }
-            if matches!(prior, Some(Attempt::Reserved | Attempt::Uncertain)) {
-                continue;
-            }
-            let before = {
-                let state = self.state();
-                // A stop hook may have taken this row after the snapshot
-                // above. Claim under the same lock before persisting.
-                if state.principal.as_ref() != Some(&principal)
-                    || !state
-                        .waiting
-                        .get(target)
-                        .is_some_and(|rows| rows.iter().any(|a| a.id == advisory.id))
-                    || state
-                        .taken
-                        .get(target)
-                        .is_some_and(|rows| rows.contains_key(&advisory.id))
-                {
-                    continue;
-                }
-                let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-                if journal.blocked {
-                    None
-                } else {
-                    journal.prune(epoch);
-                    let before = journal.saved.clone();
-                    journal.set_agent(&principal, target, &advisory.id, Attempt::Reserved, epoch);
-                    Some(before)
-                }
-            };
-            let Some(before) = before else {
-                continue;
-            };
-            if !self.save_urgent().await {
-                self.urgent.lock().unwrap_or_else(|p| p.into_inner()).saved = before;
-                continue;
-            }
-            if !self.enabled() || self.tokens.principal().as_ref() != Some(&principal) {
-                return;
-            }
-            let text = format!("{}\n{FOOTER}", line(advisory));
-            let outcome = delivery.inject(target, &advisory.id, &text).await;
-            let attempt = match outcome {
-                InjectOutcome::Delivered => Attempt::Delivered,
-                InjectOutcome::Accepted(_) | InjectOutcome::WaitingForTurn(_) => Attempt::Accepted,
-                InjectOutcome::InDoubt(_) => Attempt::Uncertain,
-                InjectOutcome::Refused(_) => Attempt::Refused,
-                InjectOutcome::Waiting(_) | InjectOutcome::Retry(_) => Attempt::Retry,
-            };
-            {
-                let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-                journal.set_agent(&principal, target, &advisory.id, attempt.clone(), epoch);
-                // Keep the observed result in memory even if this save fails;
-                // the earlier durable reservation prevents a blind restart retry.
-            }
-            self.save_urgent().await;
-            if attempt == Attempt::Delivered && self.tokens.principal().as_ref() == Some(&principal)
-            {
-                self.mark_urgent_shown(&principal, target, &advisory.id, now);
-            }
-        }
+                .collect(),
+        )
     }
 
     async fn deliver_human(
@@ -513,6 +462,8 @@ impl Advisories {
         }
     }
 }
+
+mod agent;
 
 #[cfg(test)]
 mod tests;

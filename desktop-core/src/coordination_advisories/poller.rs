@@ -174,30 +174,8 @@ impl Advisories {
         // Save shown IDs before acknowledging them; a normal restart resumes
         // retries without showing the message again. No credentials are saved.
         self.checkpoint_receipts(&token.principal);
-        let due: Vec<(Target, String)> = {
-            let mut state = self.state();
-            // Another account's token never acks this one's notes.
-            if state.principal.as_ref() != Some(&token.principal) {
-                return;
-            }
-            // A failed new checkpoint must not stall retries for receipts
-            // already saved. Newly shown, unsaved notes still wait for disk.
-            let saved = receipts::saved(&state, &token.principal);
-            let mut due = Vec::new();
-            for (target, taken) in state.taken.iter_mut() {
-                for (id, taken) in taken.iter_mut() {
-                    if taken.shown
-                        && saved.contains(&(target.clone(), id.clone()))
-                        && !taken.acked
-                        && !taken.sending
-                        && taken.retry_at.is_none_or(|at| at <= now)
-                    {
-                        taken.sending = true;
-                        due.push((target.clone(), id.clone()));
-                    }
-                }
-            }
-            due
+        let Some(due) = self.claim_due_acks(&token.principal, now) else {
+            return;
         };
         let mut sent = 0;
         for (target, id) in &due {
@@ -207,26 +185,52 @@ impl Advisories {
             let ack = self.api.ack(token, target, id).await;
             self.acked(&token.principal, target, id, ack, now);
             sent += 1;
+            if ack == Ack::Unauthorized {
+                self.tokens.refused(token);
+            }
             if matches!(ack, Ack::Unauthorized | Ack::Throttled) {
-                if ack == Ack::Unauthorized {
-                    self.tokens.refused(token);
-                }
                 break;
             }
         }
-        // A refused token stops the batch. Release only claims that were
-        // never sent, so a later fresh token can retry them.
-        {
-            let mut state = self.state();
-            if state.principal.as_ref() == Some(&token.principal) {
-                for (target, id) in due.iter().skip(sent) {
-                    if let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(id)) {
-                        taken.sending = false;
-                    }
+        self.release_unsent_acks(&token.principal, &due[sent..]);
+        self.checkpoint_receipts(&token.principal);
+    }
+
+    /// Marks and returns the shown, saved, unacknowledged notes whose retry is
+    /// due. `None` when the state belongs to another account: its token never
+    /// acks this one's notes.
+    fn claim_due_acks(&self, principal: &Principal, now: Instant) -> Option<Vec<(Target, String)>> {
+        let mut state = self.state();
+        if state.principal.as_ref() != Some(principal) {
+            return None;
+        }
+        // A failed new checkpoint must not stall retries for receipts
+        // already saved. Newly shown, unsaved notes still wait for disk.
+        let saved = receipts::saved(&state, principal);
+        let mut due = Vec::new();
+        for (target, taken) in state.taken.iter_mut() {
+            for (id, taken) in taken.iter_mut() {
+                if taken.ack_due(now) && saved.contains(&(target.clone(), id.clone())) {
+                    taken.sending = true;
+                    due.push((target.clone(), id.clone()));
                 }
             }
         }
-        self.checkpoint_receipts(&token.principal);
+        Some(due)
+    }
+
+    /// A refused token stops the batch. Release only claims that were never
+    /// sent, so a later fresh token can retry them.
+    fn release_unsent_acks(&self, principal: &Principal, unsent: &[(Target, String)]) {
+        let mut state = self.state();
+        if state.principal.as_ref() != Some(principal) {
+            return;
+        }
+        for (target, id) in unsent {
+            if let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(id)) {
+                taken.sending = false;
+            }
+        }
     }
 
     pub(super) fn acked(

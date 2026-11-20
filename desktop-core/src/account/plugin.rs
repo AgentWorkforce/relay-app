@@ -31,7 +31,7 @@ pub(super) fn mcp_installer(
 /// The core's turn-end advisories: always registered (plugins are fixed at
 /// startup), handing out nothing while the setting is off. The account
 /// starts their poller with its other watchers.
-pub fn coordination_advisories(
+pub(super) fn coordination_advisories(
     config: &agent_relay_node::relay::daemon::Config,
     plugins: &mut agent_relay_node::relay::daemon::Plugins,
     account: &Arc<Account>,

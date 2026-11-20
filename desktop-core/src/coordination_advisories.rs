@@ -153,6 +153,11 @@ impl Taken {
         }
     }
 
+    /// Shown but not yet acknowledged, with no ack running and its retry due.
+    fn ack_due(&self, now: Instant) -> bool {
+        self.shown && !self.acked && !self.sending && self.retry_at.is_none_or(|at| at <= now)
+    }
+
     /// Whether a record of a session that ended is still worth keeping: only
     /// a shown one whose ack is pending, for a bounded time and number of
     /// tries.
