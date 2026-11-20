@@ -9,7 +9,7 @@ impl Advisories {
     /// One poll over `sessions`, the live sessions the core can reach at a
     /// turn's end: at most [`SESSIONS_PER_TICK`] of them, then the acks due.
     pub async fn poll(&self, sessions: &[Target], now: Instant) {
-        self.poll_selected(sessions, None, now).await;
+        let _ = self.poll_selected(sessions, None, now).await;
     }
 
     pub(super) async fn poll_selected(
@@ -17,9 +17,10 @@ impl Advisories {
         sessions: &[Target],
         selected: Option<&[Target]>,
         now: Instant,
-    ) {
+    ) -> Vec<Target> {
+        let mut answered = Vec::new();
         if !self.enabled() {
-            return;
+            return answered;
         }
         let principal = self.tokens.principal();
         {
@@ -28,25 +29,41 @@ impl Advisories {
             state.prune(&sessions.iter().collect(), now);
         }
         if principal.is_none() {
-            return;
+            return answered;
         }
         let Some(token) = self.tokens.token().await else {
             self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status =
                 "Read access unavailable; urgent advisories cannot be fetched.";
-            return;
+            return answered;
         };
-        let due = {
+        // Read access works again: drop a stale fetch or setting status.
+        self.reset_urgent_status_if(|status| status.starts_with("Read access unavailable"));
+        let (due, backed_off) = {
             let mut state = self.state();
             // The account changed while the token was fetched.
             if !state.belong_to(Some(&token.principal)) {
-                return;
+                return answered;
             }
             if state.paused_until.is_some_and(|until| now < until)
                 || state.rate_until.is_some_and(|until| now < until)
             {
-                Vec::new()
+                (Vec::new(), Vec::new())
             } else {
                 state.paused_until = None;
+                // Selected but in their own backoff: as good as checked, so
+                // they do not keep a slot from healthy sessions every tick.
+                let backed_off: Vec<Target> = selected
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|target| {
+                        state
+                            .sessions
+                            .get(*target)
+                            .and_then(|b| b.until)
+                            .is_some_and(|until| until > now)
+                    })
+                    .cloned()
+                    .collect();
                 let start = state.cursor % sessions.len().max(1);
                 let ready: Vec<Target> = sessions
                     .iter()
@@ -65,9 +82,10 @@ impl Advisories {
                     .cloned()
                     .collect();
                 state.cursor = start + SESSIONS_PER_TICK.min(sessions.len());
-                ready
+                (ready, backed_off)
             }
         };
+        answered.extend(backed_off);
         let mut token = token;
         let mut renewed = false;
         let mut token_refused = false;
@@ -89,9 +107,11 @@ impl Advisories {
             }
             match listing {
                 Listing::Advisories(advisories) => {
-                    self.listed(&token.principal, target, advisories, now)
+                    self.listed(&token.principal, target, advisories, now);
+                    answered.push(target.clone());
                 }
                 Listing::Failed => {
+                    answered.push(target.clone());
                     let mut state = self.state();
                     let backoff = state.sessions.entry(target.clone()).or_default();
                     let wait = SESSION_BACKOFF
@@ -117,6 +137,7 @@ impl Advisories {
         if !token_refused && selected.is_none() {
             self.send_due_acks(&token, now).await;
         }
+        answered
     }
 
     /// Records what the pipeline lists for `target` now, for `principal`:

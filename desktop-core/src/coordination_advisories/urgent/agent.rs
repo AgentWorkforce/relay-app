@@ -49,6 +49,10 @@ impl Advisories {
             return ControlFlow::Continue(());
         }
         if !self.urgent_still_current(principal) {
+            // Nothing was injected: undo the reservation, or the note would
+            // be held from both paths until the receipt is pruned.
+            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).saved = before;
+            self.save_urgent().await;
             return ControlFlow::Break(());
         }
         let text = format!("{}\n{FOOTER}", line(advisory));
