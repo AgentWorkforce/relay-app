@@ -651,8 +651,6 @@ dropped in the core. `identity_hash` joins a person to `roster.list`'s
 | `login_item.status` (Linux) | — | `{"enabled"}`; `refused` on macOS | 3 |
 | `coordination_advisories.status` | — | `{"enabled","notifications_enabled","notification_status"}`: whether agents receive urgent or turn-end notes about teammates' overlapping work; off by default; `refused` from a core built without an account | turn-end advisories |
 | `coordination_advisories.set` | `{"enabled"}` | The same state as `.status`, as saved in the app's data folder; off forgets every advisory waiting; `refused` from a core built without an account, `store_failed` when it cannot be saved | turn-end advisories |
-
-
 | `coordination_advisories.notifications.set` | `{"enabled"}` | The same state as `.status`; a separate persisted human OS notification preference, off by default. Enabling requires coordination notes on; a failed save returns `store_failed`. | urgent coordination |
 
 Coordination ranking comes from the pipeline. Only an explicit high-urgency,

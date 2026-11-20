@@ -449,7 +449,8 @@ pub(crate) async fn watch(core: Arc<Core>, advisories: Arc<Advisories>) {
             .map(|(target, _)| target.clone())
             .collect();
         let due = schedule.due(&sessions, &fast, now);
-        advisories.poll_selected(&sessions, Some(&due), now).await;
+        let answered = advisories.poll_selected(&sessions, Some(&due), now).await;
+        schedule.checked_at(&answered, now);
         advisories.deliver_urgent(&delivery, now).await;
         advisories.send_shown(now).await;
     }
@@ -479,10 +480,15 @@ impl PollSchedule {
             .collect();
         due.sort_by_key(|target| self.checked.get(target).copied());
         due.truncate(SESSIONS_PER_TICK);
-        for target in &due {
+        due
+    }
+
+    /// Stamps only the targets a poll actually got an answer for, so one the
+    /// poll skipped (no token, paused, throttled) is due again next tick.
+    fn checked_at(&mut self, answered: &[Target], now: Instant) {
+        for target in answered {
             self.checked.insert(target.clone(), now);
         }
-        due
     }
 }
 

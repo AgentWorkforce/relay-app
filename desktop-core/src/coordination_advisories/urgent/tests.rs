@@ -276,9 +276,16 @@ async fn storage_failures_precede_every_external_side_effect() {
         let now = Instant::now();
         advisories.poll(&[t], now).await;
         advisories.deliver_urgent(&sink, now).await;
-        assert!(sink.calls.lock().unwrap().is_empty());
-        assert!(sink.notices.lock().unwrap().is_empty());
-        assert!(advisories.urgent_status().contains("storage"));
+        if corrupt {
+            // Set aside at load and started again: delivery is not blocked
+            // for good, and the bad file is kept for inspection.
+            assert!(dir.path().join(BAD_FILE).exists());
+            assert_eq!(sink.calls.lock().unwrap().len(), 1);
+        } else {
+            assert!(sink.calls.lock().unwrap().is_empty());
+            assert!(sink.notices.lock().unwrap().is_empty());
+            assert!(advisories.urgent_status().contains("storage"));
+        }
     }
 }
 
@@ -289,15 +296,29 @@ fn scheduler_keeps_normal_and_known_urgent_cadences_separate() {
     let fast = HashSet::from([target(A)]);
     let now = Instant::now();
     assert_eq!(schedule.due(&live, &fast, now).len(), 2);
-    assert_eq!(
-        schedule.due(&live, &fast, now + Duration::from_secs(30)),
-        vec![target(A)]
-    );
+    schedule.checked_at(&live, now);
+    let later = now + Duration::from_secs(30);
+    assert_eq!(schedule.due(&live, &fast, later), vec![target(A)]);
+    schedule.checked_at(&[target(A)], later);
     assert_eq!(
         schedule
             .due(&live, &fast, now + Duration::from_secs(60))
             .len(),
         2
+    );
+}
+
+#[test]
+fn a_target_the_poll_never_answered_is_due_again_next_tick() {
+    let mut schedule = PollSchedule::default();
+    let live = [target(A), target(B)];
+    let now = Instant::now();
+    assert_eq!(schedule.due(&live, &HashSet::new(), now).len(), 2);
+    // Throttled after the first: only A was answered.
+    schedule.checked_at(&[target(A)], now);
+    assert_eq!(
+        schedule.due(&live, &HashSet::new(), now + Duration::from_secs(1)),
+        vec![target(B)]
     );
 }
 
@@ -603,4 +624,99 @@ async fn a_changed_setting_clears_a_stale_urgent_status() {
     assert_eq!(advisories.urgent_status(), "Urgent system notifications are off.");
     advisories.set_notifications_enabled(true).unwrap();
     assert_eq!(advisories.urgent_status(), "idle");
+}
+
+#[tokio::test]
+async fn a_pass_stopped_after_its_reservation_undoes_it() {
+    struct OffDuringSave(Sink);
+    impl Delivery for OffDuringSave {
+        fn inject<'a>(
+            &'a self,
+            target: &'a Target,
+            id: &'a str,
+            text: &'a str,
+        ) -> BoxFuture<'a, InjectOutcome> {
+            self.0.inject(target, id, text)
+        }
+        fn notifications_available(&self) -> bool {
+            false
+        }
+        fn notify(&self, _: &str, _: &str) {}
+    }
+    let (_dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    let principal = Tokens.principal().unwrap();
+    let before = advisories.urgent.lock().unwrap().saved.clone();
+    // The switch goes off between the durable reservation and the inject.
+    advisories.enabled.store(false, Ordering::SeqCst);
+    let advisory = p1("p1");
+    let step = advisories
+        .deliver_urgent_agent(&OffDuringSave(Sink::default()), &principal, &t, &advisory, unix_now(), now)
+        .await;
+    assert!(step.is_break());
+    assert!(advisories
+        .urgent
+        .lock()
+        .unwrap()
+        .agent_receipt(&principal, &t, "p1")
+        .is_none());
+    assert_eq!(advisories.urgent.lock().unwrap().saved.agents.len(), before.agents.len());
+}
+
+#[tokio::test]
+async fn an_accepted_note_returns_to_the_turn_end_after_its_hand_off_expires() {
+    let (_dir, api, advisories) = setup();
+    let sink = Sink::default();
+    let t = target(A);
+    let now = Instant::now();
+    *sink.outcome.lock().unwrap() = Some(InjectOutcome::Accepted("queued".into()));
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(advisories.take_at(&t, now).is_none());
+    let principal = Tokens.principal().unwrap();
+    advisories.urgent.lock().unwrap().set_agent(
+        &principal,
+        &t,
+        "p1",
+        Attempt::Accepted,
+        unix_now() - ACCEPTED_OWNED_FOR - 1,
+    );
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
+}
+
+#[tokio::test]
+async fn read_access_unavailable_survives_the_urgent_pass_and_clears_when_reads_work() {
+    struct NoToken(AtomicBool);
+    impl TokenSource for NoToken {
+        fn principal(&self) -> Option<Principal> {
+            Tokens.principal()
+        }
+        fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
+            let off = self.0.load(Ordering::SeqCst);
+            Box::pin(async move { if off { None } else { Tokens.token().await } })
+        }
+        fn refused(&self, _: &ReadToken) {}
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let api = Arc::new(Api::default());
+    let tokens = Arc::new(NoToken(AtomicBool::new(false)));
+    let advisories = Advisories::new(dir.path(), tokens.clone(), api.clone());
+    advisories.set_enabled(true).unwrap();
+    advisories.set_notifications_enabled(true).unwrap();
+    let t = target(A);
+    let now = Instant::now();
+    // The cache belongs to this account (nothing urgent is listed), so the
+    // urgent pass runs; before the fix it reset the status to idle.
+    advisories.poll(&[t.clone()], now).await;
+    tokens.0.store(true, Ordering::SeqCst);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert!(advisories.urgent_status().starts_with("Read access unavailable"));
+    tokens.0.store(false, Ordering::SeqCst);
+    advisories.poll(&[t], now).await;
+    assert!(!advisories.urgent_status().starts_with("Read access unavailable"));
 }

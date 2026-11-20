@@ -8,6 +8,8 @@ use std::ops::ControlFlow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FILE: &str = "coordination-urgent-receipts.json";
+/// Where an unreadable journal is moved, replacing any earlier one.
+const BAD_FILE: &str = "coordination-urgent-receipts.json.bad";
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const RETENTION: u64 = 8 * 24 * 60 * 60;
@@ -15,6 +17,9 @@ const HOUR: u64 = 60 * 60;
 const HUMAN_HOURLY_CAP: usize = 3;
 /// A note whose injection asked to be retried waits this long (seconds).
 const URGENT_RETRY_AFTER: u64 = 5 * 60;
+/// How long an accepted (queued) note stays the core's before the turn-end
+/// hook may hand it out instead (seconds).
+const ACCEPTED_OWNED_FOR: u64 = 30 * 60;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 enum Attempt {
@@ -115,6 +120,18 @@ impl Journal {
             Ok(saved) => Self {
                 saved,
                 status: "idle",
+                blocked: false,
+            },
+            // An unreadable, oversized or unknown-version journal is set
+            // aside rather than blocking urgent delivery on every launch.
+            // Starting fresh can repeat a note that was in doubt; that is
+            // preferred to never delivering one again.
+            Err(()) if std::fs::rename(directory.join(FILE), directory.join(BAD_FILE)).is_ok() => Self {
+                saved: Saved {
+                    version: 1,
+                    ..Saved::default()
+                },
+                status: "Urgent receipt storage could not be read; it was set aside and started again.",
                 blocked: false,
             },
             Err(()) => Self {
@@ -309,6 +326,7 @@ impl Advisories {
     /// uncertain: a stop hook must not blindly submit them a second time.
     pub(super) fn provider_owned(&self, principal: &Principal, target: &Target) -> HashSet<String> {
         let scope = receipts::Scope::from(principal);
+        let now = unix_now();
         self.urgent
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -318,13 +336,14 @@ impl Advisories {
             .filter(|r| {
                 r.scope == scope
                     && &r.target == target
-                    && matches!(
-                        r.attempt,
-                        Attempt::Reserved
-                            | Attempt::Accepted
-                            | Attempt::Delivered
-                            | Attempt::Uncertain
-                    )
+                    && match r.attempt {
+                        Attempt::Reserved | Attempt::Delivered | Attempt::Uncertain => true,
+                        // Handed to the core's queue: owned while the core
+                        // may still deliver it; after that the turn's end
+                        // gets it (a lost queued notice is not lost for good).
+                        Attempt::Accepted => now.saturating_sub(r.at) < ACCEPTED_OWNED_FOR,
+                        Attempt::Retry | Attempt::Refused => false,
+                    }
             })
             .map(|r| r.id.clone())
             .collect()
@@ -342,7 +361,6 @@ impl Advisories {
             return;
         };
         let epoch = unix_now();
-        self.reset_urgent_status();
         self.deliver_human(delivery, principal.clone(), &candidates, epoch)
             .await;
         for (target, advisory) in &candidates {
@@ -363,6 +381,15 @@ impl Advisories {
     pub(super) fn reset_urgent_status(&self) {
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
         if !journal.blocked {
+            journal.status = "idle";
+        }
+    }
+
+    /// [`Advisories::reset_urgent_status`], only when the current status
+    /// matches `stale`.
+    pub(super) fn reset_urgent_status_if(&self, stale: impl Fn(&str) -> bool) {
+        let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+        if !journal.blocked && stale(journal.status) {
             journal.status = "idle";
         }
     }
