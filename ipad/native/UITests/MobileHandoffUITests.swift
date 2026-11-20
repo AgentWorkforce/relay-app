@@ -142,7 +142,9 @@ final class MobileHandoffUITests: XCTestCase {
         let app = open(scenario: "failed")
         send(app)
         XCTAssertTrue(app.staticTexts["Could not continue Claude"].firstMatch.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Your last message may not have reached the session. Check the status under it and send it again only if it shows Queued or Sent, not Delivered."].exists)
+        // A subscript query takes at most 128 characters, so match the label.
+        let guidance = "Your last message may not have reached the session. Check the status under it and send it again only if it shows Queued or Sent, not Delivered."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", guidance)).firstMatch.exists)
         XCTAssertTrue(app.buttons["Dismiss mobile handoff notice"].exists)
         XCTAssertFalse(app.buttons["Authorize"].exists)
         capture(app, "mobile-handoff-failure")
