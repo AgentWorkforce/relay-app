@@ -121,18 +121,26 @@ impl Delivery for Local {
     /// submission. No live registration: nothing is observed (fenced).
     fn observe<'a>(&'a self, target: &'a Target, id: &'a str) -> BoxFuture<'a, Observation> {
         Box::pin(async move {
-            use agent_relay_node::relay::local_notices::NoticeObservation;
             let Some(registration) = registration(&self.0, target) else {
                 return Observation::Fenced;
             };
-            match self.0.observe_local_notice(&registration, id).await {
-                NoticeObservation::Delivered => Observation::Delivered,
-                NoticeObservation::Pending(_) => Observation::Pending,
-                NoticeObservation::InDoubt(_) => Observation::InDoubt,
-                NoticeObservation::Unsupported => Observation::Unsupported,
-                NoticeObservation::Fenced(_) => Observation::Fenced,
-            }
+            observation_of(self.0.observe_local_notice(&registration, id).await)
         })
+    }
+}
+
+/// The core's answer as this side's observation. Only the core's
+/// `Delivered` settles a note; every other answer leaves it held.
+pub(super) fn observation_of(
+    seen: agent_relay_node::relay::local_notices::NoticeObservation,
+) -> Observation {
+    use agent_relay_node::relay::local_notices::NoticeObservation;
+    match seen {
+        NoticeObservation::Delivered => Observation::Delivered,
+        NoticeObservation::Pending(_) => Observation::Pending,
+        NoticeObservation::InDoubt(_) => Observation::InDoubt,
+        NoticeObservation::Unsupported => Observation::Unsupported,
+        NoticeObservation::Fenced(_) => Observation::Fenced,
     }
 }
 
@@ -306,6 +314,11 @@ impl Advisories {
         candidates: &[(Target, Advisory)],
         epoch: u64,
     ) {
+        // A blocked journal's fault is the only way a person learns what to
+        // repair: no later status may replace it.
+        if self.urgent.lock().unwrap_or_else(|p| p.into_inner()).blocked() {
+            return;
+        }
         if !self.notifications_enabled() {
             self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status =
                 "Urgent system notifications are off.";
