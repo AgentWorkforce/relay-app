@@ -136,7 +136,12 @@ impl Advisories {
     }
 }
 
-/// A note the urgent path would attempt, while the journal is blocked.
+/// A note the urgent path would attempt, or one a build before instances
+/// would have (an unreadable journal may hold its legacy receipt), while the
+/// journal is blocked.
 fn blocked_urgent(journal: &Journal, advisory: &Advisory) -> bool {
-    journal.blocked() && advisory.urgent() && advisory.notify_eligible && !advisory.dm_delivered
+    journal.blocked()
+        && advisory.priority_one()
+        && advisory.notify_eligible
+        && !advisory.dm_delivered
 }

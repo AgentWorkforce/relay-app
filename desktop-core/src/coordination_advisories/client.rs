@@ -69,8 +69,13 @@ pub enum Listing {
 /// What one ack gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ack {
-    /// 2xx, or 404: not (or no longer) this session's, which is done too.
+    /// 2xx; for a legacy row's v1 ack also 404: not (or no longer) this
+    /// session's, which is done too.
     Done,
+    /// 404 to an instance row's v2 ack: no such instance (a stale
+    /// incarnation, or gone). Final: settled for that instance, never retried
+    /// or shown again, and never counted as delivered.
+    NoMatch,
     /// 401.
     Unauthorized,
     /// 403: the token may not ack; retried at most hourly.
@@ -83,11 +88,15 @@ pub enum Ack {
 /// The read API; faked in tests.
 pub trait AdvisoryApi: Send + Sync + 'static {
     fn list<'a>(&'a self, token: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing>;
+    /// Acks advisory `id`: with `incarnation` the v2 ack of that instance
+    /// only, without it the v1 ack of a legacy row. An instance row is never
+    /// acked without its incarnation.
     fn ack<'a>(
         &'a self,
         token: &'a ReadToken,
         target: &'a Target,
         id: &'a str,
+        incarnation: Option<&'a str>,
     ) -> BoxFuture<'a, Ack>;
 }
 
@@ -134,10 +143,11 @@ impl AdvisoryApi for PacedApi {
         token: &'a ReadToken,
         target: &'a Target,
         id: &'a str,
+        incarnation: Option<&'a str>,
     ) -> BoxFuture<'a, Ack> {
         Box::pin(async move {
             if self.admit(token).await {
-                self.inner.ack(token, target, id).await
+                self.inner.ack(token, target, id, incarnation).await
             } else {
                 Ack::Unauthorized
             }
@@ -201,7 +211,7 @@ impl AdvisoryApi for HttpApi {
                 Ok(answer) if answer.status == 200 => match parse(&answer.body) {
                     Some(advisories) => Listing::Advisories(advisories),
                     None => {
-                        debug(format_args!("the listing was not {CONTRACT}"));
+                        debug(format_args!("the listing was not one of a known contract"));
                         Listing::Failed
                     }
                 },
@@ -227,12 +237,16 @@ impl AdvisoryApi for HttpApi {
         token: &'a ReadToken,
         target: &'a Target,
         id: &'a str,
+        incarnation: Option<&'a str>,
     ) -> BoxFuture<'a, Ack> {
         Box::pin(async move {
             let Some(url) = Self::ack_url(token, id) else {
                 return Ack::Failed;
             };
-            let body = json!({"source": source(target.kind), "sessionId": target.id});
+            let mut body = json!({"source": source(target.kind), "sessionId": target.id});
+            if let Some(incarnation) = incarnation {
+                body["incarnation"] = json!(incarnation);
+            }
             let bearer = token.bearer.expose().to_string();
             match agent_relay_node::relay::cloud_http::send(
                 "POST",
@@ -243,10 +257,12 @@ impl AdvisoryApi for HttpApi {
             )
             .await
             {
-                Ok(answer) if answer.ok() || answer.status == 404 => Ack::Done,
+                Ok(answer) if answer.ok() => Ack::Done,
                 Ok(answer) => {
                     debug(format_args!("an ack answered {}", answer.status));
                     match answer.status {
+                        404 if incarnation.is_some() => Ack::NoMatch,
+                        404 => Ack::Done,
                         401 => Ack::Unauthorized,
                         429 => Ack::Throttled,
                         403 => Ack::Forbidden,

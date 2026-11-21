@@ -1,12 +1,20 @@
 //! Minimal receipts survive a normal restart while upstream ACKs are retried.
 //! Disk writes run only in the background acknowledgement path. A crash between
 //! hook output and its background checkpoint can still redeliver: at least once.
+//!
+//! Version 2 names an instance row by its incarnation and keeps an instance
+//! whose v2 ack found no match, settled, so it is never shown again. A
+//! version 1 file is read as legacy receipts, keyed by advisory id as they
+//! were saved. A file of a later version is left alone: nothing is restored
+//! from it and nothing is checkpointed over it.
 
 use super::*;
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FILE: &str = "coordination-advisory-receipts.json";
+/// The receipts' schema version; a file with a higher one is left alone.
+const VERSION: u8 = 2;
 const MAX_RECEIPTS: usize = 4096;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 // Longer than the server's seven-day advisory retention.
@@ -15,9 +23,9 @@ const RETENTION: u64 = 8 * 24 * 60 * 60;
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Scope {
-    site: String,
-    workspace_id: String,
-    user_id: Option<String>,
+    pub(super) site: String,
+    pub(super) workspace_id: String,
+    pub(super) user_id: Option<String>,
 }
 
 impl From<&Principal> for Scope {
@@ -37,6 +45,26 @@ pub(super) struct Receipt {
     target: Target,
     advisory_id: String,
     shown_at: u64,
+    /// An instance row's incarnation; `None` (and absent in version 1) for
+    /// a legacy row.
+    #[serde(default)]
+    incarnation: Option<String>,
+    /// Its v2 ack found no match: settled, kept only so it is not shown
+    /// again.
+    #[serde(default)]
+    no_match: bool,
+}
+
+impl Receipt {
+    /// What the cache keys it by ([`instance::key`]).
+    fn key(&self) -> String {
+        instance::key(
+            &self.scope,
+            &self.target,
+            &self.advisory_id,
+            self.incarnation.as_deref(),
+        )
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -66,35 +94,77 @@ fn valid(receipt: &Receipt, now: u64) -> bool {
         && receipt.target.is_valid()
         && receipt.target.id.len() <= 512
         && plain_id(&receipt.advisory_id)
+        && receipt.incarnation.as_deref().is_none_or(instance::is_uuid)
+        && (receipt.incarnation.is_some() || !receipt.no_match)
         && receipt.shown_at <= now
         && now - receipt.shown_at < RETENTION
 }
 
-pub(super) fn load(directory: &Path) -> Vec<Receipt> {
-    let read = || -> Option<Vec<Receipt>> {
-        let file = std::fs::File::open(directory.join(FILE)).ok()?;
-        if file.metadata().ok()?.len() > MAX_FILE_BYTES {
-            return None;
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return None;
-        }
-        let saved: Saved = serde_json::from_slice(&bytes).ok()?;
-        if saved.version != 1 || saved.receipts.len() > MAX_RECEIPTS {
-            return None;
-        }
-        let now = unix_now();
-        Some(
-            saved
-                .receipts
-                .into_iter()
-                .filter(|r| valid(r, now))
-                .collect(),
-        )
+/// The saved receipts. Missing, unreadable or damaged is a fresh start, as
+/// before; `Err` when a newer version wrote the file.
+fn read(directory: &Path) -> Result<Vec<Receipt>, ()> {
+    #[derive(Deserialize)]
+    struct Versioned {
+        version: u64,
+    }
+    let Some(bytes) = bytes(directory) else {
+        return Ok(Vec::new());
     };
-    read().unwrap_or_default()
+    match serde_json::from_slice::<Versioned>(&bytes) {
+        Ok(versioned) if versioned.version > u64::from(VERSION) => return Err(()),
+        Ok(_) => {}
+        Err(_) => return Ok(Vec::new()),
+    }
+    let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) else {
+        return Ok(Vec::new());
+    };
+    if saved.version < 1 || saved.receipts.len() > MAX_RECEIPTS {
+        return Ok(Vec::new());
+    }
+    let now = unix_now();
+    // A version 1 receipt is legacy: one that names an incarnation or a
+    // no-match was not written by that version.
+    let legacy = saved.version == 1;
+    Ok(saved
+        .receipts
+        .into_iter()
+        .filter(|r| valid(r, now) && !(legacy && (r.incarnation.is_some() || r.no_match)))
+        .collect())
+}
+
+/// The file's bytes, `None` when it is missing, unreadable or too large.
+fn bytes(directory: &Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(directory.join(FILE)).ok()?;
+    if file.metadata().ok()?.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_FILE_BYTES).then_some(bytes)
+}
+
+#[cfg(test)]
+pub(super) fn load(directory: &Path) -> Vec<Receipt> {
+    read(directory).unwrap_or_default()
+}
+
+/// A fresh cache with the saved receipts, or blocked on a newer file.
+pub(super) fn loaded(directory: &Path) -> State {
+    match read(directory) {
+        Ok(receipts) => State {
+            receipts,
+            ..State::default()
+        },
+        Err(()) => State {
+            receipt_fault: Some(format!(
+                "Coordination note acknowledgements are paused: their receipt file was written \
+                 by a newer version of Agent Relay ({}). Update Agent Relay and leave the file \
+                 in place.",
+                directory.join(FILE).display()
+            )),
+            ..State::default()
+        },
+    }
 }
 
 pub(super) fn restore(state: &mut State, principal: &Principal) {
@@ -106,15 +176,21 @@ pub(super) fn restore(state: &mut State, principal: &Principal) {
         }
         let mut taken = Taken::new(Instant::now());
         taken.shown = true;
+        taken.acked = receipt.no_match;
+        taken.no_match = receipt.no_match;
+        taken.instance = receipt.incarnation.as_ref().map(|incarnation| Instance {
+            id: receipt.advisory_id.clone(),
+            incarnation: incarnation.clone(),
+        });
         state
             .taken
             .entry(receipt.target.clone())
             .or_default()
-            .insert(receipt.advisory_id.clone(), taken);
+            .insert(receipt.key(), taken);
     }
 }
 
-/// IDs that already have a durable shown receipt for this account.
+/// Keys that already have a durable shown receipt for this account.
 pub(super) fn saved(state: &State, principal: &Principal) -> HashSet<(Target, String)> {
     let scope = Scope::from(principal);
     let now = unix_now();
@@ -122,7 +198,7 @@ pub(super) fn saved(state: &State, principal: &Principal) -> HashSet<(Target, St
         .receipts
         .iter()
         .filter(|r| r.scope == scope && valid(r, now))
-        .map(|r| (r.target.clone(), r.advisory_id.clone()))
+        .map(|r| (r.target.clone(), r.key()))
         .collect()
 }
 
@@ -132,7 +208,7 @@ pub(super) fn saved(state: &State, principal: &Principal) -> HashSet<(Target, St
 fn bounded(mut rows: Vec<Receipt>) -> Option<(Saved, Vec<u8>)> {
     rows.sort_by_key(|r| r.shown_at);
     let mut size = serde_json::to_vec(&Saved {
-        version: 1,
+        version: VERSION,
         receipts: Vec::new(),
     })
     .ok()?
@@ -148,7 +224,7 @@ fn bounded(mut rows: Vec<Receipt>) -> Option<(Saved, Vec<u8>)> {
     }
     kept.reverse();
     let saved = Saved {
-        version: 1,
+        version: VERSION,
         receipts: kept,
     };
     let bytes = serde_json::to_vec(&saved).ok()?;
@@ -163,6 +239,7 @@ impl Advisories {
         let state = self.state();
         if state.principal.as_ref() != Some(principal)
             || self.tokens.principal().as_ref() != Some(principal)
+            || state.receipt_fault.is_some()
         {
             return false;
         }
@@ -174,23 +251,29 @@ impl Advisories {
             .filter(|r| r.scope != scope && valid(r, now))
             .cloned()
             .collect();
-        let previous: HashMap<(&Target, &str), u64> = state
+        let previous: HashMap<(&Target, String), u64> = state
             .receipts
             .iter()
             .filter(|r| r.scope == scope)
-            .map(|r| ((&r.target, r.advisory_id.as_str()), r.shown_at))
+            .map(|r| ((&r.target, r.key()), r.shown_at))
             .collect();
         for (target, taken) in &state.taken {
-            for (id, taken) in taken {
-                if !taken.shown || taken.acked {
+            for (key, taken) in taken {
+                // Shown and not acked, or settled as a no-match.
+                if !taken.shown || (taken.acked && !taken.no_match) {
                     continue;
                 }
-                let shown_at = previous.get(&(target, id.as_str())).copied().unwrap_or(now);
+                let shown_at = previous.get(&(target, key.clone())).copied().unwrap_or(now);
                 let receipt = Receipt {
                     scope: scope.clone(),
                     target: target.clone(),
-                    advisory_id: id.clone(),
+                    advisory_id: taken
+                        .instance
+                        .as_ref()
+                        .map_or_else(|| key.clone(), |i| i.id.clone()),
                     shown_at,
+                    incarnation: taken.instance.as_ref().map(|i| i.incarnation.clone()),
+                    no_match: taken.no_match,
                 };
                 if valid(&receipt, now) {
                     rows.push(receipt);
@@ -228,6 +311,8 @@ mod tests {
             target: Target::new(SessionKind::Codex, "11111111-1111-4111-8111-111111111111"),
             advisory_id: "example-advisory".into(),
             shown_at: unix_now(),
+            incarnation: None,
+            no_match: false,
         }
     }
 

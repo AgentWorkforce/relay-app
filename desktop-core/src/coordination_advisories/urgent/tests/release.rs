@@ -10,11 +10,13 @@ use observe::{accepted, age_observation, receipt};
 /// Backdates `p1`'s held receipt for `A` by `age` seconds.
 fn held_for(advisories: &Advisories, t: &Target, attempt: Attempt, age: u64) {
     let principal = Tokens.principal().unwrap();
-    advisories
-        .urgent
-        .lock()
-        .unwrap()
-        .set_agent(&principal, t, "p1", attempt, unix_now() - age);
+    advisories.urgent.lock().unwrap().set_agent(
+        &principal,
+        t,
+        &key(t, "p1"),
+        attempt,
+        unix_now() - age,
+    );
 }
 
 /// One observed pass, as if a minute had passed since the last one.
@@ -59,7 +61,7 @@ async fn pending_in_doubt_and_fenced_hold_until_the_cap_and_then_release() {
         );
         assert_eq!(
             advisories.take_at(&t, now).unwrap().ids,
-            vec!["p1"],
+            keys(&t, &["p1"]),
             "{seen:?}"
         );
         assert_eq!(sink.calls.lock().unwrap().len(), 1, "{seen:?}");
@@ -102,7 +104,7 @@ async fn a_backwards_clock_never_releases() {
     advisories.urgent.lock().unwrap().set_agent(
         &principal,
         &t,
-        "p1",
+        &key(&t, "p1"),
         Attempt::Accepted,
         unix_now() + ACCEPTED_OWNED_FOR,
     );
@@ -117,7 +119,7 @@ async fn a_released_note_is_handed_out_once_labelled_never_injected_and_acked_on
     held_for(&advisories, &t, Attempt::Accepted, ACCEPTED_OWNED_FOR);
     observe_once(&advisories, &sink, Observation::Pending, now).await;
     let note = advisories.take_at(&t, now).unwrap();
-    assert_eq!(note.ids, vec!["p1"]);
+    assert_eq!(note.ids, keys(&t, &["p1"]));
     assert!(
         note.text.contains(&format!("advisory p1) {MAY_REPEAT}")),
         "{}",
@@ -317,7 +319,7 @@ async fn damaged_and_newer_files_keep_blocking_untouched_until_moved_aside() {
     for (body, fault) in [
         (&b"broken"[..], "move it aside"),
         (
-            &br#"{"version":2,"agents":[],"humans":[]}"#[..],
+            &br#"{"version":3,"agents":[],"humans":[]}"#[..],
             "Update Agent Relay and leave the file in place",
         ),
     ] {
@@ -388,7 +390,7 @@ async fn while_blocked_the_turn_end_keeps_back_urgent_notes_only_where_a_notice_
     assert!(delivery.0.calls.lock().unwrap().is_empty());
     assert!(advisories.take_at(&a, now).is_none());
     let note = advisories.take_at(&b, now).unwrap();
-    assert_eq!(note.ids, vec!["on-b"]);
+    assert_eq!(note.ids, keys(&target(B), &["on-b"]));
     // The unreadable journal may record that a provider holds it.
     assert!(note.text.contains(MAY_REPEAT));
 }

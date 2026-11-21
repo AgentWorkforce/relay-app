@@ -1,4 +1,5 @@
-//! The `coordination-advisories/1` rows and the note each becomes.
+//! The listed rows (`coordination-advisories/1`, or [`CONTRACT_V3`] with an
+//! incarnation per row) and the note each becomes.
 
 use super::*;
 
@@ -18,6 +19,12 @@ pub struct Advisory {
     pub message: String,
     pub peer_source: String,
     pub peer_session_id: String,
+    /// The row's incarnation (a UUID, as listed), listed only under
+    /// [`CONTRACT_V3`]; `None` is a legacy row, keyed and acked by its id.
+    pub incarnation: Option<String>,
+    /// What this side keys the row by ([`instance::key`]): its id for a
+    /// legacy row; set for its account and session as it is cached.
+    pub(super) key: String,
 }
 
 #[derive(Deserialize)]
@@ -50,7 +57,14 @@ pub(super) fn one_line(value: &str, max: usize) -> String {
         .collect()
 }
 
-pub(super) fn advisory(row: &Value) -> Option<Advisory> {
+/// One listed row; `versioned` under [`CONTRACT_V3`] only, else any
+/// incarnation it carries is ignored and the row is legacy.
+pub(super) fn advisory(row: &Value, versioned: bool) -> Option<Advisory> {
+    let incarnation = if versioned {
+        instance::incarnation(&row["incarnation"]).ok()?
+    } else {
+        None
+    };
     let id = row["advisoryId"].as_str().filter(|id| plain_id(id))?;
     let peer_source = row["peer"]["source"].as_str().filter(|s| plain_id(s))?;
     let peer_session_id = row["peer"]["sessionId"].as_str().filter(|s| plain_id(s))?;
@@ -74,29 +88,45 @@ pub(super) fn advisory(row: &Value) -> Option<Advisory> {
         message,
         peer_source: peer_source.to_string(),
         peer_session_id: peer_session_id.to_string(),
+        incarnation,
+        key: id.to_string(),
     })
 }
 
 impl Advisory {
+    /// Priority one and high, on an instance row: a legacy row (any listing
+    /// but [`CONTRACT_V3`], or a null incarnation) is never urgent, so no
+    /// note is handed to an agent mid-turn under a key its id could reuse.
     pub fn urgent(&self) -> bool {
+        self.priority_one() && self.incarnation.is_some()
+    }
+
+    /// Priority one and high, whatever the contract: what a build before
+    /// instances handed to agents mid-turn, so a receipt it saved may hold it.
+    pub(super) fn priority_one(&self) -> bool {
         self.priority == Some(1) && self.urgency == "high"
     }
 }
 
 /// A listing's advisories: at most [`MAX_ROWS`], each once, oldest first as
-/// listed. `None` when the body is not this contract's answer.
+/// listed. `None` when the body is not a listing, or names a contract other
+/// than [`CONTRACT`] or [`CONTRACT_V3`] (fail closed). Exactly
+/// [`CONTRACT_V3`] lists instance rows; [`CONTRACT`] or no contract is
+/// legacy, as today: its rows reach the turn end and none is urgent.
 pub fn parse(body: &Value) -> Option<Vec<Advisory>> {
     let listed: Listed = serde_json::from_value(body.clone()).ok()?;
-    if listed.contract.as_deref().is_some_and(|c| c != CONTRACT) {
-        return None;
-    }
+    let versioned = match listed.contract.as_deref() {
+        Some(CONTRACT_V3) => true,
+        Some(CONTRACT) | None => false,
+        Some(_) => return None,
+    };
     let mut seen = HashSet::new();
     Some(
         listed
             .advisories
             .iter()
             .take(MAX_ROWS)
-            .filter_map(advisory)
+            .filter_map(|row| advisory(row, versioned))
             .filter(|advisory| seen.insert(advisory.id.clone()))
             .collect(),
     )

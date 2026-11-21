@@ -10,11 +10,17 @@
 //! POST {origin}/v1/coordination/advisories/:advisoryId/ack?workspace=   {"source","sessionId"} -> 204
 //! ```
 //!
+//! A listing whose `contract` is exactly [`CONTRACT_V3`] carries each row's
+//! `incarnation`; such a row is one advisory instance ([`instance`]), keyed
+//! and acked by it (`{"source","sessionId","incarnation"}`; a 404 is a final
+//! no-match). Only an instance row is ever urgent.
+//!
 //! A background poller ([`watch`]), never the hook path, asks for each live
 //! session the core can reach at a turn's end (`turn_end_advisories::reach`)
 //! about once a minute, a few sessions per tick, and caches what it gets per
-//! [`Target`], deduplicated by advisory id. The core's stop hooks then
-//! [`take`](TurnEndAdvisories::take) the cached ones, once, and report them
+//! [`Target`], deduplicated by advisory id, or instance under [`CONTRACT_V3`].
+//! The core's stop hooks then [`take`](TurnEndAdvisories::take) the cached
+//! ones, once, and report them
 //! [`shown`](TurnEndAdvisories::shown); this module acks them upstream.
 //! Shown-but-unacknowledged IDs are checkpointed in the background for up to
 //! eight days, scoped by site, workspace and person (not sign-in generation).
@@ -112,6 +118,7 @@ fn debug(args: std::fmt::Arguments<'_>) {
 
 mod client;
 mod delivery;
+mod instance;
 mod poller;
 mod receipts;
 mod rows;
@@ -120,11 +127,20 @@ mod tokens;
 mod urgent;
 
 pub use client::*;
+pub use instance::CONTRACT_V3;
 pub use rows::*;
 pub use settings::*;
 pub use tokens::*;
 
 // The cache.
+
+/// The advisory id and incarnation an instance row is acked with; a legacy
+/// one is acked by its key, which is its id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Instance {
+    id: String,
+    incarnation: String,
+}
 
 /// An advisory handed to a session.
 struct Taken {
@@ -138,9 +154,15 @@ struct Taken {
     failures: u32,
     /// When its session was first seen no longer live.
     ended: Option<Instant>,
+    /// `None` for a legacy row.
+    instance: Option<Instance>,
+    /// Its v2 ack found no such instance (stale, or gone): settled, never
+    /// acked again or shown again, and never counted as delivered.
+    no_match: bool,
 }
 
 impl Taken {
+    /// A legacy row's record.
     fn new(at: Instant) -> Self {
         Taken {
             at,
@@ -150,6 +172,20 @@ impl Taken {
             retry_at: None,
             failures: 0,
             ended: None,
+            instance: None,
+            no_match: false,
+        }
+    }
+
+    /// The record of `advisory`, an instance row's when it carries an
+    /// incarnation.
+    fn of(at: Instant, advisory: &Advisory) -> Self {
+        Taken {
+            instance: advisory.incarnation.as_ref().map(|incarnation| Instance {
+                id: advisory.id.clone(),
+                incarnation: incarnation.clone(),
+            }),
+            ..Taken::new(at)
         }
     }
 
@@ -180,6 +216,9 @@ struct Backoff {
 struct State {
     /// Minimal shown-but-unacknowledged receipts; never message text or tokens.
     receipts: Vec<receipts::Receipt>,
+    /// Why the receipt file is left alone and nothing new is checkpointed
+    /// (a newer version wrote it); `None` when it is usable.
+    receipt_fault: Option<String>,
     /// What each session has waiting, oldest first.
     waiting: HashMap<Target, Vec<Advisory>>,
     /// What each session was handed, by advisory id.
@@ -271,10 +310,7 @@ impl Advisories {
             setting: Mutex::new(()),
             tokens,
             api,
-            state: Mutex::new(State {
-                receipts: receipts::load(app_data_dir),
-                ..State::default()
-            }),
+            state: Mutex::new(receipts::loaded(app_data_dir)),
             receipt_save: Mutex::new(()),
             urgent: Mutex::new(urgent::Journal::load(app_data_dir)),
             urgent_run: tokio::sync::Mutex::new(()),
@@ -291,8 +327,11 @@ impl Advisories {
     }
 
     pub fn report(&self) -> crate::contract::coordination::CoordinationAdvisoriesState {
+        let receipt_fault = self.state().receipt_fault.clone();
         let notification_status = if !self.enabled() {
             "Coordination notes are off.".into()
+        } else if let Some(fault) = receipt_fault {
+            fault
         } else if !self.notifications_enabled() {
             "Urgent system notifications are off.".into()
         } else {

@@ -29,6 +29,8 @@ fn advisory(id: &str, urgency: &'static str) -> Advisory {
         message: format!("Another agent may be working near src/{id}."),
         peer_source: "codex".into(),
         peer_session_id: "peer-session".into(),
+        incarnation: None,
+        key: String::new(),
     }
 }
 
@@ -109,7 +111,8 @@ struct FakeApi {
     listed: Mutex<Vec<Target>>,
     /// What each ack answers, in turn; the last repeats. `Done` when empty.
     acks: Mutex<Vec<Ack>>,
-    acked: Mutex<Vec<(Target, String)>>,
+    /// Each ack: the session, the advisory id and the incarnation named.
+    acked: Mutex<Vec<(Target, String, Option<String>)>>,
     /// Runs while the next listing is under way.
     during_list: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -129,7 +132,7 @@ impl FakeApi {
             .lock()
             .unwrap()
             .iter()
-            .map(|(_, id)| id.clone())
+            .map(|(_, id, _)| id.clone())
             .collect()
     }
 }
@@ -155,11 +158,13 @@ impl AdvisoryApi for FakeApi {
         _token: &'a ReadToken,
         target: &'a Target,
         id: &'a str,
+        incarnation: Option<&'a str>,
     ) -> BoxFuture<'a, Ack> {
-        self.acked
-            .lock()
-            .unwrap()
-            .push((target.clone(), id.to_string()));
+        self.acked.lock().unwrap().push((
+            target.clone(),
+            id.to_string(),
+            incarnation.map(String::from),
+        ));
         let mut acks = self.acks.lock().unwrap();
         let answer = match acks.len() {
             0 => Ack::Done,
@@ -674,7 +679,8 @@ fn recipient_priority_and_delivery_fields_preserve_turn_end_notes() {
 }
 
 #[test]
-fn a_listing_that_is_not_the_contract_is_refused_and_bad_rows_are_dropped() {
+fn a_body_that_is_not_a_listing_is_refused_and_bad_rows_are_dropped() {
+    // Another contract value fails closed (urgent/tests/instances.rs).
     assert!(parse(&json!({"contract": "coordination-advisories/2", "advisories": []})).is_none());
     assert!(parse(&json!({"error": "advisories_disabled"})).is_none());
     assert!(parse(&json!("<html>")).is_none());
@@ -1044,7 +1050,7 @@ async fn the_http_api_maps_every_answer() {
         Ack::Unauthorized,
         Ack::Failed,
     ] {
-        assert_eq!(api.ack(&token, &session, "a1").await, expected);
+        assert_eq!(api.ack(&token, &session, "a1", None).await, expected);
     }
     let seen = server.join().unwrap();
     assert!(seen[0].starts_with(&format!(
@@ -1066,13 +1072,58 @@ async fn the_http_api_maps_every_answer() {
 }
 
 #[tokio::test]
+async fn the_http_api_reads_v3_incarnations_and_maps_v2_ack_answers() {
+    let incarnation = "0b9f6a52-3c1e-4d7a-9e2f-5a6b7c8d9e0f";
+    let mut instance = row("a1");
+    instance["incarnation"] = json!(incarnation);
+    let listing = json!({"contract": CONTRACT_V3, "advisories": [instance, row("a2")]}).to_string();
+    let acked = json!({"contract": CONTRACT_V3, "result": "acked"}).to_string();
+    let (origin, server) = serve(vec![
+        (200, listing),
+        (200, acked),
+        (404, r#"{"error":"no_match"}"#.into()),
+        (400, r#"{"error":"invalid_incarnation"}"#.into()),
+        (404, "{}".into()),
+    ]);
+    let token = ReadToken { origin, ..token() };
+    let session = claude();
+    let Listing::Advisories(listed) = HttpApi.list(&token, &session).await else {
+        panic!("a listing");
+    };
+    assert_eq!(listed[0].incarnation.as_deref(), Some(incarnation));
+    assert!(listed[1].incarnation.is_none());
+    let v2 = Some(incarnation);
+    assert_eq!(HttpApi.ack(&token, &session, "a1", v2).await, Ack::Done);
+    // A v2 ack's 404 is a final no-match; a 400 is retried like any failure.
+    assert_eq!(HttpApi.ack(&token, &session, "a1", v2).await, Ack::NoMatch);
+    assert_eq!(HttpApi.ack(&token, &session, "a1", v2).await, Ack::Failed);
+    // A v1 ack's 404 stays done.
+    assert_eq!(HttpApi.ack(&token, &session, "a2", None).await, Ack::Done);
+    let seen = server.join().unwrap();
+    let body = |request: &String| -> Value {
+        serde_json::from_str(&request[request.find('{').unwrap()..]).unwrap()
+    };
+    assert_eq!(
+        body(&seen[1]),
+        json!({"source": "claude", "sessionId": session.id, "incarnation": incarnation})
+    );
+    assert_eq!(
+        body(&seen[4]),
+        json!({"source": "claude", "sessionId": session.id})
+    );
+}
+
+#[tokio::test]
 async fn nothing_answering_is_quiet() {
     let token = ReadToken {
         origin: "http://127.0.0.1:9".into(),
         ..token()
     };
     assert_eq!(HttpApi.list(&token, &claude()).await, Listing::Failed);
-    assert_eq!(HttpApi.ack(&token, &claude(), "a1").await, Ack::Failed);
+    assert_eq!(
+        HttpApi.ack(&token, &claude(), "a1", None).await,
+        Ack::Failed
+    );
 }
 
 // The read token.
@@ -1483,7 +1534,13 @@ impl AdvisoryApi for BearerApi {
             }
         })
     }
-    fn ack<'a>(&'a self, _: &'a ReadToken, _: &'a Target, _: &'a str) -> BoxFuture<'a, Ack> {
+    fn ack<'a>(
+        &'a self,
+        _: &'a ReadToken,
+        _: &'a Target,
+        _: &'a str,
+        _: Option<&'a str>,
+    ) -> BoxFuture<'a, Ack> {
         Box::pin(async { Ack::Done })
     }
 }
