@@ -677,12 +677,15 @@ replying. The row has
 no default of its own: it shows the value the core reports, so a core that
 reads an unset value as off and one that reads it as on both show correctly.
 When the core serves `question_escalation_coverage`, the row shows, on or off,
-a collapsed *Which sessions this reaches* list in its place: one group per
+a collapsed *Which sessions this reaches* list in place of the core's
+`question_escalation_status` line: one group per
 state (covered, partial, not covered, not applicable) in the core's `KINDS`
 order, each kind named as the app names it elsewhere (`SessionKind.label`,
 `kind_label`) with the core's reason as given, then a fixed line saying the
 other questions are asked in the session as usual. Kinds with the same name,
-state and reason are one entry; two that differ get a short qualifier. An
+state and reason are one entry; two entries that still share a name get a
+short qualifier. A key the app does not know is shown by its key, after the
+known ones of its group. An
 entry in a state the app does not know is left out (macOS; on GTK the
 contract's decode refuses it). Without the map, under its line it shows the
 core's own `question_escalation_status` text as
