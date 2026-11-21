@@ -28,10 +28,12 @@ test-site = []
 service-callers-dev-attest = []
 
 [dependencies]
-# INTERIM review-only pin, never to land: relay PR #2231 feat/local-notice-observe
-# a77accfb (Core::observe_local_notice on relay main b53a59c0). Before landing,
-# replace with the relay main commit that merges #2231. Move desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "a77accfbf7bc9cc74100c948bc0f4cfd90365424", default-features = false }
+# Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
+# main 6967a00e: #2231 (Core::observe_local_notice) on top of b53a59c0, with #2219
+# (spawning agent's authority line), #2224 (bridge refuses person sends from inside
+# an agent session) and #2232 (question escalation on unless turned off).
+# Move it in desktop-core and gtk together.
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "6967a00ee644477fefac1dc9b59831c7303f034e", default-features = false }
 # relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
