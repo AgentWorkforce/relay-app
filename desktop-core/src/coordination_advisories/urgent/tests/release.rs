@@ -26,24 +26,31 @@ async fn observe_once(advisories: &Advisories, sink: &Sink, seen: Observation, n
 
 #[tokio::test]
 async fn pending_in_doubt_and_fenced_hold_until_the_cap_and_then_release() {
-    for seen in [
+    let held = [Attempt::Accepted, Attempt::Reserved, Attempt::Uncertain];
+    for (seen, attempt) in [
         Observation::Pending,
         Observation::InDoubt,
         Observation::Fenced,
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|seen| held.clone().map(|attempt| (seen.clone(), attempt)))
+    {
         let (_dir, api, advisories, sink, t, now) = accepted().await;
         // Inside the Unsupported grace, past it, and a minute short of the cap.
         for age in [60, UNOBSERVED_GRACE + 60, ACCEPTED_OWNED_FOR - 60] {
-            held_for(&advisories, &t, Attempt::Accepted, age);
+            held_for(&advisories, &t, attempt.clone(), age);
             observe_once(&advisories, &sink, seen.clone(), now).await;
             assert_eq!(
                 receipt(&advisories, &t),
-                Some(Attempt::Accepted),
-                "{seen:?} {age}"
+                Some(attempt.clone()),
+                "{seen:?} {attempt:?} {age}"
             );
-            assert!(advisories.take_at(&t, now).is_none(), "{seen:?} {age}");
+            assert!(
+                advisories.take_at(&t, now).is_none(),
+                "{seen:?} {attempt:?} {age}"
+            );
         }
-        held_for(&advisories, &t, Attempt::Accepted, ACCEPTED_OWNED_FOR);
+        held_for(&advisories, &t, attempt.clone(), ACCEPTED_OWNED_FOR);
         observe_once(&advisories, &sink, seen.clone(), now).await;
         assert_eq!(
             receipt(&advisories, &t),
@@ -195,10 +202,19 @@ fn at_capacity_stale_unlisted_holds_go_oldest_first_and_cached_ones_stay() {
     let dir = tempfile::tempdir().unwrap();
     let mut journal = Journal::load(dir.path());
     let now = unix_now();
-    let stale = now - ACCEPTED_OWNED_FOR;
+    let stale = now - RETENTION;
     let t = target(B);
     // Oldest of all, but its row is still cached: left for release.
     journal.set_agent(&principal, &t, "cached", Attempt::Accepted, stale - 100);
+    // Past the cap but inside the server's retention, uncached: its row may
+    // come back, so it stays.
+    journal.set_agent(
+        &principal,
+        &t,
+        "returning",
+        Attempt::Accepted,
+        now - ACCEPTED_OWNED_FOR - 60,
+    );
     for i in 0..15 {
         journal.set_agent(
             &principal,
@@ -208,7 +224,7 @@ fn at_capacity_stale_unlisted_holds_go_oldest_first_and_cached_ones_stay() {
             stale - i,
         );
     }
-    for i in 0..MAX_RECORDS - 16 {
+    for i in 0..MAX_RECORDS - 17 {
         journal.set_agent(
             &principal,
             &t,
@@ -221,7 +237,7 @@ fn at_capacity_stale_unlisted_holds_go_oldest_first_and_cached_ones_stay() {
     journal.prune(now, &cached);
     let kept = |id: &str| journal.agent_receipt(&principal, &t, id).is_some();
     assert_eq!(journal.saved.agents.len(), MAX_RECORDS - MAX_ROWS);
-    assert!(kept("cached") && kept("fresh-0"));
+    assert!(kept("cached") && kept("returning") && kept("fresh-0"));
     // stale-14 is the oldest of the evictable ones; the 10 oldest go.
     assert!((5..15).all(|i| !kept(&format!("stale-{i}"))));
     assert!((0..5).all(|i| kept(&format!("stale-{i}"))));
@@ -235,12 +251,15 @@ fn below_capacity_or_with_nothing_stale_nothing_unsettled_is_evicted_and_full_fa
     let mut journal = Journal::load(dir.path());
     let now = unix_now();
     let t = target(B);
+    journal.set_agent(&principal, &t, "stale", Attempt::Accepted, now - RETENTION);
+    // Past the cap, uncached, but inside the server's retention: its row may
+    // come back, so it is never evicted, even over capacity.
     journal.set_agent(
         &principal,
         &t,
-        "stale",
+        "returning",
         Attempt::Accepted,
-        now - ACCEPTED_OWNED_FOR,
+        now - RETENTION + 60,
     );
     journal.prune(now, &HashSet::new());
     assert!(journal.agent_receipt(&principal, &t, "stale").is_some());
@@ -256,7 +275,8 @@ fn below_capacity_or_with_nothing_stale_nothing_unsettled_is_evicted_and_full_fa
     journal.prune(now, &HashSet::new());
     // Only the one stale hold could go: still over, so the save fails closed.
     assert!(journal.agent_receipt(&principal, &t, "stale").is_none());
-    assert_eq!(journal.saved.agents.len(), MAX_RECORDS);
+    assert!(journal.agent_receipt(&principal, &t, "returning").is_some());
+    assert_eq!(journal.saved.agents.len(), MAX_RECORDS + 1);
     journal.set_agent(&principal, &t, "one-more", Attempt::Reserved, now);
     assert!(!journal.save(dir.path()));
     assert!(journal.status.contains("full"));
@@ -367,5 +387,8 @@ async fn while_blocked_the_turn_end_keeps_back_urgent_notes_only_where_a_notice_
     advisories.deliver_urgent(&delivery, now).await;
     assert!(delivery.0.calls.lock().unwrap().is_empty());
     assert!(advisories.take_at(&a, now).is_none());
-    assert_eq!(advisories.take_at(&b, now).unwrap().ids, vec!["on-b"]);
+    let note = advisories.take_at(&b, now).unwrap();
+    assert_eq!(note.ids, vec!["on-b"]);
+    // The unreadable journal may record that a provider holds it.
+    assert!(note.text.contains(MAY_REPEAT));
 }

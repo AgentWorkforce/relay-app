@@ -158,11 +158,13 @@ impl Journal {
     }
 
     /// A backstop for a journal near MAX_RECORDS: unsettled receipts held past
-    /// [`ACCEPTED_OWNED_FOR`] whose row is no longer cached go too, oldest
-    /// first, until one more batch of MAX_ROWS fits. One whose row is still
-    /// cached stays: the urgent pass releases it to the turn end, while
-    /// dropping it would let the urgent path inject it again. Still full after
-    /// that, save() keeps failing closed and nothing is injected.
+    /// RETENTION (8 days, beyond the server's 7-day retention, so their row
+    /// cannot come back to be injected again) whose row is no longer cached
+    /// go too, oldest first, until one more batch of MAX_ROWS fits. A younger
+    /// one stays even when this process does not cache its row: the row may
+    /// return. One whose row is still cached stays: the urgent pass releases
+    /// it to the turn end. Still full after that, save() keeps failing closed
+    /// and nothing is injected.
     fn evict_at_capacity(&mut self, now: u64, cached: &HashSet<(receipts::Scope, Target, String)>) {
         let over = records(&self.saved).saturating_sub(MAX_RECORDS - MAX_ROWS);
         if over == 0 {
@@ -175,7 +177,7 @@ impl Journal {
             .enumerate()
             .filter(|(_, r)| {
                 unsettled(&r.attempt)
-                    && now.saturating_sub(r.at) >= ACCEPTED_OWNED_FOR
+                    && now.saturating_sub(r.at) >= RETENTION
                     && !cached.contains(&(r.scope.clone(), r.target.clone(), r.id.clone()))
             })
             .map(|(index, r)| (r.at, index))

@@ -40,7 +40,9 @@ impl Advisories {
                 kept.push(advisory);
                 continue;
             }
-            let line = if released.contains(&advisory.id) {
+            let line = if released.contains(&advisory.id)
+                || self.urgent_unknown_unreached(target, &advisory)
+            {
                 format!("{} {MAY_REPEAT}", line(&advisory))
             } else {
                 line(&advisory)

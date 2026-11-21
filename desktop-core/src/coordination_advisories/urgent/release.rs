@@ -120,10 +120,23 @@ impl Advisories {
         advisory: &Advisory,
     ) -> bool {
         let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-        journal.blocked()
-            && advisory.urgent()
-            && advisory.notify_eligible
-            && !advisory.dm_delivered
-            && !journal.unreached.contains(target)
+        blocked_urgent(&journal, advisory) && !journal.unreached.contains(target)
     }
+
+    /// Whether the turn end hands out `advisory` for `target` only because no
+    /// local notice reaches the session now, while unusable storage may record
+    /// that a provider still holds it: such a line carries the may-repeat label.
+    pub(in crate::coordination_advisories) fn urgent_unknown_unreached(
+        &self,
+        target: &Target,
+        advisory: &Advisory,
+    ) -> bool {
+        let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+        blocked_urgent(&journal, advisory) && journal.unreached.contains(target)
+    }
+}
+
+/// A note the urgent path would attempt, while the journal is blocked.
+fn blocked_urgent(journal: &Journal, advisory: &Advisory) -> bool {
+    journal.blocked() && advisory.urgent() && advisory.notify_eligible && !advisory.dm_delivered
 }
