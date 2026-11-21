@@ -3473,6 +3473,13 @@ fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runti
     });
     let shown = case.settings_labels();
     assert!(shown.contains(&"Questions go to lead.".to_string()), "{shown:?}");
+    let mut status_lines = None;
+    walk(case.app.shell().unwrap().settings.column.upcast_ref(), &mut |widget| {
+        if widget.widget_name() == "question-escalation-status" {
+            status_lines = widget.downcast_ref::<gtk::Label>().map(|label| label.lines());
+        }
+    });
+    assert_eq!(status_lines, Some(4), "the core's status text is capped at four lines");
     assert!(!shown.contains(&QUESTION_ESCALATION_UNAVAILABLE.to_string()));
     assert!(case.called("settings.set").is_empty(), "showing the row never writes it");
     with_help(QUESTION_ESCALATION_TURN_OFF_HELP)
@@ -3494,7 +3501,35 @@ fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runti
         })
     });
     case.settle();
-    assert!(with_help(QUESTION_ESCALATION_TURN_ON_HELP).is_some(), "off offers Turn On");
+    // A failed write reports under this row only: not under the Claude
+    // session prompt, and not in the pane's banner.
+    const FAILED: &str = "Agent Relay could not save question escalation.";
+    case.answer("settings.set", fail(ErrorKind::Internal, FAILED));
+    with_help(QUESTION_ESCALATION_TURN_ON_HELP)
+        .expect("off offers Turn On")
+        .emit_clicked();
+    let row_labels = |name: &str| -> Vec<String> {
+        let mut found = Vec::new();
+        walk(case.app.shell().unwrap().settings.column.upcast_ref(), &mut |widget| {
+            if widget.widget_name() == name {
+                found.extend(labels(widget));
+            }
+        });
+        found
+    };
+    // Widget names from `settings_page::hook_rows` and `general`.
+    case.pump(|_| row_labels("question-escalation").contains(&FAILED.to_string()));
+    assert!(!row_labels("claude-session-prompt").contains(&FAILED.to_string()));
+    case.app.with_state(|state| {
+        assert_eq!(state.hook_errors.question_escalation.as_deref(), Some(FAILED));
+        assert_eq!(state.hook_errors.claude_session, None);
+        assert_eq!(state.settings_error, None);
+    });
+    let in_row: Vec<String> = case.settings_labels()
+        .into_iter()
+        .filter(|label| label == FAILED)
+        .collect();
+    assert_eq!(in_row.len(), 1, "the error shows once, in its own row");
 }
 
 // AutoJoinGeneralTests (wording, off by default, settings.set) and the

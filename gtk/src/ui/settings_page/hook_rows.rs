@@ -13,6 +13,8 @@ use crate::models::{
 
 /// The question escalation row's widget name, for tests.
 pub const QUESTION_ESCALATION_ROW_NAME: &str = "question-escalation";
+/// The core's availability line in that row, for tests.
+pub const QUESTION_ESCALATION_STATUS_NAME: &str = "question-escalation-status";
 
 impl App {
     /// Claude Code's SessionStart hook. On by default after sign-in. It never
@@ -110,8 +112,16 @@ impl App {
         match row.enabled {
             None => extra.push(notice(QUESTION_ESCALATION_UNAVAILABLE, Tone::Neutral)),
             Some(_) => {
-                for line in row.status.iter().chain(row.inbox.iter()) {
-                    extra.push(text(line, &["settings-row-detail"]).wrapped().upcast());
+                // The core's own text: capped at four lines, as on the Mac.
+                if let Some(status) = &row.status {
+                    let line = text(status, &["settings-row-detail"]).wrapped();
+                    line.set_lines(4);
+                    line.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    line.set_widget_name(QUESTION_ESCALATION_STATUS_NAME);
+                    extra.push(line.upcast());
+                }
+                if let Some(inbox) = &row.inbox {
+                    extra.push(text(inbox, &["settings-row-detail"]).wrapped().upcast());
                 }
             }
         }

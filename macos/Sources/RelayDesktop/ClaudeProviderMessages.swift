@@ -126,8 +126,15 @@ struct ClaudeProviderMessages: View {
                 if row.enabled == nil {
                     notice(QuestionEscalationCopy.unavailable, color: .secondary)
                 }
-                ForEach([row.status, row.inbox].compactMap { $0 }, id: \.self) { line in
-                    Text(verbatim: line)
+                if let status = row.status {
+                    // The core's own text: capped at four lines, as on Linux.
+                    Text(verbatim: status)
+                        .zoomFont(.footnote).foregroundStyle(.secondary)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let inbox = row.inbox {
+                    Text(verbatim: inbox)
                         .zoomFont(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
