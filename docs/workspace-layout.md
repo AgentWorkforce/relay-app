@@ -671,19 +671,30 @@ its relay name, how to reach peers and the messaging norm.
 
 Next to it, Messages has a *Send agents' questions to you* row for question
 escalation (`settings.set` with `question_escalation`, `on` or `off`). While
-it is on, a question an agent asks is sent to you over Agent Relay instead of
-being shown in the agent's own window, and you answer by replying. The row has
+it is on, questions from the sessions Agent Relay can reach are sent to you
+over Agent Relay instead of being asked in the session, and you answer by
+replying. The row has
 no default of its own: it shows the value the core reports, so a core that
 reads an unset value as off and one that reads it as on both show correctly.
-Under its line it shows the core's own `question_escalation_status` text as
-the availability line, and, when `question_escalation_inbox` is set,
+When the core serves `question_escalation_coverage`, the row shows, on or off,
+a collapsed *Which sessions this reaches* list in its place: one group per
+state (covered, partial, not covered, not applicable) in the core's `KINDS`
+order, each kind named as the app names it elsewhere (`SessionKind.label`,
+`kind_label`) with the core's reason as given, then a fixed line saying the
+other questions are asked in the session as usual. Kinds with the same name,
+state and reason are one entry; two that differ get a short qualifier. An
+entry in a state the app does not know is left out (macOS; on GTK the
+contract's decode refuses it). Without the map, under its line it shows the
+core's own `question_escalation_status` text as
+the availability line. When `question_escalation_inbox` is set it shows
 "Questions go to <inbox>." (read-only; the inbox is not edited here). A core
 that does not report `question_escalation` shows the row as unavailable with
 the reason and no switch, rather than hiding it. The row shows wherever
-settings are read, whatever the upload policy. Wording lives in
-`QuestionEscalationCopy` (macOS) and the `QUESTION_ESCALATION_*` constants in
-`gtk/src/models/settings.rs`, checked word for word on both; the rows are in
-`ClaudeProviderMessages.swift` and `gtk/src/ui/settings_page/hook_rows.rs`.
+settings are read, whatever the upload policy. Wording and the list's model
+live in `QuestionEscalationCopy.swift` (macOS) and
+`gtk/src/models/question_escalation.rs`, checked word for word on both; the
+rows are in `ClaudeProviderMessages.swift` and
+`gtk/src/ui/settings_page/hook_rows.rs`.
 
 Messages settings also have **Spawned agents** on both apps (see
 [native-spawn.md](native-spawn.md)). **Accept spawns from Agent Relay**

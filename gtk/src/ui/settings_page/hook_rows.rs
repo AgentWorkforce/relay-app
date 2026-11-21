@@ -3,18 +3,23 @@
 //! into a running turn.
 use super::*;
 use crate::models::{
-    question_escalation_row, CLAUDE_SESSION_HOOK_OFF, CLAUDE_SESSION_HOOK_ON,
-    CLAUDE_SESSION_HOOK_TITLE, CLAUDE_SESSION_HOOK_TURN_OFF_HELP,
+    question_escalation_row, QuestionCoverageGroup, CLAUDE_SESSION_HOOK_OFF,
+    CLAUDE_SESSION_HOOK_ON, CLAUDE_SESSION_HOOK_TITLE, CLAUDE_SESSION_HOOK_TURN_OFF_HELP,
     CLAUDE_SESSION_HOOK_TURN_ON_HELP, CODEX_HOOK_OFF, CODEX_HOOK_ON, CODEX_HOOK_TITLE,
-    CODEX_HOOK_TURN_OFF_HELP, CODEX_HOOK_TURN_ON_HELP, QUESTION_ESCALATION_DETAIL,
-    QUESTION_ESCALATION_TITLE, QUESTION_ESCALATION_TURN_OFF_HELP,
-    QUESTION_ESCALATION_TURN_ON_HELP, QUESTION_ESCALATION_UNAVAILABLE,
+    CODEX_HOOK_TURN_OFF_HELP, CODEX_HOOK_TURN_ON_HELP, QUESTION_COVERAGE_CLOSING,
+    QUESTION_COVERAGE_TITLE, QUESTION_ESCALATION_DETAIL, QUESTION_ESCALATION_TITLE,
+    QUESTION_ESCALATION_TURN_OFF_HELP, QUESTION_ESCALATION_TURN_ON_HELP,
+    QUESTION_ESCALATION_UNAVAILABLE,
 };
 
 /// The question escalation row's widget name, for tests.
 pub const QUESTION_ESCALATION_ROW_NAME: &str = "question-escalation";
 /// The core's availability line in that row, for tests.
 pub const QUESTION_ESCALATION_STATUS_NAME: &str = "question-escalation-status";
+/// The disclosure holding the list of kinds of session, for tests.
+pub const QUESTION_COVERAGE_NAME: &str = "question-escalation-coverage";
+/// Its open state in `settings_details_open`, kept across redraws.
+const QUESTION_COVERAGE_KEY: &str = "question-escalation-coverage";
 
 impl App {
     /// Claude Code's SessionStart hook. On by default after sign-in. It never
@@ -83,6 +88,7 @@ impl App {
             enabled: None,
             status: None,
             inbox: None,
+            coverage: Vec::new(),
         });
         let set = |enabled: bool| {
             self.on(move |app| {
@@ -120,6 +126,14 @@ impl App {
                     line.set_widget_name(QUESTION_ESCALATION_STATUS_NAME);
                     extra.push(line.upcast());
                 }
+                if !row.coverage.is_empty() {
+                    extra.push(self.question_coverage_disclosure(&row.coverage).upcast());
+                    extra.push(
+                        text(QUESTION_COVERAGE_CLOSING, &["settings-row-detail"])
+                            .wrapped()
+                            .upcast(),
+                    );
+                }
                 if let Some(inbox) = &row.inbox {
                     extra.push(text(inbox, &["settings-row-detail"]).wrapped().upcast());
                 }
@@ -139,6 +153,48 @@ impl App {
         .0;
         row.set_widget_name(QUESTION_ESCALATION_ROW_NAME);
         row
+    }
+
+    /// The kinds of session question escalation reaches, collapsed under
+    /// the row; read-only. The open state survives redraws.
+    fn question_coverage_disclosure(&self, groups: &[QuestionCoverageGroup]) -> gtk::Expander {
+        // The title wraps, as the row's own lines do, so it never sets the
+        // page's width at a large zoom.
+        let title = text(QUESTION_COVERAGE_TITLE, &["settings-row-detail"]).wrapped();
+        let disclosure = gtk::Expander::builder().label_widget(&title).build();
+        disclosure.set_widget_name(QUESTION_COVERAGE_NAME);
+        disclosure.add_css_class("settings-row-detail");
+        disclosure.set_expanded(
+            self.with_state(|state| state.settings_details_open.contains(QUESTION_COVERAGE_KEY)),
+        );
+        let weak = self.downgrade();
+        disclosure.connect_expanded_notify(move |disclosure| {
+            if let Some(app) = weak.upgrade() {
+                app.update_state(|state| {
+                    if disclosure.is_expanded() {
+                        state
+                            .settings_details_open
+                            .insert(QUESTION_COVERAGE_KEY.into());
+                    } else {
+                        state.settings_details_open.remove(QUESTION_COVERAGE_KEY);
+                    }
+                });
+            }
+        });
+        let list = vbox(10, &[]);
+        list.set_margin_top(6);
+        for group in groups {
+            let block = vbox(4, &[]);
+            let heading = text(group.heading, &["settings-row-detail"]).wrapped();
+            heading.add_css_class("settings-row-title");
+            block.append(&heading);
+            for entry in &group.entries {
+                block.append(&text(&entry.line(), &["settings-row-detail"]).wrapped());
+            }
+            list.append(&block);
+        }
+        disclosure.set_child(Some(&list));
+        disclosure
     }
 
     pub(in crate::ui) fn codex_hook_row(&self) -> gtk::Box {
