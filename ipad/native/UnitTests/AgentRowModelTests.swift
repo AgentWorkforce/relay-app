@@ -245,4 +245,26 @@ final class AgentRowModelTests: XCTestCase {
         XCTAssertFalse(model.matches("reviewer"))
         XCTAssertFalse(model.matches("codex"))
     }
+
+    func testSearchMatchesTheOverviewTitleTheRowDoesNotShow() {
+        // A title without a description is not a brief: the row does not
+        // show it, but search still finds it.
+        var titleOnly = AgentRowModel.Loaded()
+        titleOnly.overview = SessionOverview(status: .completed, title: "Overview only title")
+        let incomplete = row(agent(), titleOnly)
+        XCTAssertNil(incomplete.title)
+        XCTAssertNil(incomplete.summary)
+        XCTAssertTrue(incomplete.matches("overview only"))
+
+        // A person never shows a session's title, and search still finds it.
+        let person = RelayAgent(relay: ["name": "sam-lee", "type": "human", "persona": "Sam Lee", "status": "active",
+                                        "last_seen": seen(), "metadata": ["session_id": "session-9"]])
+        var loaded = AgentRowModel.Loaded(displayName: "Sam Lee")
+        loaded.overview = SessionOverview(status: .completed, title: "Release review", description: "Release line")
+        let personRow = row(person, loaded)
+        XCTAssertNil(personRow.title)
+        XCTAssertNil(personRow.summary)
+        XCTAssertTrue(personRow.matches("release review"))
+        XCTAssertFalse(personRow.matches("release line"))
+    }
 }

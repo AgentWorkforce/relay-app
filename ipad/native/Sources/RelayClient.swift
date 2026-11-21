@@ -1007,6 +1007,9 @@ private enum SecureStore {
             resetPeople()
             registeredPushToken = nil
             sessionGeneration += 1
+            // Row loads from the old session come back nil; abandon them so
+            // they are not stored as attempts and the rows load again now.
+            resetRowSummaries()
         }
         account = string(accountUser["name"]).isEmpty ? string(accountUser["email"]) : string(accountUser["name"])
         workspace = resolved.workspaceName.isEmpty ? "Workspace" : resolved.workspaceName

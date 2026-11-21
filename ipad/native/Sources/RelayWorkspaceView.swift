@@ -871,7 +871,6 @@ struct RelayWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(model.accessibilityLabel)
-            .accessibilityValue(model.summary ?? "")
             .accessibilityAddTraits(!phone && selected?.id == agent.id ? .isSelected : [])
             pinButton(agent).padding(.trailing, phone ? 4 : 0)
         }

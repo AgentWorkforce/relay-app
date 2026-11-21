@@ -105,8 +105,10 @@ struct AgentRowModel: Equatable {
         self.machine = isAgent && !machine.isEmpty ? machine : nil
         status = agent.source == .channel ? nil
             : Self.status(agent.status, reachable: agent.isReachable(at: now))
+        // The overview's title is matched even where the row does not show
+        // it: an incomplete brief, a person or a channel.
         extraSearchText = [agent.name, agent.address, agent.machine, agent.subtitle, agent.objective,
-                           agent.sessionTitle, loaded.goal].joined(separator: " ")
+                           agent.sessionTitle, loaded.goal, loaded.overview?.title ?? ""].joined(separator: " ")
     }
 
     /// The small line under the summary: the CLI and the machine.

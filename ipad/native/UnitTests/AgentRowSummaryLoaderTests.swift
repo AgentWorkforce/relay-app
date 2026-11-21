@@ -239,6 +239,33 @@ import XCTest
         XCTAssertEqual(loader.summary(for: "a"), brief("A2"))
     }
 
+    func testALoadAbandonedByResetIsNotAnAttemptAndTheVisibleRowLoadsAgainAtOnce() async {
+        let backend = Backend()
+        let loader = loader(backend, maxConcurrent: 1)
+        loader.rowAppeared("row-a", sessionID: "a")
+        await settle()
+        XCTAssertEqual(backend.requested, ["a"])
+
+        // The session changes while `a` is loading (loading stays allowed);
+        // the old load is discarded upstream and comes back nil.
+        loader.reset()
+        loader.refresh()
+        await settle()
+        // The abandoned load still holds the only slot.
+        XCTAssertEqual(backend.requested, ["a"])
+        backend.answer("a", nil)
+        await settle()
+
+        // Freed, the slot goes straight to the row still on screen: no
+        // refresh call and no time passing.
+        XCTAssertEqual(backend.requested, ["a", "a"])
+        XCTAssertNil(loader.summary(for: "a"))
+        backend.answer("a", brief("A"))
+        await settle()
+        XCTAssertEqual(loader.summary(for: "a"), brief("A"))
+        XCTAssertEqual(loader.running, 0)
+    }
+
     func testAnAbandonedLoadStillCountsAgainstTheCap() async {
         let backend = Backend()
         let loader = loader(backend)
