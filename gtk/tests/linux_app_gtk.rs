@@ -3434,6 +3434,69 @@ fn show_relay_messages_hidden_and_turn_on(runtime: &tokio::runtime::Runtime) {
     });
 }
 
+// QuestionEscalationCopyTests: the row shows only what the core reports,
+// is unavailable (not hidden) on a core without the setting, and writes
+// `question_escalation` on or off through settings.set.
+fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runtime::Runtime) {
+    use agent_relay_app::models::{
+        QUESTION_ESCALATION_DETAIL, QUESTION_ESCALATION_TITLE, QUESTION_ESCALATION_TURN_OFF_HELP,
+        QUESTION_ESCALATION_TURN_ON_HELP, QUESTION_ESCALATION_UNAVAILABLE,
+    };
+    let case = Case::with(runtime, |core| tools::answers(core, true));
+    case.sign_in();
+    tools::open_claude(&case);
+    case.pump(|case| {
+        case.settings_labels()
+            .contains(&QUESTION_ESCALATION_UNAVAILABLE.to_string())
+    });
+    let shown = case.settings_labels();
+    for line in [QUESTION_ESCALATION_TITLE, QUESTION_ESCALATION_DETAIL] {
+        assert!(shown.contains(&line.to_string()), "{line} in {shown:?}");
+    }
+    let with_help = |help: &str| {
+        buttons(case.app.window(), if help == QUESTION_ESCALATION_TURN_ON_HELP { "Turn On" } else { "Turn Off" })
+            .into_iter()
+            .find(|button| button.tooltip_text().as_deref() == Some(help))
+    };
+    assert!(with_help(QUESTION_ESCALATION_TURN_ON_HELP).is_none(), "an older core offers no switch");
+    assert!(with_help(QUESTION_ESCALATION_TURN_OFF_HELP).is_none(), "an older core offers no switch");
+    // A core that reads an unset value as on says so; the app shows it as on.
+    let mut values = settings();
+    values["question_escalation"] = json!("on");
+    values["question_escalation_status"] = json!("Works for Claude Code sessions.");
+    values["question_escalation_inbox"] = json!("lead");
+    case.answer("settings.get", check::<method::SettingsGet>(values));
+    case.app.load_settings();
+    case.pump(|case| {
+        case.settings_labels()
+            .contains(&"Works for Claude Code sessions.".to_string())
+    });
+    let shown = case.settings_labels();
+    assert!(shown.contains(&"Questions go to lead.".to_string()), "{shown:?}");
+    assert!(!shown.contains(&QUESTION_ESCALATION_UNAVAILABLE.to_string()));
+    assert!(case.called("settings.set").is_empty(), "showing the row never writes it");
+    with_help(QUESTION_ESCALATION_TURN_OFF_HELP)
+        .expect("the question escalation row has Turn Off while on")
+        .emit_clicked();
+    case.pump(|case| !case.called("settings.set").is_empty());
+    assert_eq!(
+        case.called("settings.set")[0],
+        json!({"question_escalation": "off"})
+    );
+    case.pump(|case| {
+        case.app.with_state(|state| {
+            state
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.question_escalation.clone())
+                .as_deref()
+                == Some("off")
+        })
+    });
+    case.settle();
+    assert!(with_help(QUESTION_ESCALATION_TURN_ON_HELP).is_some(), "off offers Turn On");
+}
+
 // AutoJoinGeneralTests (wording, off by default, settings.set) and the
 // agents' changes, read again when the core says an agent changed a setting.
 fn auto_join_general_turns_on_and_agent_changes_show(runtime: &tokio::runtime::Runtime) {
@@ -5918,6 +5981,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "show_relay_messages_hidden_and_turn_on",
         show_relay_messages_hidden_and_turn_on,
+    ),
+    (
+        "question_escalation_shows_the_core_value_and_turns_off",
+        question_escalation_shows_the_core_value_and_turns_off,
     ),
     (
         "auto_join_general_turns_on_and_agent_changes_show",

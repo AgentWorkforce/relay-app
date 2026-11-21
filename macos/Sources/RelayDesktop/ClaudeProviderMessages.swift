@@ -7,6 +7,7 @@ struct ClaudeProviderMessages: View {
     @State private var isConfirmingInbound = false
     @State private var inboundError: String?
     @State private var claudeSessionHookError: String?
+    @State private var questionEscalationError: String?
 
     private var hasDelivery: Bool { relay.sessions.contains { $0.target.kind == .claudeTerminal } }
 
@@ -14,14 +15,22 @@ struct ClaudeProviderMessages: View {
         model.sharingMode == .selected && model.settings?.claudeSessionHook != nil
     }
 
+    /// Question escalation shows once settings are read, beside the session
+    /// prompt; a core without the setting shows it unavailable.
+    private var showsQuestionEscalation: Bool { model.settings != nil }
+
     var body: some View {
-        if hasDelivery || showsSessionPrompt {
+        if hasDelivery || showsSessionPrompt || showsQuestionEscalation {
             SettingsSection(title: "Messages") {
                 VStack(spacing: 0) {
                     if hasDelivery { claudeInboundRow }
                     if showsSessionPrompt {
                         if hasDelivery { SettingsDivider() }
                         claudeSessionHookRow
+                    }
+                    if showsQuestionEscalation {
+                        if hasDelivery || showsSessionPrompt { SettingsDivider() }
+                        questionEscalationRow
                     }
                 }
             }
@@ -100,6 +109,50 @@ struct ClaudeProviderMessages: View {
 
     private func setClaudeSessionHook(_ enabled: Bool) {
         Task { claudeSessionHookError = await model.setSetting(SettingsChange(claudeSessionHook: enabled)) }
+    }
+
+    /// Question escalation (`question_escalation`). It shows what the core
+    /// reports, with the core's own availability line; a core that does not
+    /// report it gets an unavailable row, not a hidden one.
+    private var questionEscalationRow: some View {
+        let row = QuestionEscalationRow(model.settings)
+        return HStack(alignment: .top, spacing: 14) {
+            SettingsIcon(systemImage: row.enabled == true ? "checkmark.seal" : "bell.badge")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(QuestionEscalationCopy.title).zoomFont(.body, weight: .medium)
+                Text(QuestionEscalationCopy.detail)
+                    .zoomFont(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if row.enabled == nil {
+                    notice(QuestionEscalationCopy.unavailable, color: .secondary)
+                }
+                ForEach([row.status, row.inbox].compactMap { $0 }, id: \.self) { line in
+                    Text(verbatim: line)
+                        .zoomFont(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let questionEscalationError { notice(questionEscalationError, color: .red) }
+            }
+            Spacer(minLength: 12)
+            switch row.enabled {
+            case true?:
+                Button("Turn Off") { setQuestionEscalation(false) }
+                    .help(QuestionEscalationCopy.turnOffHelp)
+            case false?:
+                Button("Turn On") { setQuestionEscalation(true) }
+                    .help(QuestionEscalationCopy.turnOnHelp)
+            case nil:
+                EmptyView()
+            }
+        }
+        .zoomPadding(16)
+    }
+
+    private func setQuestionEscalation(_ enabled: Bool) {
+        Task {
+            questionEscalationError = await model.setSetting(
+                SettingsChange(questionEscalation: enabled ? "on" : "off"))
+        }
     }
 
     private func notice(_ text: String, color: Color) -> some View {

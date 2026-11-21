@@ -1,11 +1,18 @@
 //! Settings rows for the agent hooks Agent Relay adds: Claude Code's
-//! SessionStart hook and the Codex hook that delivers into a running turn.
+//! SessionStart hook, question escalation, and the Codex hook that delivers
+//! into a running turn.
 use super::*;
 use crate::models::{
-    CLAUDE_SESSION_HOOK_OFF, CLAUDE_SESSION_HOOK_ON, CLAUDE_SESSION_HOOK_TITLE,
-    CLAUDE_SESSION_HOOK_TURN_OFF_HELP, CLAUDE_SESSION_HOOK_TURN_ON_HELP, CODEX_HOOK_OFF,
-    CODEX_HOOK_ON, CODEX_HOOK_TITLE, CODEX_HOOK_TURN_OFF_HELP, CODEX_HOOK_TURN_ON_HELP,
+    question_escalation_row, CLAUDE_SESSION_HOOK_OFF, CLAUDE_SESSION_HOOK_ON,
+    CLAUDE_SESSION_HOOK_TITLE, CLAUDE_SESSION_HOOK_TURN_OFF_HELP,
+    CLAUDE_SESSION_HOOK_TURN_ON_HELP, CODEX_HOOK_OFF, CODEX_HOOK_ON, CODEX_HOOK_TITLE,
+    CODEX_HOOK_TURN_OFF_HELP, CODEX_HOOK_TURN_ON_HELP, QUESTION_ESCALATION_DETAIL,
+    QUESTION_ESCALATION_TITLE, QUESTION_ESCALATION_TURN_OFF_HELP,
+    QUESTION_ESCALATION_TURN_ON_HELP, QUESTION_ESCALATION_UNAVAILABLE,
 };
+
+/// The question escalation row's widget name, for tests.
+pub const QUESTION_ESCALATION_ROW_NAME: &str = "question-escalation";
 
 impl App {
     /// Claude Code's SessionStart hook. On by default after sign-in. It never
@@ -58,6 +65,70 @@ impl App {
             &extra,
         )
         .0
+    }
+
+    /// Question escalation (`question_escalation`). It shows what the core
+    /// reports, with the core's own availability line; a core that does not
+    /// report it gets an unavailable row, not a hidden one.
+    pub(super) fn question_escalation_row(&self) -> gtk::Box {
+        let (row, error) = self.with_state(|state| {
+            (
+                state.settings.as_ref().map(question_escalation_row),
+                state.hook_errors.question_escalation.clone(),
+            )
+        });
+        let row = row.unwrap_or(crate::models::QuestionEscalationRow {
+            enabled: None,
+            status: None,
+            inbox: None,
+        });
+        let set = |enabled: bool| {
+            self.on(move |app| {
+                app.set_setting(
+                    SettingsChange {
+                        question_escalation: Some(if enabled { "on" } else { "off" }.into()),
+                        ..SettingsChange::default()
+                    },
+                    SettingRow::QuestionEscalation,
+                )
+            })
+        };
+        let accessory = match row.enabled {
+            Some(true) => {
+                let off = button("Turn Off", &[], set(false));
+                off.set_tooltip_text(Some(QUESTION_ESCALATION_TURN_OFF_HELP));
+                Some(off)
+            }
+            Some(false) => {
+                let on = button("Turn On", &[], set(true));
+                on.set_tooltip_text(Some(QUESTION_ESCALATION_TURN_ON_HELP));
+                Some(on)
+            }
+            None => None,
+        };
+        let mut extra: Vec<gtk::Widget> = Vec::new();
+        match row.enabled {
+            None => extra.push(notice(QUESTION_ESCALATION_UNAVAILABLE, Tone::Neutral)),
+            Some(_) => {
+                for line in row.status.iter().chain(row.inbox.iter()) {
+                    extra.push(text(line, &["settings-row-detail"]).wrapped().upcast());
+                }
+            }
+        }
+        extra.extend(error.iter().map(|error| notice(error, Tone::Error)));
+        let row = settings_row(
+            QUESTION_ESCALATION_TITLE,
+            QUESTION_ESCALATION_DETAIL,
+            match row.enabled {
+                Some(true) => "emblem-ok-symbolic",
+                _ => "dialog-information-symbolic",
+            },
+            accessory.as_ref().map(|button| button.upcast_ref()),
+            &extra,
+        )
+        .0;
+        row.set_widget_name(QUESTION_ESCALATION_ROW_NAME);
+        row
     }
 
     pub(in crate::ui) fn codex_hook_row(&self) -> gtk::Box {

@@ -23,6 +23,8 @@ pub struct HookRowErrors {
     pub claude_session: Option<String>,
     /// Agent Relay's Codex hook (`codex_stop_hook`).
     pub codex: Option<String>,
+    /// Question escalation (`question_escalation`).
+    pub question_escalation: Option<String>,
 }
 
 #[cfg(test)]

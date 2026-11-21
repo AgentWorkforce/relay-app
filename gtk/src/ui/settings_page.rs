@@ -55,6 +55,7 @@ pub enum SettingRow {
     CursorDelivery,
     ClaudeFolders,
     ClaudeSessionHook,
+    QuestionEscalation,
     CodexHook,
     /// The pane's own banner.
     Pane,
