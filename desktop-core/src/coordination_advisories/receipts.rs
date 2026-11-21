@@ -12,7 +12,7 @@ const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 // Longer than the server's seven-day advisory retention.
 const RETENTION: u64 = 8 * 24 * 60 * 60;
 
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Scope {
     site: String,

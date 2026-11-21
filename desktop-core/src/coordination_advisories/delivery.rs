@@ -17,6 +17,9 @@ impl Advisories {
             .as_ref()
             .map(|p| self.provider_owned(p, target))
             .unwrap_or_default();
+        // Receipt storage unusable: who holds an urgent note is unknown, so the
+        // notes the urgent path would attempt for an agent wait here too.
+        let urgent_unknown = self.urgent.lock().unwrap_or_else(|p| p.into_inner()).blocked();
         // Signed out, or another account: what was cached is not theirs.
         if current.is_none() || !state.belong_to(current.as_ref()) {
             return None;
@@ -30,7 +33,12 @@ impl Advisories {
         let mut size = FOOTER.len();
         let mut overflow = false;
         for advisory in waiting {
-            if provider_owned.contains(&advisory.id) {
+            if provider_owned.contains(&advisory.id)
+                || (urgent_unknown
+                    && advisory.urgent()
+                    && advisory.notify_eligible
+                    && !advisory.dm_delivered)
+            {
                 kept.push(advisory);
                 continue;
             }
