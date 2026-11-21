@@ -120,10 +120,12 @@ final class SessionEventCacheTests: XCTestCase {
         let cache = cache()
         for session in ["a", "b"] { cache.save(snapshot(session, events: 2), workspaceID: "ws") }
         cache.remove(workspaceID: "ws", sessionID: "a")
+        cache.flush()
         XCTAssertFalse(exists(cache, "a"))
         XCTAssertTrue(exists(cache, "b"))
         cache.save(snapshot("c", events: 2), workspaceID: "ws")
         cache.removeAll()
+        cache.flush()
         XCTAssertFalse(exists(cache, "b"))
         XCTAssertFalse(exists(cache, "c"), "a save queued before removeAll is deleted too")
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
@@ -138,11 +140,53 @@ final class SessionEventCacheTests: XCTestCase {
             .resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
     }
 
-    func testOnlyA404DeletesTheCachedSession() {
-        XCTAssertTrue(SessionEventsRequest.sessionGone(status: 404))
-        for status in [nil, 401, 409, 410, 500, 502, 503] {
-            XCTAssertFalse(SessionEventsRequest.sessionGone(status: status))
+    func testAFileForAnotherWorkspaceOrSessionIsDeleted() async throws {
+        let cache = cache()
+        cache.save(snapshot("s1", events: 1), workspaceID: "ws")
+        cache.flush()
+        // The same bytes under the name of another session or workspace.
+        let data = try Data(contentsOf: cache.fileURL(workspaceID: "ws", sessionID: "s1"))
+        for (workspace, session) in [("ws", "s2"), ("other", "s1")] {
+            try data.write(to: cache.fileURL(workspaceID: workspace, sessionID: session))
+            let loaded = await cache.load(workspaceID: workspace, sessionID: session)
+            XCTAssertNil(loaded)
+            XCTAssertFalse(exists(cache, session, workspace: workspace))
         }
+        let original = await cache.load(workspaceID: "ws", sessionID: "s1")
+        XCTAssertNotNil(original)
+    }
+
+    func testAnOversizedFileIsDeletedUnread() async throws {
+        let cache = cache(bytesPerSession: 2_000)
+        cache.save(snapshot("s1", events: 1), workspaceID: "ws")
+        cache.flush()
+        let url = cache.fileURL(workspaceID: "ws", sessionID: "s1")
+        try Data(repeating: 0x20, count: 2_001).write(to: url)
+        let loaded = await cache.load(workspaceID: "ws", sessionID: "s1")
+        XCTAssertNil(loaded)
+        XCTAssertFalse(exists(cache, "s1"))
+    }
+
+    func testDefaultCaps() {
+        XCTAssertEqual(SessionEventDiskCache.formatVersion, 1)
+        XCTAssertEqual(SessionEventDiskCache.defaultEventsPerSession, 1_000)
+        XCTAssertEqual(SessionEventDiskCache.defaultBytesPerSession, 4 * 1024 * 1024)
+        XCTAssertEqual(SessionEventDiskCache.defaultTotalBytes, 50 * 1024 * 1024)
+        let standard = SessionEventDiskCache.standard()
+        XCTAssertEqual(standard?.directory.lastPathComponent, "SessionEventCache")
+        XCTAssertEqual(standard?.directory.deletingLastPathComponent().lastPathComponent, "Application Support")
+    }
+
+    func testFilesAskForProtectionUntilFirstUnlock() throws {
+        let cache = cache()
+        cache.save(snapshot("s1", events: 1), workspaceID: "ws")
+        cache.flush()
+        // The simulator records the class it is asked for but does not
+        // enforce it; a device does.
+        let attributes = try FileManager.default.attributesOfItem(atPath: cache.fileURL(workspaceID: "ws", sessionID: "s1").path)
+        let protection = attributes[.protectionKey] as? FileProtectionType
+        XCTAssertTrue(protection == nil || protection == .completeUntilFirstUserAuthentication,
+                      "protection: \(String(describing: protection))")
     }
 }
 
@@ -150,14 +194,27 @@ final class SessionEventCacheTests: XCTestCase {
 final class SpySessionEventSnapshots: SessionEventSnapshotStore, @unchecked Sendable {
     var removeAllCount = 0
     var removed: [String] = []
+    var saved: [SessionEventSnapshot] = []
     func load(workspaceID: String, sessionID: String) async -> SessionEventSnapshot? { nil }
-    func save(_ snapshot: SessionEventSnapshot, workspaceID: String) {}
+    func save(_ snapshot: SessionEventSnapshot, workspaceID: String) { saved.append(snapshot) }
     func remove(workspaceID: String, sessionID: String) { removed.append(sessionID) }
     func removeAll() { removeAllCount += 1 }
 }
 
+/// The client's session event lifecycle, with a stand-in for Cloud.
 @MainActor
 final class SessionEventCacheLifecycleTests: XCTestCase {
+    private let agent = RelayAgent(relay: ["name": "builder", "status": "active",
+                                           "metadata": ["session_id": "s1", "source": "relay-desktop"]])
+
+    private func page(_ id: String) -> SessionEventPage {
+        SessionEventPage(sessionID: "s1", events: [
+            SessionEvent(key: .init(source: "fixture", machineID: "m", kind: "assistant", eventID: id),
+                         ts: Date(timeIntervalSince1970: 1_790_000_000), kind: "assistant",
+                         actorRole: "assistant", content: "synthetic")
+        ], nextCursor: nil)
+    }
+
     func testAWorkspaceSwitchDeletesTheCache() {
         let spy = SpySessionEventSnapshots()
         let client = RelayClient(sessionEventSnapshots: spy)
@@ -168,12 +225,72 @@ final class SessionEventCacheLifecycleTests: XCTestCase {
         XCTAssertEqual(spy.removeAllCount, 1, "setting the same workspace keeps the cache")
     }
 
-    func testSignOutDeletesTheCache() async {
+    func testANewIdentityInTheSameWorkspaceForgetsSessionEvents() async {
+        let spy = SpySessionEventSnapshots()
+        let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in self.page("e1") })
+        await client.refreshSessionEvents(for: agent)
+        XCTAssertEqual(client.sessionEvents["s1"]?.events.count, 1)
+        // What pairing again (same workspace id, another messaging identity) calls.
+        client.advanceSessionGeneration()
+        XCTAssertTrue(client.sessionEvents.isEmpty)
+        XCTAssertEqual(spy.removeAllCount, 1)
+    }
+
+    func testSignOutDeletesLoadedEvents() async {
         // Runs on the simulator test host, which has no real account.
         let spy = SpySessionEventSnapshots()
-        let client = RelayClient(sessionEventSnapshots: spy)
+        let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in self.page("e1") })
+        await client.refreshSessionEvents(for: agent)
+        XCTAssertEqual(client.sessionEvents["s1"]?.events.count, 1)
+        XCTAssertEqual(spy.saved.count, 1)
         await client.signOut()
-        XCTAssertGreaterThanOrEqual(spy.removeAllCount, 1)
         XCTAssertTrue(client.sessionEvents.isEmpty)
+        XCTAssertGreaterThanOrEqual(spy.removeAllCount, 1)
+    }
+
+    func testAReadFinishingAfterAWorkspaceSwitchStoresNothing() async throws {
+        let spy = SpySessionEventSnapshots()
+        let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in
+            try await Task.sleep(for: .milliseconds(300))
+            return self.page("late")
+        })
+        let read = Task { await client.refreshSessionEvents(for: agent) }
+        try await Task.sleep(for: .milliseconds(50))
+        client.cloudWorkspaceID = UUID().uuidString.lowercased()
+        await read.value
+        XCTAssertNil(client.sessionEvents["s1"]?.events.first, "the old workspace's read is dropped")
+        XCTAssertTrue(spy.saved.isEmpty)
+    }
+
+    func testA404DeletesTheCachedSessionAndKeepsWhatIsShown() async {
+        let spy = SpySessionEventSnapshots()
+        var calls = 0
+        let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in
+            calls += 1
+            if calls == 1 { return self.page("e1") }
+            throw RelayAPIError(message: "gone", status: 404, code: "session_not_found")
+        })
+        await client.refreshSessionEvents(for: agent)
+        await client.refreshSessionEvents(for: agent)
+        XCTAssertEqual(spy.removed, ["s1"])
+        XCTAssertEqual(client.sessionEvents["s1"]?.events.count, 1)
+        XCTAssertEqual(client.sessionEvents["s1"]?.failures, 1)
+    }
+
+    func testRevokedAccessClearsTheScreenAndTheDisk() async {
+        for status in [401, 403] {
+            let spy = SpySessionEventSnapshots()
+            var calls = 0
+            let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in
+                calls += 1
+                if calls == 1 { return self.page("e1") }
+                throw RelayAPIError(message: "no access", status: status, code: "forbidden")
+            })
+            await client.refreshSessionEvents(for: agent)
+            await client.refreshSessionEvents(for: agent)
+            XCTAssertEqual(spy.removed, ["s1"], "status \(status)")
+            XCTAssertEqual(client.sessionEvents["s1"]?.events.count, 0, "status \(status)")
+            XCTAssertTrue(client.sessionEventsSettled(for: agent), "the chat does not spin")
+        }
     }
 }

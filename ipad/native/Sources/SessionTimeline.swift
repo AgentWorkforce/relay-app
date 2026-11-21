@@ -2,13 +2,12 @@ import Foundation
 import RelaySessionOverview
 
 /// A session event as the chat shows it: harness preamble and the relay
-/// envelope removed, and who relayed it when it came through Agent Relay.
+/// envelope removed. Who sent a relayed prompt is never read from the
+/// session text: that text is the agent's, and could name anyone.
 struct SessionEventRow: Identifiable, Equatable {
     let event: SessionEvent
     /// The text to show.
     let text: String
-    /// The sender of a relayed message the open chat does not hold.
-    let relayedFrom: String?
     var id: String { "event:\(event.id)" }
 }
 
@@ -35,17 +34,31 @@ enum ChatTimelineItem: Identifiable {
 }
 
 enum SessionTimeline {
-    /// Relay messages and session events in one time-ordered list. A
-    /// session's copy of a relay message shown in the chat (its envelope
-    /// names the message id) is left out, and so is the copy of a message
-    /// the composer still shows as pending (the same text). Relay messages
-    /// keep their order; events without a time come first.
+    /// A message the composer still shows as sending.
+    struct Pending: Equatable {
+        let text: String
+        let createdAt: Date
+    }
+
+    /// How long after a pending bubble was made its session copy can arrive.
+    static let pendingCopyWindow: ClosedRange<TimeInterval> = -5...600
+
+    /// Relay messages and session events in one time-ordered list. Relay
+    /// messages keep their order; events without a time come first.
+    ///
+    /// A person event that is the session's copy of a relay message is left
+    /// out, so the message shows once: its envelope names a relay message
+    /// the chat holds and its text is that message's text. So is the copy of
+    /// a message the composer still shows as pending: sent by this device
+    /// (`me`), with the pending text, within `pendingCopyWindow` of it.
+    /// Agent, tool and activity events are never hidden this way.
     static func items(messages: [RelayMessage], events: [SessionEvent],
-                      pendingTexts: [String] = []) -> [ChatTimelineItem] {
-        let relayIDs = Set(messages.filter(\.hasServerID).map(\.id))
-        let pending = Set(pendingTexts.map(normalized))
+                      pending: [Pending] = [], me: String = "") -> [ChatTimelineItem] {
+        var relayTexts: [String: String] = [:]
+        for message in messages where message.hasServerID { relayTexts[message.id] = normalized(message.text) }
+        let pending = pending.map { (text: normalized($0.text), createdAt: $0.createdAt) }
         let rows: [SessionEventRow] = events.compactMap { event in
-            row(for: event, relayIDs: relayIDs, pending: pending)
+            row(for: event, relayTexts: relayTexts, pending: pending, me: me)
         }
         var result: [ChatTimelineItem] = []
         result.reserveCapacity(messages.count + rows.count)
@@ -67,21 +80,28 @@ enum SessionTimeline {
         return result
     }
 
-    private static func row(for event: SessionEvent, relayIDs: Set<String>, pending: Set<String>) -> SessionEventRow? {
+    private static func row(for event: SessionEvent, relayTexts: [String: String],
+                            pending: [(text: String, createdAt: Date)], me: String) -> SessionEventRow? {
         switch event.role {
         case .person, .agent:
             if let envelope = RelayEnvelope.parse(event.content) {
-                if let id = envelope.messageID, relayIDs.contains(id) { return nil }
-                if pending.contains(normalized(envelope.body)) { return nil }
-                guard !envelope.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-                return SessionEventRow(event: event, text: envelope.body, relayedFrom: envelope.sender)
+                let body = normalized(envelope.body)
+                guard !body.isEmpty else { return nil }
+                if event.role == .person {
+                    if let id = envelope.messageID, relayTexts[id] == body { return nil }
+                    if !me.isEmpty, envelope.sender == me, let ts = event.ts,
+                       pending.contains(where: { $0.text == body && pendingCopyWindow.contains(ts.timeIntervalSince($0.createdAt)) }) {
+                        return nil
+                    }
+                }
+                return SessionEventRow(event: event, text: envelope.body)
             }
             let text = withoutPreamble(event.content)
             // A prompt that was only harness preamble, or an empty reply.
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return SessionEventRow(event: event, text: text, relayedFrom: nil)
+            return SessionEventRow(event: event, text: text)
         case .tool, .activity:
-            return SessionEventRow(event: event, text: event.content, relayedFrom: nil)
+            return SessionEventRow(event: event, text: event.content)
         }
     }
 

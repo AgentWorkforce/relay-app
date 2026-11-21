@@ -421,8 +421,13 @@ private enum SecureStore {
     /// Where session events persist between launches: the on-disk cache,
     /// or nothing in UI tests.
     private let sessionEventSnapshots: SessionEventSnapshotStore
+    /// Reads one page of a session's events instead of Cloud; unit tests
+    /// set it. With it set, every agent with a session id can load events.
+    typealias SessionEventFetch = @MainActor (_ sessionID: String, _ spec: SessionEventsRequest.Spec) async throws -> SessionEventPage
+    private let sessionEventFetch: SessionEventFetch?
 
-    init(sessionEventSnapshots: SessionEventSnapshotStore? = nil) {
+    init(sessionEventSnapshots: SessionEventSnapshotStore? = nil, sessionEventFetch: SessionEventFetch? = nil) {
+        self.sessionEventFetch = sessionEventFetch
         #if DEBUG
         let fixture = RelayUITestFixture.enabled
         #else
@@ -1023,7 +1028,7 @@ private enum SecureStore {
         if previousToken != messagingIdentity.token || previousURL != messagingIdentity.baseURL {
             resetPeople()
             registeredPushToken = nil
-            sessionGeneration += 1
+            advanceSessionGeneration()
         }
         account = string(accountUser["name"]).isEmpty ? string(accountUser["email"]) : string(accountUser["name"])
         workspace = resolved.workspaceName.isEmpty ? "Workspace" : resolved.workspaceName
@@ -1077,7 +1082,7 @@ private enum SecureStore {
         // Invalidate work before the first suspension point so an in-flight
         // refresh cannot repopulate signed-out state while cleanup awaits.
         refreshGeneration += 1
-        sessionGeneration += 1
+        advanceSessionGeneration()
         conversationRefreshGeneration += 1
         conversationMetadataWorkerID = nil
         threadMisses.reset()
@@ -1766,6 +1771,7 @@ private enum SecureStore {
     /// id and Cloud access is approved.
     func sessionEventsAvailable(for agent: RelayAgent) -> Bool {
         guard !agent.sessionID.isEmpty, agent.source != .channel, !agent.isHuman else { return false }
+        if sessionEventFetch != nil { return true }
         #if DEBUG
         if SessionEventsFixture.covers(agent.sessionID) { return true }
         #endif
@@ -1788,7 +1794,7 @@ private enum SecureStore {
     /// session; a call while one runs waits for it instead of starting
     /// another. A failure keeps what is shown.
     func refreshSessionEvents(for agent: RelayAgent) async {
-        await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent)) { _ in
+        await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: false) { _ in
             SessionEventsRequest.newest
         }
     }
@@ -1796,12 +1802,12 @@ private enum SecureStore {
     /// Reads the next older page, or the newest page again after the server
     /// dropped the cursor. Nothing once the start was reached.
     func loadOlderSessionEvents(for agent: RelayAgent) async {
-        await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent)) { store in
+        await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: true) { store in
             store.olderRequest
         }
     }
 
-    private func readSessionEvents(_ id: String, available: Bool,
+    private func readSessionEvents(_ id: String, available: Bool, older: Bool,
                                    request: @escaping (SessionEventStore) -> SessionEventsRequest.Spec?) async {
         guard available, !id.isEmpty else { return }
         // Wait for a read already running for this session: one in flight.
@@ -1840,9 +1846,15 @@ private enum SecureStore {
             } catch {
                 guard self.sessionEventsGeneration == generation else { return }
                 let failure = error as? RelayAPIError
-                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "")
-                // The session is gone from the server: forget its cached copy.
-                if SessionEventsRequest.sessionGone(status: failure?.status) { self.sessionEventSnapshots.remove(workspaceID: cacheWorkspace, sessionID: id) }
+                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "", older: older)
+                if SessionEventsRequest.accessRevoked(status: failure?.status) {
+                    // This account may no longer read it: off the screen and the disk.
+                    self.sessionEvents[id]?.forgetEvents()
+                    self.sessionEventSnapshots.remove(workspaceID: cacheWorkspace, sessionID: id)
+                } else if SessionEventsRequest.sessionGone(status: failure?.status) {
+                    // Gone from the server: forget the cached copy, keep what is shown.
+                    self.sessionEventSnapshots.remove(workspaceID: cacheWorkspace, sessionID: id)
+                }
             }
         }
         sessionEventReads[id] = SessionEventRead(token: token, task: read)
@@ -1851,6 +1863,7 @@ private enum SecureStore {
 
     private func fetchSessionEventPage(_ id: String, workspaceID: String?,
                                        spec: SessionEventsRequest.Spec) async throws -> SessionEventPage {
+        if let sessionEventFetch { return try await sessionEventFetch(id, spec) }
         #if DEBUG
         if SessionEventsFixture.covers(id) {
             if SessionEventsFixture.delaysFirstPage, sessionEvents[id]?.loaded != true {
@@ -1867,6 +1880,14 @@ private enum SecureStore {
         }
         let response = try await authorizedCloudCall(path)
         return try SessionEventPage.decode(try JSONSerialization.data(withJSONObject: response), sessionID: id)
+    }
+
+    /// Starts a new identity session: work from the previous one is
+    /// invalidated and its session events, in memory and on disk, forgotten,
+    /// even when the workspace id stays the same.
+    func advanceSessionGeneration() {
+        sessionGeneration += 1
+        resetSessionEvents()
     }
 
     /// Forgets every session's events, in memory and on disk, and any read in flight.

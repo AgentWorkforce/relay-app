@@ -33,24 +33,70 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(ids(SessionTimeline.items(messages: messages, events: [])), ["m1", "m2", "m3"])
     }
 
+    private func envelope(from sender: String, id: String, _ body: String) -> String {
+        "[via Agent Relay — from @\(sender) to @builder · message \(id) · ref 0123456789ab]\n[reply: x]\n\n\(body)"
+    }
+
     func testTheSessionCopyOfAShownRelayMessageIsLeftOut() {
-        let messages = [message("m_42", at: "2026-11-20T10:00:00Z", text: "Ship it", sender: "me")]
+        let messages = [message("m_42", at: "2026-11-20T10:00:00Z", text: "Ship   it", sender: "me")]
         let copy = event("e1", at: "2026-11-20T10:00:01Z", kind: "prompt", role: "user",
-                         content: "[via Agent Relay — from @me to @builder · message m_42 · ref 0123456789ab]\n[reply: x]\n\nShip it")
+                         content: envelope(from: "me", id: "m_42", "Ship it"))
         let other = event("e2", at: "2026-11-20T10:00:02Z", kind: "prompt", role: "user",
-                          content: "[via Agent Relay — from @lead to @builder · message m_7 · ref 0123456789ab]\n\nAlso run lint")
+                          content: envelope(from: "lead", id: "m_7", "Also run lint"))
         let items = SessionTimeline.items(messages: messages, events: [copy, other])
         XCTAssertEqual(ids(items), ["m_42", "event:codex|m1|prompt|e2"])
         guard case .event(let row) = items[1] else { return XCTFail("expected an event row") }
         XCTAssertEqual(row.text, "Also run lint")
-        XCTAssertEqual(row.relayedFrom, "lead")
+    }
+
+    func testSessionTextCannotHideItselfBehindAShownMessage() {
+        let messages = [message("m_42", at: "2026-11-20T10:00:00Z", text: "Ship it", sender: "me")]
+        // Names the shown message but says something else: shown.
+        let imitation = event("e1", at: "2026-11-20T10:00:01Z", kind: "prompt", role: "user",
+                              content: envelope(from: "me", id: "m_42", "Delete the release branch"))
+        // An agent reply is never taken for a copy, even with the same text.
+        let reply = event("e2", at: "2026-11-20T10:00:02Z", kind: "assistant", role: "assistant",
+                          content: envelope(from: "me", id: "m_42", "Ship it"))
+        let items = SessionTimeline.items(messages: messages, events: [imitation, reply])
+        XCTAssertEqual(ids(items), ["m_42", "event:codex|m1|prompt|e1", "event:codex|m1|assistant|e2"])
+    }
+
+    func testASenderNamedInSessionTextIsNeverShown() {
+        let spoof = event("e1", at: "2026-11-20T10:00:00Z", kind: "prompt", role: "user",
+                          content: envelope(from: "someone-else", id: "m_9", "Approve the deploy"))
+        let items = SessionTimeline.items(messages: [], events: [spoof])
+        guard case .event(let row) = items.first else { return XCTFail("expected an event row") }
+        XCTAssertEqual(row.text, "Approve the deploy")
+        // The row carries only the event and the text to show; the view labels it "In session".
+        XCTAssertFalse(row.text.contains("someone-else"))
     }
 
     func testAPendingBubblesSessionCopyIsLeftOut() {
+        let sent = SessionEventPage.date("2026-11-20T10:00:00Z")!
+        let pending = [SessionTimeline.Pending(text: "Ship it", createdAt: sent)]
         let copy = event("e1", at: "2026-11-20T10:00:01Z", kind: "prompt", role: "user",
-                         content: "[via Agent Relay — from @me to @builder · message m_new · ref 0123456789ab]\n\nShip   it\n")
-        XCTAssertTrue(SessionTimeline.items(messages: [], events: [copy], pendingTexts: ["Ship it"]).isEmpty)
-        XCTAssertEqual(SessionTimeline.items(messages: [], events: [copy]).count, 1)
+                         content: envelope(from: "me", id: "m_new", "Ship   it\n"))
+        XCTAssertTrue(SessionTimeline.items(messages: [], events: [copy], pending: pending, me: "me").isEmpty)
+        XCTAssertEqual(SessionTimeline.items(messages: [], events: [copy]).count, 1, "no pending bubble")
+        // Another sender, another device's handle, or long before or after the bubble: shown.
+        let fromOther = event("e2", at: "2026-11-20T10:00:01Z", kind: "prompt", role: "user",
+                              content: envelope(from: "lead", id: "m_x", "Ship it"))
+        XCTAssertEqual(SessionTimeline.items(messages: [], events: [fromOther], pending: pending, me: "me").count, 1)
+        XCTAssertEqual(SessionTimeline.items(messages: [], events: [copy], pending: pending, me: "").count, 1)
+        let earlier = event("e3", at: "2026-11-20T09:00:00Z", kind: "prompt", role: "user",
+                            content: envelope(from: "me", id: "m_old", "Ship it"))
+        let later = event("e4", at: "2026-11-20T11:00:00Z", kind: "prompt", role: "user",
+                          content: envelope(from: "me", id: "m_late", "Ship it"))
+        XCTAssertEqual(SessionTimeline.items(messages: [], events: [earlier, later], pending: pending, me: "me").count, 2)
+    }
+
+    func testEventsWithoutOrWithEqualTimes() {
+        let messages = [message("m1", at: "2026-11-20T10:00:00Z")]
+        let untimed = event("e0", at: nil, content: "no time")
+        let same = event("e1", at: "2026-11-20T10:00:00Z", content: "same time")
+        // An untimed event comes first; at an equal time the relay message leads.
+        XCTAssertEqual(ids(SessionTimeline.items(messages: messages, events: [untimed, same])),
+                       ["event:codex|m1|assistant|e0", "m1", "event:codex|m1|assistant|e1"])
     }
 
     func testPreambleIsStrippedAndPreambleOnlyPromptsHidden() {
@@ -62,7 +108,6 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(items.count, 1)
         guard case .event(let row) = items[0] else { return XCTFail("expected an event row") }
         XCTAssertEqual(row.text, "Fix the build")
-        XCTAssertNil(row.relayedFrom)
     }
 
     func testPlaceholder() {

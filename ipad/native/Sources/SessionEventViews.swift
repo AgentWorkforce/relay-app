@@ -33,8 +33,7 @@ struct SessionEventBubble: View {
                 if preview.isCut || row.event.contentTruncated {
                     showMore(canExpand: preview.isCut)
                 }
-                Text(person ? (row.relayedFrom.map { "From @\($0) · in session" } ?? "In session")
-                            : "\(agentName) · in session")
+                Text(person ? "In session" : "\(agentName) · in session")
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
             }
             .padding(12)
@@ -105,10 +104,13 @@ struct SessionEventBubble: View {
 /// page once it has stayed on screen for half a second (the person scrolled
 /// up, or the chat is shorter than the screen; in a longer chat the first
 /// scroll to the newest row moves it away before then), again when a page
-/// moved the cursor while it stays there, or when tapped.
+/// moved the cursor while it stays there, or when tapped. It stops loading
+/// on its own when `autoLoads` is false (the store stopped it after an
+/// empty page, a failure or repeated restarts); a tap still loads.
 struct OlderSessionRow: View {
     /// Changes when a page moves the older cursor.
     let cursorKey: String
+    let autoLoads: Bool
     let load: @MainActor () async -> Void
     @State private var visible = false
     @State private var loading = false
@@ -124,10 +126,10 @@ struct OlderSessionRow: View {
         .accessibilityIdentifier("Load earlier activity")
         .onAppear { if !visible { visible = true } }
         .onDisappear { if visible { visible = false } }
-        .task(id: "\(cursorKey)|\(visible)") {
-            guard visible else { return }
+        .task(id: "\(cursorKey)|\(visible)|\(autoLoads)") {
+            guard visible, autoLoads else { return }
             try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled, visible else { return }
+            guard !Task.isCancelled, visible, autoLoads else { return }
             await run()
         }
     }

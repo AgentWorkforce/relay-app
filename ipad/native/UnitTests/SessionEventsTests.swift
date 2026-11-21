@@ -190,6 +190,63 @@ final class SessionEventsTests: XCTestCase {
                        "an unchanged poll writes nothing")
     }
 
+    func testAutomaticOlderLoadingStopsAfterAnEmptyPage() throws {
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+        XCTAssertFalse(store.olderAutoLoadStopped)
+        store.apply(page([event("4", at: 40)], next: "c2"), for: try XCTUnwrap(store.olderRequest))
+        XCTAssertFalse(store.olderAutoLoadStopped, "a page that added events keeps going")
+        // A fresh cursor but nothing new: stop, though a tap can still load.
+        store.apply(page([event("4", at: 40)], next: "c3"), for: try XCTUnwrap(store.olderRequest))
+        XCTAssertTrue(store.olderAutoLoadStopped)
+        XCTAssertEqual(store.olderRequest?.cursor, "c3")
+        store.apply(page([], next: "c4"), for: try XCTUnwrap(store.olderRequest))
+        XCTAssertTrue(store.olderAutoLoadStopped)
+        // A tapped page that adds events resumes it.
+        store.apply(page([event("3", at: 30)], next: "c5"), for: try XCTUnwrap(store.olderRequest))
+        XCTAssertFalse(store.olderAutoLoadStopped)
+    }
+
+    func testAutomaticOlderLoadingStopsAfterAFailureOrRepeatedRestarts() throws {
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+        store.failed(status: 503, code: "", older: false)
+        XCTAssertFalse(store.olderAutoLoadStopped, "a failed poll does not stop older loading")
+        store.failed(status: 503, code: "", older: true)
+        XCTAssertTrue(store.olderAutoLoadStopped)
+
+        var restarting = SessionEventStore(sessionID: "s1")
+        restarting.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+        restarting.failed(status: 410, code: "cursor_expired", older: false)
+        XCTAssertFalse(restarting.olderAutoLoadStopped, "one restart keeps going")
+        restarting.apply(page([event("5", at: 50)], next: "c2"), for: SessionEventsRequest.newest)
+        restarting.failed(status: 409, code: "cursor_backend_transition", older: false)
+        XCTAssertTrue(restarting.olderAutoLoadStopped, "a second restart in a row stops it")
+    }
+
+    func testForgettingEventsKeepsTheFailure() {
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+        store.failed(status: 403, code: "forbidden")
+        store.forgetEvents()
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertFalse(store.loaded)
+        XCTAssertFalse(store.hasOlder)
+        XCTAssertEqual(store.failures, 1)
+    }
+
+    func testAccessRules() {
+        XCTAssertTrue(SessionEventsRequest.sessionGone(status: 404))
+        XCTAssertTrue(SessionEventsRequest.accessRevoked(status: 401))
+        XCTAssertTrue(SessionEventsRequest.accessRevoked(status: 403))
+        for status in [nil, 404, 409, 410, 500, 502, 503] as [Int?] {
+            XCTAssertFalse(SessionEventsRequest.accessRevoked(status: status))
+        }
+        for status in [nil, 401, 403, 409, 410, 500, 502, 503] as [Int?] {
+            XCTAssertFalse(SessionEventsRequest.sessionGone(status: status))
+        }
+    }
+
     // MARK: Polling
 
     func testPollingInterval() {

@@ -1310,8 +1310,10 @@ struct RelayWorkspaceView: View {
         let sessionApplies = client.sessionEventsAvailable(for: agent)
         let store = sessionApplies ? client.sessionEvents[agent.sessionID] : nil
         let pending = outgoing.messages(for: agent.id)
-        let timeline = SessionTimeline.items(messages: client.messages, events: store?.events ?? [],
-                                             pendingTexts: pending.map(\.text))
+        let timeline = SessionTimeline.items(
+            messages: client.messages, events: store?.events ?? [],
+            pending: pending.map { SessionTimeline.Pending(text: $0.text, createdAt: $0.createdAt) },
+            me: client.messagingHandle)
         let placeholder = SessionTimeline.placeholder(
             hasRows: !timeline.isEmpty || !pending.isEmpty,
             historyChecked: client.historyCheckedConversation == agent.id || client.historyLoaded(for: agent),
@@ -1345,7 +1347,8 @@ struct RelayWorkspaceView: View {
                                     .accessibilityIdentifier("Session unavailable")
                             }
                             if let store, store.hasOlder {
-                                OlderSessionRow(cursorKey: "\(agent.id)|\(store.olderCursor ?? "restart")") {
+                                OlderSessionRow(cursorKey: "\(agent.id)|\(store.olderCursor ?? "restart")",
+                                                autoLoads: !store.olderAutoLoadStopped) {
                                     await loadOlder(for: agent, keeping: timeline.first?.id, proxy: proxy)
                                 }
                             }

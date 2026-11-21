@@ -235,8 +235,13 @@ enum SessionEventsRequest {
         return "/workspaces/\(workspaceID.lowercased())/reflex/sessions/\(session)/events?" + items.joined(separator: "&")
     }
 
-    /// The server no longer has the session: its cached copy is deleted.
+    /// The server no longer has the session: its cached copy is deleted;
+    /// what is on screen stays until the chat closes.
     static func sessionGone(status: Int?) -> Bool { status == 404 }
+
+    /// This account may no longer read the session (403, or a 401 that
+    /// outlived the credential refresh): its events leave the screen and disk.
+    static func accessRevoked(status: Int?) -> Bool { status == 401 || status == 403 }
 
     /// The server dropped the cursor (409 `cursor_backend_transition`, 410
     /// `cursor_expired`): paging restarts from the newest page.
@@ -295,6 +300,12 @@ struct SessionEventStore: Equatable, Sendable {
     private(set) var failures = 0
     /// The last read failed and the store's paging has to restart.
     private var restarting = false
+    /// Restarts after a lost cursor since older paging last added events.
+    private var restarts = 0
+    /// Older pages stop loading on their own (a tap still loads one) after
+    /// an older page added nothing, an older read failed, or the cursor was
+    /// lost twice in a row. An older page that adds events resumes them.
+    private(set) var olderAutoLoadStopped = false
     private var keys: Set<SessionEvent.Key> = []
 
     init(sessionID: String) { self.sessionID = sessionID }
@@ -341,22 +352,47 @@ struct SessionEventStore: Equatable, Sendable {
             }
             loaded = true
             restarting = false
-        } else {
+        }
+        let countBefore = events.count
+        let merged = merge(page.events)
+        if spec.cursor != nil {
             olderCursor = page.nextCursor
             reachedStart = page.nextCursor == nil
+            if events.count > countBefore {
+                olderAutoLoadStopped = false
+                restarts = 0
+            } else {
+                olderAutoLoadStopped = true
+            }
         }
-        let merged = merge(page.events)
         return merged || before.0 != olderCursor || before.1 != reachedStart
     }
 
     /// Records a failed read. A lost cursor restarts paging from the newest
     /// page; what is held stays.
-    mutating func failed(status: Int?, code: String) {
+    /// `older`: the read was for older history.
+    mutating func failed(status: Int?, code: String, older: Bool = false) {
         failures += 1
+        if older { olderAutoLoadStopped = true }
         if SessionEventsRequest.cursorLost(status: status, code: code) {
             restarting = true
             olderCursor = nil
+            restarts += 1
+            if restarts >= 2 { olderAutoLoadStopped = true }
         }
+    }
+
+    /// Drops every event and cursor, keeping the failure count, so the chat
+    /// shows nothing from a session this account may no longer read.
+    mutating func forgetEvents() {
+        events = []
+        keys = []
+        olderCursor = nil
+        reachedStart = false
+        loaded = false
+        restarting = false
+        restarts = 0
+        olderAutoLoadStopped = false
     }
 
     @discardableResult

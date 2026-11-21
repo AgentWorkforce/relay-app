@@ -66,15 +66,17 @@ final class SessionEventDiskCache: SessionEventSnapshotStore, @unchecked Sendabl
         queue.async { self.write(snapshot, workspaceID: workspaceID) }
     }
 
+    /// Queued behind earlier work, so a save queued before it is deleted
+    /// too and a read queued after it finds nothing. Never waits.
     func remove(workspaceID: String, sessionID: String) {
         let url = fileURL(workspaceID: workspaceID, sessionID: sessionID)
-        queue.sync { try? FileManager.default.removeItem(at: url) }
+        queue.async { try? FileManager.default.removeItem(at: url) }
     }
 
-    /// Deletes every file. Waits, so nothing is left when it returns; a save
-    /// queued before it is deleted with the rest.
+    /// Deletes every file, queued like `remove`.
     func removeAll() {
-        queue.sync { try? FileManager.default.removeItem(at: directory) }
+        let directory = directory
+        queue.async { try? FileManager.default.removeItem(at: directory) }
     }
 
     /// Waits for queued work; tests use it.
@@ -84,6 +86,12 @@ final class SessionEventDiskCache: SessionEventSnapshotStore, @unchecked Sendabl
 
     private func read(workspaceID: String, sessionID: String) -> SessionEventSnapshot? {
         let url = fileURL(workspaceID: workspaceID, sessionID: sessionID)
+        // A file larger than any write makes is not read at all.
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return nil }
+        guard size <= bytesPerSession else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard (try? JSONDecoder().decode(Version.self, from: data))?.version == Self.formatVersion,
               let file = try? JSONDecoder().decode(File.self, from: data),
