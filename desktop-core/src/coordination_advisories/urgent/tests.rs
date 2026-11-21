@@ -52,6 +52,9 @@ struct Sink {
     notices: Mutex<Vec<(String, String)>>,
     outcome: Mutex<Option<InjectOutcome>>,
     unavailable: AtomicBool,
+    /// What `observe` reports; `None` is the trait default (unsupported).
+    observation: Mutex<Option<Observation>>,
+    observes: std::sync::atomic::AtomicUsize,
 }
 impl Delivery for Sink {
     fn inject<'a>(
@@ -77,6 +80,16 @@ impl Delivery for Sink {
             .lock()
             .unwrap()
             .push((title.into(), body.into()));
+    }
+    fn observe<'a>(&'a self, _: &'a Target, _: &'a str) -> BoxFuture<'a, Observation> {
+        self.observes.fetch_add(1, Ordering::SeqCst);
+        let seen = self
+            .observation
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Observation::Unsupported);
+        Box::pin(async move { seen })
     }
 }
 
@@ -276,15 +289,13 @@ async fn storage_failures_precede_every_external_side_effect() {
         let now = Instant::now();
         advisories.poll(&[t], now).await;
         advisories.deliver_urgent(&sink, now).await;
+        // A damaged file blocks at load (and stays in place); a write
+        // failure blocks the save. Either way nothing external happens.
+        assert!(sink.calls.lock().unwrap().is_empty());
+        assert!(sink.notices.lock().unwrap().is_empty());
+        assert!(advisories.urgent_status().contains("storage"));
         if corrupt {
-            // Set aside at load and started again: delivery is not blocked
-            // for good, and the bad file is kept for inspection.
-            assert!(dir.path().join(BAD_FILE).exists());
-            assert_eq!(sink.calls.lock().unwrap().len(), 1);
-        } else {
-            assert!(sink.calls.lock().unwrap().is_empty());
-            assert!(sink.notices.lock().unwrap().is_empty());
-            assert!(advisories.urgent_status().contains("storage"));
+            assert!(dir.path().join(FILE).exists());
         }
     }
 }
@@ -671,28 +682,6 @@ async fn a_pass_stopped_after_its_reservation_undoes_it() {
 }
 
 #[tokio::test]
-async fn an_accepted_note_returns_to_the_turn_end_after_its_hand_off_expires() {
-    let (_dir, api, advisories) = setup();
-    let sink = Sink::default();
-    let t = target(A);
-    let now = Instant::now();
-    *sink.outcome.lock().unwrap() = Some(InjectOutcome::Accepted("queued".into()));
-    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
-    advisories.poll(&[t.clone()], now).await;
-    advisories.deliver_urgent(&sink, now).await;
-    assert!(advisories.take_at(&t, now).is_none());
-    let principal = Tokens.principal().unwrap();
-    advisories.urgent.lock().unwrap().set_agent(
-        &principal,
-        &t,
-        "p1",
-        Attempt::Accepted,
-        unix_now() - ACCEPTED_OWNED_FOR - 1,
-    );
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
-}
-
-#[tokio::test]
 async fn read_access_unavailable_survives_the_urgent_pass_and_clears_when_reads_work() {
     struct NoToken(AtomicBool);
     impl TokenSource for NoToken {
@@ -726,23 +715,20 @@ async fn read_access_unavailable_survives_the_urgent_pass_and_clears_when_reads_
 }
 
 #[test]
-fn an_unknown_version_journal_is_set_aside_and_a_failed_move_stays_blocked() {
+fn a_damaged_or_unknown_version_journal_blocks_in_place_and_again_on_relaunch() {
+    for body in [&b"broken"[..], &br#"{"version":2,"agents":[],"humans":[]}"#[..]] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), body).unwrap();
+        for _launch in 0..2 {
+            let journal = Journal::load(dir.path());
+            assert!(journal.blocked);
+            assert!(journal.status.contains("damaged or from another version"));
+            assert!(dir.path().join(FILE).exists());
+        }
+    }
+    // A missing file is a fresh start.
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(FILE), br#"{"version":2,"agents":[],"humans":[]}"#).unwrap();
-    let fresh = Journal::load(dir.path());
-    assert!(!fresh.blocked);
-    assert!(fresh.status.contains("set aside"));
-    assert!(dir.path().join(BAD_FILE).exists());
-    assert!(!dir.path().join(FILE).exists());
-    // The set-aside path is taken by a non-empty directory: the move fails,
-    // so the journal stays blocked and the bad file stays where it was.
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(FILE), b"broken").unwrap();
-    std::fs::create_dir(dir.path().join(BAD_FILE)).unwrap();
-    std::fs::write(dir.path().join(BAD_FILE).join("keep"), b"x").unwrap();
-    let blocked = Journal::load(dir.path());
-    assert!(blocked.blocked);
-    assert!(dir.path().join(FILE).exists());
+    assert!(!Journal::load(dir.path()).blocked);
 }
 
 #[cfg(unix)]
@@ -761,8 +747,8 @@ fn an_io_error_on_a_valid_journal_keeps_it_blocked_and_in_place() {
     let journal = Journal::load(dir.path());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(journal.blocked);
+    assert!(journal.status.contains("cannot be read"));
     assert!(path.exists());
-    assert!(!dir.path().join(BAD_FILE).exists());
 }
 
 #[tokio::test]
@@ -801,3 +787,5 @@ async fn a_session_in_its_own_backoff_counts_as_checked() {
     schedule.checked_at(&answered, now);
     assert!(schedule.due(&live, &HashSet::new(), now + Duration::from_secs(1)).is_empty());
 }
+
+mod observe;
