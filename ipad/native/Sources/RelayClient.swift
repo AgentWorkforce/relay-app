@@ -84,6 +84,8 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
     /// `cli` only when a structured field of the record states it, not when
     /// it is inferred from the name or persona. A fork must not guess.
     var statedCLI = ""
+    /// The model a fleet record states (`cliModel`); empty when it states none.
+    var model = ""
     let subtitle: String
     let status: String
     let attachable: Bool
@@ -179,6 +181,7 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         let hints = [string(data["cli"]), string(data["harness"]), string(data["providerLabel"]), string(data["cliModel"])]
         cli = agentCLI(structured: hints, name: name)
         statedCLI = harnessStated(in: hints)
+        model = string(data["cliModel"]).trimmingCharacters(in: .whitespacesAndNewlines)
         subtitle = [node, string(data["cliModel"]).isEmpty ? string(data["providerLabel"]) : string(data["cliModel"])].filter { !$0.isEmpty }.joined(separator: " · ")
         let state = string(data["workerLiveness"])
         status = state.isEmpty ? string(data["state"]) : state
@@ -400,12 +403,24 @@ private enum SecureStore {
     @Published var summaryCredentialReady = SecureStore.read("cloudRefreshToken") != nil
     @Published var cloudWorkspaceID = UserDefaults.standard.string(forKey: "relay.workspaceID") {
         didSet {
-            if cloudWorkspaceID != oldValue { resetPeople() }
+            if cloudWorkspaceID != oldValue {
+                resetPeople()
+                resetRowSummaries()
+            }
         }
     }
     @Published private var workspacePeople = WorkspacePeopleDirectory()
     @Published var summaries: [String: SessionOverview] = [:]
     @Published var goals: [String: String] = [:]
+    /// The briefs the list rows loaded for their sessions, by session ID.
+    /// Kept apart from `summaries`, which the agent overview owns.
+    @Published private(set) var rowSummaries: [String: AgentRowSummary] = [:]
+    private lazy var rowSummaryLoader: AgentRowSummaryLoader = {
+        let loader = AgentRowSummaryLoader(canLoad: { [weak self] in self?.canLoadRowSummaries ?? false },
+                                           fetch: { [weak self] id in await self?.fetchRowSummary(id) })
+        loader.onUpdate = { [weak self] id, summary in self?.rowSummaries[id] = summary }
+        return loader
+    }()
     /// Hosted session summaries (`GET /sessions/:id/summary`), by session ID.
     @Published var sessionSummaries: [String: SessionSummaryCacheEntry] = [:]
     /// The summary load running for each session; later callers await it.
@@ -953,6 +968,7 @@ private enum SecureStore {
         if previousKey != key {
             summaries = [:]
             goals = [:]
+            resetRowSummaries()
             sessionSummaries = [:]
             sessionRevisions = [:]
             sessionSources = [:]
@@ -1095,6 +1111,7 @@ private enum SecureStore {
         deliveredMessageIDs = []
         summaries = [:]
         goals = [:]
+        resetRowSummaries()
         sessionSummaries = [:]
         sessionRevisions = [:]
         sessionSources = [:]
@@ -1645,6 +1662,80 @@ private enum SecureStore {
             summaries[id] = SessionOverview(status: .failed, title: previous?.title ?? "",
                                             description: previous?.description ?? "", error: UserFacingError.message(for: error))
         }
+    }
+    private var canLoadRowSummaries: Bool {
+        #if DEBUG
+        if RelayUITestFixture.rowSummariesEnabled { return true }
+        #endif
+        return canLoadSummaries && !signingOut
+    }
+    /// A list row showing `agent` came on screen: its session's brief is
+    /// loaded if it is missing or old (`AgentRowSummaryLoader`).
+    /// A person's or channel's row shows no session lines, so it loads none.
+    func rowAppeared(_ agent: RelayAgent) {
+        let showsSession = !agent.isHuman && agent.source != .channel
+        rowSummaryLoader.rowAppeared(agent.id, sessionID: showsSession ? agent.sessionID : "")
+    }
+    func rowDisappeared(_ agent: RelayAgent) {
+        rowSummaryLoader.rowDisappeared(agent.id)
+    }
+    /// Loads what the visible rows still need, and again what has aged out.
+    func refreshRowSummaries() {
+        rowSummaryLoader.refresh()
+    }
+    private func resetRowSummaries() {
+        rowSummaryLoader.reset()
+        rowSummaries = [:]
+    }
+    /// One session's brief for its row, from the analysis the agent overview
+    /// reads. Nil when the load failed: the row keeps what it had and the
+    /// failure is not shown. A session Cloud History has no copy of has no
+    /// brief, which is an answer, not a failure.
+    private func fetchRowSummary(_ id: String) async -> AgentRowSummary? {
+        #if DEBUG
+        if RelayUITestFixture.enabled {
+            return RelayUITestFixture.rowSummaryResponse(sessionID: id).flatMap { Self.rowSummary(from: $0, sessionID: id) }
+        }
+        #endif
+        if let loaded = summaries[id], loaded.hasBrief {
+            return AgentRowSummary(title: loaded.title, line: loaded.description)
+        }
+        if sessionsMissingFromHistory.contains(id) { return AgentRowSummary() }
+        let workspaceID = cloudWorkspaceID
+        let generation = sessionGeneration
+        do {
+            let response = try await authorizedCloudCall(summaryPath(id))
+            guard cloudWorkspaceID == workspaceID, sessionGeneration == generation else { return nil }
+            return Self.rowSummary(from: response, sessionID: id)
+        } catch let failure as RelayAPIError
+                    where AgentOverviewState.isMissingFromHistory(status: failure.status, code: failure.code) {
+            return AgentRowSummary()
+        } catch {
+            return nil
+        }
+    }
+    static func rowSummary(from response: JSONObject, sessionID: String) -> AgentRowSummary? {
+        guard let raw = try? JSONSerialization.data(withJSONObject: response),
+              let overview = try? SessionOverview.decode(raw, sessionID: sessionID) else { return nil }
+        return AgentRowSummary(title: overview.title, line: overview.description)
+    }
+    /// What the list row for `agent` shows.
+    func rowModel(for agent: RelayAgent, now: Date = Date()) -> AgentRowModel {
+        let id = agent.sessionID
+        // Only a fleet record states a model.
+        let model = agent.model.isEmpty
+            ? fleetAgents.first { $0.name == agent.name && !$0.model.isEmpty }?.model ?? ""
+            : agent.model
+        let loaded = AgentRowModel.Loaded(
+            displayName: displayName(for: agent),
+            cli: displayCLI(for: agent),
+            model: model,
+            overview: id.isEmpty ? nil : summaries[id],
+            rowSummary: id.isEmpty ? nil : rowSummaries[id],
+            recordedSummary: id.isEmpty ? nil : sessionSummaryState(for: id),
+            goal: id.isEmpty ? "" : goals[id] ?? "",
+            unread: agent.source == .conversation && unreadConversationIDs.contains(agent.id))
+        return AgentRowModel(agent: agent, loaded: loaded, now: now)
     }
     /// Keeps what the summary list reported for a session: its revision and
     /// its canonical stored source.

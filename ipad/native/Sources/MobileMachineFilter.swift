@@ -10,6 +10,9 @@ enum MobileMachineFilter {
         return host
     }
 
+    /// The computer's name as rows and the machine menu show it.
+    static func displayName(_ name: String) -> String { label(name) }
+
     static func key(_ name: String) -> String {
         label(name).folding(options: [.diacriticInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .lowercased().filter { $0.isLetter || $0.isNumber }
