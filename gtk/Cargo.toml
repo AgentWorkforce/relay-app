@@ -36,9 +36,9 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # INTERIM review-only pin, never to land: relay PR #2231 feat/local-notice-observe
-# 1d90aab2 (Core::observe_local_notice on relay main b53a59c0). Before landing,
+# a77accfb (Core::observe_local_notice on relay main b53a59c0). Before landing,
 # replace with the relay main commit that merges #2231. Move desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "1d90aab2627b3f6ac64ba31714bf6c7331e58d9b", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "a77accfbf7bc9cc74100c948bc0f4cfd90365424", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
