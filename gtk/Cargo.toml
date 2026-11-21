@@ -36,11 +36,12 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 6967a00e: #2231 (Core::observe_local_notice) on top of b53a59c0, with #2219
-# (spawning agent's authority line), #2224 (bridge refuses person sends from inside
-# an agent session) and #2232 (question escalation on unless turned off).
+# main 7965519: #2233 (question escalation coverage for Codex, Devin and Copilot)
+# on top of 6967a00e: #2231 (Core::observe_local_notice) on top of b53a59c0, with
+# #2219 (spawning agent's authority line), #2224 (bridge refuses person sends from
+# inside an agent session) and #2232 (question escalation on unless turned off).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "6967a00ee644477fefac1dc9b59831c7303f034e", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "7965519749c5353a681c8bb1fbe887daea46b6da", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
