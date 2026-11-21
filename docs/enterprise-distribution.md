@@ -382,6 +382,16 @@ and result codes below are the draft's and may change.
   or else the installed core's `agent-relay-probe feed-headers` for the
   signed-in account (an update). It is never printed, logged or written to
   a file, and never sent to the signed download URL.
+- `feed-headers` prints one JSON object with the three headers by default;
+  the installers parse that. `--format lines` prints the same headers as
+  `Name: value` lines instead, for `curl -H @file` when checking a feed by
+  hand. Pass `--socket` with the core's socket or named pipe when more than
+  one Agent Relay core runs on the machine (for example a site profile build
+  next to the stock app). A failure names the check that failed on one line:
+  the core is not reachable at the socket or pipe tried, the core's own
+  sign-in or profile id message, or an answer this command does not
+  understand (an older or different core). It exits 1 then and 2 on a usage
+  error.
 - The envelope is read with a strict JSON reader (a repeated key and a body
   over 1 MiB are refused; `install.ps1` also refuses nesting deeper than 32), its `key_id` must name the
   built-in profile, and its manifest's JCS bytes are checked against
