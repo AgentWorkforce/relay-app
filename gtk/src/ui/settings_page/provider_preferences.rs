@@ -246,7 +246,10 @@ impl App {
                         .is_some_and(|settings| settings.claude_session_hook.is_some()),
             )
         });
-        if delivery || hook {
+        // Question escalation shows once settings are read, beside the
+        // session prompt; a core without the setting shows it unavailable.
+        let questions = self.with_state(|state| state.settings.is_some());
+        if delivery || hook || questions {
             let (section, group) = settings_section("Messages", None);
             if delivery {
                 group.append(&self.claude_delivery_row());
@@ -258,6 +261,12 @@ impl App {
                 let row = self.claude_session_hook_row();
                 row.set_widget_name(super::general::CLAUDE_SESSION_PROMPT_NAME);
                 group.append(&row);
+            }
+            if questions {
+                if delivery || hook {
+                    settings_divider(&group, 62);
+                }
+                group.append(&self.question_escalation_row());
             }
             column.append(&section);
         }

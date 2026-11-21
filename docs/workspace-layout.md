@@ -669,6 +669,22 @@ registered unless they say yes. The hook never registers the session. A
 stays quiet there. A session already on the relay gets a short preamble with
 its relay name, how to reach peers and the messaging norm.
 
+Next to it, Messages has a *Send agents' questions to you* row for question
+escalation (`settings.set` with `question_escalation`, `on` or `off`). While
+it is on, a question an agent asks is sent to you over Agent Relay instead of
+being shown in the agent's own window, and you answer by replying. The row has
+no default of its own: it shows the value the core reports, so a core that
+reads an unset value as off and one that reads it as on both show correctly.
+Under its line it shows the core's own `question_escalation_status` text as
+the availability line, and, when `question_escalation_inbox` is set,
+"Questions go to <inbox>." (read-only; the inbox is not edited here). A core
+that does not report `question_escalation` shows the row as unavailable with
+the reason and no switch, rather than hiding it. The row shows wherever
+settings are read, whatever the upload policy. Wording lives in
+`QuestionEscalationCopy` (macOS) and the `QUESTION_ESCALATION_*` constants in
+`gtk/src/models/settings.rs`, checked word for word on both; the rows are in
+`ClaudeProviderMessages.swift` and `gtk/src/ui/settings_page/hook_rows.rs`.
+
 Messages settings also have **Spawned agents** on both apps (see
 [native-spawn.md](native-spawn.md)). **Accept spawns from Agent Relay**
 (`settings.set` with `accept_spawns`, on by default) makes this computer a

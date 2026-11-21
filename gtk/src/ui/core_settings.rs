@@ -120,6 +120,9 @@ impl App {
                         state.hook_errors.claude_session = error.clone()
                     }
                     SettingRow::CodexHook => state.hook_errors.codex = error.clone(),
+                    SettingRow::QuestionEscalation => {
+                        state.hook_errors.question_escalation = error.clone()
+                    }
                     SettingRow::Pane if error.is_some() => state.settings_error = error.clone(),
                     // A row's own setting reports under it; its success says
                     // nothing about an earlier error of another setting.

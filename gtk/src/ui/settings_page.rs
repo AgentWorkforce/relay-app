@@ -41,24 +41,8 @@ pub(super) const UPLOADER_BUSY: &str =
 
 mod layout;
 pub use layout::SettingsPage;
-
-/// Which row reports a setting's failure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettingRow {
-    DirectDelivery,
-    GrokLeader,
-    OpenCodePlugin,
-    OpenClaw,
-    TrustedSenders,
-    Hermes,
-    DevinDelivery,
-    CursorDelivery,
-    ClaudeFolders,
-    ClaudeSessionHook,
-    CodexHook,
-    /// The pane's own banner.
-    Pane,
-}
+mod setting_row;
+pub use setting_row::SettingRow;
 
 /// A switch row: `on` gets each change the person makes.
 pub(super) fn toggle_row(

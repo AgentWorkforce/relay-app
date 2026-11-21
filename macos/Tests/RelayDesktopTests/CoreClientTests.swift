@@ -343,6 +343,33 @@ final class CoreClientTests: XCTestCase {
         XCTAssertNil(withoutClaude.claudeSessionHook)
     }
 
+    /// Question escalation rides on `settings.get`/`settings.set` as `off` or
+    /// `on`: absent in older cores, and set with only its own key.
+    func testQuestionEscalationSettingDecodesAndSetsOnlyItsOwnKey() async throws {
+        core.on("settings.get") { _ in
+            ["allow_self_registration": true, "auto_activate": false, "analytics_enabled": true,
+             "question_escalation": "on", "question_escalation_inbox": "lead",
+             "question_escalation_status": "Covers Claude Code sessions."]
+        }
+        core.on("settings.set") { params in
+            XCTAssertEqual(params as? [String: String], ["question_escalation": "off"])
+            return ["allow_self_registration": true, "auto_activate": false, "analytics_enabled": true,
+                    "question_escalation": "off"]
+        }
+        let client = CoreClient(socketPath: core.path)
+        let before = try await client.settingsGet()
+        XCTAssertEqual(before.questionEscalation, "on")
+        XCTAssertEqual(before.questionEscalationInbox, "lead")
+        XCTAssertEqual(before.questionEscalationStatus, "Covers Claude Code sessions.")
+        let after = try await client.settingsSet(SettingsChange(questionEscalation: "off"))
+        XCTAssertEqual(after.questionEscalation, "off")
+        core.on("settings.get") { _ in
+            ["allow_self_registration": true, "auto_activate": false, "analytics_enabled": true]
+        }
+        let older = try await client.settingsGet()
+        XCTAssertNil(older.questionEscalation)
+    }
+
     /// The Devin hooks setting rides on `settings.get`/`settings.set`:
     /// absent where Devin never ran, a bool otherwise, and set with only
     /// its own key.

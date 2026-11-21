@@ -3434,6 +3434,104 @@ fn show_relay_messages_hidden_and_turn_on(runtime: &tokio::runtime::Runtime) {
     });
 }
 
+// QuestionEscalationCopyTests: the row shows only what the core reports,
+// is unavailable (not hidden) on a core without the setting, and writes
+// `question_escalation` on or off through settings.set.
+fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runtime::Runtime) {
+    use agent_relay_app::models::{
+        QUESTION_ESCALATION_DETAIL, QUESTION_ESCALATION_TITLE, QUESTION_ESCALATION_TURN_OFF_HELP,
+        QUESTION_ESCALATION_TURN_ON_HELP, QUESTION_ESCALATION_UNAVAILABLE,
+    };
+    let case = Case::with(runtime, |core| tools::answers(core, true));
+    case.sign_in();
+    tools::open_claude(&case);
+    case.pump(|case| {
+        case.settings_labels()
+            .contains(&QUESTION_ESCALATION_UNAVAILABLE.to_string())
+    });
+    let shown = case.settings_labels();
+    for line in [QUESTION_ESCALATION_TITLE, QUESTION_ESCALATION_DETAIL] {
+        assert!(shown.contains(&line.to_string()), "{line} in {shown:?}");
+    }
+    let with_help = |help: &str| {
+        buttons(case.app.window(), if help == QUESTION_ESCALATION_TURN_ON_HELP { "Turn On" } else { "Turn Off" })
+            .into_iter()
+            .find(|button| button.tooltip_text().as_deref() == Some(help))
+    };
+    assert!(with_help(QUESTION_ESCALATION_TURN_ON_HELP).is_none(), "an older core offers no switch");
+    assert!(with_help(QUESTION_ESCALATION_TURN_OFF_HELP).is_none(), "an older core offers no switch");
+    // A core that reads an unset value as on says so; the app shows it as on.
+    let mut values = settings();
+    values["question_escalation"] = json!("on");
+    values["question_escalation_status"] = json!("Works for Claude Code sessions.");
+    values["question_escalation_inbox"] = json!("lead");
+    case.answer("settings.get", check::<method::SettingsGet>(values));
+    case.app.load_settings();
+    case.pump(|case| {
+        case.settings_labels()
+            .contains(&"Works for Claude Code sessions.".to_string())
+    });
+    let shown = case.settings_labels();
+    assert!(shown.contains(&"Questions go to lead.".to_string()), "{shown:?}");
+    let mut status_lines = None;
+    walk(case.app.shell().unwrap().settings.column.upcast_ref(), &mut |widget| {
+        if widget.widget_name() == "question-escalation-status" {
+            status_lines = widget.downcast_ref::<gtk::Label>().map(|label| label.lines());
+        }
+    });
+    assert_eq!(status_lines, Some(4), "the core's status text is capped at four lines");
+    assert!(!shown.contains(&QUESTION_ESCALATION_UNAVAILABLE.to_string()));
+    assert!(case.called("settings.set").is_empty(), "showing the row never writes it");
+    with_help(QUESTION_ESCALATION_TURN_OFF_HELP)
+        .expect("the question escalation row has Turn Off while on")
+        .emit_clicked();
+    case.pump(|case| !case.called("settings.set").is_empty());
+    assert_eq!(
+        case.called("settings.set")[0],
+        json!({"question_escalation": "off"})
+    );
+    case.pump(|case| {
+        case.app.with_state(|state| {
+            state
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.question_escalation.clone())
+                .as_deref()
+                == Some("off")
+        })
+    });
+    case.settle();
+    // A failed write reports under this row only: not under the Claude
+    // session prompt, and not in the pane's banner.
+    const FAILED: &str = "Agent Relay could not save question escalation.";
+    case.answer("settings.set", fail(ErrorKind::Internal, FAILED));
+    with_help(QUESTION_ESCALATION_TURN_ON_HELP)
+        .expect("off offers Turn On")
+        .emit_clicked();
+    let row_labels = |name: &str| -> Vec<String> {
+        let mut found = Vec::new();
+        walk(case.app.shell().unwrap().settings.column.upcast_ref(), &mut |widget| {
+            if widget.widget_name() == name {
+                found.extend(labels(widget));
+            }
+        });
+        found
+    };
+    // Widget names from `settings_page::hook_rows` and `general`.
+    case.pump(|_| row_labels("question-escalation").contains(&FAILED.to_string()));
+    assert!(!row_labels("claude-session-prompt").contains(&FAILED.to_string()));
+    case.app.with_state(|state| {
+        assert_eq!(state.hook_errors.question_escalation.as_deref(), Some(FAILED));
+        assert_eq!(state.hook_errors.claude_session, None);
+        assert_eq!(state.settings_error, None);
+    });
+    let in_row: Vec<String> = case.settings_labels()
+        .into_iter()
+        .filter(|label| label == FAILED)
+        .collect();
+    assert_eq!(in_row.len(), 1, "the error shows once, in its own row");
+}
+
 // AutoJoinGeneralTests (wording, off by default, settings.set) and the
 // agents' changes, read again when the core says an agent changed a setting.
 fn auto_join_general_turns_on_and_agent_changes_show(runtime: &tokio::runtime::Runtime) {
@@ -5918,6 +6016,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "show_relay_messages_hidden_and_turn_on",
         show_relay_messages_hidden_and_turn_on,
+    ),
+    (
+        "question_escalation_shows_the_core_value_and_turns_off",
+        question_escalation_shows_the_core_value_and_turns_off,
     ),
     (
         "auto_join_general_turns_on_and_agent_changes_show",
