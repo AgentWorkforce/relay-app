@@ -95,6 +95,10 @@ struct RelayWorkspaceView: View {
     @FocusState private var phoneSearchFocused: Bool
     @FocusState private var commandFocused: Bool
     @State private var outgoing = OutgoingMessages()
+    /// When Relaycast accepted an answer to a question, by "<chat id>|<ref>".
+    /// Kept after the answer's bubble leaves, so a card whose answer history
+    /// has not shown yet never offers a second send.
+    @State private var acceptedQuestionAnswers: [String: Date] = [:]
     @State private var uploadedAttachments: [RelayAttachment] = []
     @State private var showFileImporter = false
     @State private var attachmentUploadTask: Task<Void, Never>?
@@ -233,6 +237,7 @@ struct RelayWorkspaceView: View {
             discardStagedAttachments()
             showFileImporter = false
             outgoing.removeAll()
+            acceptedQuestionAnswers = [:]
             messageDraft = ""
             selected = nil
             phonePath = []
@@ -1620,15 +1625,18 @@ struct RelayWorkspaceView: View {
         guard agent.source != .channel,
               let question = RelayQuestionParser.parse(message.text, sender: message.sender,
                                                        mine: message.mine, chatAgent: agent.name) else { return nil }
-        let messages = client.messages.map { RelayQuestionState.Message(text: $0.text, mine: $0.mine, sender: $0.sender) }
-        let pending = outgoing.messages(for: agent.id).map {
-            RelayQuestionState.PendingAnswer(text: $0.text, failed: $0.state == .failed)
+        let messages = client.messages.map {
+            RelayQuestionState.Message(text: $0.text, mine: $0.mine, sender: $0.sender, createdAt: $0.createdAt)
         }
+        let pending = outgoing.messages(for: agent.id).map {
+            RelayQuestionState.PendingAnswer(text: $0.text, failed: $0.state == .failed, accepted: $0.state == .sent)
+        }
+        let acceptedAt = acceptedQuestionAnswers["\(agent.id)|\(question.ref.lowercased())"]
         let sentAt = message.createdAt
         return AnyView(HStack {
             QuestionCardView(question: question, expiresAt: question.expiresAt(sentAt: sentAt), state: { now in
                 RelayQuestionState.state(for: question, at: index, in: messages, chatAgent: agent.name,
-                                         pending: pending, sentAt: sentAt, now: now)
+                                         pending: pending, acceptedAt: acceptedAt, sentAt: sentAt, now: now)
             }, accent: accent) { line in
                 sendQuestionAnswer(line, to: agent)
             }
@@ -1678,6 +1686,9 @@ struct RelayWorkspaceView: View {
             MobileHandoffFixture.trace("composer received send result: \(outcome)")
             #endif
             outgoing.finish(message.id, attempt: attempt, outcome: outcome)
+            if case .accepted = outcome, let ref = RelayQuestionState.answeredRef(message.text) {
+                acceptedQuestionAnswers["\(agent.id)|\(ref)"] = Date()
+            }
             if selected?.id == agent.id { outgoing.reconcile(agentID: agent.id, with: historyRows) }
             #if DEBUG
             MobileHandoffFixture.trace("composer reconciled pending: \(outgoing.all.filter { $0.id == message.id }.count); history: \(client.messages.count)")

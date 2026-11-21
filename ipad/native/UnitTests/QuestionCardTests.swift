@@ -168,16 +168,21 @@ final class QuestionCardTests: XCTestCase {
     }
 
     private func state(_ after: [RelayQuestionState.Message], pending: [RelayQuestionState.PendingAnswer] = [],
+                       acceptedAt: Date? = nil,
                        sentAt: Date? = Date(timeIntervalSince1970: 1_000), now: Date = Date(timeIntervalSince1970: 1_060)) throws -> RelayQuestionState {
         let text = question(["Which one?", "1. A", "2. B", "Choose a number."])
         let parsed = try XCTUnwrap(parse(text))
         let messages = [RelayQuestionState.Message(text: text, mine: false, sender: agent)] + after
         return RelayQuestionState.state(for: parsed, at: 0, in: messages, chatAgent: agent, pending: pending,
-                                        sentAt: sentAt, now: now)
+                                        acceptedAt: acceptedAt, sentAt: sentAt, now: now)
     }
 
-    private func fromAgent(_ text: String) -> RelayQuestionState.Message { .init(text: text, mine: false, sender: agent) }
-    private func mine(_ text: String) -> RelayQuestionState.Message { .init(text: text, mine: true, sender: "me") }
+    private func fromAgent(_ text: String, at seconds: TimeInterval? = nil) -> RelayQuestionState.Message {
+        .init(text: text, mine: false, sender: agent, createdAt: seconds.map { Date(timeIntervalSince1970: $0) })
+    }
+    private func mine(_ text: String, at seconds: TimeInterval? = nil) -> RelayQuestionState.Message {
+        .init(text: text, mine: true, sender: "me", createdAt: seconds.map { Date(timeIntervalSince1970: $0) })
+    }
 
     func testStateFromTheChat() throws {
         XCTAssertEqual(try state([]), .open)
@@ -207,13 +212,67 @@ final class QuestionCardTests: XCTestCase {
         XCTAssertEqual(try state([], pending: [.init(text: "answer \(ref) 2", failed: false)]), .sending)
         XCTAssertEqual(try state([], pending: [.init(text: "answer \(ref) 2", failed: true)]), .sendFailed)
         XCTAssertEqual(try state([], pending: [.init(text: "hello", failed: false)]), .open)
-        // 30 minutes after it was sent the card stops sending.
-        XCTAssertEqual(try state([], now: Date(timeIntervalSince1970: 1_000 + 30 * 60)), .expired)
-        XCTAssertEqual(try state([], now: Date(timeIntervalSince1970: 1_000 + 30 * 60 - 1)), .open)
+        // 30 minutes after it was sent, plus the clock margin, the card stops sending.
+        let expiry: TimeInterval = 1_000 + 30 * 60
+        XCTAssertEqual(try state([], now: Date(timeIntervalSince1970: expiry + RelayQuestionState.clockSkew)), .expired)
+        XCTAssertEqual(try state([], now: Date(timeIntervalSince1970: expiry + RelayQuestionState.clockSkew - 1)), .open,
+                       "a device clock a little ahead does not block an answer the core would take")
+        XCTAssertEqual(RelayQuestionState.clockSkew, 120)
         // Without a send time the minutes are shown as written and nothing expires by clock.
         XCTAssertEqual(try state([], sentAt: nil, now: .distantFuture), .open)
         // An answered card stays answered after the expiry time.
         XCTAssertEqual(try state([mine("answer \(ref) 2")], now: .distantFuture), .sent)
+    }
+
+    func testAnAcceptedAnswerStaysSentWithoutItsHistoryRow() throws {
+        // Accepted, its bubble settled, history never showed the row.
+        let accepted = Date(timeIntervalSince1970: 1_010)
+        let settled = try state([], acceptedAt: accepted)
+        XCTAssertEqual(settled, .sent)
+        XCTAssertFalse(settled.answerable)
+        // Still sent after the expiry time: it was answered.
+        XCTAssertEqual(try state([], acceptedAt: accepted, now: .distantFuture), .sent)
+        // An old "not delivered" from before this answer does not reopen it.
+        XCTAssertEqual(try state([mine("answer \(ref) 1", at: 500),
+                                  fromAgent("The answer to question \(ref) was not delivered: busy", at: 505)],
+                                 acceptedAt: accepted), .sent)
+        // Once history shows this answer, a reply to it decides, however soon it came.
+        XCTAssertEqual(try state([mine("answer \(ref) 2", at: 1_009),
+                                  fromAgent("The answer to question \(ref) was not delivered: busy", at: 1_012)],
+                                 acceptedAt: accepted), .notDelivered(reason: "busy"))
+        XCTAssertEqual(try state([mine("answer \(ref) 2", at: 1_009),
+                                  fromAgent("Answer to question \(ref) delivered to @planner.", at: 1_012)],
+                                 acceptedAt: accepted), .delivered)
+    }
+
+    func testAnAcceptedPendingAnswerReadsSent() throws {
+        XCTAssertEqual(try state([], pending: [.init(text: "answer \(ref) 2", failed: false, accepted: true)]), .sent)
+        XCTAssertEqual(try state([], pending: [.init(text: "answer \(ref) 2", failed: false, accepted: false)]), .sending)
+    }
+
+    func testAQuestionMayStartWithTheMetadataWords() throws {
+        let text = (["[Question \(ref) from @\(agent) on test-mini]", "Working on: Tidying the build", "session s-fixture",
+                     "session timeout: raise it to 30s?", "1. Yes", "2. No", "Choose a number.",
+                     "Reply: answer \(ref) <n|text>. Expires in 30 min; the agent continues without it."]).joined(separator: "\n")
+        let parsed = try XCTUnwrap(parse(text))
+        XCTAssertEqual(parsed.items[0].text, "session timeout: raise it to 30s?")
+        let working = (["[Question \(ref) from @\(agent) on test-mini]", "Working on: the build",
+                        "Working on: which part first?", "free text",
+                        "Reply: answer \(ref) <n|text>. Expires in 30 min; the agent continues without it."]).joined(separator: "\n")
+        let second = try XCTUnwrap(parse(working))
+        XCTAssertEqual(second.workingOn, "the build")
+        XCTAssertEqual(second.items[0].text, "Working on: which part first?")
+        // Without the metadata lines the first line is the question.
+        let bare = (["[Question \(ref) from @\(agent) on test-mini]", "session length: keep it?", "free text",
+                     "Reply: answer \(ref) <n|text>. Expires in 30 min; the agent continues without it."]).joined(separator: "\n")
+        XCTAssertNil(try XCTUnwrap(parse(bare)).workingOn)
+    }
+
+    func testAnsweredRef() {
+        XCTAssertEqual(RelayQuestionState.answeredRef("answer Q0A1B2C3D 2"), "q0a1b2c3d")
+        XCTAssertNil(RelayQuestionState.answeredRef("answer nope 2"))
+        XCTAssertNil(RelayQuestionState.answeredRef("hello there friend"))
+        XCTAssertNil(RelayQuestionState.answeredRef("answer q0a1b2c3d"))
     }
 
     func testStatusText() {

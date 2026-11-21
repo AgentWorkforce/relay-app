@@ -78,21 +78,21 @@ enum RelayQuestionParser {
         var items: [RelayQuestion.Item] = []
         var textLines: [String] = []
         var options: [RelayQuestion.Option] = []
-        var started = false
-        for line in lines[1..<(lines.count - 1)] {
-            if !started, textLines.isEmpty {
-                if line.hasPrefix("Working on: ") {
-                    workingOn = String(line.dropFirst("Working on: ".count)); continue
-                }
-                if line.hasPrefix("session ") || line.isEmpty { continue }
-            }
+        // The core writes "Working on: …" as line 2 and "session …" right
+        // after it, each once; only those two positions are metadata, so a
+        // question that starts with either word keeps its line.
+        var body = Array(lines[1..<(lines.count - 1)])
+        if body.first?.hasPrefix("Working on: ") == true {
+            workingOn = String(body.removeFirst().dropFirst("Working on: ".count))
+            if body.first?.hasPrefix("session ") == true { body.removeFirst() }
+        }
+        for line in body {
             if let hint = hints[line] {
                 guard !textLines.isEmpty, items.count < maximumQuestions,
                       (hint.selection == .none) == options.isEmpty else { return nil }
                 items.append(item(textLines.joined(separator: "\n"), options: options, hint: hint))
                 textLines = []
                 options = []
-                started = true
                 continue
             }
             if !textLines.isEmpty, let option = option(line, expected: options.count + 1) {
@@ -353,24 +353,43 @@ enum RelayQuestionState: Equatable {
         let text: String
         let mine: Bool
         let sender: String
+        var createdAt: Date? = nil
     }
 
     /// A composer send not yet in history.
     struct PendingAnswer {
         let text: String
         let failed: Bool
+        /// Relaycast accepted it.
+        var accepted: Bool = false
     }
 
-    /// The state of `question`, whose message is `messages[index]`, from the
-    /// messages after it, then the composer's pending sends, then the clock.
-    /// A later message wins; an unknown follow-up changes nothing.
+    /// How far the server's clock may differ from the device's, as
+    /// `OutgoingMessages.clockSkew` allows for the same timestamps.
+    static let clockSkew: TimeInterval = 120
+
+    /// The state of `question`, whose message is `messages[index]`:
+    /// 1. the messages after it: the person's own answer line, then the
+    ///    agent's follow-ups for the same ref; a later message wins and an
+    ///    unknown follow-up changes nothing;
+    /// 2. an answer this device had accepted (`acceptedAt`, kept after its
+    ///    bubble left): sent until history shows that answer row; from then
+    ///    on the messages' order decides, so a "not delivered" reply to it
+    ///    reopens the card;
+    /// 3. the composer's pending sends;
+    /// 4. the clock, with `clockSkew` of margin, since only the device can
+    ///    time the question out (the core tells the inbox nothing).
     static func state(for question: RelayQuestion, at index: Int, in messages: [Message],
-                      chatAgent: String, pending: [PendingAnswer] = [],
+                      chatAgent: String, pending: [PendingAnswer] = [], acceptedAt: Date? = nil,
                       sentAt: Date?, now: Date) -> RelayQuestionState {
         var state = RelayQuestionState.open
+        var latestOwnAnswerAt: Date?
         for message in messages.dropFirst(index + 1) {
             if message.mine {
-                if isAnswer(message.text, to: question.ref) { state = .sent }
+                if isAnswer(message.text, to: question.ref) {
+                    state = .sent
+                    if let at = message.createdAt { latestOwnAnswerAt = max(latestOwnAnswerAt ?? at, at) }
+                }
                 continue
             }
             guard message.sender == chatAgent,
@@ -387,9 +406,21 @@ enum RelayQuestionState: Equatable {
             case .notOpen: state = .notOpen
             }
         }
+        // An accepted answer counts even when history never shows it. Once a
+        // row of mine for this ref dates from it (within the clock margin),
+        // history has caught up and the loop above already decided.
+        if state.answerable, let acceptedAt {
+            let caughtUp = latestOwnAnswerAt.map { $0 >= acceptedAt.addingTimeInterval(-clockSkew) } ?? false
+            if !caughtUp { state = .sent }
+        }
         let answers = pending.filter { isAnswer($0.text, to: question.ref) }
-        if state.answerable, let last = answers.last { state = last.failed ? .sendFailed : .sending }
-        if state.answerable, let expires = question.expiresAt(sentAt: sentAt), now >= expires { state = .expired }
+        if state.answerable, let last = answers.last {
+            state = last.failed ? .sendFailed : (last.accepted ? .sent : .sending)
+        }
+        if state.answerable, let expires = question.expiresAt(sentAt: sentAt),
+           now >= expires.addingTimeInterval(clockSkew) {
+            state = .expired
+        }
         return state
     }
 
@@ -397,5 +428,13 @@ enum RelayQuestionState: Equatable {
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = "answer \(ref) "
         return line.count > prefix.count && line.prefix(prefix.count).lowercased() == prefix.lowercased()
+    }
+
+    /// The ref an "answer {ref} …" line answers, lowercased, or nil.
+    static func answeredRef(_ text: String) -> String? {
+        let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ", maxSplits: 2)
+        guard parts.count == 3, parts[0].lowercased() == "answer" else { return nil }
+        let ref = String(parts[1])
+        return RelayQuestionParser.isRef(ref) ? ref.lowercased() : nil
     }
 }
