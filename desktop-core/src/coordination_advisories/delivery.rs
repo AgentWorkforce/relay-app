@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Appended to the line of a note released to the turn end after its
+/// provider held it unconfirmed: the provider may have delivered it as well.
+pub(super) const MAY_REPEAT: &str = "(This may repeat an earlier delivery of the same advisory.)";
+
 impl Advisories {
     /// [`TurnEndAdvisories::take`] at `now`.
     pub fn take_at(&self, target: &Target, now: Instant) -> Option<TurnEndAdvisory> {
@@ -13,13 +17,10 @@ impl Advisories {
         // state before consulting the urgent journal, so neither can take
         // an ID after the other has claimed its delivery.
         let mut state = self.state();
-        let provider_owned = current
+        let (provider_owned, released) = current
             .as_ref()
             .map(|p| self.provider_owned(p, target))
             .unwrap_or_default();
-        // Receipt storage unusable: who holds an urgent note is unknown, so the
-        // notes the urgent path would attempt for an agent wait here too.
-        let urgent_unknown = self.urgent.lock().unwrap_or_else(|p| p.into_inner()).blocked();
         // Signed out, or another account: what was cached is not theirs.
         if current.is_none() || !state.belong_to(current.as_ref()) {
             return None;
@@ -33,16 +34,17 @@ impl Advisories {
         let mut size = FOOTER.len();
         let mut overflow = false;
         for advisory in waiting {
-            if provider_owned.contains(&advisory.id)
-                || (urgent_unknown
-                    && advisory.urgent()
-                    && advisory.notify_eligible
-                    && !advisory.dm_delivered)
-            {
+            // Receipt storage unusable: who holds an urgent note is unknown,
+            // so the notes the urgent path would attempt wait here too.
+            if provider_owned.contains(&advisory.id) || self.urgent_unknown(target, &advisory) {
                 kept.push(advisory);
                 continue;
             }
-            let line = line(&advisory);
+            let line = if released.contains(&advisory.id) {
+                format!("{} {MAY_REPEAT}", line(&advisory))
+            } else {
+                line(&advisory)
+            };
             if size + line.len() + 1 <= MAX_TEXT && !overflow {
                 size += line.len() + 1;
                 ids.push(advisory.id.clone());

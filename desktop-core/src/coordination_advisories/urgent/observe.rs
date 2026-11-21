@@ -23,9 +23,10 @@ const OBSERVE_EVERY: u64 = 60;
 
 impl Advisories {
     /// A held note (accepted, reserved before a crash, or in doubt): observe
-    /// it, never inject it again. Only an observed `Delivered` changes the
-    /// receipt: journal Delivered, saved, then shown, which gives exactly one
-    /// ack. `Break` when the account or the switch changed meanwhile.
+    /// it, never inject it again. An observed `Delivered` settles it: journal
+    /// Delivered, saved, then shown, which gives exactly one ack. Any other
+    /// answer leaves it held until [`release::release_due`] hands it to the
+    /// turn end. `Break` when the account or the switch changed meanwhile.
     pub(super) async fn observe_held(
         &self,
         delivery: &dyn Delivery,
@@ -43,6 +44,14 @@ impl Advisories {
             return ControlFlow::Break(());
         }
         if seen != Observation::Delivered {
+            let held = self
+                .urgent
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .agent_receipt(principal, target, id);
+            if held.is_some_and(|(_, at)| release::release_due(at, &seen, epoch)) {
+                self.release_held(principal, target, id, epoch).await;
+            }
             return ControlFlow::Continue(());
         }
         let prior = {
@@ -70,7 +79,11 @@ impl Advisories {
 
     /// Whether this note may be observed now, recording the attempt.
     fn observe_due(&self, principal: &Principal, target: &Target, id: &str, epoch: u64) -> bool {
-        let key = (receipts::Scope::from(principal), target.clone(), id.to_string());
+        let key = (
+            receipts::Scope::from(principal),
+            target.clone(),
+            id.to_string(),
+        );
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
         if journal
             .observed
