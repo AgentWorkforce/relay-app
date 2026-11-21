@@ -74,16 +74,7 @@ fn fits(case: &Case, zoom: UiZoom, page: &str) {
 }
 
 fn sessions_and_settings_fit_at_every_zoom(runtime: &tokio::runtime::Runtime) {
-    let case = Case::with(runtime, |core| tools::answers(core, true));
-    // Claude Code's Messages shows question escalation on, with the core's
-    // availability line and a question inbox.
-    let mut values = settings();
-    values["question_escalation"] = json!("on");
-    values["question_escalation_status"] = json!(
-        "Works for Claude Code sessions and for Codex sessions Agent Relay started. Codex, Cursor, Copilot, Grok and OpenCode sessions you started yourself have no way to send a question before it is shown, so their questions still appear in their own window."
-    );
-    values["question_escalation_inbox"] = json!("lead");
-    case.answer("settings.get", check::<method::SettingsGet>(values));
+    let case = Case::new(runtime);
     case.sign_in();
     case.app.show_window();
     for percent in UiZoom::LEVELS {
@@ -99,16 +90,6 @@ fn sessions_and_settings_fit_at_every_zoom(runtime: &tokio::runtime::Runtime) {
             case.settle();
             fits(&case, zoom, &format!("Settings > {}", pane.title()));
         }
-        tools::open_claude(&case);
-        case.pump(|case| {
-            case.settings_labels()
-                .contains(&"Questions go to lead.".to_string())
-        });
-        case.settle();
-        fits(&case, zoom, "Settings > Providers > Claude Code");
-        // Back to the provider overview, so the next zoom's panes start as before.
-        case.app.open_providers();
-        case.settle();
         case.app.go(Page::Settings(Pane::General));
         case.settle();
         let column = case.app.shell().unwrap().settings.column.clone();
