@@ -163,7 +163,8 @@ final class SessionEventCacheLifecycleTests: XCTestCase {
         let client = RelayClient(sessionEventSnapshots: spy)
         client.cloudWorkspaceID = UUID().uuidString.lowercased()
         XCTAssertEqual(spy.removeAllCount, 1)
-        client.cloudWorkspaceID = client.cloudWorkspaceID
+        let same = client.cloudWorkspaceID
+        client.cloudWorkspaceID = same
         XCTAssertEqual(spy.removeAllCount, 1, "setting the same workspace keeps the cache")
     }
 

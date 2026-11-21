@@ -409,8 +409,8 @@ private enum SecureStore {
     @Published private var workspacePeople = WorkspacePeopleDirectory()
     @Published var summaries: [String: SessionOverview] = [:]
     @Published var goals: [String: String] = [:]
-    /// Each session's stored events read so far, by session id. Kept in
-    /// memory for the app run; cleared at sign-out and workspace switch.
+    /// Each session's stored events read so far, by session id, for the app
+    /// run and in the disk cache; both cleared at sign-out and workspace switch.
     @Published private(set) var sessionEvents: [String: SessionEventStore] = [:]
     private struct SessionEventRead {
         let token: UUID
@@ -428,9 +428,13 @@ private enum SecureStore {
         #else
         let fixture = false
         #endif
-        self.sessionEventSnapshots = sessionEventSnapshots
-            ?? (fixture ? nil : SessionEventDiskCache.standard())
-            ?? MemoryOnlySessionEventSnapshots()
+        if let sessionEventSnapshots {
+            self.sessionEventSnapshots = sessionEventSnapshots
+        } else if !fixture, let disk = SessionEventDiskCache.standard() {
+            self.sessionEventSnapshots = disk
+        } else {
+            self.sessionEventSnapshots = MemoryOnlySessionEventSnapshots()
+        }
     }
     /// The conversation whose relay history read has finished, found no
     /// thread or failed, so the chat can tell loading from empty.
