@@ -290,7 +290,13 @@ struct RelayWorkspaceView: View {
         // message. This view always observes the client, so that does not
         // wait for the chat view, pushed or not, to be built again.
         .onChange(of: client.messages.map(\.id)) { _, _ in
+            #if DEBUG
+            QuestionCardFixture.note("onChange(messages) selected=\(selected?.id ?? "nil") before=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))] history=[\(historyRows.map(\.id).joined(separator: ", "))]")
+            #endif
             if let selected { outgoing.reconcile(agentID: selected.id, with: historyRows) }
+            #if DEBUG
+            QuestionCardFixture.note("onChange(messages) after=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))]")
+            #endif
         }
         .onChange(of: client.channels) { _, channels in
             reconcileSelection(in: channels, source: .channel)
@@ -1411,6 +1417,15 @@ struct RelayWorkspaceView: View {
                                     }
                                 }.id(MobileChatScrollTarget.pending(pending.id))
                             }
+                            #if DEBUG
+                            if QuestionCardFixture.enabled {
+                                // The composer's state for the UI test's kept tree; fixture launches only.
+                                Text(QuestionCardFixture.report(outgoing: outgoing.all, historyIDs: historyRows.map(\.id),
+                                                                selected: selected?.id))
+                                    .font(.system(size: 6)).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("Question fixture report")
+                            }
+                            #endif
                         }.padding(20)
                         // Fill the visible message area so a tap below a short
                         // thread counts as empty space too; the reader's height
@@ -1689,7 +1704,13 @@ struct RelayWorkspaceView: View {
             if case .accepted = outcome, let ref = RelayQuestionState.answeredRef(message.text) {
                 acceptedQuestionAnswers["\(agent.id)|\(ref)"] = Date()
             }
+            #if DEBUG
+            QuestionCardFixture.note("post finished outcome=\(outcome) selected=\(selected?.id ?? "nil") agent=\(agent.id) history=[\(historyRows.map(\.id).joined(separator: ", "))]")
+            #endif
             if selected?.id == agent.id { outgoing.reconcile(agentID: agent.id, with: historyRows) }
+            #if DEBUG
+            QuestionCardFixture.note("post reconciled after=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))]")
+            #endif
             #if DEBUG
             MobileHandoffFixture.trace("composer reconciled pending: \(outgoing.all.filter { $0.id == message.id }.count); history: \(client.messages.count)")
             #endif

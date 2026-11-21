@@ -9,6 +9,7 @@ enum QuestionCardFixture {
     private final class State: @unchecked Sendable {
         let lock = NSLock()
         var sent: [String] = []
+        var notes: [String] = []
     }
     private static let state = State()
     private static let person = "ui-test-person"
@@ -33,6 +34,35 @@ enum QuestionCardFixture {
         Reply: answer \(ref) <n|text>. Expires in 30 min; the agent continues without it.
         """
 
+    // MARK: Diagnostics (fixture launches only)
+
+    /// Records one step of the composer, kept for the on-screen report and
+    /// printed to the log.
+    static func note(_ line: String) {
+        guard enabled else { return }
+        NSLog("Question card fixture: %@", line)
+        state.lock.lock()
+        defer { state.lock.unlock() }
+        state.notes.append(line)
+        if state.notes.count > 30 { state.notes.removeFirst(state.notes.count - 30) }
+    }
+
+    /// One outgoing bubble as the report shows it.
+    static func describe(_ message: OutgoingMessage) -> String {
+        "\(message.id.prefix(8)):\(message.state):\(message.messageID ?? "-"):agent=\(message.agentID)"
+    }
+
+    /// What the composer holds and what history shows, for the UI test's
+    /// kept accessibility tree.
+    static func report(outgoing: [OutgoingMessage], historyIDs: [String], selected: String?) -> String {
+        state.lock.lock()
+        defer { state.lock.unlock() }
+        return ["posts=\(state.sent.count)", "selected=\(selected ?? "nil")",
+                "outgoing=[\(outgoing.map(describe).joined(separator: ", "))]",
+                "history=[\(historyIDs.joined(separator: ", "))]",
+                "notes:"] .joined(separator: " | ") + " " + state.notes.joined(separator: " || ")
+    }
+
     static func response(_ path: String, method: String, body: JSONObject?) -> Any? {
         guard enabled else { return nil }
         state.lock.lock()
@@ -41,6 +71,7 @@ enum QuestionCardFixture {
         if path == "/dm", method == "POST" {
             guard body?["to"] as? String == agent, let text = body?["text"] as? String else { return nil }
             state.sent.append(text)
+            NSLog("Question card fixture: POST /dm #%d", state.sent.count)
             return ["id": "question-answer-\(state.sent.count)", "conversation_id": "dm_\(agent)"]
         }
         let question: JSONObject = ["id": "question-1", "agent_name": agent, "agent_id": "a_\(agent)",

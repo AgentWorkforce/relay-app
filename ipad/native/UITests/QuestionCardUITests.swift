@@ -73,8 +73,17 @@ final class QuestionCardUITests: XCTestCase {
         // Exactly one answer line in the thread, sent as the person to this agent.
         // (The pending bubble gives way to the history row; wait for that.)
         let answers = thread(app).staticTexts.matching(NSPredicate(format: "label == 'answer q1a2b3c4d 2'"))
-        expectation(for: NSPredicate(format: "count == 1"), evaluatedWith: answers)
-        waitForExpectations(timeout: 10)
+        let one = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 1"), object: answers)
+        let waited = XCTWaiter().wait(for: [one], timeout: 10)
+        // Kept whether or not the wait succeeded, with the fixture's report
+        // of the composer's bubbles, history ids and reconcile steps.
+        explain(app, "after-wait")
+        let report = element(app, "Question fixture report")
+        let note = XCTAttachment(string: "answers=\(answers.count)\nreport=\(report.exists ? report.label : "missing")")
+        note.name = "after-wait-report"
+        note.lifetime = .keepAlways
+        add(note)
+        XCTAssertEqual(waited, .completed, "answer rows in the thread: \(answers.count); \(report.exists ? report.label : "no report")")
         // The card no longer sends.
         XCTAssertFalse(option.isEnabled)
         option.tap()
