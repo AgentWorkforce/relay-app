@@ -96,6 +96,9 @@ final class SessionEventCacheTests: XCTestCase {
         let one = try XCTUnwrap(FileManager.default.attributesOfItem(
             atPath: probe.fileURL(workspaceID: "ws", sessionID: "probe").path)[.size] as? Int)
         probe.removeAll()
+        // The probe's removal runs on its own queue: wait for it before the
+        // cache below, with its own queue, writes into the same directory.
+        probe.flush()
 
         // Room for three files of this size, not four.
         let cache = cache(totalBytes: one * 3 + one / 2)
