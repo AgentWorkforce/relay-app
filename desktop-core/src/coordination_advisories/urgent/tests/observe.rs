@@ -387,18 +387,128 @@ async fn while_storage_is_blocked_the_turn_end_keeps_back_urgent_agent_notes_onl
     low.urgency = "low";
     let mut ineligible = p1("ineligible");
     ineligible.notify_eligible = false;
+    let mut by_dm = p1("by-dm");
+    by_dm.dm_delivered = true;
     api.rows
         .lock()
         .unwrap()
-        .insert(t.clone(), vec![p1("p1"), low, ineligible]);
+        .insert(t.clone(), vec![p1("p1"), low, ineligible, by_dm]);
     advisories.poll(&[t.clone()], now).await;
     let sink = Sink::default();
     advisories.deliver_urgent(&sink, now).await;
     assert!(sink.calls.lock().unwrap().is_empty());
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["low", "ineligible"]);
+    // A row already delivered by DM is not one the urgent path would attempt.
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["low", "ineligible", "by-dm"]);
     // Relaunch: still blocked; the P1 note is still kept back.
     let relaunched = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
     relaunched.poll(&[t.clone()], now).await;
     let ids = relaunched.take_at(&t, now).map(|n| n.ids).unwrap_or_default();
     assert!(!ids.contains(&"p1".to_string()), "{ids:?}");
+}
+
+#[test]
+fn only_the_cores_delivered_settles_a_note() {
+    use agent_relay_node::relay::local_notices::NoticeObservation as Core;
+    assert_eq!(observation_of(Core::Delivered), Observation::Delivered);
+    assert_eq!(observation_of(Core::Pending("queued".into())), Observation::Pending);
+    assert_eq!(observation_of(Core::InDoubt("grace".into())), Observation::InDoubt);
+    assert_eq!(observation_of(Core::Unsupported), Observation::Unsupported);
+    assert_eq!(observation_of(Core::Fenced("stopping".into())), Observation::Fenced);
+}
+
+#[tokio::test]
+async fn local_observe_without_a_live_registration_is_fenced() {
+    use agent_relay_node::relay::daemon::{Config, Core, Plugins};
+    let home = tempfile::tempdir().unwrap();
+    let config = Config {
+        paths: agent_relay_node::relay::paths::CorePaths::for_socket(home.path().join("core.sock")).unwrap(),
+        home: home.path().into(),
+        app_data_dir: home.path().join("app-data"),
+        env: Default::default(),
+        version: "test".into(),
+        host_name: "Test Desk.local".into(),
+        rediscover_every: Duration::from_secs(3600),
+        push_timing: Default::default(),
+        delivery_timing: Default::default(),
+    };
+    let (core, _signals) = Core::with_plugins(config, Plugins::default());
+    let local = Local(core);
+    assert_eq!(local.observe(&target(A), "p1").await, Observation::Fenced);
+    assert!(!local.reaches(&target(A)));
+}
+
+#[tokio::test]
+async fn a_held_note_is_observed_even_when_now_ineligible_or_unreachable() {
+    struct Unreached(Sink);
+    impl Delivery for Unreached {
+        fn inject<'a>(&'a self, t: &'a Target, id: &'a str, text: &'a str) -> BoxFuture<'a, InjectOutcome> {
+            self.0.inject(t, id, text)
+        }
+        fn notifications_available(&self) -> bool {
+            false
+        }
+        fn notify(&self, _: &str, _: &str) {}
+        fn reaches(&self, _: &Target) -> bool {
+            false
+        }
+        fn observe<'a>(&'a self, t: &'a Target, id: &'a str) -> BoxFuture<'a, Observation> {
+            self.0.observe(t, id)
+        }
+    }
+    // Now notify-ineligible.
+    let (_dir, api, advisories, sink, t, now) = accepted().await;
+    let mut row = p1("p1");
+    row.notify_eligible = false;
+    api.rows.lock().unwrap().insert(t.clone(), vec![row]);
+    advisories.poll(&[t.clone()], now).await;
+    *sink.observation.lock().unwrap() = Some(Observation::Delivered);
+    advisories.deliver_urgent(&sink, now).await;
+    advisories.send_shown(now).await;
+    assert_eq!(sink.observes.load(Ordering::SeqCst), 1);
+    assert_eq!(*api.acked.lock().unwrap(), vec!["p1"]);
+    assert_eq!(sink.calls.lock().unwrap().len(), 1);
+    // Now unreachable.
+    let (_dir, api, advisories, sink, _t, now) = accepted().await;
+    *sink.observation.lock().unwrap() = Some(Observation::Delivered);
+    let unreached = Unreached(sink);
+    advisories.deliver_urgent(&unreached, now).await;
+    advisories.send_shown(now).await;
+    assert_eq!(unreached.0.observes.load(Ordering::SeqCst), 1);
+    assert_eq!(*api.acked.lock().unwrap(), vec!["p1"]);
+}
+
+#[tokio::test]
+async fn the_minute_throttle_holds_at_59_seconds_and_lets_one_through_past_60() {
+    let (_dir, _api, advisories, sink, _t, now) = accepted().await;
+    *sink.observation.lock().unwrap() = Some(Observation::Pending);
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.observes.load(Ordering::SeqCst), 1);
+    let age = |by: u64| {
+        for at in advisories.urgent.lock().unwrap().observed.values_mut() {
+            *at = at.saturating_sub(by);
+        }
+    };
+    age(59);
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.observes.load(Ordering::SeqCst), 1);
+    age(2);
+    advisories.deliver_urgent(&sink, now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.observes.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_blocked_journal_keeps_its_fault_status_with_notifications_off() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE), b"broken").unwrap();
+    let api = Arc::new(Api::default());
+    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    advisories.set_enabled(true).unwrap();
+    assert!(!advisories.notifications_enabled());
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t], now).await;
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert!(advisories.urgent_status().contains("damaged or from another version"));
 }
