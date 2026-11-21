@@ -1333,6 +1333,9 @@ struct RelayWorkspaceView: View {
                                         .frame(maxWidth: .infinity)
                                         .padding(.top, 15).padding(.bottom, 4)
                                 }
+                                if let question = questionCard(message, at: index, in: agent) {
+                                    question
+                                } else {
                                 messageTimeRow(at: message.createdAt) {
                                     VStack(alignment: .trailing, spacing: 3) {
                                     HStack(alignment: .bottom) {
@@ -1368,6 +1371,7 @@ struct RelayWorkspaceView: View {
                                     }
                                     }
                                 }.id(MobileChatScrollTarget.message(message.id))
+                                }
                             }
                             ForEach(outgoing.messages(for: agent.id)) { pending in
                                 messageTimeRow(at: pending.createdAt) {
@@ -1610,6 +1614,35 @@ struct RelayWorkspaceView: View {
                 return
             }
         }
+    }
+    /// The card for an agent's question in its DM, or nil to keep the bubble.
+    private func questionCard(_ message: RelayMessage, at index: Int, in agent: RelayAgent) -> AnyView? {
+        guard agent.source != .channel,
+              let question = RelayQuestionParser.parse(message.text, sender: message.sender,
+                                                       mine: message.mine, chatAgent: agent.name) else { return nil }
+        let messages = client.messages.map { RelayQuestionState.Message(text: $0.text, mine: $0.mine, sender: $0.sender) }
+        let pending = outgoing.messages(for: agent.id).map {
+            RelayQuestionState.PendingAnswer(text: $0.text, failed: $0.state == .failed)
+        }
+        let sentAt = message.createdAt
+        return AnyView(HStack {
+            QuestionCardView(question: question, expiresAt: question.expiresAt(sentAt: sentAt), state: { now in
+                RelayQuestionState.state(for: question, at: index, in: messages, chatAgent: agent.name,
+                                         pending: pending, sentAt: sentAt, now: now)
+            }, accent: accent) { line in
+                sendQuestionAnswer(line, to: agent)
+            }
+            Spacer(minLength: 24)
+        }.id(MobileChatScrollTarget.message(message.id)))
+    }
+    /// A card's answer goes the way a typed message does: a pending bubble,
+    /// one POST, a visible failure and a tap to retry. Only to `agent`, the
+    /// agent whose question it is, as the person.
+    private func sendQuestionAnswer(_ line: String, to agent: RelayAgent) {
+        guard selected?.id == agent.id else { return }
+        let message = outgoing.begin(agentID: agent.id, text: line, attachments: [],
+                                     history: client.historyLoaded(for: agent) ? historyRows : nil)
+        post(message, to: agent)
     }
     private func sendDraft(to agent: RelayAgent) {
         let draft = messageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
