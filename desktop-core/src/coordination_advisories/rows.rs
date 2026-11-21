@@ -19,7 +19,7 @@ pub struct Advisory {
     pub message: String,
     pub peer_source: String,
     pub peer_session_id: String,
-    /// The row's incarnation (a lower-case UUID), listed only under
+    /// The row's incarnation (a UUID, as listed), listed only under
     /// [`CONTRACT_V3`]; `None` is a legacy row, keyed and acked by its id.
     pub incarnation: Option<String>,
     /// What this side keys the row by ([`instance::key`]): its id for a
@@ -109,12 +109,17 @@ impl Advisory {
 }
 
 /// A listing's advisories: at most [`MAX_ROWS`], each once, oldest first as
-/// listed. `None` when the body is not a listing. Exactly [`CONTRACT_V3`]
-/// lists instance rows; [`CONTRACT`], no contract or any other value is
-/// read as legacy, as today: its rows reach the turn end and none is urgent.
+/// listed. `None` when the body is not a listing, or names a contract other
+/// than [`CONTRACT`] or [`CONTRACT_V3`] (fail closed). Exactly
+/// [`CONTRACT_V3`] lists instance rows; [`CONTRACT`] or no contract is
+/// legacy, as today: its rows reach the turn end and none is urgent.
 pub fn parse(body: &Value) -> Option<Vec<Advisory>> {
     let listed: Listed = serde_json::from_value(body.clone()).ok()?;
-    let versioned = listed.contract.as_deref() == Some(CONTRACT_V3);
+    let versioned = match listed.contract.as_deref() {
+        Some(CONTRACT_V3) => true,
+        Some(CONTRACT) | None => false,
+        Some(_) => return None,
+    };
     let mut seen = HashSet::new();
     Some(
         listed

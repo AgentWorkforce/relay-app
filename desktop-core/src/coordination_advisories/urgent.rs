@@ -333,7 +333,15 @@ impl Advisories {
             return;
         }
         let scope = receipts::Scope::from(&principal);
-        let cached = self.state().cached();
+        let (cached, shown_as_legacy) = {
+            let state = self.state();
+            let shown: HashSet<String> = candidates
+                .iter()
+                .filter(|(t, a)| state.shown_as_legacy(t, a))
+                .map(|(_, a)| a.key.clone())
+                .collect();
+            (state.cached(), shown)
+        };
         let human = {
             let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
             if journal.blocked() {
@@ -352,6 +360,7 @@ impl Advisories {
                 .iter()
                 .filter(|(t, a)| {
                     a.notify_eligible
+                        && !shown_as_legacy.contains(&a.key)
                         && !journal.known_as_legacy(&principal, t, a, &seen)
                         && seen.insert(a.key.clone())
                 })

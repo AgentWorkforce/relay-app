@@ -13,21 +13,25 @@ use sha2::{Digest, Sha256};
 
 /// The listing contract whose rows carry an incarnation and whose acks of
 /// instance rows are matched on it (`advisories/v3`). Only this exact value
-/// counts: any other value, or none, is legacy, and nothing it lists is
-/// urgent.
+/// counts: [`CONTRACT`] or none is legacy, and nothing it lists is urgent;
+/// any other value refuses the listing.
 pub const CONTRACT_V3: &str = "advisories/v3";
 
 /// Separates this hash's inputs from any other use of the same fields.
 const DOMAIN: &str = "agent-relay-desktop/advisory-instance/1";
 
 /// A row's incarnation under [`CONTRACT_V3`]: `Ok(None)` when it is null or
-/// absent (a legacy row), `Ok(Some)` with the UUID in lower case, `Err` when
-/// it is anything else, which drops the row: it is an instance row this
-/// side cannot name, and a v1 ack must never stand in for its v2 ack.
+/// absent (a legacy row), `Ok(Some)` with the UUID verbatim, `Err` when it
+/// is anything else, which drops the row: it is an instance row this side
+/// cannot name, and a v1 ack must never stand in for its v2 ack. The
+/// pipeline lists `uuid::text`, which is lower case, and compares the ack's
+/// incarnation as a uuid, so either case matches there; echoing it verbatim
+/// in the ack and the receipt is the robust choice. Only the copy hashed
+/// into [`key`] is lower-cased.
 pub(super) fn incarnation(value: &Value) -> Result<Option<String>, ()> {
     match value {
         Value::Null => Ok(None),
-        Value::String(uuid) if is_uuid(uuid) => Ok(Some(uuid.to_ascii_lowercase())),
+        Value::String(uuid) if is_uuid(uuid) => Ok(Some(uuid.clone())),
         _ => Err(()),
     }
 }
@@ -53,6 +57,8 @@ pub(super) fn key(scope: &Scope, target: &Target, id: &str, incarnation: Option<
     };
     let mut hash = Sha256::new();
     let user = scope.user_id.as_deref();
+    // One instance whatever case its UUID was listed in.
+    let incarnation = incarnation.to_ascii_lowercase();
     let fields = [
         Some(DOMAIN),
         Some(scope.site.as_str()),
@@ -61,7 +67,7 @@ pub(super) fn key(scope: &Scope, target: &Target, id: &str, incarnation: Option<
         Some(target.kind.as_str()),
         Some(target.id.as_str()),
         Some(id),
-        Some(incarnation),
+        Some(incarnation.as_str()),
     ];
     for field in fields {
         // A field that is absent hashes as a tag of its own, never as an
@@ -196,9 +202,13 @@ mod tests {
     #[test]
     fn only_a_uuid_or_null_is_an_incarnation() {
         assert_eq!(incarnation(&Value::Null), Ok(None));
+        // Kept verbatim; only the key's copy is lower-cased.
+        let upper = UUID.to_ascii_uppercase();
+        assert_eq!(incarnation(&json!(upper)), Ok(Some(upper.clone())));
+        let target = Target::new(SessionKind::Codex, "t");
         assert_eq!(
-            incarnation(&json!(UUID.to_ascii_uppercase())),
-            Ok(Some(UUID.into()))
+            key(&scope(), &target, "a1", Some(&upper)),
+            key(&scope(), &target, "a1", Some(UUID))
         );
         for bad in [
             json!(""),

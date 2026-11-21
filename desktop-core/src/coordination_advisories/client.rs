@@ -211,7 +211,7 @@ impl AdvisoryApi for HttpApi {
                 Ok(answer) if answer.status == 200 => match parse(&answer.body) {
                     Some(advisories) => Listing::Advisories(advisories),
                     None => {
-                        debug(format_args!("the listing was not a listing"));
+                        debug(format_args!("the listing was not one of a known contract"));
                         Listing::Failed
                     }
                 },

@@ -76,18 +76,8 @@ fn exactly_advisories_v3_lists_instance_rows() {
 }
 
 #[test]
-fn any_other_contract_value_or_none_is_legacy_and_never_urgent() {
-    for contract in [
-        None,
-        Some(Value::Null),
-        Some(json!(CONTRACT)),
-        Some(json!("coordination-advisories/2")),
-        Some(json!("advisories/v2")),
-        Some(json!("advisories/v4")),
-        Some(json!("Advisories/v3")),
-        Some(json!("advisories/v3 ")),
-        Some(json!("")),
-    ] {
+fn the_legacy_contract_or_none_is_legacy_and_never_urgent() {
+    for contract in [None, Some(Value::Null), Some(json!(CONTRACT))] {
         let rows = vec![wire_row("p1", json!(INCARNATION))];
         let parsed = parse(&listing(contract.clone(), rows)).unwrap();
         // Still a turn-end row, keyed and acked by its id.
@@ -95,8 +85,27 @@ fn any_other_contract_value_or_none_is_legacy_and_never_urgent() {
         assert!(parsed[0].incarnation.is_none(), "{contract:?}");
         assert!(!parsed[0].urgent(), "{contract:?}");
     }
-    // A contract that is not a string at all is no listing.
-    assert!(parse(&listing(Some(json!(3)), vec![])).is_none());
+}
+
+#[test]
+fn any_other_contract_value_refuses_the_listing() {
+    for contract in [
+        json!("coordination-advisories/2"),
+        json!("advisories/v2"),
+        json!("advisories/v4"),
+        json!("Advisories/v3"),
+        json!("ADVISORIES/V3"),
+        json!("advisories/v3 "),
+        json!(" advisories/v3"),
+        json!(""),
+        json!(3),
+    ] {
+        let rows = vec![wire_row("p1", json!(INCARNATION))];
+        assert!(
+            parse(&listing(Some(contract.clone()), rows)).is_none(),
+            "{contract}"
+        );
+    }
 }
 
 #[test]
@@ -498,4 +507,130 @@ async fn while_the_journal_is_blocked_a_legacy_priority_one_row_is_kept_back_too
     let note = advisories.take_at(&t, now).unwrap();
     assert_eq!(note.ids, vec!["p1"]);
     assert!(note.text.contains(MAY_REPEAT));
+}
+
+/// A version 1 turn-end receipts file: `p1` shown to `t` before instances.
+fn legacy_shown(dir: &Path, t: &Target) {
+    let saved = json!({"version": 1, "receipts": [{
+        "scope": scope_json(), "target": t, "advisory_id": "p1", "shown_at": unix_now() - 60,
+    }]});
+    std::fs::write(dir.join(RECEIPTS), saved.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn an_urgent_instance_of_an_id_shown_under_its_legacy_key_reaches_only_the_turn_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = target(A);
+    legacy_shown(dir.path(), &t);
+    let api = Arc::new(Api::default());
+    // The legacy receipt's v1 ack stays pending, so its hand-out is kept.
+    *api.answer.lock().unwrap() = Some(Ack::Failed);
+    let advisories = opened(dir.path(), &api);
+    let sink = Sink::default();
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.calls.lock().unwrap().is_empty());
+    assert!(sink.notices.lock().unwrap().is_empty());
+    let note = advisories.take_at(&t, now).unwrap();
+    assert_eq!(note.ids, keys(&t, &["p1"]));
+    assert!(note.text.contains(MAY_REPEAT));
+    advisories.mark_shown(&t, &note.ids);
+    *api.answer.lock().unwrap() = None;
+    advisories.send_shown(now + ACK_RETRY_MAX).await;
+    let v2: Vec<_> = acks(&api)
+        .into_iter()
+        .filter(|(_, i)| i.is_some())
+        .collect();
+    assert_eq!(v2, vec![("p1".into(), Some(INCARNATION.into()))]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.calls.lock().unwrap().is_empty());
+    assert!(sink.notices.lock().unwrap().is_empty());
+    assert!(advisories.take_at(&t, now).is_none());
+}
+
+#[tokio::test]
+async fn an_upper_case_incarnation_is_echoed_verbatim_and_keys_as_its_lower_case_form() {
+    let (dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    let upper = INCARNATION.to_ascii_uppercase();
+    let row = Advisory {
+        incarnation: Some(upper.clone()),
+        ..low("p1")
+    };
+    api.rows.lock().unwrap().insert(t.clone(), vec![row]);
+    advisories.poll(&[t.clone()], now).await;
+    let note = advisories.take_at(&t, now).unwrap();
+    assert_eq!(note.ids, keys(&t, &["p1"]));
+    advisories.mark_shown(&t, &note.ids);
+    // The first ack fails, so the receipt stays saved with its incarnation.
+    *api.answer.lock().unwrap() = Some(Ack::Failed);
+    advisories.send_shown(now).await;
+    assert_eq!(acks(&api), vec![("p1".into(), Some(upper.clone()))]);
+    let on_disk: Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(RECEIPTS)).unwrap()).unwrap();
+    assert_eq!(on_disk["receipts"][0]["incarnation"], json!(upper));
+    // Restored, it is the same instance: not handed out again, acked as listed.
+    *api.answer.lock().unwrap() = None;
+    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    restarted.poll(&[t.clone()], now).await;
+    assert!(restarted.take_at(&t, now).is_none());
+    assert_eq!(
+        acks(&api).last().unwrap().1.as_deref(),
+        Some(upper.as_str())
+    );
+}
+
+/// A version 1 journal whose only record is a person notified of `p1` at `at`.
+fn legacy_notified(dir: &Path, at: u64) {
+    let saved = json!({"version": 1, "agents": [],
+        "humans": [{"scope": scope_json(), "ids": ["p1"], "at": at}]});
+    std::fs::write(dir.join(FILE), saved.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn a_legacy_human_batch_alone_suppresses_the_notification_of_an_instance_of_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_notified(dir.path(), unix_now() - 60);
+    let api = Arc::new(Api::default());
+    let advisories = opened(dir.path(), &api);
+    let sink = Sink::default();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    // No agent receipt covers it, so the agent gets it; the person does not.
+    assert_eq!(sink.calls.lock().unwrap().len(), 1);
+    assert!(sink.notices.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_re_created_instance_is_notified_again() {
+    // The legacy cover is gone: its batch is past retention.
+    let dir = tempfile::tempdir().unwrap();
+    legacy_notified(dir.path(), unix_now() - RETENTION - 60);
+    let api = Arc::new(Api::default());
+    let advisories = opened(dir.path(), &api);
+    let sink = Sink::default();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.notices.lock().unwrap().len(), 1);
+    // Delivered and settled; then re-created under a new incarnation.
+    advisories.send_shown(now).await;
+    let recreated = Advisory {
+        incarnation: Some(PROMOTED.into()),
+        ..p1("p1")
+    };
+    api.rows.lock().unwrap().insert(t.clone(), vec![recreated]);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.notices.lock().unwrap().len(), 2);
+    assert_eq!(sink.calls.lock().unwrap().len(), 2);
 }

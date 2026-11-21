@@ -680,8 +680,8 @@ fn recipient_priority_and_delivery_fields_preserve_turn_end_notes() {
 
 #[test]
 fn a_body_that_is_not_a_listing_is_refused_and_bad_rows_are_dropped() {
-    // Another contract value is a legacy listing (urgent/tests/instances.rs).
-    assert!(parse(&json!({"contract": "coordination-advisories/2", "advisories": []})).is_some());
+    // Another contract value fails closed (urgent/tests/instances.rs).
+    assert!(parse(&json!({"contract": "coordination-advisories/2", "advisories": []})).is_none());
     assert!(parse(&json!({"error": "advisories_disabled"})).is_none());
     assert!(parse(&json!("<html>")).is_none());
     let mut high = row("h1");

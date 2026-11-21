@@ -153,7 +153,13 @@ impl Advisories {
             .taken
             .get(target)
             .is_some_and(|rows| rows.contains_key(&advisory.key));
-        if state.principal.as_ref() != Some(principal) || !waiting || taken {
+        // Its id was shown at a turn end under its legacy key: the turn end
+        // hands it out, labelled; never mid-turn as if new.
+        if state.principal.as_ref() != Some(principal)
+            || !waiting
+            || taken
+            || state.shown_as_legacy(target, advisory)
+        {
             return None;
         }
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
