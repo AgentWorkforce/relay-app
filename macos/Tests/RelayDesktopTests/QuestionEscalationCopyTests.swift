@@ -18,7 +18,7 @@ final class QuestionEscalationCopyTests: XCTestCase {
         )
         XCTAssertEqual(
             QuestionEscalationCopy.turnOffHelp,
-            "Show agents' questions in their own window again"
+            "Ask agents' questions in the session again"
         )
         XCTAssertEqual(QuestionEscalationCopy.inbox("lead"), "Questions go to lead.")
         XCTAssertEqual(QuestionEscalationCopy.coverageTitle, "Which sessions this reaches")

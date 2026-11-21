@@ -17,8 +17,7 @@ pub const QUESTION_ESCALATION_TITLE: &str = "Send agents' questions to you";
 pub const QUESTION_ESCALATION_DETAIL: &str = "While this is on, questions from the sessions Agent Relay can reach are sent to you over Agent Relay instead of being asked in the session. You answer by replying to them.";
 pub const QUESTION_ESCALATION_UNAVAILABLE: &str = "Not available: this version of Agent Relay's background service does not have this setting. Update Agent Relay to use it.";
 pub const QUESTION_ESCALATION_TURN_ON_HELP: &str = "Send agents' questions to you over Agent Relay";
-pub const QUESTION_ESCALATION_TURN_OFF_HELP: &str =
-    "Show agents' questions in their own window again";
+pub const QUESTION_ESCALATION_TURN_OFF_HELP: &str = "Ask agents' questions in the session again";
 
 /// The disclosure that holds the list of kinds of session.
 pub const QUESTION_COVERAGE_TITLE: &str = "Which sessions this reaches";
@@ -247,7 +246,7 @@ mod tests {
         );
         assert_eq!(
             QUESTION_ESCALATION_TURN_OFF_HELP,
-            "Show agents' questions in their own window again"
+            "Ask agents' questions in the session again"
         );
         assert_eq!(
             question_escalation_inbox_line("lead"),

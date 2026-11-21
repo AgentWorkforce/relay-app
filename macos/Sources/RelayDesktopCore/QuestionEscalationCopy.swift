@@ -11,7 +11,7 @@ public enum QuestionEscalationCopy {
     public static let detail = "While this is on, questions from the sessions Agent Relay can reach are sent to you over Agent Relay instead of being asked in the session. You answer by replying to them."
     public static let unavailable = "Not available: this version of Agent Relay's background service does not have this setting. Update Agent Relay to use it."
     public static let turnOnHelp = "Send agents' questions to you over Agent Relay"
-    public static let turnOffHelp = "Show agents' questions in their own window again"
+    public static let turnOffHelp = "Ask agents' questions in the session again"
 
     /// The disclosure that holds the list of kinds of session.
     public static let coverageTitle = "Which sessions this reaches"
