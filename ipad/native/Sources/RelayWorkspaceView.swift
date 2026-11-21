@@ -110,9 +110,8 @@ struct RelayWorkspaceView: View {
     /// Whether the end of the open chat is on screen; new session events
     /// scroll it only then, so reading older activity is not interrupted.
     @State private var chatAtBottom = true
-    /// The person has scrolled up since the chat opened; older pages load
-    /// on their own only after that.
-    @State private var chatScrolledUp = false
+    /// Whether the row above the oldest loaded event is on screen.
+    @State private var olderRowVisible = false
     @State private var collapsedOverviewIDs: Set<String> = []
     @State private var commandDraft = ""
     @State private var newRecipient = ""
@@ -1431,10 +1430,7 @@ struct RelayWorkspaceView: View {
                             Color.clear.frame(height: 1)
                                 .id(MobileChatScrollTarget.message("chat-bottom"))
                                 .onAppear { chatAtBottom = true }
-                                .onDisappear {
-                                    chatAtBottom = false
-                                    if !timeline.isEmpty { chatScrolledUp = true }
-                                }
+                                .onDisappear { chatAtBottom = false }
                         }.padding(20)
                         // Fill the visible message area so a tap below a short
                         // thread counts as empty space too; the reader's height
@@ -1470,7 +1466,6 @@ struct RelayWorkspaceView: View {
                         proxy.scrollTo(MobileChatScrollTarget.message("chat-bottom"), anchor: .bottom)
                     }
                     .task(id: pollID) {
-                        chatScrolledUp = false
                         guard sessionApplies, scenePhase == .active else { return }
                         while !Task.isCancelled {
                             await client.refreshSessionEvents(for: agent)
@@ -1523,8 +1518,11 @@ struct RelayWorkspaceView: View {
         }.id(MobileChatScrollTarget.message(message.id))
     }
     /// The row above the oldest loaded session event. It reads the next
-    /// older page when it scrolls into view after the person scrolled up,
-    /// or when tapped, and keeps the rows that were on top in place.
+    /// older page once it has stayed on screen for half a second (the person
+    /// scrolled up, or the chat is shorter than the screen; the first scroll
+    /// to the newest row moves it away before then in a longer chat), again
+    /// after each page while it stays there, or when tapped. The rows that
+    /// were on top stay in place.
     private func olderSessionRow(for agent: RelayAgent, store: SessionEventStore, firstItemID: String?,
                                  proxy: ScrollViewProxy) -> some View {
         Button {
@@ -1535,8 +1533,12 @@ struct RelayWorkspaceView: View {
         }
         .buttonStyle(.plain).frame(maxWidth: .infinity)
         .accessibilityIdentifier("Load earlier activity")
-        .task(id: "\(store.olderCursor ?? "restart")|\(chatScrolledUp)") {
-            guard chatScrolledUp else { return }
+        .onAppear { olderRowVisible = true }
+        .onDisappear { olderRowVisible = false }
+        .task(id: "\(agent.id)|\(store.olderCursor ?? "restart")|\(olderRowVisible)") {
+            guard olderRowVisible else { return }
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, olderRowVisible else { return }
             await loadOlder(for: agent, keeping: firstItemID, proxy: proxy)
         }
     }
