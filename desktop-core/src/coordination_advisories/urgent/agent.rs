@@ -40,9 +40,9 @@ impl Advisories {
                     .observe_held(delivery, principal, target, &advisory.id, epoch, now)
                     .await;
             }
-            // Refused: never injected again; it still reaches the session at
-            // its turn's end.
-            Some((Attempt::Refused, _)) => return ControlFlow::Continue(()),
+            // Refused, or released to the turn end: never injected again; it
+            // reaches the session at its turn's end.
+            Some((Attempt::Refused | Attempt::Released, _)) => return ControlFlow::Continue(()),
             Some((Attempt::Retry, at)) if epoch.saturating_sub(at) < URGENT_RETRY_AFTER => {
                 return ControlFlow::Continue(());
             }
@@ -76,7 +76,10 @@ impl Advisories {
             .unwrap_or_else(|p| p.into_inner())
             .set_agent(principal, target, &advisory.id, attempt.clone(), epoch);
         let saved = self.save_urgent().await;
-        if saved && attempt == Attempt::Delivered && self.tokens.principal().as_ref() == Some(principal) {
+        if saved
+            && attempt == Attempt::Delivered
+            && self.tokens.principal().as_ref() == Some(principal)
+        {
             self.mark_urgent_shown(principal, target, &advisory.id, now);
         }
         ControlFlow::Continue(())
@@ -107,7 +110,7 @@ impl Advisories {
             return None;
         }
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-        if journal.blocked {
+        if journal.blocked() {
             return None;
         }
         journal.prune(epoch, &state.cached());

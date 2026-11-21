@@ -25,6 +25,9 @@ enum Attempt {
     Uncertain,
     Retry,
     Refused,
+    /// Held past its time and handed to the turn-end hand-out instead, once,
+    /// labelled as possibly a repeat; never injected. Settled.
+    Released,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -57,9 +60,14 @@ struct Saved {
 pub(super) struct Journal {
     saved: Saved,
     pub(super) status: &'static str,
-    blocked: bool,
+    /// Why unusable receipt storage blocks urgent delivery, naming the file
+    /// and the repair; `None` when it is usable.
+    fault: Option<String>,
     /// When each held note was last observed (epoch seconds); memory only.
     observed: HashMap<(receipts::Scope, Target, String), u64>,
+    /// While blocked: the sessions the last urgent pass found no local notice
+    /// reaches, whose urgent notes the turn end need not keep back.
+    unreached: HashSet<Target>,
 }
 
 fn unix_now() -> u64 {
@@ -198,39 +206,46 @@ impl Advisories {
         }
     }
 
+    /// The fault of a blocked journal, else the last pass's status.
     pub fn urgent_status(&self) -> String {
-        self.urgent
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .status
-            .into()
+        let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+        journal.fault.clone().unwrap_or_else(|| journal.status.into())
     }
 
-    /// IDs whose provider already owns the handoff, or whose handoff is
-    /// uncertain: a stop hook must not blindly submit them a second time.
-    pub(super) fn provider_owned(&self, principal: &Principal, target: &Target) -> HashSet<String> {
+    /// For a stop hook: first, the IDs whose provider already owns the
+    /// handoff, or whose handoff is uncertain, which it must not blindly
+    /// submit a second time; second, the IDs released to the turn end, whose
+    /// line says it may repeat a delivery.
+    pub(super) fn provider_owned(
+        &self,
+        principal: &Principal,
+        target: &Target,
+    ) -> (HashSet<String>, HashSet<String>) {
         let scope = receipts::Scope::from(principal);
-        self.urgent
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+        let receipts = journal
             .saved
             .agents
             .iter()
-            .filter(|r| {
-                r.scope == scope
-                    && &r.target == target
-                    && match r.attempt {
-                        Attempt::Reserved | Attempt::Delivered | Attempt::Uncertain => true,
-                        // Handed to the core's queue: the provider may still
-                        // deliver it, so it stays the core's until an
-                        // observation shows it delivered. Never handed out
-                        // again at a turn's end, which could repeat it.
-                        Attempt::Accepted => true,
-                        Attempt::Retry | Attempt::Refused => false,
-                    }
+            .filter(|r| r.scope == scope && &r.target == target);
+        let released = receipts
+            .clone()
+            .filter(|r| r.attempt == Attempt::Released)
+            .map(|r| r.id.clone())
+            .collect();
+        let owned = receipts
+            .filter(|r| match r.attempt {
+                Attempt::Reserved | Attempt::Delivered | Attempt::Uncertain => true,
+                // Handed to the core's queue: the provider may still deliver
+                // it, so it stays the core's until an observation shows it
+                // delivered, or it is released (release.rs). Never handed out
+                // at a turn's end before that, which could repeat it.
+                Attempt::Accepted => true,
+                Attempt::Retry | Attempt::Refused | Attempt::Released => false,
             })
             .map(|r| r.id.clone())
-            .collect()
+            .collect();
+        (owned, released)
     }
 
     pub(super) async fn deliver_urgent(&self, delivery: &dyn Delivery, now: Instant) {
@@ -241,9 +256,11 @@ impl Advisories {
         let Some(principal) = self.tokens.principal() else {
             return;
         };
+        self.retry_blocked_journal().await;
         let Some(candidates) = self.urgent_candidates(&principal) else {
             return;
         };
+        self.record_reach(delivery, &candidates);
         let epoch = unix_now();
         // A new pass: last pass's one-off status (sent, hourly cap, a save
         // that failed then, a journal set aside) no longer applies. Read
@@ -268,7 +285,7 @@ impl Advisories {
     /// never shows a stale one; a blocked journal keeps its reason.
     pub(super) fn reset_urgent_status(&self) {
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-        if !journal.blocked {
+        if !journal.blocked() {
             journal.status = "idle";
         }
     }
@@ -277,7 +294,7 @@ impl Advisories {
     /// matches `stale`.
     pub(super) fn reset_urgent_status_if(&self, stale: impl Fn(&str) -> bool) {
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-        if !journal.blocked && stale(journal.status) {
+        if !journal.blocked() && stale(journal.status) {
             journal.status = "idle";
         }
     }
@@ -336,7 +353,7 @@ impl Advisories {
         let cached = self.state().cached();
         let human = {
             let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-            if journal.blocked {
+            if journal.blocked() {
                 return;
             }
             journal.prune(epoch, &cached);
@@ -412,8 +429,10 @@ impl Advisories {
 mod agent;
 mod journal;
 mod observe;
+mod release;
 
 pub(super) use observe::Observation;
+pub(super) use release::ACCEPTED_OWNED_FOR;
 
 #[cfg(test)]
 mod tests;

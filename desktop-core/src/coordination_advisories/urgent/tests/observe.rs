@@ -4,7 +4,7 @@
 use super::*;
 
 /// One P1 note for `A`, handed to the provider and held as accepted.
-async fn accepted() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>, Sink, Target, Instant) {
+pub(super) async fn accepted() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>, Sink, Target, Instant) {
     let (dir, api, advisories) = setup();
     let sink = Sink::default();
     let t = target(A);
@@ -17,7 +17,7 @@ async fn accepted() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>, Sink, Targ
     (dir, api, advisories, sink, t, now)
 }
 
-fn receipt(advisories: &Advisories, t: &Target) -> Option<Attempt> {
+pub(super) fn receipt(advisories: &Advisories, t: &Target) -> Option<Attempt> {
     let principal = Tokens.principal().unwrap();
     advisories
         .urgent
@@ -28,7 +28,7 @@ fn receipt(advisories: &Advisories, t: &Target) -> Option<Attempt> {
 }
 
 /// Lets the next pass observe again, as if a minute had passed.
-fn age_observation(advisories: &Advisories) {
+pub(super) fn age_observation(advisories: &Advisories) {
     for at in advisories.urgent.lock().unwrap().observed.values_mut() {
         *at = at.saturating_sub(61);
     }
@@ -202,7 +202,7 @@ async fn an_unsaved_observed_delivery_is_not_shown_or_acked() {
 }
 
 #[tokio::test]
-async fn an_old_accepted_receipt_survives_the_prune_and_still_blocks_inject_and_take() {
+async fn an_old_accepted_receipt_survives_the_prune_and_is_released_not_injected() {
     let (_dir, _api, advisories, sink, t, now) = accepted().await;
     let principal = Tokens.principal().unwrap();
     let old = unix_now() - RETENTION - 60;
@@ -216,8 +216,10 @@ async fn an_old_accepted_receipt_survives_the_prune_and_still_blocks_inject_and_
     assert_eq!(receipt(&advisories, &t), Some(Attempt::Accepted));
     age_observation(&advisories);
     advisories.deliver_urgent(&sink, now).await;
+    // Past ACCEPTED_OWNED_FOR: handed to the turn end, never injected again.
     assert_eq!(sink.calls.lock().unwrap().len(), 1);
-    assert!(advisories.take_at(&t, now).is_none());
+    assert_eq!(receipt(&advisories, &t), Some(Attempt::Released));
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
 }
 
 #[tokio::test]
@@ -510,5 +512,5 @@ async fn a_blocked_journal_keeps_its_fault_status_with_notifications_off() {
     api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
     advisories.poll(&[t], now).await;
     advisories.deliver_urgent(&Sink::default(), now).await;
-    assert!(advisories.urgent_status().contains("damaged or from another version"));
+    assert!(advisories.urgent_status().contains("is damaged"));
 }
