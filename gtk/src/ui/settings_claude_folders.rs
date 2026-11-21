@@ -135,13 +135,15 @@ impl App {
         // other rows' titles; the folders open indented beneath it.
         let heading = hbox(12, &[]);
         super::zoom::margins(&heading, 12, 16, 12, 22);
-        let title = text(CLAUDE_FOLDERS_TITLE, &["settings-row-title"]);
+        // Both wrap, as other rows' titles do, so the heading never sets
+        // the page's width at a large zoom.
+        let title = text(CLAUDE_FOLDERS_TITLE, &["settings-row-title"]).wrapped();
         title.set_hexpand(true);
         heading.append(&title);
-        heading.append(&text(
-            &claude_folders_summary(folders),
-            &["settings-row-detail"],
-        ));
+        let summary = text(&claude_folders_summary(folders), &["settings-row-detail"]).wrapped();
+        summary.set_xalign(1.0);
+        summary.set_justify(gtk::Justification::Right);
+        heading.append(&summary);
         widgets::action_cursor(&heading);
         let disclosure = gtk::Expander::builder().label_widget(&heading).build();
         disclosure.set_widget_name("claude-folders");
