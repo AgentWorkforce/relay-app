@@ -8,6 +8,7 @@ struct ClaudeProviderMessages: View {
     @State private var inboundError: String?
     @State private var claudeSessionHookError: String?
     @State private var questionEscalationError: String?
+    @State private var isQuestionCoverageExpanded = false
 
     private var hasDelivery: Bool { relay.sessions.contains { $0.target.kind == .claudeTerminal } }
 
@@ -133,6 +134,12 @@ struct ClaudeProviderMessages: View {
                         .lineLimit(4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if !row.coverage.isEmpty {
+                    questionCoverage(row.coverage)
+                    Text(QuestionEscalationCopy.coverageClosing)
+                        .zoomFont(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let inbox = row.inbox {
                     Text(verbatim: inbox)
                         .zoomFont(.footnote).foregroundStyle(.secondary)
@@ -153,6 +160,27 @@ struct ClaudeProviderMessages: View {
             }
         }
         .zoomPadding(16)
+    }
+
+    /// The kinds of session question escalation reaches, collapsed under the
+    /// row; read-only, the same whether the switch is on or off.
+    private func questionCoverage(_ groups: [QuestionCoverageGroup]) -> some View {
+        DisclosureGroup(QuestionEscalationCopy.coverageTitle, isExpanded: $isQuestionCoverageExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(groups, id: \.heading) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: group.heading).fontWeight(.medium)
+                        ForEach(Array(group.entries.enumerated()), id: \.offset) { _, entry in
+                            Text(verbatim: entry.line)
+                        }
+                    }
+                }
+            }
+            .zoomFont(.footnote).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading).zoomPadding(.top, 6)
+        }
+        .zoomFont(.footnote).foregroundStyle(.secondary)
     }
 
     private func setQuestionEscalation(_ enabled: Bool) {

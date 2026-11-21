@@ -3532,6 +3532,81 @@ fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runti
     assert_eq!(in_row.len(), 1, "the error shows once, in its own row");
 }
 
+// QuestionEscalationCopyTests: with the core's coverage map the row shows the
+// list (collapsed, read-only) and the closing line instead of the status
+// paragraph, on or off; the list's open state survives a redraw.
+fn question_escalation_lists_coverage_by_kind(runtime: &tokio::runtime::Runtime) {
+    use agent_relay_app::models::{QUESTION_COVERAGE_CLOSING, QUESTION_COVERAGE_TITLE};
+    let case = Case::with(runtime, |core| tools::answers(core, true));
+    let mut values = settings();
+    values["question_escalation"] = json!("off");
+    values["question_escalation_status"] = json!("Available for Claude Code.");
+    values["question_escalation_coverage"] = json!({
+        "codex": {"state": "partial", "reason": "Plan mode only."},
+        "claude-terminal": {"state": "covered", "reason": "Through the hook."},
+        "muse-open": {"state": "not_applicable", "reason": ""},
+    });
+    case.answer("settings.get", check::<method::SettingsGet>(values));
+    case.sign_in();
+    tools::open_claude(&case);
+    case.pump(|case| {
+        case.settings_labels()
+            .contains(&QUESTION_COVERAGE_TITLE.to_string())
+    });
+    case.settle();
+    let shown = case.settings_labels();
+    assert!(
+        shown.contains(&QUESTION_COVERAGE_CLOSING.to_string()),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.contains(&"Available for Claude Code.".to_string()),
+        "the list stands in for the status paragraph: {shown:?}"
+    );
+    assert!(
+        !shown.contains(&"Claude Code: Through the hook.".to_string()),
+        "the list starts collapsed: {shown:?}"
+    );
+    let disclosure = || {
+        let mut found = None;
+        walk(
+            case.app.shell().unwrap().settings.column.upcast_ref(),
+            &mut |widget| {
+                if widget.widget_name() == "question-escalation-coverage" {
+                    found = widget.downcast_ref::<gtk::Expander>().cloned();
+                }
+            },
+        );
+        found.expect("the coverage disclosure")
+    };
+    disclosure().set_expanded(true);
+    case.settle();
+    let opened = labels(&disclosure());
+    assert_eq!(
+        opened,
+        [
+            QUESTION_COVERAGE_TITLE,
+            "Sent to you",
+            "Claude Code: Through the hook.",
+            "Sent to you in some cases",
+            "Codex: Plan mode only.",
+            "Does not apply",
+            "Muse Code",
+        ]
+    );
+    // A redraw keeps it open.
+    case.app.render_settings();
+    case.settle();
+    assert!(
+        disclosure().is_expanded(),
+        "the open state survives a redraw"
+    );
+    assert!(
+        case.called("settings.set").is_empty(),
+        "the list never writes"
+    );
+}
+
 // AutoJoinGeneralTests (wording, off by default, settings.set) and the
 // agents' changes, read again when the core says an agent changed a setting.
 fn auto_join_general_turns_on_and_agent_changes_show(runtime: &tokio::runtime::Runtime) {
@@ -6020,6 +6095,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "question_escalation_shows_the_core_value_and_turns_off",
         question_escalation_shows_the_core_value_and_turns_off,
+    ),
+    (
+        "question_escalation_lists_coverage_by_kind",
+        question_escalation_lists_coverage_by_kind,
     ),
     (
         "auto_join_general_turns_on_and_agent_changes_show",
