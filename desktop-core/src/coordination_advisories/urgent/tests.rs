@@ -28,6 +28,12 @@ impl TokenSource for Tokens {
 struct Api {
     rows: Mutex<HashMap<Target, Vec<Advisory>>>,
     acked: Mutex<Vec<String>>,
+    /// The incarnation each ack named, in order.
+    incarnations: Mutex<Vec<Option<String>>>,
+    /// What each ack answers; `Done` when unset.
+    answer: Mutex<Option<Ack>>,
+    /// Incarnations whose v2 ack finds no match (404).
+    stale: Mutex<HashSet<String>>,
 }
 impl AdvisoryApi for Api {
     fn list<'a>(&'a self, _: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing> {
@@ -40,9 +46,25 @@ impl AdvisoryApi for Api {
             .unwrap_or_default();
         Box::pin(async move { Listing::Advisories(rows) })
     }
-    fn ack<'a>(&'a self, _: &'a ReadToken, _: &'a Target, id: &'a str) -> BoxFuture<'a, Ack> {
+    fn ack<'a>(
+        &'a self,
+        _: &'a ReadToken,
+        _: &'a Target,
+        id: &'a str,
+        incarnation: Option<&'a str>,
+    ) -> BoxFuture<'a, Ack> {
         self.acked.lock().unwrap().push(id.into());
-        Box::pin(async { Ack::Done })
+        self.incarnations
+            .lock()
+            .unwrap()
+            .push(incarnation.map(String::from));
+        let stale = incarnation.is_some_and(|i| self.stale.lock().unwrap().contains(i));
+        let answer = match *self.answer.lock().unwrap() {
+            _ if stale => Ack::NoMatch,
+            Some(answer) => answer,
+            None => Ack::Done,
+        };
+        Box::pin(async move { answer })
     }
 }
 
@@ -55,6 +77,8 @@ struct Sink {
     /// What `observe` reports; `None` is the trait default (unsupported).
     observation: Mutex<Option<Observation>>,
     observes: std::sync::atomic::AtomicUsize,
+    /// The keys observed, in order.
+    observed: Mutex<Vec<String>>,
 }
 impl Delivery for Sink {
     fn inject<'a>(
@@ -81,8 +105,9 @@ impl Delivery for Sink {
             .unwrap()
             .push((title.into(), body.into()));
     }
-    fn observe<'a>(&'a self, _: &'a Target, _: &'a str) -> BoxFuture<'a, Observation> {
+    fn observe<'a>(&'a self, _: &'a Target, id: &'a str) -> BoxFuture<'a, Observation> {
         self.observes.fetch_add(1, Ordering::SeqCst);
+        self.observed.lock().unwrap().push(id.into());
         let seen = self
             .observation
             .lock()
@@ -106,7 +131,27 @@ fn p1(id: &str) -> Advisory {
         message: format!("Review overlap {id}."),
         peer_source: "codex".into(),
         peer_session_id: "peer".into(),
+        incarnation: Some(INCARNATION.into()),
+        key: String::new(),
     }
+}
+/// Every test row's incarnation, unless a test says otherwise.
+const INCARNATION: &str = "5f0c8a1e-2b3d-4c5e-8f6a-7b8c9d0e1f2a";
+/// The key `id`'s instance (incarnation [`INCARNATION`]) is held under for `t`.
+fn key(t: &Target, id: &str) -> String {
+    key_of(t, id, INCARNATION)
+}
+/// `advisory` keyed as the poll caches it for `t`.
+fn keyed(t: &Target, advisory: Advisory) -> Advisory {
+    advisory.keyed(&receipts::Scope::from(&Tokens.principal().unwrap()), t)
+}
+/// The keys of `ids`' instances for `t`, as a turn end hands them out.
+fn keys(t: &Target, ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| key(t, id)).collect()
+}
+fn key_of(t: &Target, id: &str, incarnation: &str) -> String {
+    let scope = receipts::Scope::from(&Tokens.principal().unwrap());
+    instance::key(&scope, t, id, Some(incarnation))
 }
 fn setup() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>) {
     let dir = tempfile::tempdir().unwrap();
@@ -169,7 +214,7 @@ async fn unproven_and_legacy_priorities_never_trigger_os_notices() {
     assert!(sink.calls.lock().unwrap().is_empty());
     assert!(sink.notices.lock().unwrap().is_empty());
     let note = advisories.take_at(&t, now).unwrap();
-    assert_eq!(note.ids, vec!["unproven", "legacy", "p2"]);
+    assert_eq!(note.ids, keys(&t, &["unproven", "legacy", "p2"]));
     assert!(advisories.urgent_status().contains("validated"));
 }
 
@@ -191,7 +236,7 @@ async fn accepted_is_handed_off_once_not_acknowledged_and_does_not_block_other_t
     advisories.deliver_urgent(&sink, now).await;
     advisories.send_shown(now).await;
     assert!(api.acked.lock().unwrap().is_empty());
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["low"]);
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, keys(&t, &["low"]));
     *sink.outcome.lock().unwrap() = Some(InjectOutcome::Delivered);
     advisories.deliver_urgent(&sink, now).await;
     advisories.send_shown(now).await;
@@ -200,9 +245,9 @@ async fn accepted_is_handed_off_once_not_acknowledged_and_does_not_block_other_t
             .lock()
             .unwrap()
             .iter()
-            .map(|(_, id)| id.as_str())
+            .map(|(_, id)| id.clone())
             .collect::<Vec<_>>(),
-        vec!["p1"]
+        keys(&t, &["p1"])
     );
     assert!(api.acked.lock().unwrap().is_empty());
 }
@@ -213,11 +258,13 @@ async fn uncertain_or_crashed_reservations_never_blindly_reinject() {
         let (dir, api, advisories) = setup();
         let t = target(A);
         let principal = Tokens.principal().unwrap();
-        advisories
-            .urgent
-            .lock()
-            .unwrap()
-            .set_agent(&principal, &t, "p1", attempt, unix_now());
+        advisories.urgent.lock().unwrap().set_agent(
+            &principal,
+            &t,
+            &key(&t, "p1"),
+            attempt,
+            unix_now(),
+        );
         assert!(advisories.save_urgent().await);
         let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
         let sink = Sink::default();
@@ -243,7 +290,7 @@ async fn unregistered_provider_still_notifies_the_human_and_keeps_turn_end_fallb
     advisories.poll(&[t.clone()], now).await;
     advisories.deliver_urgent(&sink, now).await;
     assert_eq!(sink.notices.lock().unwrap().len(), 1);
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, keys(&t, &["p1"]));
 }
 
 #[tokio::test]
@@ -343,7 +390,7 @@ async fn list_and_ack_share_one_device_request_budget() {
     let start = tokio::time::Instant::now();
     let (a, b, c) = tokio::join!(
         paced.list(&token, &target),
-        paced.ack(&token, &target, "ack"),
+        paced.ack(&token, &target, "ack", None),
         paced.list(&token, &target)
     );
     assert!(matches!(a, Listing::Advisories(_)));
@@ -373,11 +420,15 @@ async fn polling_a_subset_does_not_end_the_other_live_sessions() {
 #[test]
 fn server_gates_fail_closed_for_missing_and_malformed_fields() {
     for priority in [Value::Null, json!(0), json!(4), json!("1"), json!(true)] {
-        let row = json!({"advisoryId":"p1","urgency":"high","priority":priority,"notifyEligible":true,"message":"Test","peer":{"source":"codex","sessionId":"peer"}});
-        assert!(!super::super::rows::advisory(&row).unwrap().urgent());
+        let row = json!({"advisoryId":"p1","urgency":"high","priority":priority,"notifyEligible":true,"message":"Test","peer":{"source":"codex","sessionId":"peer"},"incarnation":INCARNATION});
+        assert!(!super::super::rows::advisory(&row, true).unwrap().urgent());
     }
-    let row = json!({"advisoryId":"p1","urgency":"high","priority":1,"notifyEligible":"true","message":"Test","peer":{"source":"codex","sessionId":"peer"}});
-    assert!(!super::super::rows::advisory(&row).unwrap().notify_eligible);
+    let row = json!({"advisoryId":"p1","urgency":"high","priority":1,"notifyEligible":"true","message":"Test","peer":{"source":"codex","sessionId":"peer"},"incarnation":INCARNATION});
+    assert!(
+        !super::super::rows::advisory(&row, true)
+            .unwrap()
+            .notify_eligible
+    );
 }
 
 #[tokio::test]
@@ -445,7 +496,7 @@ async fn a_turn_end_that_wins_during_human_notification_is_not_also_injected() {
     advisories.poll(&[t.clone()], now).await;
     let sink = TurnEnd(advisories.clone(), t, Mutex::new(None));
     advisories.deliver_urgent(&sink, now).await;
-    assert_eq!(*sink.2.lock().unwrap(), Some(vec!["race".to_string()]));
+    assert_eq!(*sink.2.lock().unwrap(), Some(keys(&target(A), &["race"])));
     assert!(api.acked.lock().unwrap().is_empty());
 }
 
@@ -472,14 +523,14 @@ async fn refused_is_terminal_and_retry_waits_out_its_backoff() {
             .urgent
             .lock()
             .unwrap()
-            .agent_receipt(&principal, &t, "p1")
+            .agent_receipt(&principal, &t, &key(&t, "p1"))
             .unwrap()
             .0;
         advisories
             .urgent
             .lock()
             .unwrap()
-            .set_agent(&principal, &t, "p1", attempt, old);
+            .set_agent(&principal, &t, &key(&t, "p1"), attempt, old);
         advisories.deliver_urgent(&sink, now).await;
         let expected = if matches!(outcome, InjectOutcome::Retry(_)) { 2 } else { 1 };
         assert_eq!(sink.calls.lock().unwrap().len(), expected, "{outcome:?}");
@@ -521,9 +572,9 @@ async fn a_session_no_local_notice_reaches_is_never_reserved_or_injected() {
         .urgent
         .lock()
         .unwrap()
-        .agent_receipt(&principal, &t, "p1")
+        .agent_receipt(&principal, &t, &key(&t, "p1"))
         .is_none());
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, keys(&t, &["p1"]));
 }
 
 #[tokio::test]
@@ -663,7 +714,7 @@ async fn a_pass_stopped_after_its_reservation_undoes_it() {
     let before = advisories.urgent.lock().unwrap().saved.clone();
     // The switch goes off between the durable reservation and the inject.
     advisories.enabled.store(false, Ordering::SeqCst);
-    let advisory = p1("p1");
+    let advisory = keyed(&t, p1("p1"));
     let step = advisories
         .deliver_urgent_agent(&OffDuringSave(Sink::default()), &principal, &t, &advisory, unix_now(), now)
         .await;
@@ -672,12 +723,12 @@ async fn a_pass_stopped_after_its_reservation_undoes_it() {
         .urgent
         .lock()
         .unwrap()
-        .agent_receipt(&principal, &t, "p1")
+        .agent_receipt(&principal, &t, &key(&t, "p1"))
         .is_none());
     assert_eq!(advisories.urgent.lock().unwrap().saved.agents.len(), before.agents.len());
     // The undo is on disk too: a restart does not find the reservation.
     assert!(Journal::load(_dir.path())
-        .agent_receipt(&principal, &t, "p1")
+        .agent_receipt(&principal, &t, &key(&t, "p1"))
         .is_none());
 }
 
@@ -719,7 +770,9 @@ fn a_damaged_or_newer_version_journal_blocks_in_place_and_again_on_relaunch() {
     for (body, fault) in [
         (&b"broken"[..], "is damaged"),
         (&br#"{"version":1,"agents":[],"humans":[],"later":1}"#[..], "is damaged"),
-        (&br#"{"version":2,"agents":[],"humans":[]}"#[..], "newer version"),
+        (&br#"{"version":2,"agents":[],"humans":[],"later":1}"#[..], "is damaged"),
+        (&br#"{"version":0,"agents":[],"humans":[]}"#[..], "is damaged"),
+        (&br#"{"version":3,"agents":[],"humans":[]}"#[..], "newer version"),
         (&br#"{"version":9,"shape":"unknown"}"#[..], "newer version"),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -796,5 +849,6 @@ async fn a_session_in_its_own_backoff_counts_as_checked() {
     assert!(schedule.due(&live, &HashSet::new(), now + Duration::from_secs(1)).is_empty());
 }
 
+mod instances;
 mod observe;
 mod release;

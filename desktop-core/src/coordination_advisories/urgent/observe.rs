@@ -21,6 +21,14 @@ pub(in crate::coordination_advisories) enum Observation {
 /// At most one observation per note in this long (seconds); memory only.
 const OBSERVE_EVERY: u64 = 60;
 
+/// A held note to observe: the key it was handed to the core under, and the
+/// row its observed delivery shows (`None` for a legacy receipt held for an
+/// instance row, whose delivery may have been another note).
+pub(in crate::coordination_advisories) struct Held<'a> {
+    pub(super) key: &'a str,
+    pub(super) shows: Option<&'a Advisory>,
+}
+
 impl Advisories {
     /// A held note (accepted, reserved before a crash, or in doubt): observe
     /// it, never inject it again. An observed `Delivered` settles it: journal
@@ -32,10 +40,11 @@ impl Advisories {
         delivery: &dyn Delivery,
         principal: &Principal,
         target: &Target,
-        id: &str,
+        held: Held<'_>,
         epoch: u64,
         now: Instant,
     ) -> ControlFlow<()> {
+        let id = held.key;
         if !self.observe_due(principal, target, id, epoch) {
             return ControlFlow::Continue(());
         }
@@ -71,8 +80,8 @@ impl Advisories {
             }
             return ControlFlow::Continue(());
         }
-        if self.urgent_still_current(principal) {
-            self.mark_urgent_shown(principal, target, id, now);
+        if let Some(advisory) = held.shows.filter(|_| self.urgent_still_current(principal)) {
+            self.mark_urgent_shown(principal, target, advisory, now);
         }
         ControlFlow::Continue(())
     }

@@ -5,6 +5,20 @@ use super::*;
 /// Acknowledgements sent per pass, at most (each waits for the shared request pacing).
 pub(super) const MAX_ACKS_PER_PASS: usize = 16;
 
+/// Shown on the status line, until the next urgent pass, when a v2 ack found
+/// no match.
+pub(super) const NO_MATCH_STATUS: &str =
+    "An advisory had changed or expired before it was acknowledged; it was not delivered again.";
+
+/// One ack claimed: the session, the cache key, and what the ack names
+/// (the advisory id, and an instance row's incarnation).
+pub(super) struct Due {
+    target: Target,
+    key: String,
+    id: String,
+    incarnation: Option<String>,
+}
+
 impl Advisories {
     /// One poll over `sessions`, the live sessions the core can reach at a
     /// turn's end: at most [`SESSIONS_PER_TICK`] of them, then the acks due.
@@ -159,17 +173,35 @@ impl Advisories {
             return;
         }
         state.sessions.remove(target);
-        let listed: HashSet<String> = advisories.iter().map(|a| a.id.clone()).collect();
-        // Handed out and no longer listed: acked or expired upstream.
+        let scope = receipts::Scope::from(principal);
+        let advisories: Vec<Advisory> = advisories
+            .into_iter()
+            .map(|advisory| advisory.keyed(&scope, target))
+            .collect();
+        let listed: HashSet<String> = advisories.iter().map(|a| a.key.clone()).collect();
+        let instances: HashSet<&str> = advisories
+            .iter()
+            .filter(|a| a.incarnation.is_some())
+            .map(|a| a.id.as_str())
+            .collect();
+        // Handed out and no longer listed: acked or expired upstream. A
+        // no-match stays settled for as long as its session lives, and a
+        // legacy hand-out while an instance of its id is listed, which it
+        // labels (State::shown_as_legacy).
         if let Some(taken) = state.taken.get_mut(target) {
-            taken.retain(|id, taken| listed.contains(id) || (taken.shown && !taken.acked));
+            taken.retain(|key, taken| {
+                listed.contains(key)
+                    || (taken.shown && !taken.acked)
+                    || taken.no_match
+                    || (taken.instance.is_none() && instances.contains(key.as_str()))
+            });
         }
         let mut waiting = Vec::new();
         for advisory in advisories {
             let taken = state
                 .taken
                 .get_mut(target)
-                .and_then(|t| t.get_mut(&advisory.id));
+                .and_then(|t| t.get_mut(&advisory.key));
             match taken {
                 // Shown, or acked: never again, whatever the ack's retries.
                 // Taken and never confirmed shown: again once 30 minutes
@@ -177,7 +209,7 @@ impl Advisories {
                 Some(taken) if taken.acked || taken.sending || taken.shown => continue,
                 Some(taken) if now.duration_since(taken.at) < REDELIVER_AFTER => continue,
                 Some(_) => {
-                    state.taken.get_mut(target).map(|t| t.remove(&advisory.id));
+                    state.taken.get_mut(target).map(|t| t.remove(&advisory.key));
                     waiting.push(advisory);
                 }
                 None => waiting.push(advisory),
@@ -202,12 +234,15 @@ impl Advisories {
             return;
         };
         let mut sent = 0;
-        for (target, id) in &due {
+        for due in &due {
             if self.tokens.principal().as_ref() != Some(&token.principal) {
                 break;
             }
-            let ack = self.api.ack(token, target, id).await;
-            self.acked(&token.principal, target, id, ack, now);
+            let ack = self
+                .api
+                .ack(token, &due.target, &due.id, due.incarnation.as_deref())
+                .await;
+            self.acked(&token.principal, &due.target, &due.key, ack, now);
             sent += 1;
             if ack == Ack::Unauthorized {
                 self.tokens.refused(token);
@@ -223,7 +258,7 @@ impl Advisories {
     /// Marks and returns the shown, saved, unacknowledged notes whose retry is
     /// due. `None` when the state belongs to another account: its token never
     /// acks this one's notes.
-    fn claim_due_acks(&self, principal: &Principal, now: Instant) -> Option<Vec<(Target, String)>> {
+    fn claim_due_acks(&self, principal: &Principal, now: Instant) -> Option<Vec<Due>> {
         let mut state = self.state();
         if state.principal.as_ref() != Some(principal) {
             return None;
@@ -235,13 +270,24 @@ impl Advisories {
         // Bounded, so a backlog of paced acks never stalls the watch loop;
         // the rest go on the next pass.
         'claim: for (target, taken) in state.taken.iter_mut() {
-            for (id, taken) in taken.iter_mut() {
+            for (key, taken) in taken.iter_mut() {
                 if due.len() == MAX_ACKS_PER_PASS {
                     break 'claim;
                 }
-                if taken.ack_due(now) && saved.contains(&(target.clone(), id.clone())) {
+                if taken.ack_due(now) && saved.contains(&(target.clone(), key.clone())) {
                     taken.sending = true;
-                    due.push((target.clone(), id.clone()));
+                    // An instance row is acked with its own incarnation, a
+                    // legacy one by its key, its id: never one for the other.
+                    let (id, incarnation) = match &taken.instance {
+                        Some(i) => (i.id.clone(), Some(i.incarnation.clone())),
+                        None => (key.clone(), None),
+                    };
+                    due.push(Due {
+                        target: target.clone(),
+                        key: key.clone(),
+                        id,
+                        incarnation,
+                    });
                 }
             }
         }
@@ -250,13 +296,17 @@ impl Advisories {
 
     /// A refused token stops the batch. Release only claims that were never
     /// sent, so a later fresh token can retry them.
-    fn release_unsent_acks(&self, principal: &Principal, unsent: &[(Target, String)]) {
+    fn release_unsent_acks(&self, principal: &Principal, unsent: &[Due]) {
         let mut state = self.state();
         if state.principal.as_ref() != Some(principal) {
             return;
         }
-        for (target, id) in unsent {
-            if let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(id)) {
+        for due in unsent {
+            if let Some(taken) = state
+                .taken
+                .get_mut(&due.target)
+                .and_then(|t| t.get_mut(&due.key))
+            {
                 taken.sending = false;
             }
         }
@@ -266,7 +316,7 @@ impl Advisories {
         &self,
         principal: &Principal,
         target: &Target,
-        id: &str,
+        key: &str,
         ack: Ack,
         now: Instant,
     ) {
@@ -274,7 +324,7 @@ impl Advisories {
         if state.principal.as_ref() != Some(principal) {
             return;
         }
-        let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(id)) else {
+        let Some(taken) = state.taken.get_mut(target).and_then(|t| t.get_mut(key)) else {
             return;
         };
         taken.sending = false;
@@ -282,6 +332,16 @@ impl Advisories {
             Ack::Done => {
                 taken.acked = true;
                 taken.retry_at = None;
+            }
+            Ack::NoMatch => {
+                taken.acked = true;
+                taken.no_match = true;
+                taken.retry_at = None;
+                drop(state);
+                let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+                if !journal.blocked() {
+                    journal.status = NO_MATCH_STATUS;
+                }
             }
             Ack::Forbidden => taken.retry_at = Some(now + ACK_FORBIDDEN_RETRY),
             Ack::Throttled => {

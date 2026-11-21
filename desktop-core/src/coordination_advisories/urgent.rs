@@ -1,6 +1,9 @@
 //! Priority-one delivery. The server owns ranking and the evaluation gate.
 //! Durable reservations fence uncertain handoffs and dedupe human requests
 //! across restarts. A notification request is not a display/read receipt.
+//! Only an advisory instance ([`CONTRACT_V3`]) is urgent, and everything
+//! here is keyed by its instance key, so a promoted or re-created advisory
+//! is a new note, eligible afresh.
 
 use super::*;
 use agent_relay_node::relay::inject::InjectOutcome;
@@ -186,7 +189,13 @@ impl Advisories {
         result
     }
 
-    fn mark_urgent_shown(&self, principal: &Principal, target: &Target, id: &str, now: Instant) {
+    fn mark_urgent_shown(
+        &self,
+        principal: &Principal,
+        target: &Target,
+        advisory: &Advisory,
+        now: Instant,
+    ) {
         if self.tokens.principal().as_ref() != Some(principal) {
             return;
         }
@@ -198,11 +207,11 @@ impl Advisories {
             .taken
             .entry(target.clone())
             .or_default()
-            .entry(id.into())
-            .or_insert_with(|| Taken::new(now))
+            .entry(advisory.key.clone())
+            .or_insert_with(|| Taken::of(now, advisory))
             .shown = true;
         if let Some(waiting) = state.waiting.get_mut(target) {
-            waiting.retain(|a| a.id != id);
+            waiting.retain(|a| a.key != advisory.key);
         }
     }
 
@@ -210,42 +219,6 @@ impl Advisories {
     pub fn urgent_status(&self) -> String {
         let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
         journal.fault.clone().unwrap_or_else(|| journal.status.into())
-    }
-
-    /// For a stop hook: first, the IDs whose provider already owns the
-    /// handoff, or whose handoff is uncertain, which it must not blindly
-    /// submit a second time; second, the IDs released to the turn end, whose
-    /// line says it may repeat a delivery.
-    pub(super) fn provider_owned(
-        &self,
-        principal: &Principal,
-        target: &Target,
-    ) -> (HashSet<String>, HashSet<String>) {
-        let scope = receipts::Scope::from(principal);
-        let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
-        let receipts = journal
-            .saved
-            .agents
-            .iter()
-            .filter(|r| r.scope == scope && &r.target == target);
-        let released = receipts
-            .clone()
-            .filter(|r| r.attempt == Attempt::Released)
-            .map(|r| r.id.clone())
-            .collect();
-        let owned = receipts
-            .filter(|r| match r.attempt {
-                Attempt::Reserved | Attempt::Delivered | Attempt::Uncertain => true,
-                // Handed to the core's queue: the provider may still deliver
-                // it, so it stays the core's until an observation shows it
-                // delivered, or it is released (release.rs). Never handed out
-                // at a turn's end before that, which could repeat it.
-                Attempt::Accepted => true,
-                Attempt::Retry | Attempt::Refused | Attempt::Released => false,
-            })
-            .map(|r| r.id.clone())
-            .collect();
-        (owned, released)
     }
 
     pub(super) async fn deliver_urgent(&self, delivery: &dyn Delivery, now: Instant) {
@@ -260,13 +233,18 @@ impl Advisories {
         let Some(candidates) = self.urgent_candidates(&principal) else {
             return;
         };
+        let urgent: Vec<(Target, Advisory)> = candidates
+            .iter()
+            .filter(|(_, a)| a.urgent())
+            .cloned()
+            .collect();
         self.record_reach(delivery, &candidates);
         let epoch = unix_now();
         // A new pass: last pass's one-off status (sent, hourly cap, a save
         // that failed then, a journal set aside) no longer applies. Read
         // access is the poll's to clear.
         self.reset_urgent_status_if(|status| !status.starts_with("Read access unavailable"));
-        self.deliver_human(delivery, principal.clone(), &candidates, epoch)
+        self.deliver_human(delivery, principal.clone(), &urgent, epoch)
             .await;
         for (target, advisory) in &candidates {
             if !self.urgent_still_current(&principal) {
@@ -304,22 +282,27 @@ impl Advisories {
         self.enabled() && self.tokens.principal().as_ref() == Some(principal)
     }
 
-    /// The urgent rows waiting for this account's sessions; `None` when the
-    /// cache belongs to another account.
+    /// The rows waiting for this account's sessions that the urgent path
+    /// acts on: the urgent ones, and any with an urgent receipt (its own, or
+    /// for an instance row the legacy one of its id), which is observed or
+    /// settled whatever the row's urgency is now; and legacy priority-one
+    /// rows, never injected, whose reach a blocked journal needs
+    /// (`record_reach`). `None` when the cache belongs to another account.
     fn urgent_candidates(&self, principal: &Principal) -> Option<Vec<(Target, Advisory)>> {
         let state = self.state();
         if state.principal.as_ref() != Some(principal) {
             return None;
         }
+        let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
         Some(
             state
                 .waiting
                 .iter()
-                .flat_map(|(target, rows)| {
-                    rows.iter()
-                        .filter(|a| a.urgent())
-                        .map(move |a| (target.clone(), a.clone()))
+                .flat_map(|(target, rows)| rows.iter().map(move |a| (target, a)))
+                .filter(|(target, a)| {
+                    a.priority_one() || journal.record_for(principal, target, a).is_some()
                 })
+                .map(|(target, a)| (target.clone(), a.clone()))
                 .collect(),
         )
     }
@@ -357,6 +340,7 @@ impl Advisories {
                 return;
             }
             journal.prune(epoch, &cached);
+            // By instance key: a promoted or re-created advisory is new.
             let mut seen: HashSet<String> = journal
                 .saved
                 .humans
@@ -366,8 +350,12 @@ impl Advisories {
                 .collect();
             let rows: Vec<&Advisory> = candidates
                 .iter()
+                .filter(|(t, a)| {
+                    a.notify_eligible
+                        && !journal.known_as_legacy(&principal, t, a, &seen)
+                        && seen.insert(a.key.clone())
+                })
                 .map(|(_, a)| a)
-                .filter(|a| a.notify_eligible && seen.insert(a.id.clone()))
                 .take(MAX_ROWS)
                 .collect();
             if rows.is_empty() {
@@ -387,7 +375,7 @@ impl Advisories {
                 journal.status="System notification hourly limit reached.";
                 return;
             }
-            let ids = rows.iter().map(|a| a.id.clone()).collect();
+            let ids = rows.iter().map(|a| a.key.clone()).collect();
             let body = one_line(
                 &agent_relay_node::relay::delivery::policy::frame::body(
                     &rows
@@ -431,28 +419,36 @@ mod journal;
 mod observe;
 mod release;
 
+use observe::Held;
 pub(super) use observe::Observation;
+#[cfg(test)]
 pub(super) use release::ACCEPTED_OWNED_FOR;
 
 #[cfg(test)]
 mod tests;
 
 impl State {
-    /// The ids this process still has cached (waiting or handed out), for the
-    /// account the cache belongs to.
+    /// The keys this process still has cached (waiting or handed out), for
+    /// the account the cache belongs to; an instance row's advisory id too,
+    /// so the legacy receipt of its id is kept while it is.
     fn cached(&self) -> HashSet<(receipts::Scope, Target, String)> {
         let Some(principal) = self.principal.as_ref() else {
             return HashSet::new();
         };
         let scope = receipts::Scope::from(principal);
-        let waiting = self
-            .waiting
-            .iter()
-            .flat_map(|(t, rows)| rows.iter().map(move |a| (t, a.id.clone())));
-        let taken = self
-            .taken
-            .iter()
-            .flat_map(|(t, rows)| rows.keys().map(move |id| (t, id.clone())));
+        let waiting = self.waiting.iter().flat_map(|(t, rows)| {
+            rows.iter()
+                .flat_map(|a| [a.key.clone(), a.id.clone()])
+                .map(move |key| (t, key))
+        });
+        let taken = self.taken.iter().flat_map(|(t, rows)| {
+            rows.iter()
+                .flat_map(|(key, taken)| {
+                    let id = taken.instance.as_ref().map(|i| i.id.clone());
+                    std::iter::once(key.clone()).chain(id)
+                })
+                .map(move |key| (t, key))
+        });
         waiting
             .chain(taken)
             .map(|(t, id)| (scope.clone(), t.clone(), id))

@@ -23,7 +23,7 @@ pub(super) fn receipt(advisories: &Advisories, t: &Target) -> Option<Attempt> {
         .urgent
         .lock()
         .unwrap()
-        .agent_receipt(&principal, t, "p1")
+        .agent_receipt(&principal, t, &key(t, "p1"))
         .map(|r| r.0)
 }
 
@@ -105,7 +105,7 @@ async fn a_held_note_is_never_handed_out_at_a_turn_end_and_a_late_delivery_still
     advisories.urgent.lock().unwrap().set_agent(
         &principal,
         &t,
-        "p1",
+        &key(&t, "p1"),
         Attempt::Accepted,
         unix_now() - 31 * 60,
     );
@@ -127,7 +127,7 @@ async fn reserved_and_uncertain_receipts_are_observed_too() {
             .urgent
             .lock()
             .unwrap()
-            .set_agent(&principal, &t, "p1", attempt.clone(), unix_now());
+            .set_agent(&principal, &t, &key(&t, "p1"), attempt.clone(), unix_now());
         assert!(advisories.save_urgent().await);
         let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
         api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
@@ -169,18 +169,19 @@ async fn an_account_change_during_observation_records_nothing() {
     api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
     advisories.poll(&[t.clone()], now).await;
     let alice = Switch::principal_for("alice");
+    let alices = instance::key(&receipts::Scope::from(&alice), &t, "p1", Some(INCARNATION));
     advisories
         .urgent
         .lock()
         .unwrap()
-        .set_agent(&alice, &t, "p1", Attempt::Accepted, unix_now());
+        .set_agent(&alice, &t, &alices, Attempt::Accepted, unix_now());
     let sink = SwitchOnObserve(Sink::default(), tokens);
     advisories.deliver_urgent(&sink, now).await;
     let held = advisories
         .urgent
         .lock()
         .unwrap()
-        .agent_receipt(&alice, &t, "p1")
+        .agent_receipt(&alice, &t, &alices)
         .map(|r| r.0);
     assert_eq!(held, Some(Attempt::Accepted));
     assert!(api.acked.lock().unwrap().is_empty());
@@ -208,7 +209,7 @@ async fn an_old_accepted_receipt_survives_the_prune_and_is_released_not_injected
     let old = unix_now() - RETENTION - 60;
     {
         let mut journal = advisories.urgent.lock().unwrap();
-        journal.set_agent(&principal, &t, "p1", Attempt::Accepted, old);
+        journal.set_agent(&principal, &t, &key(&t, "p1"), Attempt::Accepted, old);
         journal.set_agent(&principal, &t, "settled", Attempt::Delivered, old);
         journal.prune(unix_now(), &HashSet::new());
         assert!(journal.agent_receipt(&principal, &t, "settled").is_none());
@@ -219,7 +220,7 @@ async fn an_old_accepted_receipt_survives_the_prune_and_is_released_not_injected
     // Past ACCEPTED_OWNED_FOR: handed to the turn end, never injected again.
     assert_eq!(sink.calls.lock().unwrap().len(), 1);
     assert_eq!(receipt(&advisories, &t), Some(Attempt::Released));
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["p1"]);
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, keys(&t, &["p1"]));
 }
 
 #[tokio::test]
@@ -263,7 +264,7 @@ async fn a_held_id_outside_a_full_page_is_kept_past_8_days_and_never_resubmitted
     advisories.urgent.lock().unwrap().set_agent(
         &principal,
         &t,
-        "p1",
+        &key(&t, "p1"),
         Attempt::Accepted,
         unix_now() - RETENTION - 60,
     );
@@ -277,10 +278,10 @@ async fn a_held_id_outside_a_full_page_is_kept_past_8_days_and_never_resubmitted
         let next = Sink::default();
         *next.outcome.lock().unwrap() = Some(InjectOutcome::Accepted("queued".into()));
         relaunched.deliver_urgent(&next, now).await;
-        assert!(!next.calls.lock().unwrap().iter().any(|(_, id)| id == "p1"));
+        assert!(!next.calls.lock().unwrap().iter().any(|(_, id)| *id == key(&t, "p1")));
         let taken = relaunched.take_at(&t, now).map(|n| n.ids).unwrap_or_default();
-        assert!(!taken.contains(&"p1".to_string()));
-        assert_eq!(on_disk(dir.path(), "p1"), Some(Attempt::Accepted));
+        assert!(!taken.contains(&key(&t, "p1")));
+        assert_eq!(on_disk(dir.path(), &key(&t, "p1")), Some(Attempt::Accepted));
     }
 }
 
@@ -322,7 +323,7 @@ async fn a_settled_receipt_whose_row_is_still_cached_survives_failing_lists() {
     advisories.urgent.lock().unwrap().set_agent(
         &principal,
         &t,
-        "p1",
+        &key(&t, "p1"),
         Attempt::Refused,
         unix_now() - RETENTION - 60,
     );
@@ -360,7 +361,7 @@ async fn a_delivered_that_could_not_be_saved_is_acked_once_after_a_later_save() 
     advisories.send_shown(now).await;
     assert!(api.acked.lock().unwrap().is_empty());
     assert_eq!(
-        advisories.urgent.lock().unwrap().agent_receipt(&principal, &t, "p1").map(|r| r.0),
+        advisories.urgent.lock().unwrap().agent_receipt(&principal, &t, &key(&t, "p1")).map(|r| r.0),
         Some(Attempt::Delivered)
     );
     // Storage works again: the next pass saves, then shows; exactly one ack.
@@ -400,12 +401,12 @@ async fn while_storage_is_blocked_the_turn_end_keeps_back_urgent_agent_notes_onl
     advisories.deliver_urgent(&sink, now).await;
     assert!(sink.calls.lock().unwrap().is_empty());
     // A row already delivered by DM is not one the urgent path would attempt.
-    assert_eq!(advisories.take_at(&t, now).unwrap().ids, vec!["low", "ineligible", "by-dm"]);
+    assert_eq!(advisories.take_at(&t, now).unwrap().ids, keys(&t, &["low", "ineligible", "by-dm"]));
     // Relaunch: still blocked; the P1 note is still kept back.
     let relaunched = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
     relaunched.poll(&[t.clone()], now).await;
     let ids = relaunched.take_at(&t, now).map(|n| n.ids).unwrap_or_default();
-    assert!(!ids.contains(&"p1".to_string()), "{ids:?}");
+    assert!(!ids.contains(&key(&t, "p1")), "{ids:?}");
 }
 
 #[test]

@@ -1,10 +1,21 @@
 //! The urgent receipt journal on disk: load (blocking on unusable storage),
 //! prune and save.
+//!
+//! A receipt's `id` is the key the note was handed to the core under
+//! ([`instance::key`]): `n` and 64 hex digits for an advisory instance, the
+//! advisory id for a legacy note. Version 2 may hold instance keys, so an
+//! older build, which would look its notes up by advisory id and could hand
+//! a held one over again, blocks on it as a newer version. A version 1 file
+//! is read as it is: every receipt in it is legacy-keyed, and is saved back
+//! as version 2.
 
 use super::*;
+use crate::coordination_advisories::delivery::Hand;
 
 /// The journal's schema version; a file with a higher one blocks in place.
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+/// The oldest version still read.
+const LEGACY_VERSION: u8 = 1;
 
 /// Why a journal could not be loaded.
 enum Fault {
@@ -78,8 +89,8 @@ fn parse(bytes: &[u8]) -> Result<Saved, Fault> {
     if version > u64::from(VERSION) {
         return Err(Fault::Newer);
     }
-    let saved: Saved = serde_json::from_slice(bytes).map_err(|_| Fault::Damaged)?;
-    let invalid = saved.version != VERSION
+    let mut saved: Saved = serde_json::from_slice(bytes).map_err(|_| Fault::Damaged)?;
+    let invalid = !(LEGACY_VERSION..=VERSION).contains(&saved.version)
         || records(&saved) > MAX_RECORDS
         || saved
             .agents
@@ -92,6 +103,8 @@ fn parse(bytes: &[u8]) -> Result<Saved, Fault> {
     if invalid {
         return Err(Fault::Damaged);
     }
+    // Migrated: its receipts keep the keys they were saved under.
+    saved.version = VERSION;
     Ok(saved)
 }
 
@@ -101,7 +114,7 @@ fn records(saved: &Saved) -> usize {
 }
 
 /// Reserved, accepted or in doubt: the provider may still hold the note.
-fn unsettled(attempt: &Attempt) -> bool {
+pub(super) fn unsettled(attempt: &Attempt) -> bool {
     matches!(
         attempt,
         Attempt::Reserved | Attempt::Accepted | Attempt::Uncertain
@@ -226,6 +239,65 @@ impl Journal {
             .map(|r| (r.attempt.clone(), r.at))
     }
 
+    /// The receipt the urgent path goes by for `advisory`: its own, under its
+    /// key; else, for an instance row, the legacy receipt of its id, saved
+    /// before instances, which may be the same note.
+    pub(super) fn record_for(
+        &self,
+        principal: &Principal,
+        target: &Target,
+        advisory: &Advisory,
+    ) -> Option<Record> {
+        if let Some((attempt, at)) = self.agent_receipt(principal, target, &advisory.key) {
+            return Some(Record::Own(attempt, at));
+        }
+        advisory.incarnation.as_ref()?;
+        self.agent_receipt(principal, target, &advisory.id)
+            .map(|(attempt, _)| Record::Legacy(attempt))
+    }
+
+    /// Whether `advisory`, an instance row, has an agent receipt or a person
+    /// notified (in `seen`) under its id from before instances: it may be
+    /// that note, so nobody is notified of it again. Only such a batch holds
+    /// a bare advisory id (no legacy row is urgent since), so this ends with
+    /// those receipts' retention.
+    pub(super) fn known_as_legacy(
+        &self,
+        principal: &Principal,
+        target: &Target,
+        advisory: &Advisory,
+        seen: &HashSet<String>,
+    ) -> bool {
+        advisory.incarnation.is_some()
+            && (seen.contains(&advisory.id)
+                || matches!(
+                    self.record_for(principal, target, advisory),
+                    Some(Record::Legacy(_))
+                ))
+    }
+
+    /// What this journal says about handing `advisory` out at a turn's end.
+    /// Its own receipt: kept back while the provider owns it (accepted,
+    /// reserved, in doubt, or delivered and shown by the urgent path),
+    /// labelled once released. For an instance row, a legacy receipt of its
+    /// id: kept back while held, so the note is never handed over twice
+    /// across the upgrade; else labelled, so a note that may have been shown
+    /// under its id is handed out once and acked from there.
+    pub(in crate::coordination_advisories) fn turn_end(
+        &self,
+        principal: &Principal,
+        target: &Target,
+        advisory: &Advisory,
+    ) -> Hand {
+        match self.record_for(principal, target, advisory) {
+            Some(Record::Own(Attempt::Released, _)) => Hand::Repeat,
+            Some(Record::Own(Attempt::Retry | Attempt::Refused, _)) | None => Hand::Plain,
+            Some(Record::Own(..)) => Hand::Keep,
+            Some(Record::Legacy(attempt)) if unsettled(&attempt) => Hand::Keep,
+            Some(Record::Legacy(_)) => Hand::Repeat,
+        }
+    }
+
     pub(super) fn set_agent(
         &mut self,
         principal: &Principal,
@@ -253,4 +325,12 @@ impl Journal {
             });
         }
     }
+}
+
+/// A receipt [`Journal::record_for`] found.
+pub(super) enum Record {
+    /// The row's own: its attempt and when (epoch seconds).
+    Own(Attempt, u64),
+    /// The legacy receipt of an instance row's id.
+    Legacy(Attempt),
 }
