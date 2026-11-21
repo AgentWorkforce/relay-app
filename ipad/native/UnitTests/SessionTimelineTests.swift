@@ -85,6 +85,13 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(tall.text, (1...12).map(String.init).joined(separator: "\n") + "…")
     }
 
+    func testCollapsedRowKeepsThreeLinesAndALimit() {
+        XCTAssertEqual(SessionTimeline.collapsed("a\nb", characters: 240), "a\nb")
+        XCTAssertEqual(SessionTimeline.collapsed("1\n2\n3\n4\n5", characters: 240), "1\n2\n3…")
+        XCTAssertEqual(SessionTimeline.collapsed(String(repeating: "x", count: 300), characters: 240),
+                       String(repeating: "x", count: 240) + "…")
+    }
+
     func testFilesSummary() {
         XCTAssertEqual(SessionTimeline.filesSummary([]), "")
         XCTAssertEqual(SessionTimeline.filesSummary(["a/b.swift", "c.swift"]), "b.swift, c.swift")

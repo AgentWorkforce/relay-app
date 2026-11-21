@@ -119,6 +119,15 @@ enum SessionTimeline {
         return (cut ? head.trimmingCharacters(in: .whitespacesAndNewlines) + "…" : head, cut)
     }
 
+    /// A collapsed compact row: the first three lines and at most
+    /// `characters` characters, with "…" when that cut anything.
+    static func collapsed(_ text: String, characters: Int) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var head = lines.prefix(3).joined(separator: "\n")
+        if head.count > characters { head = String(head.prefix(characters)) }
+        return head.count < text.count ? head + "…" : head
+    }
+
     /// A tool row's file list: the first three names and how many more.
     static func filesSummary(_ files: [String]) -> String {
         guard !files.isEmpty else { return "" }

@@ -1832,9 +1832,11 @@ private enum SecureStore {
             do {
                 let page = try await self.fetchSessionEventPage(id, workspaceID: workspaceID, spec: spec)
                 guard self.sessionEventsGeneration == generation else { return }
-                if self.sessionEvents[id]?.apply(page, for: spec) == true, let snapshot = self.sessionEvents[id]?.snapshot {
-                    self.sessionEventSnapshots.save(snapshot, workspaceID: cacheWorkspace)
-                }
+                guard var updated = self.sessionEvents[id] else { return }
+                let changed = updated.apply(page, for: spec)
+                // An unchanged poll publishes nothing, so the open chat is not re-rendered.
+                if updated != self.sessionEvents[id] { self.sessionEvents[id] = updated }
+                if changed { self.sessionEventSnapshots.save(updated.snapshot, workspaceID: cacheWorkspace) }
             } catch {
                 guard self.sessionEventsGeneration == generation else { return }
                 let failure = error as? RelayAPIError
