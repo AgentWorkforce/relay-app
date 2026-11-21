@@ -171,17 +171,35 @@ jobs:
                    if device.get("isAvailable") and device["name"].startswith("iPad")]
           if not ipads:
               raise SystemExit("No available iPad simulator installed")
-          ipad = ipads[0]
+          # Fewer screen pixels make a lighter simulator. Each preferred
+          # model is at least 744 points wide in portrait, the orientation
+          # the test runs in, so it gets the iPad layout (700 or more).
+          # The base iPad (820 points) comes first because it leaves the
+          # most room beside the sidebar; any iPad is the fallback.
+          preferred = ["iPad (", "iPad mini", "iPad Air 11-inch", "iPad Pro 11-inch"]
+          def rank(device):
+              for index, prefix in enumerate(preferred):
+                  if device["name"].startswith(prefix):
+                      return index
+              return len(preferred)
+          ipad = min(ipads, key=rank)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("udid=" + ipad["udid"] + "\n")
           print("Testing on " + ipad["name"])
           PY
 
+      # Nothing after the iPad steps uses the iPhone simulator: the export
+      # and upload steps read only the result bundles. Shutting it down
+      # leaves the runner to the iPad alone.
       - name: Boot the iPad simulator
         if: ${{ !cancelled() && steps.ipad_simulator.outcome == 'success' }}
         env:
+          IPHONE_UDID: ${{ steps.simulator.outputs.udid }}
           SIMULATOR_UDID: ${{ steps.ipad_simulator.outputs.udid }}
         run: |
+          if ! xcrun simctl shutdown "$IPHONE_UDID"; then
+            echo "The iPhone simulator was not running"
+          fi
           if ! output=$(xcrun simctl boot "$SIMULATOR_UDID" 2>&1); then
             if ! grep -q "current state: Booted" <<< "$output"; then
               echo "$output"
@@ -191,22 +209,39 @@ jobs:
           fi
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
+      # A loaded runner can kill the test runner before it starts any test
+      # ("never finished bootstrapping"). Only that is retried, once, into a
+      # fresh result bundle; a test that started and failed fails the step.
       - name: Test the iPad sidebar toggle
         if: ${{ !cancelled() && steps.ipad_simulator.outcome == 'success' }}
         env:
           SIMULATOR_UDID: ${{ steps.ipad_simulator.outputs.udid }}
         run: |
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-          xcodebuild test-without-building \
-            -project ipad/native/AgentRelayiPad.xcodeproj \
-            -scheme AgentRelayiPad \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            -resultBundlePath "$RUNNER_TEMP/MobileSidebar.xcresult" \
-            -parallel-testing-enabled NO \
-            -skipPackagePluginValidation \
-            -only-testing:AgentRelayUITests/SidebarCollapseUITests \
-            CODE_SIGNING_ALLOWED=NO
+          set -o pipefail
+          sidebar_tests() {
+            xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+            xcodebuild test-without-building \
+              -project ipad/native/AgentRelayiPad.xcodeproj \
+              -scheme AgentRelayiPad \
+              -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+              -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+              -resultBundlePath "$RUNNER_TEMP/MobileSidebar.xcresult" \
+              -parallel-testing-enabled NO \
+              -skipPackagePluginValidation \
+              -only-testing:AgentRelayUITests/SidebarCollapseUITests \
+              CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$1"
+          }
+          if sidebar_tests "$RUNNER_TEMP/MobileSidebar-attempt1.log"; then
+            exit 0
+          fi
+          if grep -Eq "^Test [Cc]ase '.*' started" "$RUNNER_TEMP/MobileSidebar-attempt1.log"; then
+            exit 1
+          fi
+          echo "::warning::The iPad UI test runner started no test case; retrying once."
+          if [ -d "$RUNNER_TEMP/MobileSidebar.xcresult" ]; then
+            mv "$RUNNER_TEMP/MobileSidebar.xcresult" "$RUNNER_TEMP/MobileSidebar-attempt1.xcresult"
+          fi
+          sidebar_tests "$RUNNER_TEMP/MobileSidebar-attempt2.log"
 
       # MobileHandoff and MobileSidebar are the UI test bundles and MobileUnit
       # the unit test bundle; each is absent when its step did not get to run.
@@ -263,6 +298,7 @@ jobs:
             ${{ runner.temp }}/MobileHandoff-diagnostics
             ${{ runner.temp }}/MobileHandoff-console.json
             ${{ runner.temp }}/MobileSidebar.xcresult
+            ${{ runner.temp }}/MobileSidebar-attempt1.xcresult
             ${{ runner.temp }}/MobileSidebar-attachments
             ${{ runner.temp }}/MobileSidebar-diagnostics
             ${{ runner.temp }}/MobileSidebar-console.json
