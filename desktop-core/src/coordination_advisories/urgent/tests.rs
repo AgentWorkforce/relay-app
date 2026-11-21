@@ -715,20 +715,28 @@ async fn read_access_unavailable_survives_the_urgent_pass_and_clears_when_reads_
 }
 
 #[test]
-fn a_damaged_or_unknown_version_journal_blocks_in_place_and_again_on_relaunch() {
-    for body in [&b"broken"[..], &br#"{"version":2,"agents":[],"humans":[]}"#[..]] {
+fn a_damaged_or_newer_version_journal_blocks_in_place_and_again_on_relaunch() {
+    for (body, fault) in [
+        (&b"broken"[..], "is damaged"),
+        (&br#"{"version":1,"agents":[],"humans":[],"later":1}"#[..], "is damaged"),
+        (&br#"{"version":2,"agents":[],"humans":[]}"#[..], "newer version"),
+        (&br#"{"version":9,"shape":"unknown"}"#[..], "newer version"),
+    ] {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(FILE), body).unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, body).unwrap();
         for _launch in 0..2 {
             let journal = Journal::load(dir.path());
-            assert!(journal.blocked);
-            assert!(journal.status.contains("damaged or from another version"));
-            assert!(dir.path().join(FILE).exists());
+            assert!(journal.blocked());
+            let text = journal.fault.clone().unwrap();
+            assert!(text.contains(fault), "{text}");
+            assert!(text.contains(&path.display().to_string()), "{text}");
+            assert_eq!(std::fs::read(&path).unwrap(), body);
         }
     }
     // A missing file is a fresh start.
     let dir = tempfile::tempdir().unwrap();
-    assert!(!Journal::load(dir.path()).blocked);
+    assert!(!Journal::load(dir.path()).blocked());
 }
 
 #[cfg(unix)]
@@ -746,8 +754,8 @@ fn an_io_error_on_a_valid_journal_keeps_it_blocked_and_in_place() {
     }
     let journal = Journal::load(dir.path());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(journal.blocked);
-    assert!(journal.status.contains("cannot be read"));
+    assert!(journal.blocked());
+    assert!(journal.fault.unwrap().contains("cannot be read"));
     assert!(path.exists());
 }
 
@@ -789,3 +797,4 @@ async fn a_session_in_its_own_backoff_counts_as_checked() {
 }
 
 mod observe;
+mod release;
