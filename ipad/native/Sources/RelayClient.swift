@@ -1886,6 +1886,11 @@ private enum SecureStore {
         guard let notice = current.mobileHandoff else { return }
         handoffDismissals.dismiss(notice, for: MobileHandoffDismissals.identity(name: current.name, sessionID: current.sessionID))
     }
+    /// Called when a send to the agent starts; it never resends anything.
+    func forgetHandoffDismissal(for agent: RelayAgent) {
+        let current = conversationAgentMetadata[agent.name] ?? agent
+        handoffDismissals.forget(MobileHandoffDismissals.identity(name: current.name, sessionID: current.sessionID))
+    }
     func nativeContinuationNotice(for agent: RelayAgent) -> String? {
         (conversationAgentMetadata[agent.name] ?? agent).nativeContinuationNotice
     }
@@ -1905,7 +1910,10 @@ private enum SecureStore {
     /// composer's bubble in "Sending…".
     func send(_ text: String, attachments: [RelayAttachment], to agent: RelayAgent,
               idempotencyKey: String = UUID().uuidString) async -> RelaySendOutcome {
-        await RelaySendFlow.run(post: {
+        // Every send reaches here (composer, failed-bubble retry, voice), so a
+        // new attempt shows its handoff failure even when the detail repeats.
+        forgetHandoffDismissal(for: agent)
+        return await RelaySendFlow.run(post: {
             if agent.source == .channel {
                 // Posting needs no membership, but only members are sent the
                 // channel's later messages, so the first post joins it.

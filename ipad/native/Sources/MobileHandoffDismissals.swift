@@ -19,6 +19,13 @@ struct MobileHandoffDismissals: Equatable {
         dismissed[identity] = notice
     }
 
+    /// Forgets one agent's dismissal. The person sending to that agent again
+    /// is a new attempt, so its failure is shown even if it repeats the old
+    /// detail exactly.
+    mutating func forget(_ identity: String) {
+        dismissed[identity] = nil
+    }
+
     func hides(_ notice: MobileHandoffNotice, for identity: String) -> Bool {
         dismissed[identity] == notice
     }

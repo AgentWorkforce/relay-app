@@ -106,6 +106,25 @@ final class MobileHandoffNoticeTests: XCTestCase {
         XCTAssertEqual(cleared, MobileHandoffDismissals())
     }
 
+    func testSendingAgainShowsTheSameFailureAgain() throws {
+        let failed = try XCTUnwrap(MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed",
+                                                                  "mobile_handoff_error": MobileHandoffNotice.unconfirmedDetail]))
+        let reviewer = MobileHandoffDismissals.identity(name: "reviewer", sessionID: "s1")
+        let builder = MobileHandoffDismissals.identity(name: "builder", sessionID: "s1")
+        var dismissals = MobileHandoffDismissals()
+        dismissals.dismiss(failed, for: reviewer)
+
+        // A send to another agent leaves this dismissal alone.
+        dismissals.forget(builder)
+        XCTAssertTrue(dismissals.hides(failed, for: reviewer))
+
+        // A send to this agent is a new attempt: the same failure shows again
+        // even though no refresh saw the state change in between.
+        dismissals.forget(reviewer)
+        XCTAssertFalse(dismissals.hides(failed, for: reviewer))
+        XCTAssertEqual(dismissals, MobileHandoffDismissals())
+    }
+
     func testOtherAgentsRequireExplicitDesktopNativeMetadata() {
         for provider in ["pi", "opencode", "codex"] {
             var metadata: JSONObject = ["source": "relay-desktop", "cli": provider]

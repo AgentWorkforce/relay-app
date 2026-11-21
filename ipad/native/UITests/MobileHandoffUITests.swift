@@ -16,7 +16,7 @@ final class MobileHandoffUITests: XCTestCase {
         return app
     }
 
-    private func send(_ app: XCUIApplication) {
+    private func send(_ app: XCUIApplication, text: String = "Continue the task") {
         let composer = app.textFields["Message composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -33,7 +33,6 @@ final class MobileHandoffUITests: XCTestCase {
             XCTFail("Tapping the composer must give it keyboard focus before typing")
             return
         }
-        let text = "Continue the task"
         composer.typeText(text)
         let send = app.buttons["Send message"].firstMatch
         // Resolve readiness in the accessibility query instead of reading
@@ -148,5 +147,20 @@ final class MobileHandoffUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Dismiss mobile handoff notice"].exists)
         XCTAssertFalse(app.buttons["Authorize"].exists)
         capture(app, "mobile-handoff-failure")
+    }
+
+    func testSendingAgainAfterDismissingShowsTheFailureAgain() {
+        let app = open(scenario: "failed")
+        send(app)
+        let title = app.staticTexts["Could not continue Claude"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        app.buttons["Dismiss mobile handoff notice"].firstMatch.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: title)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "dismissing hides the notice")
+        // The fixture keeps publishing the same failure with the same detail,
+        // so only the new send can bring the notice back.
+        send(app, text: "Continue the task again")
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        capture(app, "mobile-handoff-failure-after-resend")
     }
 }
