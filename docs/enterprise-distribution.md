@@ -384,8 +384,10 @@ and result codes below are the draft's and may change.
   a file, and never sent to the signed download URL.
 - `feed-headers` prints one JSON object with the three headers by default;
   the installers parse that. `--format lines` prints the same headers as
-  `Name: value` lines instead, for `curl -H @file` when checking a feed by
-  hand. Pass `--socket` with the core's socket or named pipe when more than
+  `Name: value` lines instead, for checking a feed by hand: pipe it
+  straight into curl, `agent-relay-probe feed-headers ... --format lines |
+  curl -H @- <url>`, and do not save the output, which holds a live bearer
+  token. Pass `--socket` with the core's socket or named pipe when more than
   one Agent Relay core runs on the machine (for example a site profile build
   next to the stock app). A failure names the check that failed on one line:
   the core is not reachable at the socket or pipe tried, the core's own

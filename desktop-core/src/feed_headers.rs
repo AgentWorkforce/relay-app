@@ -41,7 +41,7 @@ const USAGE: &str = "Usage: agent-relay-probe feed-headers --site <url> --worksp
 enum Format {
     /// One JSON object and a newline; the installers parse this.
     Json,
-    /// `Name: value` lines, for `curl -H @file`.
+    /// `Name: value` lines, to pipe into `curl -H @-`.
     Lines,
 }
 
@@ -364,22 +364,14 @@ mod tests {
         );
     }
 
-    /// Pins the relay crate's connection-failure text this command relies
-    /// on, against a socket in an empty directory (no core is contacted).
-    #[cfg(unix)]
-    #[test]
-    fn the_relay_connection_failure_is_recognised() {
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("core.sock");
-        let tried = core_socket(Some(&socket)).unwrap();
+    /// Calls the real `cli::call` at `socket`, which nothing serves, and
+    /// checks the line names it: pins the relay crate's connection-failure
+    /// text this command relies on. No core is contacted.
+    fn an_unserved_endpoint_is_named(socket: &Path) {
+        let tried = core_socket(Some(socket)).unwrap();
         assert_eq!(tried, socket);
         let error = headers("site", "w", "a", "x7k2q", Some(&tried), |method, params| {
-            agent_relay_node::relay::cli::call(
-                Some(&socket),
-                method,
-                params,
-                Duration::from_secs(5),
-            )
+            agent_relay_node::relay::cli::call(Some(socket), method, params, Duration::from_secs(5))
         })
         .unwrap_err();
         assert_eq!(
@@ -389,6 +381,25 @@ mod tests {
                 socket.display()
             )
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_relay_connection_failure_is_recognised() {
+        let directory = tempfile::tempdir().unwrap();
+        an_unserved_endpoint_is_named(&directory.path().join("core.sock"));
+    }
+
+    /// On Windows the endpoint is a path the relay crate maps to a named
+    /// pipe (`transport::pipe_name`); one in an empty directory names a pipe
+    /// nobody serves, and the failure names the endpoint path.
+    #[cfg(windows)]
+    #[test]
+    fn the_relay_named_pipe_failure_is_recognised() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("core.sock");
+        assert!(!agent_relay_node::relay::transport::is_served(&socket));
+        an_unserved_endpoint_is_named(&socket);
     }
 
     #[test]
