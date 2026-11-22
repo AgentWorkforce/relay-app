@@ -465,13 +465,15 @@ enum SessionEventPolling {
     /// the later of the newest event and the chat's newest message: 5 s
     /// under 2 minutes old, 15 s under an hour, 60 s under a day, 5 minutes
     /// under a week, no timer after; 15 s with no reference. Failures in a
-    /// row double it, up to 2 minutes, never below the base. An unavailable
-    /// session has no timer.
+    /// row double it, up to 2 minutes, never below the base. A failed read
+    /// in the no-timer tier is retried every 5 minutes until one succeeds.
+    /// An unavailable session has no timer.
     static func interval(newestEventAt newest: Date?, chatActivityAt chat: Date? = nil, now: Date, failures: Int,
                          unavailable: Bool = false) -> TimeInterval? {
-        guard !unavailable, let base = baseInterval(reference: [newest, chat].compactMap { $0 }.max(), now: now) else {
-            return nil
-        }
+        guard !unavailable else { return nil }
+        let tier = baseInterval(reference: [newest, chat].compactMap { $0 }.max(), now: now)
+        let retry: TimeInterval? = failures > 0 ? dormantInterval : nil
+        guard let base = tier ?? retry else { return nil }
         guard failures > 0 else { return base }
         return max(base, min(base * pow(2, Double(min(failures, 10))), maximumBackoff))
     }

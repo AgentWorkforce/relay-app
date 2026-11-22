@@ -1481,9 +1481,10 @@ struct RelayWorkspaceView: View {
                                 if Task.isCancelled { return }
                             }
                             await client.refreshSessionEvents(for: agent)
-                            // Nil: no timer (activity a week old, or the session
-                            // is unavailable). Opening the chat, returning to the
-                            // foreground or a new message reads again.
+                            // Nil: no timer (activity a week old with no failed
+                            // read, or the session is unavailable). Opening the
+                            // chat, returning to the foreground or a new message
+                            // reads again.
                             guard let delay = client.sessionEventPollDelay(for: agent, chatActivityAt: chatActivityAt) else { return }
                             try? await Task.sleep(for: .seconds(delay))
                         }

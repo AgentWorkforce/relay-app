@@ -284,7 +284,7 @@ final class SessionEventsTests: XCTestCase {
         let old = now.addingTimeInterval(-30 * 24 * 60 * 60)
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: old, chatActivityAt: now.addingTimeInterval(-10),
                                                     now: now, failures: 0), 5)
-        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, chatActivityAt: now.addingTimeInterval(-2 * 60 * 60),
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, chatActivityAt: now.addingTimeInterval(-2 * 24 * 60 * 60),
                                                     now: now, failures: 0), 300, "chat activity alone is a reference")
         // An older message does not slow a recent session.
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: now.addingTimeInterval(-10), chatActivityAt: old,
@@ -299,14 +299,25 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 4), 80)
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 5), 120)
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 500), 120)
-        let hours = now.addingTimeInterval(-2 * 60 * 60)
-        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 0), 300)
-        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 3), 300,
+        let days = now.addingTimeInterval(-2 * 24 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: days, now: now, failures: 0), 300)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: days, now: now, failures: 3), 300,
                        "a 5 minute base stays 5 minutes")
-        let minutes = now.addingTimeInterval(-10 * 60)
-        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: minutes, now: now, failures: 0), 60)
-        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: minutes, now: now, failures: 1), 120)
-        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: minutes, now: now, failures: 9), 120)
+        let hours = now.addingTimeInterval(-2 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 0), 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 1), 120)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 9), 120)
+    }
+
+    func testAFailedReadOfAWeekOldSessionIsRetriedEveryFiveMinutes() {
+        let now = base
+        let week = now.addingTimeInterval(-7 * 24 * 60 * 60)
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 0), "no timer")
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 1), 300)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 5), 300)
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 1, unavailable: true))
+        let almostWeek = now.addingTimeInterval(-(7 * 24 * 60 * 60 - 1))
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: almostWeek, now: now, failures: 1), 300)
     }
 
     func testAnUnavailableSessionHasNoTimer() {
