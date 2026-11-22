@@ -244,9 +244,18 @@ enum SessionEventsRequest {
     static func accessRevoked(status: Int?) -> Bool { status == 401 || status == 403 }
 
     /// The server dropped the cursor (409 `cursor_backend_transition`, 410
-    /// `cursor_expired`): paging restarts from the newest page.
+    /// `cursor_expired`, 501 `canonical_cursor_scope`): paging restarts
+    /// from the newest page.
     static func cursorLost(status: Int?, code: String) -> Bool {
         status == 410 || status == 409 || code == "cursor_expired" || code == "cursor_backend_transition"
+            || (status == 501 && code == "canonical_cursor_scope")
+    }
+
+    /// The server will not serve this session's events (any other 501, with
+    /// or without a code, since the route in front may drop it). The answer
+    /// is final: the store reads the session no more until it is dropped.
+    static func unavailable(status: Int?, code: String) -> Bool {
+        status == 501 && !cursorLost(status: status, code: code)
     }
 }
 
@@ -306,6 +315,10 @@ struct SessionEventStore: Equatable, Sendable {
     /// an older page added nothing, an older read failed, or the cursor was
     /// lost twice in a row. An older page that adds events resumes them.
     private(set) var olderAutoLoadStopped = false
+    /// The server answered that it will not serve this session (a 501):
+    /// no further read, newest or older, and no timer. In memory only; it
+    /// ends when the store is dropped and is not part of the snapshot.
+    private(set) var unavailable = false
     private var keys: Set<SessionEvent.Key> = []
 
     init(sessionID: String) { self.sessionID = sessionID }
@@ -325,12 +338,13 @@ struct SessionEventStore: Equatable, Sendable {
     }
 
     var newest: SessionEvent? { events.last }
-    var hasOlder: Bool { loaded && !reachedStart }
+    var hasOlder: Bool { loaded && !reachedStart && !unavailable }
 
     /// The request that reads the next older page: the newest page again
-    /// when the cursor was lost, nil when the start was reached.
+    /// when the cursor was lost, nil when the start was reached or the
+    /// session is unavailable.
     var olderRequest: SessionEventsRequest.Spec? {
-        guard loaded, !reachedStart else { return nil }
+        guard loaded, !reachedStart, !unavailable else { return nil }
         guard let olderCursor, !restarting else { return SessionEventsRequest.newest }
         return .init(order: .desc, limit: SessionEventsRequest.pageLimit, cursor: olderCursor)
     }
@@ -369,11 +383,15 @@ struct SessionEventStore: Equatable, Sendable {
     }
 
     /// Records a failed read. A lost cursor restarts paging from the newest
-    /// page; what is held stays.
+    /// page; a 501 makes the store final. What is held stays.
     /// `older`: the read was for older history.
     mutating func failed(status: Int?, code: String, older: Bool = false) {
         failures += 1
         if older { olderAutoLoadStopped = true }
+        if SessionEventsRequest.unavailable(status: status, code: code) {
+            unavailable = true
+            return
+        }
         if SessionEventsRequest.cursorLost(status: status, code: code) {
             restarting = true
             olderCursor = nil
@@ -418,19 +436,50 @@ struct SessionEventStore: Equatable, Sendable {
     }
 }
 
-/// How often the open chat re-reads its session's newest page.
+/// How often the open chat re-reads its session's newest page, by how old
+/// the session's activity is.
 enum SessionEventPolling {
     static let activeInterval: TimeInterval = 5
     static let idleInterval: TimeInterval = 15
-    static let activeWindow: TimeInterval = 120
-    static let maximumBackoff: TimeInterval = 120
+    static let quietInterval: TimeInterval = 60
+    static let dormantInterval: TimeInterval = 5 * 60
+    static let activeWindow: TimeInterval = 2 * 60
+    static let idleWindow: TimeInterval = 60 * 60
+    static let quietWindow: TimeInterval = 24 * 60 * 60
+    /// At this age or older there is no timer.
+    static let dormantWindow: TimeInterval = 7 * 24 * 60 * 60
+    /// With nothing loaded and no chat messages.
+    static let unknownInterval: TimeInterval = idleInterval
+    static let maximumBackoff: TimeInterval = 2 * 60
+    /// The shortest gap between two newest-page reads of one session, so a
+    /// burst of chat messages reads at most once per interval.
+    static let minimumSpacing: TimeInterval = activeInterval
 
-    /// Every 5 s while the newest event is under 2 minutes old, else 15 s;
-    /// failures in a row double it, up to 2 minutes.
-    static func interval(newestEventAt newest: Date?, now: Date, failures: Int) -> TimeInterval {
-        let base = newest.map { now.timeIntervalSince($0) < activeWindow } == true ? activeInterval : idleInterval
+    /// Age under the window → interval, youngest first.
+    static let tiers: [(window: TimeInterval, interval: TimeInterval)] = [
+        (activeWindow, activeInterval), (idleWindow, idleInterval),
+        (quietWindow, quietInterval), (dormantWindow, dormantInterval),
+    ]
+
+    /// The wait before the next read, or nil for no timer. The reference is
+    /// the later of the newest event and the chat's newest message: 5 s
+    /// under 2 minutes old, 15 s under an hour, 60 s under a day, 5 minutes
+    /// under a week, no timer after; 15 s with no reference. Failures in a
+    /// row double it, up to 2 minutes, never below the base. An unavailable
+    /// session has no timer.
+    static func interval(newestEventAt newest: Date?, chatActivityAt chat: Date? = nil, now: Date, failures: Int,
+                         unavailable: Bool = false) -> TimeInterval? {
+        guard !unavailable, let base = baseInterval(reference: [newest, chat].compactMap { $0 }.max(), now: now) else {
+            return nil
+        }
         guard failures > 0 else { return base }
-        return min(base * pow(2, Double(min(failures, 10))), maximumBackoff)
+        return max(base, min(base * pow(2, Double(min(failures, 10))), maximumBackoff))
+    }
+
+    static func baseInterval(reference: Date?, now: Date) -> TimeInterval? {
+        guard let reference else { return unknownInterval }
+        let age = now.timeIntervalSince(reference)
+        return tiers.first { age < $0.window }?.interval
     }
 }
 

@@ -1320,8 +1320,13 @@ struct RelayWorkspaceView: View {
             sessionApplies: sessionApplies, sessionSettled: client.sessionEventsSettled(for: agent))
         let lastMineID = client.messages.last(where: \.mine)?.id
         let lastEventID = store?.newest?.id
-        // Restarts on another chat, and stops in the background: no reads there.
-        let pollID = "\(agent.id)|\(agent.sessionID)|\(sessionApplies)|\(scenePhase == .active)"
+        // The chat's newest message, sent or received: it sets the poll's
+        // pace with the newest event.
+        let chatActivityAt = (client.messages.compactMap(\.createdAt) + pending.map(\.createdAt)).max()
+        // Restarts on another chat, on a new message in this one (a read
+        // follows, at most one per 5 s), and stops in the background: no reads there.
+        let pollID = "\(agent.id)|\(agent.sessionID)|\(sessionApplies)|\(scenePhase == .active)|"
+            + "\(client.messages.last?.id ?? "")|\(pending.last?.id ?? "")"
         return VStack(spacing: 0) {
             if agent.source == .drive {
                 HStack(spacing: 10) {
@@ -1366,7 +1371,11 @@ struct RelayWorkspaceView: View {
                                     .font(.subheadline).foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity).padding(.top, 45)
                             }
-                            if let store, store.failures > 0 {
+                            if let store, store.unavailable {
+                                Text(store.loaded ? "Newer session activity is not available for this session."
+                                     : "Session activity is not available for this session.")
+                                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                            } else if let store, store.failures > 0 {
                                 Text(store.loaded ? "Session activity could not refresh. Retrying…"
                                      : "Session activity could not load. Retrying…")
                                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
@@ -1464,8 +1473,19 @@ struct RelayWorkspaceView: View {
                     .task(id: pollID) {
                         guard sessionApplies, scenePhase == .active else { return }
                         while !Task.isCancelled {
+                            // A burst of messages restarts this task each time;
+                            // reads of one session stay 5 s apart.
+                            let wait = client.sessionEventReadWait(for: agent)
+                            if wait > 0 {
+                                try? await Task.sleep(for: .seconds(wait))
+                                if Task.isCancelled { return }
+                            }
                             await client.refreshSessionEvents(for: agent)
-                            try? await Task.sleep(for: .seconds(client.sessionEventPollDelay(for: agent)))
+                            // Nil: no timer (activity a week old, or the session
+                            // is unavailable). Opening the chat, returning to the
+                            // foreground or a new message reads again.
+                            guard let delay = client.sessionEventPollDelay(for: agent, chatActivityAt: chatActivityAt) else { return }
+                            try? await Task.sleep(for: .seconds(delay))
                         }
                     }
                 }

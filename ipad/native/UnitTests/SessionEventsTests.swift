@@ -260,6 +260,121 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, now: now, failures: 50), 120)
     }
 
+    func testPollingTierBoundaries() {
+        let now = base
+        func at(_ age: TimeInterval) -> TimeInterval? {
+            SessionEventPolling.interval(newestEventAt: now.addingTimeInterval(-age), now: now, failures: 0)
+        }
+        XCTAssertEqual(at(0), 5)
+        XCTAssertEqual(at(2 * 60 - 1), 5)
+        XCTAssertEqual(at(2 * 60), 15)
+        XCTAssertEqual(at(60 * 60 - 1), 15)
+        XCTAssertEqual(at(60 * 60), 60)
+        XCTAssertEqual(at(24 * 60 * 60 - 1), 60)
+        XCTAssertEqual(at(24 * 60 * 60), 300)
+        XCTAssertEqual(at(7 * 24 * 60 * 60 - 1), 300)
+        XCTAssertNil(at(7 * 24 * 60 * 60), "a week old: no timer")
+        XCTAssertNil(at(30 * 24 * 60 * 60))
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, chatActivityAt: nil, now: now, failures: 0), 15,
+                       "no reference")
+    }
+
+    func testChatActivityNewerThanTheNewestEventLiftsTheTier() {
+        let now = base
+        let old = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: old, chatActivityAt: now.addingTimeInterval(-10),
+                                                    now: now, failures: 0), 5)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, chatActivityAt: now.addingTimeInterval(-2 * 60 * 60),
+                                                    now: now, failures: 0), 300, "chat activity alone is a reference")
+        // An older message does not slow a recent session.
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: now.addingTimeInterval(-10), chatActivityAt: old,
+                                                    now: now, failures: 0), 5)
+    }
+
+    func testBackoffDoublesCapsAndNeverGoesBelowTheBase() {
+        let now = base
+        let fresh = now.addingTimeInterval(-10)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 1), 10)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 2), 20)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 4), 80)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 5), 120)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 500), 120)
+        let hours = now.addingTimeInterval(-2 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 0), 300)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 3), 300,
+                       "a 5 minute base stays 5 minutes")
+        let minutes = now.addingTimeInterval(-10 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: minutes, now: now, failures: 0), 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: minutes, now: now, failures: 1), 120)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: minutes, now: now, failures: 9), 120)
+    }
+
+    func testAnUnavailableSessionHasNoTimer() {
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: base, chatActivityAt: base, now: base, failures: 1,
+                                                  unavailable: true))
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: nil, now: base, failures: 0, unavailable: true))
+    }
+
+    // MARK: 501
+
+    func testA501IsFinalForTheSession() throws {
+        for code in ["events_canonical_too_large", "events_canonical_source_ambiguous", "history_floor", ""] {
+            var store = SessionEventStore(sessionID: "s1")
+            store.apply(page([event("5", at: 50), event("6", at: 60)], next: "c1"), for: SessionEventsRequest.newest)
+            store.failed(status: 501, code: code)
+            XCTAssertTrue(store.unavailable, code)
+            XCTAssertEqual(store.events.map(\.key.eventID), ["5", "6"], "what was loaded is kept: \(code)")
+            XCTAssertTrue(store.loaded, code)
+            XCTAssertNil(store.olderRequest, code)
+            XCTAssertFalse(store.hasOlder, code)
+            XCTAssertNil(SessionEventPolling.interval(newestEventAt: base.addingTimeInterval(60), now: base.addingTimeInterval(61),
+                                                      failures: store.failures, unavailable: store.unavailable), code)
+            XCTAssertTrue(SessionEventsRequest.unavailable(status: 501, code: code), code)
+            XCTAssertFalse(SessionEventsRequest.cursorLost(status: 501, code: code), code)
+            // Not part of what is cached on disk.
+            XCTAssertEqual(store.snapshot.events.count, 2, code)
+            XCTAssertFalse(SessionEventStore(snapshot: store.snapshot).unavailable, code)
+        }
+        // Before anything loaded, too.
+        var empty = SessionEventStore(sessionID: "s1")
+        empty.failed(status: 501, code: "")
+        XCTAssertTrue(empty.unavailable)
+        XCTAssertFalse(empty.loaded)
+        XCTAssertNil(empty.olderRequest)
+    }
+
+    func testA501CanonicalCursorScopeRestartsPaging() throws {
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+        store.apply(page([event("4", at: 40)], next: "c2"), for: try XCTUnwrap(store.olderRequest))
+        store.failed(status: 501, code: "canonical_cursor_scope")
+        XCTAssertFalse(store.unavailable)
+        XCTAssertTrue(SessionEventsRequest.cursorLost(status: 501, code: "canonical_cursor_scope"))
+        XCTAssertFalse(SessionEventsRequest.unavailable(status: 501, code: "canonical_cursor_scope"))
+        XCTAssertEqual(store.olderRequest, SessionEventsRequest.newest, "restart from the newest page")
+        XCTAssertEqual(store.events.count, 2)
+        XCTAssertNotNil(SessionEventPolling.interval(newestEventAt: base, now: base, failures: store.failures,
+                                                     unavailable: store.unavailable))
+    }
+
+    func testServerAndTransportFailuresAreNotFinal() {
+        for status in [500, 503, nil] as [Int?] {
+            var store = SessionEventStore(sessionID: "s1")
+            store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+            store.failed(status: status, code: "")
+            store.failed(status: status, code: "")
+            XCTAssertFalse(store.unavailable, "\(String(describing: status))")
+            XCTAssertFalse(SessionEventsRequest.unavailable(status: status, code: ""))
+            XCTAssertEqual(store.olderRequest?.cursor, "c1")
+            let now = base.addingTimeInterval(60)
+            XCTAssertEqual(SessionEventPolling.interval(newestEventAt: store.newest?.ts, now: now, failures: store.failures,
+                                                        unavailable: store.unavailable), 20, "retried with backoff")
+        }
+        for status in [401, 403, 404, 409, 410] {
+            XCTAssertFalse(SessionEventsRequest.unavailable(status: status, code: ""))
+        }
+    }
+
     // MARK: Working
 
     func testWorkingWhileTheNewestEventIsARecentToolCall() {
@@ -285,5 +400,63 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(SessionWorking.state(events: events, now: base.addingTimeInterval(5))?.label, "Working…")
         XCTAssertNil(SessionWorking.state(events: [event("1", at: 0, kind: "prompt", role: "user")], now: base.addingTimeInterval(5)))
         XCTAssertNil(SessionWorking.state(events: [], now: base))
+    }
+}
+
+/// A final store, through the client, with a stand-in for Cloud.
+@MainActor
+final class SessionEventUnavailableClientTests: XCTestCase {
+    private let agent = RelayAgent(relay: ["name": "builder", "status": "active",
+                                           "metadata": ["session_id": "s1", "source": "relay-desktop"]])
+
+    private func page() -> SessionEventPage {
+        SessionEventPage(sessionID: "s1", events: [
+            SessionEvent(key: .init(source: "fixture", machineID: "m", kind: "assistant", eventID: "e1"),
+                         ts: Date(timeIntervalSince1970: 1_790_000_000), kind: "assistant",
+                         actorRole: "assistant", content: "synthetic")
+        ], nextCursor: "c1")
+    }
+
+    func testAFinalStoreMakesNoRequestAndKeepsTheCache() async {
+        for code in ["events_canonical_too_large", ""] {
+            let spy = SpySessionEventSnapshots()
+            var calls = 0
+            let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in
+                calls += 1
+                if calls == 1 { return self.page() }
+                throw RelayAPIError(message: "not available", status: 501, code: code)
+            })
+            await client.refreshSessionEvents(for: agent)
+            await client.refreshSessionEvents(for: agent)
+            XCTAssertEqual(calls, 2, code)
+            XCTAssertEqual(client.sessionEvents["s1"]?.unavailable, true, code)
+            await client.refreshSessionEvents(for: agent)
+            await client.loadOlderSessionEvents(for: agent)
+            XCTAssertEqual(calls, 2, "no read of a final session: \(code)")
+            XCTAssertEqual(client.sessionEvents["s1"]?.events.count, 1, "what is shown stays: \(code)")
+            XCTAssertTrue(spy.removed.isEmpty, "the cached copy stays: \(code)")
+            XCTAssertEqual(spy.removeAllCount, 0, code)
+            XCTAssertTrue(client.sessionEventsSettled(for: agent), code)
+            XCTAssertNil(client.sessionEventPollDelay(for: agent, chatActivityAt: Date()), code)
+            // Dropping the store (a new identity) ends it.
+            client.advanceSessionGeneration()
+            XCTAssertNil(client.sessionEvents["s1"])
+        }
+    }
+
+    func testReadsOfOneSessionStayApart() async {
+        var calls = 0
+        let client = RelayClient(sessionEventSnapshots: SpySessionEventSnapshots(), sessionEventFetch: { _, _ in
+            calls += 1
+            return self.page()
+        })
+        XCTAssertEqual(client.sessionEventReadWait(for: agent), 0, "the first read goes at once")
+        let start = Date()
+        await client.refreshSessionEvents(for: agent)
+        XCTAssertEqual(calls, 1)
+        let wait = client.sessionEventReadWait(for: agent, now: start.addingTimeInterval(1))
+        XCTAssertGreaterThan(wait, 3)
+        XCTAssertLessThanOrEqual(wait, SessionEventPolling.minimumSpacing)
+        XCTAssertEqual(client.sessionEventReadWait(for: agent, now: Date().addingTimeInterval(SessionEventPolling.minimumSpacing)), 0)
     }
 }
