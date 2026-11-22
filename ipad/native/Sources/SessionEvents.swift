@@ -244,18 +244,54 @@ enum SessionEventsRequest {
     static func accessRevoked(status: Int?) -> Bool { status == 401 || status == 403 }
 
     /// The server dropped the cursor (409 `cursor_backend_transition`, 410
-    /// `cursor_expired`, 501 `canonical_cursor_scope`): paging restarts
-    /// from the newest page.
-    static func cursorLost(status: Int?, code: String) -> Bool {
+    /// `cursor_expired`, a lost-cursor 501): paging restarts from the newest
+    /// page.
+    static func cursorLost(status: Int?, code: String, reason: String = "") -> Bool {
         status == 410 || status == 409 || code == "cursor_expired" || code == "cursor_backend_transition"
-            || (status == 501 && code == "canonical_cursor_scope")
+            || (status == 501 && notImplemented(code: code, reason: reason) == .cursorLost)
     }
 
-    /// The server will not serve this session's events (any other 501, with
-    /// or without a code, since the route in front may drop it). The answer
-    /// is final: the store reads the session no more until it is dropped.
-    static func unavailable(status: Int?, code: String) -> Bool {
-        status == 501 && !cursorLost(status: status, code: code)
+    /// The server will not serve this session's events: a final 501. The
+    /// store reads the session no more until it is dropped. (Three unknown
+    /// 501s in a row make the store final too; see `SessionEventStore`.)
+    static func unavailable(status: Int?, code: String, reason: String = "") -> Bool {
+        status == 501 && notImplemented(code: code, reason: reason) == .permanent
+    }
+
+    /// What a session events 501 means.
+    enum NotImplemented: Equatable, Sendable {
+        /// The cursor does not fit the session: paging restarts.
+        case cursorLost
+        /// Not served yet (a session still being written): retried like a 500.
+        case transient
+        /// Never served for this session: the store is final at once.
+        case permanent
+        /// An identifier the app does not know, or none (a route in front may
+        /// drop the body): retried slowly, final after a few in a row.
+        case unknown
+    }
+
+    /// Unknown 501s in a row that make the store final.
+    static let unknownNotImplementedLimit = 3
+
+    /// What identifies a 501: the reason when there is one, else the code
+    /// unless it is empty or the shared `unsupported_by_backend`; nil when
+    /// neither says anything.
+    static func notImplementedIdentifier(code: String, reason: String) -> String? {
+        if !reason.isEmpty { return reason }
+        if !code.isEmpty, code != "unsupported_by_backend" { return code }
+        return nil
+    }
+
+    /// Classifies a 501 from its `error.code` and `error.reason`.
+    static func notImplemented(code: String, reason: String) -> NotImplemented {
+        guard let identifier = notImplementedIdentifier(code: code, reason: reason) else { return .unknown }
+        switch identifier {
+        case "canonical_cursor_scope", "foreign_cursor": return .cursorLost
+        case "session_partial", "history_floor_unknown_session": return .transient
+        case "history_floor": return .permanent
+        default: return identifier.hasPrefix("events_canonical_") ? .permanent : .unknown
+        }
     }
 }
 
@@ -307,6 +343,10 @@ struct SessionEventStore: Equatable, Sendable {
     private(set) var loaded = false
     /// Failed reads in a row; a success resets it.
     private(set) var failures = 0
+    /// Unknown 501s in a row (`SessionEventsRequest.NotImplemented.unknown`);
+    /// a success or any other failure resets it. At the limit the store is
+    /// final.
+    private(set) var unknownNotImplemented = 0
     /// The last read failed and the store's paging has to restart.
     private var restarting = false
     /// Restarts after a lost cursor since older paging last added events.
@@ -357,6 +397,7 @@ struct SessionEventStore: Equatable, Sendable {
     mutating func apply(_ page: SessionEventPage, for spec: SessionEventsRequest.Spec) -> Bool {
         guard page.sessionID == sessionID else { return false }
         failures = 0
+        unknownNotImplemented = 0
         let before = (olderCursor, reachedStart)
         if spec.cursor == nil {
             let overlaps = page.events.contains { keys.contains($0.key) }
@@ -383,16 +424,23 @@ struct SessionEventStore: Equatable, Sendable {
     }
 
     /// Records a failed read. A lost cursor restarts paging from the newest
-    /// page; a 501 makes the store final. What is held stays.
+    /// page; a final 501, or the third unknown 501 in a row, makes the store
+    /// final; a transient 501 is retried like a 500. What is held stays.
     /// `older`: the read was for older history.
-    mutating func failed(status: Int?, code: String, older: Bool = false) {
+    mutating func failed(status: Int?, code: String, reason: String = "", older: Bool = false) {
         failures += 1
         if older { olderAutoLoadStopped = true }
-        if SessionEventsRequest.unavailable(status: status, code: code) {
+        if status == 501, SessionEventsRequest.notImplemented(code: code, reason: reason) == .unknown {
+            unknownNotImplemented += 1
+            if unknownNotImplemented >= SessionEventsRequest.unknownNotImplementedLimit { unavailable = true }
+            return
+        }
+        unknownNotImplemented = 0
+        if SessionEventsRequest.unavailable(status: status, code: code, reason: reason) {
             unavailable = true
             return
         }
-        if SessionEventsRequest.cursorLost(status: status, code: code) {
+        if SessionEventsRequest.cursorLost(status: status, code: code, reason: reason) {
             restarting = true
             olderCursor = nil
             restarts += 1
@@ -467,13 +515,15 @@ enum SessionEventPolling {
     /// under a week, no timer after; 15 s with no reference. Failures in a
     /// row double it, up to 2 minutes, never below the base. A failed read
     /// in the no-timer tier is retried every 5 minutes until one succeeds.
-    /// An unavailable session has no timer.
+    /// After an unknown 501 (`unknownNotImplemented` > 0) the wait is at
+    /// least 2 minutes. An unavailable session has no timer.
     static func interval(newestEventAt newest: Date?, chatActivityAt chat: Date? = nil, now: Date, failures: Int,
-                         unavailable: Bool = false) -> TimeInterval? {
+                         unavailable: Bool = false, unknownNotImplemented: Int = 0) -> TimeInterval? {
         guard !unavailable else { return nil }
         let tier = baseInterval(reference: [newest, chat].compactMap { $0 }.max(), now: now)
-        let retry: TimeInterval? = failures > 0 ? dormantInterval : nil
+        let retry: TimeInterval? = failures > 0 || unknownNotImplemented > 0 ? dormantInterval : nil
         guard let base = tier ?? retry else { return nil }
+        if unknownNotImplemented > 0 { return max(base, maximumBackoff) }
         guard failures > 0 else { return base }
         return max(base, min(base * pow(2, Double(min(failures, 10))), maximumBackoff))
     }

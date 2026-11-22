@@ -298,6 +298,9 @@ struct RelayAPIError: LocalizedError {
     let message: String
     var status: Int? = nil
     var code: String = ""
+    /// The server's `error.reason`: what tells apart answers that share a
+    /// code (every session events 501 has `unsupported_by_backend`).
+    var reason: String = ""
     var retryAfterSeconds: Int? = nil
     /// A paid GPT-Live session the voice broker created but couldn't confirm
     /// closed; the call reports usage for it until the close is confirmed.
@@ -309,6 +312,16 @@ struct RelayAPIError: LocalizedError {
     /// failure from it (SpawnFailure).
     var summary: String? = nil
     var errorDescription: String? { UserFacingError.apiMessage(self) }
+}
+
+/// The identifiers in an error body. Cloud routes report `{error, code}`;
+/// Relaycast nests the code in `error`; the reason is `error.reason`.
+enum RelayErrorBody {
+    static func identifiers(in json: JSONObject) -> (code: String, reason: String) {
+        let problem = object(json["error"])
+        let code = string(problem["code"]).isEmpty ? string(json["code"]) : string(problem["code"])
+        return (code, string(problem["reason"]))
+    }
 }
 
 private enum SecureStore {
@@ -560,8 +573,7 @@ private enum SecureStore {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? JSONObject ?? [:]
             guard !(200..<300).contains(http.statusCode) else { return json }
             let problem = object(json["error"])
-            // Cloud routes report `{error, code}`; Relaycast nests the code in `error`.
-            let code = string(problem["code"]).isEmpty ? string(json["code"]) : string(problem["code"])
+            let (code, reason) = RelayErrorBody.identifiers(in: json)
             let headerDelay = http.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(Int.init).map { max($0, 0) }
             let retryDelay = headerDelay ?? min(2 << attempt, 10)
@@ -576,7 +588,7 @@ private enum SecureStore {
                 ? "Agent Relay is busy. Try again in a moment."
                 : (serverDetail.isEmpty ? "Agent Relay returned HTTP \(http.statusCode)" : serverDetail)
             let voiceSession = string(json["sessionId"])
-            throw RelayAPIError(message: detail, status: http.statusCode, code: code,
+            throw RelayAPIError(message: detail, status: http.statusCode, code: code, reason: reason,
                                 retryAfterSeconds: headerDelay,
                                 voiceSessionID: voiceSession.isEmpty ? nil : voiceSession,
                                 fromServer: code != "database_overloaded")
@@ -1793,7 +1805,8 @@ private enum SecureStore {
     func sessionEventPollDelay(for agent: RelayAgent, chatActivityAt: Date? = nil, now: Date = Date()) -> TimeInterval? {
         let store = sessionEvents[agent.sessionID]
         return SessionEventPolling.interval(newestEventAt: store?.newest?.ts, chatActivityAt: chatActivityAt, now: now,
-                                            failures: store?.failures ?? 0, unavailable: store?.unavailable ?? false)
+                                            failures: store?.failures ?? 0, unavailable: store?.unavailable ?? false,
+                                            unknownNotImplemented: store?.unknownNotImplemented ?? 0)
     }
 
     /// How long to wait before the next newest-page read of `agent`'s
@@ -1865,7 +1878,8 @@ private enum SecureStore {
             } catch {
                 guard self.sessionEventsGeneration == generation else { return }
                 let failure = error as? RelayAPIError
-                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "", older: older)
+                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "",
+                                               reason: failure?.reason ?? "", older: older)
                 if SessionEventsRequest.accessRevoked(status: failure?.status) {
                     // This account may no longer read it: off the screen and the disk.
                     self.sessionEvents[id]?.forgetEvents()
