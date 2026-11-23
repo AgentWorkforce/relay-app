@@ -1326,12 +1326,12 @@ struct RelayWorkspaceView: View {
         }
     }
     private func conversation(for agent: RelayAgent) -> some View {
+        let pending = shownPending(for: agent)
         let scrollRequest = MobileChatScrollRequest(
-            pending: outgoing.messages(for: agent.id).map(\.id),
+            pending: pending.map(\.id),
             messages: client.messages.map(\.id))
         let sessionApplies = client.sessionEventsAvailable(for: agent)
         let store = sessionApplies ? client.sessionEvents[agent.sessionID] : nil
-        let pending = outgoing.messages(for: agent.id)
         let timeline = SessionTimeline.items(
             messages: client.messages, events: store?.events ?? [],
             pending: pending.map { SessionTimeline.Pending(text: $0.text, createdAt: $0.createdAt) },
@@ -1429,7 +1429,7 @@ struct RelayWorkspaceView: View {
                                     }.id(MobileChatScrollTarget.message(row.id))
                                 }
                             }
-                            ForEach(outgoing.messages(for: agent.id)) { pending in
+                            ForEach(pending) { pending in
                                 messageTimeRow(at: pending.createdAt) {
                                     HStack {
                                         Spacer(minLength: 45)
@@ -1588,6 +1588,13 @@ struct RelayWorkspaceView: View {
         case .sent: Label("Sent", systemImage: "checkmark")
         case .failed: Label("Could not confirm send · tap to retry", systemImage: "exclamationmark.circle")
         }
+    }
+    /// The bubbles of `agent`'s conversation as shown: reconciled with its
+    /// loaded history when drawn, so a bubble never shows beside its own row
+    /// even if the reconcile of the stored state does not reach this view.
+    private func shownPending(for agent: RelayAgent) -> [OutgoingMessage] {
+        let shown = client.historyLoaded(for: agent) ? outgoing.reconciled(agentID: agent.id, with: historyRows) : outgoing
+        return shown.messages(for: agent.id)
     }
     /// The open conversation's history rows that carry a server id, as the
     /// composer reconciles its outgoing messages with them.
@@ -1762,7 +1769,7 @@ struct RelayWorkspaceView: View {
         let messages = client.messages.map {
             RelayQuestionState.Message(text: $0.text, mine: $0.mine, sender: $0.sender, createdAt: $0.createdAt)
         }
-        let pending = outgoing.messages(for: agent.id).map {
+        let pending = shownPending(for: agent).map {
             RelayQuestionState.PendingAnswer(text: $0.text, failed: $0.state == .failed, accepted: $0.state == .sent)
         }
         let acceptedAt = acceptedQuestionAnswers["\(agent.id)|\(question.ref.lowercased())"]
