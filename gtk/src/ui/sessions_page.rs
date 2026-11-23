@@ -534,7 +534,7 @@ impl App {
     }
 
     pub fn render_sessions(&self) {
-        self.render_transcript_controls();
+        self.render_session_extras();
         let Some(shell) = self.shell() else {
             return;
         };

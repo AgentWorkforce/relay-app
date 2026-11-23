@@ -284,6 +284,11 @@ pub fn chat_agents(
     agents
 }
 
+/// The note under the agents elsewhere that a search would show.
+pub fn chat_elsewhere_more(hidden: usize) -> String {
+    format!("+{hidden} more: search to find them")
+}
+
 /// The Chat page's key for the agent of a sessions-table `row`.
 pub fn chat_key(row: &LocalSessionRow) -> String {
     match &row.relay {

@@ -19,6 +19,7 @@ use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 
 mod controls;
+mod elsewhere;
 mod filters;
 mod open;
 mod send;
@@ -63,6 +64,8 @@ pub struct ChatPage {
     /// What the list last drew, so a redraw with nothing new keeps it.
     drawn: RefCell<Vec<String>>,
     pub sending: Cell<bool>,
+    /// Your agents elsewhere, shown above the sessions list.
+    pub elsewhere: gtk::Box,
 }
 
 impl ChatPage {
@@ -187,6 +190,7 @@ impl ChatPage {
             selected: RefCell::default(),
             drawn: RefCell::default(),
             sending: Cell::new(false),
+            elsewhere: elsewhere::elsewhere_box(),
         }
     }
 }

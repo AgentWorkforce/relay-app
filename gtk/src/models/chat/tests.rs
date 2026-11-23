@@ -248,3 +248,8 @@ fn relay_messages_are_marked() {
     background.holder = Some(agent_relay_node::relay::contract::agents::SessionHolder::Background);
     assert!(agent(background, ChatActivity::Idle).relay_only());
 }
+
+#[test]
+fn more_agents_elsewhere_are_counted() {
+    assert_eq!(chat_elsewhere_more(14), "+14 more: search to find them");
+}
