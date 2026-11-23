@@ -56,6 +56,39 @@ impl State {
                 || (session.live && self.has_workspace()))
     }
 
+    /// Why pressing an off switch cannot put `session` on the relay
+    /// because Agent Relay does not see it running, with what to do next;
+    /// `None` when the switch works or another reason applies. The switch
+    /// stays pressable then and shows this inline, so it is never silently
+    /// dead (relay#2239).
+    pub fn not_running_reason(
+        &self,
+        session: &LocalSession,
+        presence: Presence,
+    ) -> Option<&'static str> {
+        let blocked = !SpawnHandover::can_end(Some(session))
+            && !presence.is_on()
+            && !presence.is_changing()
+            && !session.live
+            && self.has_workspace();
+        blocked.then(|| not_running_message(session.target.kind))
+    }
+
+    /// The relay error a session's row and detail pane show. The
+    /// not-running reason a press saved shows only while the session is
+    /// still not seen running (relay#2239).
+    pub fn relay_error_of(&self, session: &LocalSession) -> Option<String> {
+        let error = self.relay_errors.get(&session.target.key())?;
+        let stale = error == not_running_message(session.target.kind)
+            && self.not_running_reason(session, self.presence_of(session)).is_none();
+        (!stale).then(|| error.clone())
+    }
+
+    /// `not_running_reason` for a row's local session, when it has one.
+    pub fn relay_not_running(&self, session: Option<&LocalSession>) -> Option<&'static str> {
+        session.and_then(|session| self.not_running_reason(session, self.presence_of(session)))
+    }
+
     /// What a session's switch does, or why it can't.
     pub fn switch_help(&self, session: &LocalSession, presence: Presence) -> &'static str {
         if SpawnHandover::can_end(Some(session)) {
@@ -191,3 +224,34 @@ impl State {
 #[path = "session_queries.rs"]
 mod session_queries;
 pub(super) use session_queries::SessionQueryState;
+
+/// The inline reason a session not seen running cannot receive messages.
+pub fn not_running_message(kind: agent_relay_node::relay::store::SessionKind) -> &'static str {
+    use agent_relay_node::relay::store::SessionKind;
+    match kind {
+        SessionKind::Codex => {
+            "Agent Relay can't see this Codex chat running. Open it in Codex and try again."
+        }
+        _ => "Agent Relay can't see this session running. Open it and try again.",
+    }
+}
+
+/// A session row's Messages switch tooltip: what it does, or why it can't.
+pub fn message_switch_help(
+    can_relay: bool,
+    not_running: Option<&'static str>,
+    presence: Presence,
+    session: Option<&LocalSession>,
+) -> &'static str {
+    if can_relay {
+        return presence.message_help();
+    }
+    if let Some(reason) = not_running {
+        return reason;
+    }
+    match session {
+        Some(local) if local.live => "Connect a workspace to receive messages.",
+        Some(_) => "Start this session to receive messages.",
+        None => "Start this session in a supported harness to receive messages.",
+    }
+}

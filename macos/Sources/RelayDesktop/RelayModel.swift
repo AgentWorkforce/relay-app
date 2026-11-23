@@ -219,6 +219,50 @@ final class RelayModel {
             && (presence.isOn || presence.isChanging || (session.live && workspace != nil))
     }
 
+    /// Why pressing an off switch cannot put `session` on the relay because
+    /// Agent Relay does not see it running, with what to do next; nil when
+    /// the switch works or another reason applies. The switch stays
+    /// pressable then and shows this inline, so it is never silently dead
+    /// (relay#2239).
+    func notRunningReason(_ session: LocalSession, presence: RelayPresence) -> String? {
+        guard model?.hiddenSessionIDs.contains(session.uploadKey ?? session.id) != true,
+              !SpawnHandover.canEnd(session), !presence.isOn, !presence.isChanging,
+              !session.live, workspace != nil else { return nil }
+        return Self.notRunningMessage(for: session.target.kind)
+    }
+
+    /// The relay error a session's row and sidebar show. The not-running
+    /// reason a press saved shows only while the session is still not seen
+    /// running (relay#2239).
+    func relayError(for session: LocalSession) -> String? {
+        Self.shownError(errors[session.id], kind: session.target.kind,
+                        stillNotRunning: notRunningReason(session, presence: presence(of: session)) != nil)
+    }
+
+    static func shownError(_ error: String?, kind: SessionKind, stillNotRunning: Bool) -> String? {
+        guard let error else { return nil }
+        return error == notRunningMessage(for: kind) && !stillNotRunning ? nil : error
+    }
+
+    static func notRunningMessage(for kind: SessionKind) -> String {
+        kind == .codex
+            ? "Agent Relay can't see this Codex chat running. Open it in Codex and try again."
+            : "Agent Relay can't see this session running. Open it and try again."
+    }
+
+    /// A press on a session's Messages switch: flips it, or, when the session
+    /// is not seen running, says so on its row and looks for it again.
+    func pressRelay(for session: LocalSession) {
+        let current = presence(of: session)
+        guard !canToggle(session, presence: current),
+              let reason = notRunningReason(session, presence: current) else {
+            requestRelay(!current.isOn, for: session)
+            return
+        }
+        errors[session.id] = reason
+        Task { await refresh(.sessions) }
+    }
+
     func switchHelp(_ session: LocalSession, presence: RelayPresence) -> String {
         if SpawnHandover.canEnd(session) { return "Use End Agent to stop this spawned agent" }
         if presence.isOn { return "Take off the relay" }

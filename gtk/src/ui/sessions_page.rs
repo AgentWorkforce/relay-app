@@ -348,6 +348,8 @@ struct DrawnRow {
     presence: Option<Presence>,
     relay_error: Option<String>,
     can_relay: bool,
+    /// Why an off switch can't turn on: the session is not seen running.
+    not_running: Option<&'static str>,
     hidden: bool,
     requesting: bool,
     stopping: bool,
@@ -677,18 +679,18 @@ impl App {
             .iter()
             .map(|session| {
                 let key = session.key();
-                let (presence, relay_error, can_relay) = self.with_state(|state| {
+                let (presence, relay_error, can_relay, not_running) = self.with_state(|state| {
                     let presence = session.relay.as_ref().map(|s| state.presence_of(s));
                     let error = session
                         .relay
                         .as_ref()
-                        .and_then(|s| state.relay_errors.get(&s.target.key()).cloned())
+                        .and_then(|s| state.relay_error_of(s))
                         .or_else(|| state.upload_errors.get(&key).cloned());
                     let can = session
                         .relay
                         .as_ref()
                         .is_some_and(|s| state.can_toggle(s, state.presence_of(s)));
-                    (presence, error, can)
+                    (presence, error, can, state.relay_not_running(session.relay.as_ref()))
                 });
                 DrawnRow {
                     activity: activity.activity(session),
@@ -699,6 +701,7 @@ impl App {
                     presence,
                     relay_error,
                     can_relay: can_relay && !hidden_sessions.contains(&key),
+                    not_running: not_running.filter(|_| !hidden_sessions.contains(&key)),
                     hidden: hidden_sessions.contains(&key),
                     requesting: requesting.contains(&key),
                     stopping: stopping.contains(&key),
@@ -1074,8 +1077,7 @@ impl App {
         let local = session.relay.clone();
         let relay = button("", &["flat", "message-control"], move || {
             if let (Some(app), Some(local)) = (weak.upgrade(), &local) {
-                let on = app.with_state(|state| state.presence_of(local).is_on());
-                app.toggle_relay(local, !on);
+                app.press_relay(local);
             }
         });
         // GtkListBox selects a row when a child takes focus. A mouse click
@@ -1083,7 +1085,7 @@ impl App {
         relay.set_focus_on_click(false);
         relay.set_valign(gtk::Align::Center);
         relay.set_halign(gtk::Align::Center);
-        relay.set_sensitive(drawn.can_relay);
+        relay.set_sensitive(drawn.can_relay || drawn.not_running.is_some());
         message_controls::set_cursor(&relay, presence);
         relay.set_widget_name(&format!("receive-messages {key}"));
         relay.add_css_class(presence.message_class());
@@ -1099,17 +1101,12 @@ impl App {
             &relay,
             &format!("Receive messages: {title}, {}", presence.message_status()),
         );
-        let help = if drawn.can_relay {
-            presence.message_help()
-        } else if let Some(local) = &session.relay {
-            if local.live {
-                "Connect a workspace to receive messages."
-            } else {
-                "Start this session to receive messages."
-            }
-        } else {
-            "Start this session in a supported harness to receive messages."
-        };
+        let help = super::state::view::message_switch_help(
+            drawn.can_relay,
+            drawn.not_running,
+            presence,
+            session.relay.as_ref(),
+        );
         relay.set_tooltip_text(Some(help));
         let relay_holder = gtk::CenterBox::new();
         relay_holder.add_css_class("session-message-column");

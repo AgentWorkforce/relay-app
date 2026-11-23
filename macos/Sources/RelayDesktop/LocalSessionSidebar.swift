@@ -91,7 +91,7 @@ struct LocalSessionSidebar: View {
                         } else if relay.workspace == nil {
                             Text("Connect a workspace to receive messages.").foregroundStyle(CloudTheme.secondary)
                         }
-                        if let session, let error = relay.errors[session.id] { Text(error).foregroundStyle(CloudTheme.warning) }
+                        if let session, let error = relay.relayError(for: session) { Text(error).foregroundStyle(CloudTheme.warning) }
                     }
                     if let session, relay.presence(of: session).isOn, let agent, !agent.name.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {

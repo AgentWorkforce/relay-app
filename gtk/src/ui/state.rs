@@ -809,6 +809,53 @@ mod tests {
         assert!(!state.can_toggle(spawned, state.presence_of(spawned)));
     }
 
+    // relay#2239: an off switch for a session not seen running says why,
+    // with what to do next, instead of being silently dead.
+    #[test]
+    fn a_session_not_seen_running_explains_its_switch() {
+        let registered = json!({"name": "web", "address": "web@desk", "added_by_session": false,
+                                "push": null});
+        let mut state = local(json!([
+            session("codex", "a", false, serde_json::Value::Null),
+            session("claude-terminal", "b", false, serde_json::Value::Null),
+            session("codex", "c", true, serde_json::Value::Null),
+            session("codex", "d", false, registered),
+        ]));
+        let reasons: Vec<Option<&str>> = state
+            .local_sessions
+            .iter()
+            .map(|session| state.not_running_reason(session, state.presence_of(session)))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                Some("Agent Relay can't see this Codex chat running. Open it in Codex and try again."),
+                Some("Agent Relay can't see this session running. Open it and try again."),
+                None,
+                None,
+            ]
+        );
+        let first = &state.local_sessions[0];
+        assert!(!state.can_toggle(first, state.presence_of(first)));
+        // A press saves the reason; once the session is seen running it
+        // is no longer shown, while any other relay error still is.
+        let reason = reasons[0].unwrap().to_string();
+        state.relay_errors.insert("codex:a".into(), reason.clone());
+        state.relay_errors.insert("codex:c".into(), "Could not register".into());
+        assert_eq!(state.relay_error_of(&state.local_sessions[0]), Some(reason));
+        state.local_sessions[0].live = true;
+        assert_eq!(state.relay_error_of(&state.local_sessions[0]), None);
+        assert_eq!(
+            state.relay_error_of(&state.local_sessions[2]).as_deref(),
+            Some("Could not register")
+        );
+        state.local_sessions[0].live = false;
+        // Without a workspace, connecting one is the next step instead.
+        state.snapshot.as_mut().unwrap().workspace.state = WorkspaceState::Missing;
+        let first = &state.local_sessions[0];
+        assert_eq!(state.not_running_reason(first, state.presence_of(first)), None);
+    }
+
     #[test]
     fn leaving_the_account_forgets_what_its_pages_held() {
         let mut state = local(json!([session(

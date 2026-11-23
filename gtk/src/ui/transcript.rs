@@ -523,7 +523,7 @@ impl App {
             let error = state.upload_errors.get(&key).cloned().or_else(|| {
                 row.relay
                     .as_ref()
-                    .and_then(|s| state.relay_errors.get(&s.target.key()).cloned())
+                    .and_then(|s| state.relay_error_of(s))
             });
             let help = if row
                 .relay

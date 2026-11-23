@@ -324,6 +324,34 @@ impl App {
         self.schedule_activity_check();
     }
 
+    /// A press on a session's Messages switch: flips it, or, when Agent
+    /// Relay does not see the session running, says so inline on its row
+    /// and looks for it again, instead of doing nothing (relay#2239).
+    pub fn press_relay(&self, session: &LocalSession) {
+        let (on, reason) = self.with_state(|state| {
+            let presence = state.presence_of(session);
+            let reason = (!state.can_toggle(session, presence))
+                .then(|| state.not_running_reason(session, presence))
+                .flatten();
+            (presence.is_on(), reason)
+        });
+        let Some(reason) = reason else {
+            self.toggle_relay(session, !on);
+            return;
+        };
+        eprintln!(
+            "relay: messages switch pressed for a {} session the core does not report running; see the core log's codex discovery line",
+            session.target.kind.as_str()
+        );
+        self.update_state(|state| {
+            state
+                .relay_errors
+                .insert(session.target.key(), reason.to_string());
+        });
+        self.relay_changed();
+        self.refresh_local();
+    }
+
     /// Puts `session` on the relay or takes it off. The switch shows the new
     /// state at once; one change per session runs at a time, and the last
     /// state asked for wins.

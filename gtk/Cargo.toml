@@ -41,7 +41,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 # session) and 62a803a: #2226 (remote approvals for spawned Codex agents), over
 # 7965519: #2233 (question escalation coverage for Codex, Devin and Copilot).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "35a003a0e98f08ad3683878299ed9dd4ed217f3b", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "df348af380b2a558747387ce01e159bcda4cf275", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
