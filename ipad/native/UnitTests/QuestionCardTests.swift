@@ -168,20 +168,24 @@ final class QuestionCardTests: XCTestCase {
     }
 
     private func state(_ after: [RelayQuestionState.Message], pending: [RelayQuestionState.PendingAnswer] = [],
-                       acceptedAt: Date? = nil,
+                       accepted: RelayQuestionState.AcceptedAnswer? = nil,
                        sentAt: Date? = Date(timeIntervalSince1970: 1_000), now: Date = Date(timeIntervalSince1970: 1_060)) throws -> RelayQuestionState {
         let text = question(["Which one?", "1. A", "2. B", "Choose a number."])
         let parsed = try XCTUnwrap(parse(text))
         let messages = [RelayQuestionState.Message(text: text, mine: false, sender: agent)] + after
         return RelayQuestionState.state(for: parsed, at: 0, in: messages, chatAgent: agent, pending: pending,
-                                        acceptedAt: acceptedAt, sentAt: sentAt, now: now)
+                                        accepted: accepted, sentAt: sentAt, now: now)
     }
 
-    private func fromAgent(_ text: String, at seconds: TimeInterval? = nil) -> RelayQuestionState.Message {
-        .init(text: text, mine: false, sender: agent, createdAt: seconds.map { Date(timeIntervalSince1970: $0) })
+    private func fromAgent(_ text: String, at seconds: TimeInterval? = nil, id: String = "") -> RelayQuestionState.Message {
+        .init(text: text, mine: false, sender: agent, createdAt: seconds.map { Date(timeIntervalSince1970: $0) }, id: id)
     }
-    private func mine(_ text: String, at seconds: TimeInterval? = nil) -> RelayQuestionState.Message {
-        .init(text: text, mine: true, sender: "me", createdAt: seconds.map { Date(timeIntervalSince1970: $0) })
+    private func mine(_ text: String, at seconds: TimeInterval? = nil, id: String = "") -> RelayQuestionState.Message {
+        .init(text: text, mine: true, sender: "me", createdAt: seconds.map { Date(timeIntervalSince1970: $0) }, id: id)
+    }
+    private func acceptedAnswer(tappedAt seconds: TimeInterval, id: String? = nil,
+                                earlier: Set<String>? = nil) -> RelayQuestionState.AcceptedAnswer {
+        .init(sentAt: Date(timeIntervalSince1970: seconds), messageID: id, earlierRowIDs: earlier)
     }
 
     func testStateFromTheChat() throws {
@@ -225,24 +229,69 @@ final class QuestionCardTests: XCTestCase {
     }
 
     func testAnAcceptedAnswerStaysSentWithoutItsHistoryRow() throws {
-        // Accepted, its bubble settled, history never showed the row.
-        let accepted = Date(timeIntervalSince1970: 1_010)
-        let settled = try state([], acceptedAt: accepted)
+        // Accepted, its bubble settled, history never showed the row. No id
+        // and no history at the send: only the first tap's time identifies it.
+        let accepted = acceptedAnswer(tappedAt: 1_010)
+        let settled = try state([], accepted: accepted)
         XCTAssertEqual(settled, .sent)
         XCTAssertFalse(settled.answerable)
         // Still sent after the expiry time: it was answered.
-        XCTAssertEqual(try state([], acceptedAt: accepted, now: .distantFuture), .sent)
+        XCTAssertEqual(try state([], accepted: accepted, now: .distantFuture), .sent)
         // An old "not delivered" from before this answer does not reopen it.
         XCTAssertEqual(try state([mine("answer \(ref) 1", at: 500),
                                   fromAgent("The answer to question \(ref) was not delivered: busy", at: 505)],
-                                 acceptedAt: accepted), .sent)
+                                 accepted: accepted), .sent)
         // Once history shows this answer, a reply to it decides, however soon it came.
         XCTAssertEqual(try state([mine("answer \(ref) 2", at: 1_009),
                                   fromAgent("The answer to question \(ref) was not delivered: busy", at: 1_012)],
-                                 acceptedAt: accepted), .notDelivered(reason: "busy"))
+                                 accepted: accepted), .notDelivered(reason: "busy"))
         XCTAssertEqual(try state([mine("answer \(ref) 2", at: 1_009),
                                   fromAgent("Answer to question \(ref) delivered to @planner.", at: 1_012)],
-                                 acceptedAt: accepted), .delivered)
+                                 accepted: accepted), .delivered)
+    }
+
+    func testAReplayedSendIsCaughtUpByTheRowOfItsFirstAttempt() throws {
+        // The first tap at 1_010 was applied at once (row m7 at 1_011); its
+        // POST answer was lost and a retry minutes later was accepted as a
+        // replay. The agent's reply to that answer must reopen the card, not
+        // stay "sent" because the replay returned long after the row.
+        let history = [mine("answer \(ref) 2", at: 1_011, id: "m7"),
+                       fromAgent("The answer to question \(ref) was not delivered: busy", at: 1_020, id: "m8")]
+        let reopened = RelayQuestionState.notDelivered(reason: "busy")
+        XCTAssertEqual(try state(history, accepted: acceptedAnswer(tappedAt: 1_010, id: "m7")), reopened, "by id")
+        XCTAssertEqual(try state(history, accepted: acceptedAnswer(tappedAt: 1_010, earlier: [])), reopened,
+                       "by a row that was not there at the send")
+        XCTAssertEqual(try state(history, accepted: acceptedAnswer(tappedAt: 1_010)), reopened, "by the first tap's time")
+        // Why the view keeps the first tap's time: the moment the replay
+        // returned (1_400) is past the row's clock margin and never finds it.
+        XCTAssertEqual(try state(history, accepted: acceptedAnswer(tappedAt: 1_400)), .sent)
+        // The id Relaycast returned decides when it has one: another row is not it.
+        XCTAssertEqual(try state(history, accepted: acceptedAnswer(tappedAt: 1_010, id: "m9")), .sent)
+    }
+
+    func testAReAnswerIsNotCaughtUpByTheAnswerBeforeIt() throws {
+        // The first answer (m1) was not delivered, and the person answered
+        // again at 1_060, within the clock margin of m1. Until history shows
+        // the second answer, the card must not reopen for a duplicate send.
+        let history = [mine("answer \(ref) 1", at: 1_000, id: "m1"),
+                       fromAgent("The answer to question \(ref) was not delivered: busy", at: 1_005, id: "m2")]
+        for accepted in [acceptedAnswer(tappedAt: 1_060, id: "m3"),
+                         acceptedAnswer(tappedAt: 1_060, earlier: ["m1", "m2"]),
+                         acceptedAnswer(tappedAt: 1_060)] {
+            let waiting = try state(history, accepted: accepted)
+            XCTAssertEqual(waiting, .sent)
+            XCTAssertFalse(waiting.answerable)
+            // Its row arrives, then the reply to it: the reply decides.
+            let shown = history + [mine("answer \(ref) 2", at: 1_061, id: "m3")]
+            XCTAssertEqual(try state(shown, accepted: accepted), .sent)
+            XCTAssertEqual(try state(shown + [fromAgent("Answer to question \(ref) delivered to @planner.", at: 1_070)],
+                                     accepted: accepted), .delivered)
+            XCTAssertEqual(try state(shown + [fromAgent("The answer to question \(ref) was not delivered: away", at: 1_070)],
+                                     accepted: accepted), .notDelivered(reason: "away"))
+        }
+        XCTAssertTrue(RelayQuestionFollowUp.notDelivered(reason: "").reopens)
+        XCTAssertTrue(RelayQuestionFollowUp.stillOpen(reason: "").reopens)
+        XCTAssertFalse(RelayQuestionFollowUp.delivered.reopens)
     }
 
     func testAnAcceptedPendingAnswerReadsSent() throws {

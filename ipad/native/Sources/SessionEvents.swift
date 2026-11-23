@@ -149,7 +149,13 @@ struct SessionEventPage: Equatable, Sendable {
                     event = nil
                     return
                 }
-                eventID = "ts:\(Int64(ts.timeIntervalSince1970 * 1000)):\(SessionEventPage.fingerprint(kind + "\u{1F}" + content))"
+                // A time outside Int64 milliseconds (a bad `ts` such as
+                // 1e19) cannot key the event: it is dropped, never a trap.
+                guard let millis = Int64(exactly: (ts.timeIntervalSince1970 * 1000).rounded(.towardZero)) else {
+                    event = nil
+                    return
+                }
+                eventID = "ts:\(millis):\(SessionEventPage.fingerprint(kind + "\u{1F}" + content))"
             }
             let files = ((try? container.decode([LenientString].self, forKey: AnyKey("filesTouched"))) ?? [])
                 .compactMap(\.value).filter { !$0.isEmpty }
@@ -202,7 +208,9 @@ enum SessionEventsRequest {
     /// `/workspaces/<ws>/reflex/sessions/<id>/events?…`, or nil when the
     /// workspace is not a Cloud workspace id or the session id is unusable.
     static func path(workspaceID: String, sessionID: String, spec: Spec) -> String? {
-        guard UUID(uuidString: workspaceID) != nil, !sessionID.isEmpty, sessionID.count <= 512 else { return nil }
+        guard UUID(uuidString: workspaceID) != nil, !sessionID.isEmpty, sessionID.count <= 512,
+              // A dot segment would change the path the request is authorized for.
+              sessionID != ".", sessionID != ".." else { return nil }
         let segment = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let query = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         guard let session = sessionID.addingPercentEncoding(withAllowedCharacters: segment) else { return nil }
@@ -309,7 +317,27 @@ final class MemoryOnlySessionEventSnapshots: SessionEventSnapshotStore, @uncheck
 }
 
 /// One session's events in time order, merged from pages by key.
+///
+/// The live store is capped like the disk copy. Only a newest-page merge
+/// trims, and only the oldest events: to the newest `liveLimit` until the
+/// person reads older history, and from their first older read on, to
+/// `pagedBackLimit` or to what was held after the last older page,
+/// whichever is more. So a poll never trims rows a person scrolled back to
+/// load; only events that arrive after more than that many are held push
+/// the oldest out.
+///
+/// A trim keeps older paging going below what is held: the store remembers
+/// each page's next cursor with the page's oldest event, and after a trim
+/// the older cursor becomes the one whose page starts nearest above the new
+/// oldest event. Pages that bring back only held events on the way down do
+/// not stop automatic older loading. With no such cursor (a restored
+/// snapshot), paging restarts from the newest page, in the same way.
 struct SessionEventStore: Equatable, Sendable {
+    /// The most events a store keeps before any older page was read.
+    static let liveLimit = 1_000
+    /// The floor of the cap once an older page has added events.
+    static let pagedBackLimit = 5_000
+
     let sessionID: String
     /// Oldest first, by time and then key.
     private(set) var events: [SessionEvent] = []
@@ -339,6 +367,24 @@ struct SessionEventStore: Equatable, Sendable {
     /// ends when the store is dropped and is not part of the snapshot.
     private(set) var unavailable = false
     private var keys: Set<SessionEvent.Key> = []
+    /// What a newest-page merge trims to; nil until an older page is read
+    /// (then `liveLimit` no longer applies).
+    private var pagedBackCap: Int?
+    /// A page's next cursor and the page's oldest event: reading it returns
+    /// what is older than that event.
+    private struct PageCursor: Equatable, Sendable {
+        let cursor: String
+        let oldest: SessionEvent
+    }
+    /// The cursors of pages whose oldest event is still held, by that event.
+    private var pageCursors: [SessionEvent.Key: PageCursor] = [:]
+    /// Older paging is walking down through events already held, after a
+    /// trim or from a trimmed snapshot: a page that adds nothing does not
+    /// stop automatic loading until one adds events or the start is reached.
+    private(set) var rewalking = false
+
+    /// The most events a newest-page merge keeps now.
+    var cap: Int { pagedBackCap ?? Self.liveLimit }
 
     init(sessionID: String) { self.sessionID = sessionID }
 
@@ -349,6 +395,7 @@ struct SessionEventStore: Equatable, Sendable {
         loaded = true
         // A trimmed snapshot has no cursor: older paging restarts from the newest page.
         restarting = snapshot.olderCursor == nil && !snapshot.reachedStart
+        rewalking = restarting
         merge(snapshot.events)
     }
 
@@ -388,16 +435,25 @@ struct SessionEventStore: Equatable, Sendable {
             restarting = false
         }
         let countBefore = events.count
-        let merged = merge(page.events)
+        var merged = merge(page.events)
+        if let next = page.nextCursor, let oldest = page.events.min(by: Self.ordered), keys.contains(oldest.key) {
+            pageCursors[oldest.key] = PageCursor(cursor: next, oldest: oldest)
+        }
         if spec.cursor != nil {
             olderCursor = page.nextCursor
             reachedStart = page.nextCursor == nil
+            // From the first older read on, a poll trims nothing they load.
+            pagedBackCap = max(Self.pagedBackLimit, events.count, pagedBackCap ?? 0)
             if events.count > countBefore {
                 olderAutoLoadStopped = false
                 restarts = 0
-            } else {
+                rewalking = false
+            } else if !rewalking {
                 olderAutoLoadStopped = true
             }
+            if reachedStart { rewalking = false }
+        } else if trimToCap() {
+            merged = true
         }
         return merged || before.0 != olderCursor || before.1 != reachedStart
     }
@@ -438,6 +494,28 @@ struct SessionEventStore: Equatable, Sendable {
         restarting = false
         restarts = 0
         olderAutoLoadStopped = false
+        pagedBackCap = nil
+        pageCursors = [:]
+        rewalking = false
+    }
+
+    /// Drops the oldest events beyond `cap`. The older cursor pointed below
+    /// the dropped events, so it becomes the cursor of the page that starts
+    /// nearest above the new oldest event (reading it brings back a few held
+    /// events, then what is below); without one, paging restarts from the
+    /// newest page. Returns whether any went.
+    private mutating func trimToCap() -> Bool {
+        guard events.count > cap else { return false }
+        let dropped = events.prefix(events.count - cap)
+        for event in dropped { keys.remove(event.key) }
+        events.removeFirst(dropped.count)
+        pageCursors = pageCursors.filter { keys.contains($0.key) }
+        let resume = pageCursors.values.min { Self.ordered($0.oldest, $1.oldest) }
+        olderCursor = resume?.cursor
+        restarting = resume == nil
+        reachedStart = false
+        rewalking = true
+        return true
     }
 
     @discardableResult
