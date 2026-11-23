@@ -169,12 +169,6 @@ fn names_notes_and_glance() {
     );
     assert_eq!(ChatActivity::Working.label(), "Working");
     assert_eq!(ChatStatusFilter::ALL.len(), 4);
-    assert_eq!(chat_all_sessions(0), "All sessions on this computer ›");
-    assert_eq!(chat_all_sessions(1), "1 session on this computer ›");
-    assert_eq!(
-        chat_all_sessions(1328),
-        "All 1328 sessions on this computer ›"
-    );
 }
 
 #[test]

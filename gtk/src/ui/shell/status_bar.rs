@@ -15,11 +15,8 @@ pub(super) fn status_bar(app: &App) -> (gtk::Box, Dot, gtk::Label) {
     let relay_count_text = text("Live Agents on Relay: 0", &[]);
     counted.append(&relay_count_text);
     relay_count_button.set_child(Some(&counted));
-    relay_count_button.set_tooltip_text(Some("Show live sessions on the relay"));
-    let on_relay = app.on(|app| {
-        app.set_session_search("is:active is:on-relay");
-        app.go(Page::Sessions);
-    });
+    relay_count_button.set_tooltip_text(Some("Show your agents"));
+    let on_relay = app.on(|app| app.show_chat_page(None));
     relay_count_button.connect_clicked(move |_| on_relay());
     bar.append(&relay_count_button);
     (bar, relay_count_dot, relay_count_text)

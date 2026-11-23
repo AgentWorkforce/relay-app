@@ -79,7 +79,7 @@ impl ChatStatusFilter {
             ChatStatusFilter::Running => "Running",
             ChatStatusFilter::Working => "Working",
             ChatStatusFilter::Idle => "Idle",
-            ChatStatusFilter::All => "All, with ended",
+            ChatStatusFilter::All => "All sessions",
         }
     }
 
@@ -136,6 +136,9 @@ pub enum ChatPlace {
         row: LocalSessionRow,
         session: LocalSession,
     },
+    /// A session in this computer's history the core no longer lists: its
+    /// transcript can be read, and it takes no messages.
+    History(LocalSessionRow),
     /// One of your agents on another computer or in Cloud, from the
     /// workspace roster: its direct messages are the conversation.
     Elsewhere(RosterAgent),
@@ -186,19 +189,12 @@ pub const CHAT_WORKING: &str = "Working…";
 pub const CHAT_DELIVERED: &str = "Delivered: your message is in the session.";
 pub const CHAT_HIDE_LIST: &str = "Hide agent list";
 pub const CHAT_SHOW_LIST: &str = "Show agent list";
-pub const CHAT_OPEN_SESSION: &str = "Session details";
+pub const CHAT_RECEIVES: &str = "Receives messages";
+pub const CHAT_RECEIVES_HELP: &str =
+    "Receive messages from other agents. This also uploads the session to Cloud.";
 pub const CHAT_BACK: &str = "‹ Back to chat";
 pub const CHAT_BACK_HELP: &str = "Back to your agents";
 
-/// The link under the list to the table of every session on this
-/// computer, where uploads and sharing are managed.
-pub fn chat_all_sessions(count: usize) -> String {
-    match count {
-        0 => "All sessions on this computer ›".into(),
-        1 => "1 session on this computer ›".into(),
-        count => format!("All {count} sessions on this computer ›"),
-    }
-}
 pub const CHAT_NOT_LIVE: &str =
     "This session can't take a message right now. What you send waits until it can.";
 pub const CHAT_ENDED: &str = "This session has ended. Its conversation stays readable here.";
@@ -234,7 +230,7 @@ pub fn chat_activity(
     }
 }
 
-/// Every session on this computer, working first, then idle, offline and
+/// Every session on this computer, history included, working first, then idle, offline and
 /// ended, most recently active first within each.
 pub fn chat_agents(
     rows: &[LocalSessionRow],
@@ -244,8 +240,19 @@ pub fn chat_agents(
 ) -> Vec<ChatAgent> {
     let mut agents: Vec<ChatAgent> = rows
         .iter()
-        .filter_map(|row| {
-            let session = row.relay.clone()?;
+        .map(|row| {
+            let Some(session) = row.relay.clone() else {
+                // History only: the core no longer lists the session.
+                return ChatAgent {
+                    summary: summary(row).unwrap_or_default(),
+                    last_activity_ms: row
+                        .upload
+                        .as_ref()
+                        .and_then(|upload| upload.last_activity_ms),
+                    place: ChatPlace::History(row.clone()),
+                    activity: ChatActivity::Ended,
+                };
+            };
             let last_activity_ms = [
                 session.updated_at_ms,
                 row.upload
@@ -257,7 +264,7 @@ pub fn chat_agents(
             .max();
             let activity =
                 chat_activity(&session, work(&session).as_ref(), last_activity_ms, now_ms);
-            Some(ChatAgent {
+            ChatAgent {
                 summary: summary(row).unwrap_or_default(),
                 place: ChatPlace::Local {
                     row: row.clone(),
@@ -265,7 +272,7 @@ pub fn chat_agents(
                 },
                 activity,
                 last_activity_ms,
-            })
+            }
         })
         .collect();
     sort_agents(&mut agents);

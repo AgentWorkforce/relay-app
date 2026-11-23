@@ -302,7 +302,8 @@ fn read_page(
     done: impl FnOnce(&App, Result<LocalTranscriptPage, crate::bridge::CoreError>) + 'static,
 ) {
     let (row, session) = match &agent.place {
-        ChatPlace::Local { row, session } => (row, session),
+        ChatPlace::Local { row, session } => (row, Some(session)),
+        ChatPlace::History(row) => (row, None),
         ChatPlace::Elsewhere(_) => {
             let endpoint = agent.address().unwrap_or_else(|| agent.name());
             app.view_call::<method::MessagesHistory>(
@@ -330,14 +331,14 @@ fn read_page(
         cursor,
         following,
     };
-    app.transcript_page(SpawnHandover::transcript_agent(Some(session)), params, done);
+    app.transcript_page(SpawnHandover::transcript_agent(session), params, done);
 }
 
 /// The source a conversation's entries are drawn for: the session's, or
 /// for an agent elsewhere its name, which its replies are marked with.
 fn entry_source(agent: &ChatAgent) -> String {
     match &agent.place {
-        ChatPlace::Local { row, .. } => row.source().to_string(),
+        ChatPlace::Local { row, .. } | ChatPlace::History(row) => row.source().to_string(),
         ChatPlace::Elsewhere(remote) => remote.name.clone(),
     }
 }

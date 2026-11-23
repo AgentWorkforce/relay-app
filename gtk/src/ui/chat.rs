@@ -10,9 +10,9 @@ use super::app::App;
 use super::state::Page;
 use super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
-    chat_agents, chat_all_sessions, chat_elsewhere_agents, chat_filter_choices,
-    merge_local_sessions, ChatAgent, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE,
-    CHAT_HIDE_LIST, CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_OPEN_SESSION, CHAT_SEARCH, CHAT_SEND,
+    chat_agents, chat_elsewhere_agents, chat_filter_choices, merge_local_sessions, ChatAgent,
+    ChatPlace, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE, CHAT_HIDE_LIST,
+    CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_RECEIVES, CHAT_RECEIVES_HELP, CHAT_SEARCH, CHAT_SEND,
     CHAT_SHOW_LIST, CHAT_TITLE,
 };
 use gtk::{glib, prelude::*};
@@ -39,7 +39,6 @@ pub struct ChatPage {
     side: gtk::Box,
     filters: FilterBar,
     list: gtk::Box,
-    all_sessions: gtk::Button,
     stack: gtk::Stack,
     pub toggle_list: gtk::Button,
     pub header_badge: gtk::Box,
@@ -47,7 +46,9 @@ pub struct ChatPage {
     pub header_meta: gtk::Label,
     pub header_summary: gtk::Label,
     pub header_presence: gtk::Label,
-    pub open_session: gtk::Button,
+    /// Whether the session shown receives messages: Receives messages.
+    pub receives: gtk::Switch,
+    syncing: Cell<bool>,
     pub thread: Thread,
     pub input: ChatInput,
     pub send: gtk::Button,
@@ -72,13 +73,6 @@ impl ChatPage {
         side.append(&filters.root);
         let list = vbox(2, &[]);
         side.append(&widgets::scrolled(&list));
-        // The table of every session, where uploads and sharing are managed.
-        let all_sessions = gtk::Button::with_label(&chat_all_sessions(0));
-        all_sessions.add_css_class("flat");
-        all_sessions.add_css_class("chat-all-sessions");
-        all_sessions.set_halign(gtk::Align::Start);
-        widgets::action_cursor(&all_sessions);
-        side.append(&all_sessions);
         // Drag the divider to widen or narrow the list.
         let split = gtk::Paned::new(gtk::Orientation::Horizontal);
         split.set_hexpand(true);
@@ -130,11 +124,15 @@ impl ChatPage {
         header_summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
         words.append(&header_summary);
         header.append(&words);
-        let open_session = gtk::Button::with_label(CHAT_OPEN_SESSION);
-        open_session.add_css_class("flat");
-        open_session.set_valign(gtk::Align::Center);
-        widgets::action_cursor(&open_session);
-        header.append(&open_session);
+        let receiving = hbox(8, &[]);
+        receiving.set_valign(gtk::Align::Center);
+        receiving.append(&text(CHAT_RECEIVES, &["caption"]));
+        let receives = gtk::Switch::new();
+        receives.set_valign(gtk::Align::Center);
+        receives.set_tooltip_text(Some(CHAT_RECEIVES_HELP));
+        widgets::name(&receives, CHAT_RECEIVES);
+        receiving.append(&receives);
+        header.append(&receiving);
         view.append(&header);
         view.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let thread = Thread::build();
@@ -169,7 +167,6 @@ impl ChatPage {
             side,
             filters,
             list,
-            all_sessions,
             stack,
             toggle_list,
             header_badge,
@@ -177,7 +174,8 @@ impl ChatPage {
             header_meta,
             header_summary,
             header_presence,
-            open_session,
+            receives,
+            syncing: Cell::new(false),
             thread,
             input,
             send,
@@ -197,10 +195,13 @@ impl App {
         page.input.connect_activate(send);
         let send = self.on(App::send_chat_message);
         page.send.connect_clicked(move |_| send());
-        let open = self.on(App::open_chat_session);
-        page.open_session.connect_clicked(move |_| open());
-        let table = self.on(|app| app.go(Page::Sessions));
-        page.all_sessions.connect_clicked(move |_| table());
+        let weak = self.downgrade();
+        page.receives.connect_state_set(move |_, on| {
+            if let Some(app) = weak.upgrade() {
+                app.set_chat_receives(on);
+            }
+            glib::Propagation::Proceed
+        });
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
         self.follow_chat_thread();
@@ -266,8 +267,6 @@ impl App {
         };
         let page = &shell.pages.chat;
         let agents = self.chat_agents();
-        // The table loads its rows in pages; the link does not count them.
-        page.all_sessions.set_label(&chat_all_sessions(0));
         let (harnesses, projects) = chat_filter_choices(&agents);
         page.filters.offer(&harnesses, &projects);
         let filters = page.filters.read();
@@ -311,7 +310,7 @@ impl App {
             }
             let mut elsewhere = false;
             for agent in &shown {
-                if agent.local().is_none() && !elsewhere {
+                if matches!(agent.place, ChatPlace::Elsewhere(_)) && !elsewhere {
                     elsewhere = true;
                     let heading = widgets::section_title(CHAT_ELSEWHERE_SECTION);
                     heading.set_margin_top(super::zoom::px(12));
@@ -323,7 +322,7 @@ impl App {
             *page.drawn.borrow_mut() = drawn;
         }
         for agent in shown.iter().take(SUMMARIES_AHEAD) {
-            if let Some((row, _)) = agent.local() {
+            if let Some(row) = agent.row() {
                 self.load_session_title_overview(row);
             }
         }
@@ -389,7 +388,12 @@ impl App {
     fn render_chat_header(&self, page: &ChatPage, agent: &ChatAgent) {
         clear(&page.header_badge);
         page.header_badge.append(&agent_badge(agent, 32));
-        page.open_session.set_visible(agent.local().is_some());
+        page.receives
+            .parent()
+            .inspect(|row| row.set_visible(agent.local().is_some()));
+        page.syncing.set(true);
+        page.receives.set_active(agent.address().is_some());
+        page.syncing.set(false);
         page.header_name.set_text(&agent.name());
         let mut meta = agent.meta();
         if let Some(address) = agent.address() {
@@ -461,27 +465,30 @@ impl App {
         });
     }
 
-    /// Opens the agent shown in the Sessions reader.
-    fn open_chat_session(&self) {
-        let key = self
-            .with_chat(|page| page.selected.borrow().clone())
-            .flatten();
-        let Some(agent) = key.and_then(|key| self.chat_agent(&key)) else {
+    /// Puts the session shown on the relay or takes it off, as the
+    /// sessions table's Receives messages switch does.
+    fn set_chat_receives(&self, on: bool) {
+        let Some(session) = self
+            .with_chat(|page| {
+                if page.syncing.get() {
+                    return None;
+                }
+                let key = page.selected.borrow().clone()?;
+                let agent = self.chat_agent(&key)?;
+                agent.local().map(|(_, session)| session.clone())
+            })
+            .flatten()
+        else {
             return;
         };
-        let Some((row, _)) = agent.local() else {
-            return;
-        };
-        let row = row.clone();
-        self.go(Page::Sessions);
-        self.open_local_session(row);
+        self.toggle_relay(&session, on);
     }
 }
 
 /// The agent's mark: its session's avatar here, else its harness's.
 fn agent_badge(agent: &ChatAgent, size: i32) -> gtk::Widget {
-    match agent.local() {
-        Some((row, _)) => super::session_avatar::row_badge(row, size),
+    match agent.row() {
+        Some(row) => super::session_avatar::row_badge(row, size),
         None => widgets::agent_badge(&agent.icon_source(), size),
     }
 }

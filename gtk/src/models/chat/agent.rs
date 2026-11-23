@@ -4,10 +4,18 @@
 use super::*;
 
 impl ChatAgent {
-    /// Its session on this computer, when it runs here.
+    /// Its session on this computer, when the core still lists it.
     pub fn local(&self) -> Option<(&LocalSessionRow, &LocalSession)> {
         match &self.place {
             ChatPlace::Local { row, session } => Some((row, session)),
+            ChatPlace::History(_) | ChatPlace::Elsewhere(_) => None,
+        }
+    }
+
+    /// Its row in this computer's session history, running or not.
+    pub fn row(&self) -> Option<&LocalSessionRow> {
+        match &self.place {
+            ChatPlace::Local { row, .. } | ChatPlace::History(row) => Some(row),
             ChatPlace::Elsewhere(_) => None,
         }
     }
@@ -20,6 +28,7 @@ impl ChatAgent {
     pub fn key(&self) -> String {
         match &self.place {
             ChatPlace::Local { session, .. } => session.target.key(),
+            ChatPlace::History(row) => format!("history:{}", row.key()),
             ChatPlace::Elsewhere(agent) => format!(
                 "elsewhere:{}",
                 agent.address.clone().unwrap_or_else(|| agent.name.clone())
@@ -35,13 +44,13 @@ impl ChatAgent {
                 .alias
                 .clone()
                 .unwrap_or_else(|| registration.name.clone()),
-            (ChatPlace::Local { row, .. }, None) => row.title(),
+            (ChatPlace::Local { row, .. } | ChatPlace::History(row), None) => row.title(),
         }
     }
 
     pub fn title(&self) -> String {
         match &self.place {
-            ChatPlace::Local { row, .. } => row.title(),
+            ChatPlace::Local { row, .. } | ChatPlace::History(row) => row.title(),
             ChatPlace::Elsewhere(agent) => agent.description.clone(),
         }
     }
@@ -49,7 +58,7 @@ impl ChatAgent {
     /// The harness's source id its mark is drawn for.
     pub fn icon_source(&self) -> String {
         match &self.place {
-            ChatPlace::Local { row, .. } => row.icon_source(),
+            ChatPlace::Local { row, .. } | ChatPlace::History(row) => row.icon_source(),
             ChatPlace::Elsewhere(agent) => agent.provider.clone().unwrap_or_default(),
         }
     }
@@ -65,7 +74,7 @@ impl ChatAgent {
 
     pub fn project(&self) -> String {
         match &self.place {
-            ChatPlace::Local { row, .. } => row.project(),
+            ChatPlace::Local { row, .. } | ChatPlace::History(row) => row.project(),
             ChatPlace::Elsewhere(agent) => agent
                 .activity
                 .as_ref()
@@ -78,7 +87,7 @@ impl ChatAgent {
     pub fn address(&self) -> Option<String> {
         match &self.place {
             ChatPlace::Elsewhere(agent) => agent.address.clone(),
-            ChatPlace::Local { .. } => self
+            ChatPlace::Local { .. } | ChatPlace::History(_) => self
                 .registration()
                 .map(|registration| registration.address.clone()),
         }
@@ -150,6 +159,7 @@ impl ChatAgent {
     pub fn relay_only(&self) -> bool {
         match &self.place {
             ChatPlace::Elsewhere(_) => true,
+            ChatPlace::History(_) => false,
             ChatPlace::Local { session, .. } => {
                 SpawnHandover::joins(Some(session))
                     || session.holder == Some(SessionHolder::Background)
