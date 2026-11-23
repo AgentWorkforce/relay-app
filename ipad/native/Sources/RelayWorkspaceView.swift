@@ -1332,10 +1332,15 @@ struct RelayWorkspaceView: View {
             messages: client.messages.map(\.id))
         let sessionApplies = client.sessionEventsAvailable(for: agent)
         let store = sessionApplies ? client.sessionEvents[agent.sessionID] : nil
-        let timeline = SessionTimeline.items(
+        let rows = SessionTimeline.items(
             messages: client.messages, events: store?.events ?? [],
             pending: pending.map { SessionTimeline.Pending(text: $0.text, createdAt: $0.createdAt) },
             me: client.messagingHandle)
+        let timeline = SessionTimeline.grouped(rows)
+        let turnOpen = SessionTurn.isOpen(rows, events: store?.events ?? [], me: client.messagingHandle)
+        // The roster's record when it has one: the open chat's copy can be stale.
+        let presence = client.relayAgents.first { $0.name == agent.name } ?? agent
+        let offline = SessionTurn.isOffline(status: presence.status, lastSeen: presence.lastSeen, now: Date())
         let placeholder = SessionTimeline.placeholder(
             hasRows: !timeline.isEmpty || !pending.isEmpty,
             historyChecked: client.historyCheckedConversation == agent.id || client.historyLoaded(for: agent),
@@ -1427,6 +1432,9 @@ struct RelayWorkspaceView: View {
                                     messageTimeRow(at: row.event.ts) {
                                         SessionEventBubble(row: row, agentName: agent.name, accent: accent)
                                     }.id(MobileChatScrollTarget.message(row.id))
+                                case .activity(let group):
+                                    SessionActivityGroupView(group: group, agentName: agent.name, accent: accent)
+                                        .id(MobileChatScrollTarget.message(group.id))
                                 }
                             }
                             ForEach(pending) { pending in
@@ -1471,7 +1479,9 @@ struct RelayWorkspaceView: View {
                                     .accessibilityIdentifier("Question fixture report")
                             }
                             #endif
-                            if let store { SessionWorkingRow(events: store.events) }
+                            if let store {
+                                SessionWorkingRow(open: turnOpen, newestEventAt: store.newest?.ts, offline: offline)
+                            }
                             Color.clear.frame(height: 1)
                                 .id(MobileChatScrollTarget.message("chat-bottom"))
                                 .onAppear { chatPosition.atBottom = true }

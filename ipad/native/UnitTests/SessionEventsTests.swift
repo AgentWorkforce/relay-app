@@ -536,33 +536,6 @@ final class SessionEventsTests: XCTestCase {
             XCTAssertFalse(SessionEventsRequest.unavailable(status: status, code: ""))
         }
     }
-
-    // MARK: Working
-
-    func testWorkingWhileTheNewestEventIsARecentToolCall() {
-        let events = [event("1", at: 0, kind: "prompt", role: "user"),
-                      event("2", at: 10, kind: "tool_use", tool: "Bash"),
-                      event("3", at: 12, kind: "tool_result", role: "tool_result")]
-        XCTAssertEqual(SessionWorking.state(events: events, now: base.addingTimeInterval(40))?.label, "Working: Bash")
-        XCTAssertNil(SessionWorking.state(events: events, now: base.addingTimeInterval(80)), "cleared by age")
-    }
-
-    func testALaterAgentReplyEndsWork() {
-        let events = [event("2", at: 10, kind: "tool_use", tool: "Bash"),
-                      event("3", at: 20, kind: "assistant", content: "Done.")]
-        XCTAssertNil(SessionWorking.state(events: events, now: base.addingTimeInterval(25)))
-    }
-
-    func testUnnamedActivityAndPersonPrompts() {
-        XCTAssertEqual(SessionWorking.state(events: [event("1", at: 0, kind: "reasoning", role: "assistant")],
-                                            now: base.addingTimeInterval(5))?.label, "Working…")
-        // A tool from before the agent's last reply does not name this run.
-        let events = [event("1", at: 0, kind: "tool_use", tool: "Read"), event("2", at: 1, kind: "assistant", content: "Ok"),
-                      event("3", at: 2, kind: "reasoning", role: "assistant")]
-        XCTAssertEqual(SessionWorking.state(events: events, now: base.addingTimeInterval(5))?.label, "Working…")
-        XCTAssertNil(SessionWorking.state(events: [event("1", at: 0, kind: "prompt", role: "user")], now: base.addingTimeInterval(5)))
-        XCTAssertNil(SessionWorking.state(events: [], now: base))
-    }
 }
 
 /// A final store, through the client, with a stand-in for Cloud.

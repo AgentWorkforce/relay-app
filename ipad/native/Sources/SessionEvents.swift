@@ -67,30 +67,9 @@ struct SessionEvent: Identifiable, Hashable, Codable, Sendable {
         self.subagentID = subagentID
     }
 
-    private static let toolKinds: Set<String> = ["tool_use", "tool_call", "tool_result", "tool"]
-    private static let personKinds: Set<String> = ["prompt", "user", "user_message"]
-    private static let agentKinds: Set<String> = ["assistant", "assistant_message", "agent_message", "response"]
-
-    var role: Role {
-        let kind = kind.lowercased(), actor = actorRole.lowercased()
-        if !toolName.isEmpty || Self.toolKinds.contains(kind) || actor == "tool_result" || actor == "tool" { return .tool }
-        if actor == "user" || Self.personKinds.contains(kind) { return .person }
-        // The agent thinking out loud is activity, not a reply.
-        if kind.contains("reason") || kind.contains("think") { return .activity }
-        if actor == "assistant" || Self.agentKinds.contains(kind) { return .agent }
-        return .activity
-    }
-
-    /// Whether this is the agent's own activity (its tools, its thinking),
-    /// which says it is still working.
-    var isAgentActivity: Bool {
-        switch role {
-        case .tool: true
-        case .activity: actorRole.lowercased() == "assistant" || actorRole.isEmpty
-        case .agent: content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .person: false
-        }
-    }
+    /// How the chat draws the event, by `ChatEntryRules.role`: thinking
+    /// is activity, a tool's call and its result are tool rows.
+    var role: Role { entryRole.sessionRole }
 }
 
 /// One page of a session's events.
@@ -532,28 +511,5 @@ enum SessionEventPolling {
         guard let reference else { return unknownInterval }
         let age = now.timeIntervalSince(reference)
         return tiers.first { age < $0.window }?.interval
-    }
-}
-
-/// Whether the agent looks busy. The API has no in-progress flag, so this
-/// is read from the newest event: the agent's own tool call or activity
-/// under a minute old, with no reply of its own after it.
-enum SessionWorking {
-    static let window: TimeInterval = 60
-
-    struct State: Equatable {
-        /// The latest tool in the run, empty when none was named.
-        let tool: String
-        var label: String { tool.isEmpty ? "Working…" : "Working: \(tool)" }
-    }
-
-    static func state(events: [SessionEvent], now: Date) -> State? {
-        guard let newest = events.last, newest.isAgentActivity, let ts = newest.ts,
-              now.timeIntervalSince(ts) < window, now.timeIntervalSince(ts) > -window else { return nil }
-        for event in events.reversed() {
-            if !event.toolName.isEmpty { return State(tool: event.toolName) }
-            if !event.isAgentActivity { break }
-        }
-        return State(tool: "")
     }
 }

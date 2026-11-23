@@ -1,20 +1,80 @@
 import Foundation
 import RelaySessionOverview
 
+/// That a chat row came through Agent Relay, and which way.
+enum RelayMark: Equatable {
+    /// A message to the agent, from the sender when the chat already shows
+    /// a relay message of theirs; nil when only session text names one.
+    case from(String?)
+    /// A message the agent sent, to the recipient its send names.
+    case to(String?)
+
+    /// The line over a marked row: "⇄ Agent Relay · from @sender",
+    /// "⇄ Agent Relay · to @recipient" (a channel keeps its "#"),
+    /// "⇄ Agent Relay · sent" with no recipient, and "⇄ Agent Relay" for a
+    /// received message whose sender is not shown.
+    var label: String {
+        let mark = "⇄ Agent Relay"
+        switch self {
+        case .from(let sender):
+            guard let sender, !sender.isEmpty else { return mark }
+            return "\(mark) · from @\(sender)"
+        case .to(let recipient):
+            guard let recipient, !recipient.isEmpty else { return "\(mark) · sent" }
+            return "\(mark) · to \(recipient.hasPrefix("#") ? "" : "@")\(recipient)"
+        }
+    }
+
+    /// A received message is drawn as one to the agent, on the person's
+    /// side; a sent one as the agent's.
+    var isIncoming: Bool {
+        if case .from = self { return true }
+        return false
+    }
+}
+
 /// A session event as the chat shows it: harness preamble and the relay
 /// envelope removed. Who sent a relayed prompt is never read from the
-/// session text: that text is the agent's, and could name anyone.
+/// session text alone: that text is the agent's, and could name anyone.
 struct SessionEventRow: Identifiable, Equatable {
     let event: SessionEvent
     /// The text to show.
     let text: String
+    /// Set when the row is a relay message: one the agent received (a
+    /// relayed prompt, or one its tool read from its inbox) or one it sent
+    /// with a command or tool.
+    var mark: RelayMark? = nil
     var id: String { "event:\(event.id)" }
 }
 
-/// One row of an agent's chat: a relay message or a session event.
+/// One run of the agent's tool work: its tool calls and their results,
+/// shown together as one "Activity" group.
+struct ActivityGroup: Identifiable, Equatable {
+    /// Oldest first; never empty.
+    let rows: [SessionEventRow]
+
+    /// Named after the run's first row, so the group keeps its id (and its
+    /// expanded state) while newer tool work joins the run.
+    var id: String { "activity:\(rows[0].event.id)" }
+
+    /// One line of the group: the tool's name and what it worked on (the
+    /// first line of its content, else the files it touched).
+    static func line(for row: SessionEventRow) -> (title: String, target: String) {
+        let event = row.event
+        let title = !event.toolName.isEmpty ? event.toolName : event.entryRole == .toolResult ? "Result" : "Tool"
+        let first = event.content.split(whereSeparator: \.isNewline)
+            .lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+        let target = first.isEmpty ? SessionTimeline.filesSummary(event.filesTouched) : first
+        return (title, target.count > 120 ? String(target.prefix(120)) + "…" : target)
+    }
+}
+
+/// One row of an agent's chat: a relay message, a session event, or a run
+/// of tool work.
 enum ChatTimelineItem: Identifiable {
     case message(RelayMessage)
     case event(SessionEventRow)
+    case activity(ActivityGroup)
 
     /// A relay message keeps its own id, so delivery, pending reconciliation
     /// and scrolling see the same ids as before session events were shown.
@@ -22,6 +82,7 @@ enum ChatTimelineItem: Identifiable {
         switch self {
         case .message(let message): message.id
         case .event(let row): row.id
+        case .activity(let group): group.id
         }
     }
 
@@ -29,6 +90,7 @@ enum ChatTimelineItem: Identifiable {
         switch self {
         case .message(let message): message.createdAt
         case .event(let row): row.event.ts
+        case .activity(let group): group.rows[0].event.ts
         }
     }
 }
@@ -46,19 +108,40 @@ enum SessionTimeline {
     /// Relay messages and session events in one time-ordered list. Relay
     /// messages keep their order; events without a time come first.
     ///
+    /// Events are read by `ChatEntryRules` over the whole list: an agent
+    /// line that repeats a tool call goes, thinking is not shown, and an
+    /// event with no content shows its tool's name or is left out.
+    ///
+    /// A relay message inside the session is shown as one, marked
+    /// (`RelayMark`): a relayed prompt, a relay frame in a tool's output or
+    /// the agent's text (received), and a relay send in a tool call or the
+    /// agent's text (sent). Each is shown once by direction and trimmed
+    /// text, counting the relay messages the chat holds: a message to the
+    /// agent (sent by `me`) is "in", one from it "out". A message the chat
+    /// holds stays and its session copy goes; a send recorded twice shows
+    /// once. A received message names its sender only when a relay message
+    /// the chat holds is from that sender.
+    ///
     /// A person event that is the session's copy of a relay message is left
     /// out, so the message shows once: its envelope names a relay message
     /// the chat holds and its text is that message's text. So is the copy of
     /// a message the composer still shows as pending: sent by this device
     /// (`me`), with the pending text, within `pendingCopyWindow` of it.
-    /// Agent, tool and activity events are never hidden this way.
     static func items(messages: [RelayMessage], events: [SessionEvent],
                       pending: [Pending] = [], me: String = "") -> [ChatTimelineItem] {
         var relayTexts: [String: String] = [:]
         for message in messages where message.hasServerID { relayTexts[message.id] = normalized(message.text) }
-        let pending = pending.map { (text: normalized($0.text), createdAt: $0.createdAt) }
-        let rows: [SessionEventRow] = events.compactMap { event in
-            row(for: event, relayTexts: relayTexts, pending: pending, me: me)
+        var reader = Reader(relayTexts: relayTexts,
+                            pending: pending.map { (text: normalized($0.text), createdAt: $0.createdAt) }, me: me)
+        if !events.isEmpty {
+            for message in messages {
+                reader.senders.insert(message.sender)
+                reader.seen.insert(relayKey(incoming: isToAgent(message, me: me), message.text))
+            }
+        }
+        var rows: [SessionEventRow] = []
+        for event in ChatEntryRules.withoutToolEchoes(events) {
+            if let row = reader.row(for: event) { rows.append(row) }
         }
         var result: [ChatTimelineItem] = []
         result.reserveCapacity(messages.count + rows.count)
@@ -80,32 +163,102 @@ enum SessionTimeline {
         return result
     }
 
-    private static func row(for event: SessionEvent, relayTexts: [String: String],
-                            pending: [(text: String, createdAt: Date)], me: String) -> SessionEventRow? {
-        switch event.role {
-        case .person, .agent:
-            if let envelope = RelayEnvelope.parse(event.content) {
+    /// `items` with each run of tool rows (calls and their results, not a
+    /// relay message carried by one) folded into one `ActivityGroup`. Any
+    /// other row ends the run: a message, a reply, a relay message, an
+    /// activity note.
+    static func grouped(_ items: [ChatTimelineItem]) -> [ChatTimelineItem] {
+        var result: [ChatTimelineItem] = []
+        var run: [SessionEventRow] = []
+        func close() {
+            if !run.isEmpty { result.append(.activity(ActivityGroup(rows: run))) }
+            run = []
+        }
+        for item in items {
+            if case .event(let row) = item, row.mark == nil, row.event.role == .tool {
+                run.append(row)
+                continue
+            }
+            close()
+            result.append(item)
+        }
+        close()
+        return result
+    }
+
+    /// Whether a relay message the chat holds went to the agent: sent by
+    /// this device's handle (`me`), or marked as this device's own.
+    static func isToAgent(_ message: RelayMessage, me: String) -> Bool {
+        message.mine || (!me.isEmpty && message.sender == me)
+    }
+
+    /// What tells one relay message from another in the chat: its
+    /// direction and its trimmed text (the desktop's `relay_seen`).
+    static func relayKey(incoming: Bool, _ text: String) -> String {
+        (incoming ? "in:" : "out:") + text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Reads events into rows in time order, remembering the relay
+    /// messages already shown.
+    private struct Reader {
+        let relayTexts: [String: String]
+        let pending: [(text: String, createdAt: Date)]
+        let me: String
+        /// Senders of relay messages the chat holds: the only names a
+        /// received message's mark shows.
+        var senders: Set<String> = []
+        /// `relayKey`s already shown.
+        var seen: Set<String> = []
+
+        init(relayTexts: [String: String], pending: [(text: String, createdAt: Date)], me: String) {
+            self.relayTexts = relayTexts
+            self.pending = pending
+            self.me = me
+        }
+
+        private func trusted(_ sender: String?) -> String? {
+            guard let sender, !sender.isEmpty, senders.contains(sender) else { return nil }
+            return sender
+        }
+
+        mutating func row(for event: SessionEvent) -> SessionEventRow? {
+            let role = event.entryRole
+            guard role != .thinking,
+                  let shown = ChatEntryRules.shownText(content: event.content, toolName: event.toolName) else { return nil }
+            if role == .person {
+                guard let envelope = RelayEnvelope.parse(event.content) else {
+                    let text = withoutPreamble(event.content)
+                    // A prompt that was only harness preamble.
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                    return SessionEventRow(event: event, text: text)
+                }
                 let body = normalized(envelope.body)
                 guard !body.isEmpty else { return nil }
-                if event.role == .person {
-                    if let id = envelope.messageID, relayTexts[id] == body { return nil }
-                    if !me.isEmpty, envelope.sender == me, let ts = event.ts,
-                       pending.contains(where: { $0.text == body && pendingCopyWindow.contains(ts.timeIntervalSince($0.createdAt)) }) {
-                        return nil
-                    }
+                if let id = envelope.messageID, relayTexts[id] == body { return nil }
+                if !me.isEmpty, envelope.sender == me, let ts = event.ts,
+                   pending.contains(where: { $0.text == body && pendingCopyWindow.contains(ts.timeIntervalSince($0.createdAt)) }) {
+                    return nil
                 }
-                return SessionEventRow(event: event, text: envelope.body)
+                // A relay message the chat holds shows it already.
+                guard !seen.contains(relayKey(incoming: true, envelope.body)) else { return nil }
+                return SessionEventRow(event: event, text: envelope.body, mark: .from(trusted(envelope.sender)))
             }
+            if let incoming = RelayLines.incoming(shown) {
+                guard seen.insert(relayKey(incoming: true, incoming.body)).inserted else { return nil }
+                return SessionEventRow(event: event, text: incoming.body, mark: .from(trusted(incoming.sender)))
+            }
+            if role != .toolResult, let outgoing = RelayLines.outgoing(shown) {
+                guard seen.insert(relayKey(incoming: false, outgoing.body)).inserted else { return nil }
+                return SessionEventRow(event: event, text: outgoing.body, mark: .to(outgoing.recipient))
+            }
+            guard role == .agent else { return SessionEventRow(event: event, text: shown) }
             let text = withoutPreamble(event.content)
-            // A prompt that was only harness preamble, or an empty reply.
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return SessionEventRow(event: event, text: text)
-        case .tool, .activity:
-            return SessionEventRow(event: event, text: event.content)
         }
     }
 
-    private static func normalized(_ text: String) -> String {
+    fileprivate static func normalized(_ text: String) -> String {
         text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
     }
 
@@ -153,5 +306,67 @@ enum SessionTimeline {
         guard !files.isEmpty else { return "" }
         let names = files.prefix(3).map { ($0 as NSString).lastPathComponent }
         return files.count > 3 ? names.joined(separator: ", ") + " +\(files.count - 3)" : names.joined(separator: ", ")
+    }
+}
+
+/// Whether the agent is on its turn: the chat shows "Working…" at its end
+/// while it is. The API has no in-progress flag, so this is read from what
+/// the chat shows (the desktop's `chat_turn_open`).
+enum SessionTurn {
+    /// Past this age of the newest event the session is taken for idle or
+    /// dead, and "Working…" is not shown.
+    static let window: TimeInterval = 10 * 60
+    /// The relay core's presence window: an agent not seen for longer is offline.
+    static let presenceWindow: TimeInterval = 5 * 60
+
+    /// Whether the agent's last row is not its own written reply. A message
+    /// to the agent, a received relay message, a prompt and tool work leave
+    /// the turn open; a reply, a relay message the agent sent and a relay
+    /// message from it close it. Activity notes say nothing either way.
+    /// Thinking, which the chat does not show, after the last row leaves it open.
+    static func isOpen(_ items: [ChatTimelineItem], events: [SessionEvent], me: String = "") -> Bool {
+        for item in items.reversed() {
+            let open: Bool
+            switch item {
+            case .message(let message):
+                open = SessionTimeline.isToAgent(message, me: me)
+            case .activity:
+                open = true
+            case .event(let row):
+                if let mark = row.mark {
+                    open = mark.isIncoming
+                } else {
+                    switch row.event.role {
+                    case .person, .tool: open = true
+                    case .agent: open = false
+                    case .activity: continue
+                    }
+                }
+            }
+            if !open, let date = item.date,
+               events.contains(where: { $0.isThinking && ($0.ts ?? .distantPast) > date }) {
+                return true
+            }
+            return open
+        }
+        return events.contains(where: \.isThinking)
+    }
+
+    /// Whether to show "Working…": the turn is open, the newest event is
+    /// under `window` old, and the agent is not offline. With no events (the
+    /// session is not available) it never shows.
+    static func showsWorking(open: Bool, newestEventAt newest: Date?, offline: Bool, now: Date) -> Bool {
+        guard open, !offline, let newest else { return false }
+        let age = now.timeIntervalSince(newest)
+        return age < window && age > -window
+    }
+
+    /// Whether the roster says the agent is gone: its status is offline, or
+    /// it was last seen longer ago than the presence window. An unknown
+    /// status is not offline.
+    static func isOffline(status: String, lastSeen: Date?, now: Date) -> Bool {
+        if status.lowercased() == "offline" { return true }
+        if let lastSeen, now.timeIntervalSince(lastSeen) > presenceWindow { return true }
+        return false
     }
 }
