@@ -47,6 +47,9 @@ struct AgentRowModel: Equatable {
         var recordedSummary: SessionSummaryState?
         var goal = ""
         var unread = false
+        /// The newest event of the agent's session, only when that session
+        /// is already loaded; never requested for the row.
+        var lastEventAt: Date?
     }
 
     static let summaryLimit = 240
@@ -60,6 +63,9 @@ struct AgentRowModel: Equatable {
     let machine: String?
     /// Nil for a channel, which has no presence.
     let status: Status?
+    /// What the agent is doing (`AgentListOrder.activity`), shown as the
+    /// row's badge. Nil for a person or a channel.
+    let activity: ChatActivity?
     let unread: Bool
     /// Text the row does not show but search has always matched.
     private let extraSearchText: String
@@ -105,6 +111,10 @@ struct AgentRowModel: Equatable {
         self.machine = isAgent && !machine.isEmpty ? machine : nil
         status = agent.source == .channel ? nil
             : Self.status(agent.status, reachable: agent.isReachable(at: now))
+        activity = isAgent
+            ? AgentListOrder.activity(status: agent.status, reachable: agent.isReachable(at: now),
+                                      lastEventAt: loaded.lastEventAt, now: now)
+            : nil
         // The overview's title is matched even where the row does not show
         // it: an incomplete brief, a person or a channel.
         extraSearchText = [agent.name, agent.address, agent.machine, agent.subtitle, agent.objective,
@@ -118,13 +128,13 @@ struct AgentRowModel: Equatable {
     }
 
     /// What VoiceOver reads for the row: name, title, CLI, machine, status
-    /// and unread, in that order.
+    /// (an agent's badge: Working, Idle or Offline) and unread, in that order.
     var accessibilityLabel: String {
         var parts = [name]
         if let title { parts.append(title) }
         if let cliLabel { parts.append(cliLabel) }
         if let machine { parts.append(machine) }
-        if let status { parts.append(status.label) }
+        if let activity { parts.append(activity.label) } else if let status { parts.append(status.label) }
         if unread { parts.append("Unread messages") }
         return parts.joined(separator: ", ")
     }

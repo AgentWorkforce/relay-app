@@ -682,7 +682,7 @@ struct RelayWorkspaceView: View {
             // Search matches what the row shows (`AgentRowModel.searchText`).
             (search.isEmpty || client.rowModel(for: agent, now: now).matches(search))
         }
-        return matching.filter { pinnedAgentIDs.contains($0.id) } + matching.filter { !pinnedAgentIDs.contains($0.id) }
+        return page == .agents ? client.listOrdered(matching, pinned: pinnedAgentIDs, now: now) : matching.filter { pinnedAgentIDs.contains($0.id) } + matching.filter { !pinnedAgentIDs.contains($0.id) }
     }
     private var machines: [String] {
         let agents = page == .agents ? client.relayAgents.filter { showAll || $0.isReachable() } : client.conversations

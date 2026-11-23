@@ -231,7 +231,26 @@ final class AgentRowModelTests: XCTestCase {
         XCTAssertFalse(row(agent()).unread)
         let model = row(agent(metadata: ["session_title": "Provider title"]), .init(cli: "codex", unread: true))
         XCTAssertTrue(model.unread)
-        XCTAssertEqual(model.accessibilityLabel, "builder, Provider title, Codex, Test Mini, Online, Unread messages")
+        // An agent's row reads its badge in place of the presence status.
+        XCTAssertEqual(model.accessibilityLabel, "builder, Provider title, Codex, Test Mini, Idle, Unread messages")
+    }
+
+    func testAgentBadgeFromStatusThenLoadedEventsAndNoneForPeopleOrChannels() {
+        XCTAssertEqual(row(agent(status: "active")).activity, .idle)
+        XCTAssertEqual(row(agent(status: "waiting")).activity, .working)
+        XCTAssertEqual(row(agent(status: "offline")).activity, .offline)
+        XCTAssertEqual(row(agent(status: "")).activity, .offline)
+        XCTAssertEqual(row(agent(status: "active", extra: ["last_seen": seen(6 * 60)])).activity, .offline)
+        XCTAssertEqual(row(agent(), .init(lastEventAt: now.addingTimeInterval(-30))).activity, .working)
+        XCTAssertEqual(row(agent(), .init(lastEventAt: now.addingTimeInterval(-121))).activity, .idle)
+        XCTAssertEqual(row(agent(status: "waiting")).accessibilityLabel, "builder, Test Mini, Working")
+        XCTAssertEqual(row(agent(status: "offline")).accessibilityLabel, "builder, Test Mini, Offline")
+
+        let person = RelayAgent(relay: ["name": "sam-lee", "type": "human", "persona": "Sam Lee", "status": "active",
+                                        "last_seen": seen()])
+        XCTAssertNil(row(person, .init(displayName: "Sam Lee")).activity)
+        let channel = RelayAgent(channel: ["name": "launch", "member_count": 3], joined: true)
+        XCTAssertNil(row(channel).activity)
     }
 
     func testSearchMatchesWhatTheRowShowsAndTheRecordsOwnFields() {
