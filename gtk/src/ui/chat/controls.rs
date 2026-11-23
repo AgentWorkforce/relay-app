@@ -162,11 +162,23 @@ impl App {
         self.chat_agent(&key)
     }
 
-    /// Puts the session shown on the relay or takes it off, as Receives
-    /// messages did in the sessions table.
+    /// Puts the session shown on the relay or takes it off, as the Messages
+    /// switch does in the sessions table: a session Agent Relay does not see
+    /// running stays off, and why shows under the message box.
     fn set_chat_receives(&self, on: bool) {
-        if let Some((_, session)) = self.shown_chat_agent().as_ref().and_then(ChatAgent::local) {
-            self.toggle_relay(session, on);
+        let Some(agent) = self.shown_chat_agent() else {
+            return;
+        };
+        let Some((_, session)) = agent.local() else {
+            return;
+        };
+        if on == agent.address().is_some() {
+            return;
+        }
+        self.press_relay(session);
+        let key = session.target.key();
+        if let Some(reason) = self.with_state(|state| state.relay_errors.get(&key).cloned()) {
+            self.with_chat(|page| page.composer.note.set_text(&reason));
         }
     }
 
