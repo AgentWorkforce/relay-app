@@ -445,6 +445,11 @@ private enum SecureStore {
     private var latestMessageIDs: [String: String] = [:]
     private var localMessageNotices = LocalMessageNotices()
     private var latestIncomingMessageIDs: [String: String] = [:]
+    /// The server's read state (`/inbox`), for the session `readStateSession`.
+    private var readState = ConversationReadState()
+    private var readStateSession = 0
+    private var carryingOverSeen = false
+    var isAppActive: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
     private var conversationsInitialized = false
     private var registeredPushToken: String?
     private var selectedConversation: String?
@@ -1300,16 +1305,66 @@ private enum SecureStore {
     func pollMessages(fromRefresh refresh: Int? = nil) async {
         guard paired, !signingOut, !Task.isCancelled,
               refresh == nil || refresh == refreshGeneration else { return }
+        await reloadConversations(fromRefresh: refresh, afterCarryOver: false)
+    }
+    /// Reads the conversation list and the server's read state together.
+    /// `afterCarryOver` is the one re-read after carrying the old device
+    /// cursor over: it applies the inbox as it is and starts no carry-over.
+    private func reloadConversations(fromRefresh refresh: Int?, afterCarryOver: Bool) async {
+        guard paired, !signingOut, !Task.isCancelled,
+              refresh == nil || refresh == refreshGeneration else { return }
+        resetReadStateIfSessionChanged()
         conversationRefreshGeneration += 1
         let generation = conversationRefreshGeneration
-        do {
-            let threads = try objects(await api("/dm/conversations", agent: true))
-            guard generation == conversationRefreshGeneration else { return }
+        let session = sessionGeneration
+        let ticket = readState.inboxRequested()
+        async let inboxData: Any? = try? api("/inbox", agent: true)
+        async let threadData: Any? = try? api("/dm/conversations", agent: true)
+        let inbox = await inboxData as? JSONObject
+        let threads = await threadData.map { objects($0) }
+        // A transient poll failure should not interrupt an open conversation.
+        guard generation == conversationRefreshGeneration, session == sessionGeneration,
+              paired, !signingOut else { return }
+        var answer = inbox.map { ConversationReadState.unread(inInbox: $0, mine: messagingHandle) }
+        var carryOver: [(conversationID: String, messageID: String)] = []
+        let cursorKeys = [unreadSeenKey, unreadBaselineKey]
+        if answer != nil, carryingOverSeen {
+            answer = nil
+        } else if let unread = answer, !afterCarryOver,
+                  let seen = ConversationReadState.oldSeenCursor(
+                    UserDefaults.standard.dictionary(forKey: cursorKeys[0]),
+                    hasBaseline: UserDefaults.standard.object(forKey: cursorKeys[1]) != nil) {
+            carryOver = ConversationReadState.carryOverPlan(unread: unread.keys, seen: seen)
+            // Until the server knows what this device had seen, keep the last answer.
+            if carryOver.isEmpty { cursorKeys.forEach(UserDefaults.standard.removeObject(forKey:)) } else { answer = nil }
+        }
+        if let answer { readState.apply(inbox: answer, ticket: ticket) } else { readState.inboxUnanswered() }
+        if let threads {
             latestConversationThreads = threads
             updateConversations(threads, metadata: conversationAgentMetadata)
             Task { await enrichConversationMetadata() }
-        } catch {
-            // A transient poll failure should not interrupt an open conversation.
+        } else if answer != nil, conversationsInitialized {
+            updateConversations(latestConversationThreads, metadata: conversationAgentMetadata)
+        }
+        if answer != nil { removeReadNotifications() }
+        if !carryOver.isEmpty {
+            carryingOverSeen = true
+            var outcomes: [ConversationReadState.Outcome] = []
+            for step in carryOver {
+                outcomes.append(await postRead(step.messageID))
+                guard session == sessionGeneration else { return }
+            }
+            carryingOverSeen = false
+            if ConversationReadState.carryOverComplete(outcomes) {
+                cursorKeys.forEach(UserDefaults.standard.removeObject(forKey:))
+            }
+            await reloadConversations(fromRefresh: nil, afterCarryOver: true)
+            return
+        }
+        if attachedID == nil, let open = selectedConversation,
+           let agent = conversations.first(where: { $0.id == open }) ?? relayAgents.first(where: { $0.id == open }),
+           let conversationID = conversationIDs[agent.name] {
+            await markOpenConversationRead(agent, conversationID: conversationID)
         }
     }
     /// Lists workspace channels, marking the ones this person has joined.
@@ -1458,12 +1513,9 @@ private enum SecureStore {
     }
     private func updateConversations(_ threads: [JSONObject], metadata: [String: RelayAgent]) {
         let mine = UserDefaults.standard.string(forKey: "relay.mobileName") ?? ""
-        // Relaycast's unread_count includes this agent's own messages. Keep a
-        // device-local cursor for the newest incoming message instead.
+        // Relaycast's unread_count includes this agent's own messages; the
+        // server's read state (`/inbox`) says which conversations are unread.
         let defaults = UserDefaults.standard
-        var seen = defaults.dictionary(forKey: unreadSeenKey) as? [String: String] ?? [:]
-        let establishingBaseline = !defaults.bool(forKey: unreadBaselineKey)
-        var seenChanged = establishingBaseline
         var ids: [String: String] = [:]
         var latest: [String: String] = [:]
         var latestIncoming: [String: String] = [:]
@@ -1486,22 +1538,14 @@ private enum SecureStore {
             let incoming = !messageID.isEmpty &&
                 (!senderID.isEmpty && !myID.isEmpty ? senderID != myID :
                  !senderName.isEmpty && senderName != mine)
-            if incoming {
-                latestIncoming[conversationID] = messageID
-                if establishingBaseline {
-                    if seen[conversationID] != messageID {
-                        seen[conversationID] = messageID
-                        seenChanged = true
-                    }
-                } else if seen[conversationID] != messageID {
-                    unread.insert("conversation:\(name)")
-                }
-            }
+            if incoming { latestIncoming[conversationID] = messageID }
+            if readState.unreadConversationIDs.contains(conversationID) { unread.insert("conversation:\(name)") }
             if localMessageNotices.shouldPost(conversationID: conversationID, messageID: messageID,
                                               isCurrentPeer: isCurrentPeer,
                                               apnsToken: RelayPushState.shared.token,
                                               initialized: conversationsInitialized,
-                                              fromMe: string(last["agent_id"]) == myID) {
+                                              fromMe: string(last["agent_id"]) == myID),
+               readState.allowsLocalNotice(conversationID: conversationID) {
                 let content = UNMutableNotificationContent()
                 // A person shows by name, as in the app; agents by their name.
                 let person = metadata[name]
@@ -1545,9 +1589,59 @@ private enum SecureStore {
         conversations = updated
         hiddenConversationIDs = hiddenIDs
         unreadConversationIDs = unread.intersection(visibleIDs).subtracting(hiddenIDs)
-        if seenChanged { defaults.set(seen, forKey: unreadSeenKey) }
-        if establishingBaseline { defaults.set(true, forKey: unreadBaselineKey) }
         conversationsInitialized = true
+    }
+    /// The read state belongs to the session it was read for.
+    private func resetReadStateIfSessionChanged() {
+        guard readStateSession != sessionGeneration else { return }
+        readState = ConversationReadState()
+        readStateSession = sessionGeneration
+        carryingOverSeen = false
+    }
+    /// Marks the open direct conversation read up to its newest incoming
+    /// message, once, while the app is in the foreground. A failed post is
+    /// tried again by the next history load.
+    private func markOpenConversationRead(_ agent: RelayAgent, conversationID: String) async {
+        resetReadStateIfSessionChanged()
+        guard ConversationReadState.mayMarkRead(isDirectConversation: agent.source != .channel,
+                                                isOpen: selectedConversation == agent.id,
+                                                historyLoaded: loadedHistoryConversation == agent.id,
+                                                appActive: isAppActive()) else { return }
+        let page = messages.map { (id: $0.hasServerID ? $0.id : "", mine: $0.mine) }
+        guard let messageID = ConversationReadState.messageToMarkRead(
+                page: page, latestIncomingID: latestIncomingMessageIDs[conversationID]),
+              readState.beginRead(conversationID: conversationID, messageID: messageID) else { return }
+        unreadConversationIDs.remove("conversation:\(agent.name)")
+        let session = sessionGeneration
+        let outcome = await postRead(messageID)
+        guard session == sessionGeneration else { return }
+        readState.finishRead(conversationID: conversationID, messageID: messageID, outcome: outcome)
+        if outcome == .success { removeReadNotifications() }
+    }
+    private func postRead(_ messageID: String) async -> ConversationReadState.Outcome {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        let encoded = messageID.addingPercentEncoding(withAllowedCharacters: allowed) ?? messageID
+        do {
+            _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
+            return .success
+        } catch let failure as RelayAPIError where failure.status == 404 {
+            return .notFound
+        } catch {
+            return .failed
+        }
+    }
+    /// Clears delivered notifications of direct conversations that are read.
+    private func removeReadNotifications() {
+        let direct = Set(conversationIDs.values)
+        let unread = readState.unreadConversationIDs
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let delivered = await center.deliveredNotifications()
+                .map { (identifier: $0.request.identifier, userInfo: $0.request.content.userInfo) }
+            let read = ConversationReadState.deliveredNotificationsToRemove(
+                delivered, directConversationIDs: direct, unread: unread)
+            if !read.isEmpty { center.removeDeliveredNotifications(withIdentifiers: read) }
+        }
     }
     /// Hides a conversation from the Messages list on this device only.
     func hideConversation(_ agent: RelayAgent) {
@@ -1766,18 +1860,10 @@ private enum SecureStore {
             messages = objects(result).reversed().enumerated().map { RelayMessage($0.element, index: $0.offset) }
             loadedHistoryConversation = agent.id
             if agent.source == .channel { await loadChannelSenders(in: messages) }
-            if let id = conversationID, let incomingID = latestIncomingMessageIDs[id],
-               messages.contains(where: { $0.id == incomingID && !$0.mine }) {
-                var seen = UserDefaults.standard.dictionary(forKey: unreadSeenKey) as? [String: String] ?? [:]
-                if seen[id] != incomingID {
-                    seen[id] = incomingID
-                    UserDefaults.standard.set(seen, forKey: unreadSeenKey)
-                    unreadConversationIDs.remove("conversation:\(agent.name)")
-                }
-            }
             error = nil
             refreshNotice = nil
             connectionReports.succeeded(ticket)
+            if let id = conversationID { await markOpenConversationRead(agent, conversationID: id) }
         } catch {
             if reportsErrors, selectedConversation == agent.id {
                 reportConnectionFailure(error, from: ticket, channel: agent.source == .channel)
