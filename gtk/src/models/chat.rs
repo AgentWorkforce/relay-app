@@ -182,6 +182,16 @@ pub fn chat_relay_marker(sender: Option<&str>) -> String {
     }
 }
 pub const CHAT_ELSEWHERE: &str = "Elsewhere";
+/// The tooltip on an agent's unread count.
+pub fn chat_unread_label(count: u64) -> String {
+    match count {
+        1 => "1 unread message".to_string(),
+        n => format!("{n} unread messages"),
+    }
+}
+
+/// A notification's link back to a conversation: `<prefix><peer name>`.
+pub const CHAT_LINK: &str = "agent-relay-chat:";
 /// An agent elsewhere someone else in the workspace owns.
 pub const CHAT_NOT_YOURS: &str = "Not yours";
 pub const CHAT_CLOUD: &str = "Cloud";
@@ -548,9 +558,11 @@ pub fn chat_turn_open(entry: &LocalTranscriptEntry) -> bool {
 }
 
 mod agent;
+mod inbox;
 mod order;
 mod pasted;
 mod relay_lines;
+pub use inbox::{ChatInbox, ChatNotice, Unread};
 pub use order::{chat_sort_elsewhere, chat_sorts_before};
 pub use pasted::chat_pasted_images;
 pub use relay_lines::{chat_relay_incoming, chat_relay_outgoing, RelayIncoming, RelayOutgoing};

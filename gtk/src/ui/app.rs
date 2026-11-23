@@ -11,6 +11,7 @@ use super::desktop::{Answer, Confirmation, Desktop};
 mod actions;
 mod connection;
 mod content;
+mod invalidated;
 mod lifecycle;
 mod links;
 use super::shell::Shell;
@@ -488,42 +489,6 @@ impl App {
         self.replay_links();
     }
 
-    fn invalidated(&self, what: agent_relay_node::relay::state::Listing) {
-        use agent_relay_node::relay::state::Listing;
-        if !self.with_state(|state| state.connected()) {
-            return;
-        }
-        match what {
-            Listing::Uploader => {
-                let sessions = self.page() == Page::Sessions;
-                self.refresh_uploader(sessions);
-            }
-            Listing::Sessions => self.refresh_local(),
-            Listing::Agents => {
-                self.refresh_agents();
-                self.refresh_local();
-            }
-            Listing::Roster => self.refresh_roster(),
-            // The workspace's people are not shown.
-            Listing::People => {}
-            // An agent changed a setting (`PATCH /settings`).
-            Listing::Settings => self.load_settings(),
-            Listing::Activity => self.refresh_claude_delivery(),
-            Listing::Messages => self.refresh_chats(),
-            // Skip chat, projects and CLI fleet brokers are not read by this
-            // window.
-            Listing::Chat | Listing::Projects | Listing::Fleet => {}
-        }
-        // A session or reply changing can change whether a followed
-        // conversation's recipient runs and what became of its message.
-        if matches!(
-            what,
-            Listing::Sessions | Listing::Roster | Listing::Messages
-        ) {
-            self.follow_recipients();
-        }
-    }
-
     pub fn notify(&self, notification: &CoreNotification) {
         self.inner.desktop.notify(notification);
     }
@@ -531,6 +496,9 @@ impl App {
     /// A link from a notification: the app's own links are parsed by the
     /// core; web links open in the browser.
     pub fn open_url(&self, url: &str) {
+        if self.open_chat_link(url) {
+            return;
+        }
         if crate::launch::is_app_link(url) {
             self.open_link(url);
         } else if web_link(url) {

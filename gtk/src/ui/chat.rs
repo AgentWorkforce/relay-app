@@ -23,6 +23,7 @@ mod controls;
 mod elsewhere;
 mod filters;
 mod images;
+mod inbox;
 mod open;
 mod send;
 mod sources;
@@ -70,6 +71,8 @@ pub struct ChatPage {
     /// Your agents elsewhere as drawn at the head of the sessions list.
     elsewhere_rows: RefCell<Vec<gtk::ListBoxRow>>,
     elsewhere_drawn: RefCell<Vec<String>>,
+    /// Your unread messages from agents (`inbox.rs`).
+    pub inbox: RefCell<crate::models::ChatInbox>,
 }
 
 impl ChatPage {
@@ -197,6 +200,7 @@ impl ChatPage {
             unsent_files: Cell::new(false),
             elsewhere_rows: RefCell::default(),
             elsewhere_drawn: RefCell::default(),
+            inbox: RefCell::default(),
         }
     }
 }
@@ -218,6 +222,7 @@ impl App {
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
         self.follow_chat_thread();
+        self.follow_chat_inbox();
     }
 
     pub(super) fn with_chat<T>(&self, read: impl FnOnce(&ChatPage) -> T) -> Option<T> {
@@ -346,12 +351,13 @@ impl App {
             .iter()
             .map(|agent| {
                 format!(
-                    "{}|{:?}|{}|{}|{}",
+                    "{}|{:?}|{}|{}|{}|{}",
                     agent.key(),
                     agent.activity,
                     agent.name(),
                     agent.glance(),
-                    selected.as_deref() == Some(agent.key().as_str())
+                    selected.as_deref() == Some(agent.key().as_str()),
+                    self.chat_unread(&agent.relay_names())
                 )
             })
             .collect();
@@ -422,6 +428,12 @@ impl App {
             &["chat-status", agent.activity.class()],
         );
         top.append(&status);
+        let unread = self.chat_unread(&agent.relay_names());
+        if unread > 0 {
+            let count = text(&unread.min(99).to_string(), &["chat-unread"]);
+            count.set_tooltip_text(Some(&crate::models::chat_unread_label(unread)));
+            top.append(&count);
+        }
         words.append(&top);
         let glance = agent.glance();
         if !glance.is_empty() {
@@ -506,6 +518,11 @@ impl App {
                 page.composer.note.set_text(&agent.composer_note());
             }
             self.load_chat_thread(key);
+            // Opening a conversation reads it, here and on your other
+            // devices.
+            if let Some(agent) = self.chat_agent(key) {
+                self.mark_chat_read(&agent.relay_names());
+            }
         }
         self.render_chat();
         page.composer.input.view.grab_focus();

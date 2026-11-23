@@ -95,6 +95,24 @@ impl ChatAgent {
     }
 
     /// The exact address it is messaged at, once it is on the relay.
+    /// Every name the agent goes by on the relay, for matching a direct
+    /// conversation's peer: its name, its registered name and alias, and
+    /// its address without the machine.
+    pub fn relay_names(&self) -> Vec<String> {
+        let mut names = vec![self.name()];
+        if let Some(registration) = self.registration() {
+            names.push(registration.name.clone());
+            names.extend(registration.alias.clone());
+        }
+        if let Some(address) = self.address() {
+            names.extend(address.split('@').next().map(str::to_string));
+            names.push(address);
+        }
+        names.retain(|name| !name.is_empty());
+        names.dedup();
+        names
+    }
+
     pub fn address(&self) -> Option<String> {
         match &self.place {
             ChatPlace::Elsewhere(agent) => agent.address.clone(),
