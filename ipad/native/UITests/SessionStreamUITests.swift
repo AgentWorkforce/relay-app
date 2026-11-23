@@ -97,7 +97,7 @@ final class SessionStreamUITests: XCTestCase {
                       "The fixture's hold ran out before the test released it (control reads \((release.value as? String) ?? "nil"))")
 
         XCTAssertTrue(app.staticTexts["Running the build checks now."].waitForExistence(timeout: 10))
-        XCTAssertTrue(waitFor("exists == false", loading, timeout: 5), "The loading row must give way to the timeline")
+        XCTAssertFalse(loading.exists)
         // The session's copy of "Ship it" is the relay message, shown once.
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == 'Ship it'")).count, 1)
         XCTAssertTrue(app.staticTexts["Delivery status"].exists)
