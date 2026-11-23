@@ -509,3 +509,42 @@ empty feed, with a warning, and any other failure fails the run. Given a
 `version`, the run does not list the feed and its candidate is marked
 unlisted: Desktop Promote lists the feed before it publishes and refuses a
 version the feed already holds other than as a draft.
+
+## Agent Deploy: the delegated-approval list
+
+The layered agent's delegated-approval list (`agent/delegations.json`, a lane
+file the agent host's permit validator reads) is not tracked in the
+repository. It lives in the `LAYERED_AGENT_DELEGATIONS` variable of the
+`agent-deploy` environment, which only the owner can change. Its value is a
+JSON array of grant entries; the list's version and owner are constants in
+`agent/delegations-from-env.ts`, so the variable can add grants but cannot
+change who the owner is. One synthetic entry:
+
+```json
+[
+  {
+    "agent": "example-bot",
+    "agentId": "100000000000000001",
+    "expiresAt": "2026-12-19T00:00:00Z",
+    "grantedBy": "khaliq-gant",
+    "grantedAt": "2026-11-19T10:21:40Z",
+    "reason": "Why the owner granted it, on one line.",
+    "scope": "owner-equivalent",
+    "ownsSpawned": false,
+    "ownerMessageId": "200000000000000001"
+  }
+]
+```
+
+Every key is required and no other key is accepted. `agentId` and
+`ownerMessageId` are digits, the timestamps are UTC to the second,
+`grantedBy` is an owner, a grant lasts at most 30 days, and no two entries
+share an agent or an `agentId`. Agent Deploy's preview and deploy jobs write
+`agent/delegations.json` from the variable with the same command before
+anything reads `agent/`. Unset or blank, the list is empty and no agent holds
+a permit; a value that is not a valid list fails the job before the kit runs,
+and its log names the entry and field, never a value. Agent CI writes the
+empty list. A change to the variable reaches the host only with the next
+deploy: a dispatch of Agent Deploy by the owner, or the next landing that
+changes `agent/` or the agent workflows. A deploy that changes only this file
+is a hot update, without a restart.

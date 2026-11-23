@@ -19,6 +19,18 @@
 # instead of failing; everything else is checked the same. Once the deployed
 # template carries the pin and the marker there is nothing to preview and it
 # passes.
+#
+# The delegated-approval list (agent/delegations.json, a lane file the host's
+# delegation-decide.py reads) is not tracked in the repository. It lives in
+# the LAYERED_AGENT_DELEGATIONS variable of the agent-deploy environment,
+# which only the owner can change: a JSON array of grant entries. The preview
+# and deploy jobs each write agent/delegations.json from it with the same
+# command (agent/delegations-from-env.ts) before anything reads agent/; unset
+# or blank, the list is empty and no agent holds a permit, and a value that is
+# not a valid list fails the job before the kit runs. A change to the variable
+# reaches the host only with the next deploy: a dispatch of this workflow by
+# the owner, or the next landing that changes agent/ or these workflows. A
+# deploy that changes only that file is a hot update, without a restart.
 name: Agent Deploy
 
 # A landing on main that changes agent/ or its workflows deploys it once
@@ -152,6 +164,14 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@agentworkforce'
 
+      # Before anything of the kit reads agent/ (the preview's template
+      # reads every lane file): the same command as the deploy job's, so both
+      # see the same bytes. The value reaches the generator only through env.
+      - name: Write the delegation list
+        env:
+          LAYERED_AGENT_DELEGATIONS: ${{ vars.LAYERED_AGENT_DELEGATIONS }}
+        run: node agent/delegations-from-env.ts agent/delegations.json
+
       - name: Install
         working-directory: agent
         env:
@@ -241,6 +261,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # For the generator below: it needs node 24 and no install (the
+      # preview job runs it on the same version).
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      # Before anything of the kit reads agent/ (the Deploy step ships
+      # the lane files): the same command as the preview job's, so both
+      # see the same bytes. The value reaches the generator only through env.
+      - name: Write the delegation list
+        env:
+          LAYERED_AGENT_DELEGATIONS: ${{ vars.LAYERED_AGENT_DELEGATIONS }}
+        run: node agent/delegations-from-env.ts agent/delegations.json
 
       # The kit runs with the deploy role's credentials, so it is pinned: a
       # kit change reaches this deploy only through a deliberate bump of this
