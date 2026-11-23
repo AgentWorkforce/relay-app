@@ -508,4 +508,4 @@ with that token; a site that answers with HTTP 404 `not_found` counts as an
 empty feed, with a warning, and any other failure fails the run. Given a
 `version`, the run does not list the feed and its candidate is marked
 unlisted: Desktop Promote lists the feed before it publishes and refuses a
-version the feed already holds.
+version the feed already holds other than as a draft.

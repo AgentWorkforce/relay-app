@@ -8,16 +8,25 @@ what each step prints.
 
 ## A. Before touching the Mac
 
-1. Check that your site's feed offers the macOS headless files. The
-   downloads page (`{site}/cloud/dashboard/downloads`) lists `install-macos.sh`
-   and `<asset prefix>-<version>-macOS-<arch>-probe.tar.gz` when they were
-   published. A release published under a manifest limit too small for them
-   leaves those three files out and says so in its run
+1. Check that the release you install carries the macOS headless files:
+   `install-macos.sh` and
+   `<asset prefix>-<version>-macOS-<arch>-probe.tar.gz` for each CPU. A
+   release published under a manifest limit too small for them leaves those
+   three files out and says so in its run
    ([The signer's manifest limit](workspace-layout.md#the-signers-manifest-limit)).
-2. Download `install-macos.sh` from that page, and keep the page open for its
-   sha256.
-3. Get an install token from the same page when you are ready to install. A
-   first install needs it; a token that has expired or was revoked is refused.
+   The downloads page (`{site}/cloud/dashboard/downloads`) lists
+   `install-macos.sh` with the command-line install scripts when it was
+   published. It does not list the archives: they are in the release's
+   signed manifest, which the dry run in B7 reads.
+2. Download `install-macos.sh` from that page. The page shows no checksum for
+   a script; the manifest records one, and B3 compares against it.
+3. Get an install token when you are ready to install: it lasts 1 hour and
+   reads your profile's feed only. A first install needs it; a token that has
+   expired or was revoked is refused. The site mints it for a signed-in
+   browser session only. Use the downloads page where it offers one;
+   otherwise send, from that signed-in session, a `POST` to
+   `{site}/cloud/api/v1/desktop/feed/install-tokens` with the header
+   `X-Agent-Relay-Profile: <profile id>`. The answer shows the token once.
 4. Decide how the Mac signs in: an administrator's enrollment key file, or
    the device code the installer prints.
 5. Find out how the self-built core runs today: under the installer's
@@ -32,11 +41,23 @@ what each step prints.
 2. Install what a first install needs: `curl`, `python3` (the Command Line
    Tools, `xcode-select --install`) and Homebrew's `openssl@3` first on
    `PATH`. The Mac's own `openssl` is LibreSSL, which the installer refuses.
-3. Check the installer against the page's sha256:
+3. Export the install token, then check the installer against the sha256
+   the feed records for it. The site and the profile id are in the script's
+   own `SITE_URL=` and `PROFILE_ID=` lines:
 
    ```sh
+   read -rs AGENT_RELAY_INSTALL_TOKEN && export AGENT_RELAY_INSTALL_TOKEN  # paste the token, not in shell history
+   grep -E "^(SITE_URL|PROFILE_ID)=" install-macos.sh
+   printf 'Authorization: Bearer %s\n' "$AGENT_RELAY_INSTALL_TOKEN" \
+     | curl -fsS -H @- -H "X-Agent-Relay-Profile: <profile id>" \
+         "<site>/cloud/api/v1/desktop/feed/manifest?channel=stable" \
+     | python3 -c 'import json, sys; print(next(a["sha256"] for a in json.load(sys.stdin)["manifest"]["assets"] if a["name"] == "install-macos.sh"))'
    shasum -a 256 install-macos.sh
    ```
+
+   The last two lines must show the same value. This compares your download
+   with the feed's record over the same connection to your site; the
+   manifest's signature is checked by the installer itself, in B7.
 
 4. See what is installed now:
 
@@ -56,10 +77,11 @@ what each step prints.
      never replaces a copy that is not signed like itself.
 6. Run `--status` again; it should say `not installed`.
 7. Dry run, then install (with `--enrollment-key-file` only if you have a
-   key):
+   key), in the shell that holds the token from B3. The dry run stops with
+   `the release has no <archive name>` when the release left this Mac's
+   archive out:
 
    ```sh
-   read -rs AGENT_RELAY_INSTALL_TOKEN && export AGENT_RELAY_INSTALL_TOKEN  # paste the token, not in shell history
    bash ./install-macos.sh --dry-run
    bash ./install-macos.sh --enrollment-key-file /private/path/to/key
    unset AGENT_RELAY_INSTALL_TOKEN
