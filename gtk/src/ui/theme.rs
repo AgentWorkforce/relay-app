@@ -260,6 +260,7 @@ label.chat-status { font-size: 10px; font-weight: 600; border-radius: 9px; paddi
 label.chat-status.working, .presence-badge.working { color: $green; background-color: alpha($green, 0.16); }
 label.chat-status.offline { color: $tertiary; background-color: transparent; }
 label.chat-glance { font-size: 12px; color: $secondary; }
+label.elsewhere-tag { font-size: 11px; font-weight: 600; color: $accent; background-color: alpha($accent, 0.12); border-radius: 9px; padding: 1px 8px; }
 .chat-header { background-color: $panel; }
 .chat-dock { background-color: $window; }
 .chat-pending { opacity: 0.7; }

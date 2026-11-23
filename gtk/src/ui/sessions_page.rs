@@ -57,7 +57,7 @@ pub struct SessionsPage {
     pub list: gtk::ListBox,
     pub(super) scroller: gtk::ScrolledWindow,
     /// The `SOURCE:ID` of each row of `list`, in order.
-    keys: RefCell<Vec<String>>,
+    pub(in crate::ui) keys: RefCell<Vec<String>>,
     /// What each row of `list` was drawn from.
     drawn: RefCell<Vec<DrawnRow>>,
     /// Each row's last active time, with the moment it reads from: kept
@@ -70,7 +70,7 @@ pub struct SessionsPage {
     first_page: gtk::Button,
     /// Set while the list is rebuilt: its selection changing then is not
     /// the person's.
-    drawing: Cell<bool>,
+    pub(in crate::ui) drawing: Cell<bool>,
 }
 
 /// Hover previews the next click, while the resting arrow records current order.
@@ -556,7 +556,7 @@ impl App {
                 if let Some(app) = weak.upgrade() {
                     if let Some(shell) = app.shell() {
                         let page = &shell.pages.sessions;
-                        if page.list.selected_rows().len() == page.keys.borrow().len() {
+                        if page.list.selected_rows().len() == page.row_keys().len() {
                             app.clear_session_selection();
                         } else {
                             page.list.select_all();

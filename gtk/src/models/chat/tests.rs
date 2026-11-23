@@ -233,6 +233,7 @@ fn your_agents_elsewhere_are_listed_from_the_roster() {
     assert_eq!(ops.composer_note(), CHAT_ELSEWHERE_NOTE);
     assert!(ops.can_send() && ops.local().is_none());
     assert_eq!(ops.placeholder(), "Message @layered-infra-ops");
+    assert_eq!(chat_elsewhere_tag(ops), "Elsewhere · build.example.test");
 }
 
 #[test]
@@ -250,6 +251,9 @@ fn relay_messages_are_marked() {
 }
 
 #[test]
-fn more_agents_elsewhere_are_counted() {
-    assert_eq!(chat_elsewhere_more(14), "+14 more: search to find them");
+fn agents_elsewhere_are_tagged_with_where_they_run() {
+    assert_eq!(
+        chat_elsewhere_tag(&agent(session("a", None), ChatActivity::Idle)),
+        ""
+    );
 }

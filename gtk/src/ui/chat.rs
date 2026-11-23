@@ -64,8 +64,9 @@ pub struct ChatPage {
     /// What the list last drew, so a redraw with nothing new keeps it.
     drawn: RefCell<Vec<String>>,
     pub sending: Cell<bool>,
-    /// Your agents elsewhere, shown above the sessions list.
-    pub elsewhere: gtk::Box,
+    /// Your agents elsewhere as drawn at the head of the sessions list.
+    elsewhere_rows: RefCell<Vec<gtk::ListBoxRow>>,
+    elsewhere_drawn: RefCell<Vec<String>>,
 }
 
 impl ChatPage {
@@ -190,7 +191,8 @@ impl ChatPage {
             selected: RefCell::default(),
             drawn: RefCell::default(),
             sending: Cell::new(false),
-            elsewhere: elsewhere::elsewhere_box(),
+            elsewhere_rows: RefCell::default(),
+            elsewhere_drawn: RefCell::default(),
         }
     }
 }

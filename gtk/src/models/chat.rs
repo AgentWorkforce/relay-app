@@ -169,6 +169,7 @@ pub fn chat_relay_marker(sender: Option<&str>) -> String {
     }
 }
 pub const CHAT_ELSEWHERE: &str = "Elsewhere";
+pub const CHAT_CLOUD: &str = "Cloud";
 pub const CHAT_ELSEWHERE_SECTION: &str = "Your agents elsewhere";
 pub const CHAT_ELSEWHERE_NOTE: &str =
     "Sent as a direct message through Agent Relay. Its replies to you show here.";
@@ -284,9 +285,16 @@ pub fn chat_agents(
     agents
 }
 
-/// The note under the agents elsewhere that a search would show.
-pub fn chat_elsewhere_more(hidden: usize) -> String {
-    format!("+{hidden} more: search to find them")
+/// The tag on an agent elsewhere in the sessions list, where a local
+/// session shows this computer's details: where it runs.
+pub fn chat_elsewhere_tag(agent: &ChatAgent) -> String {
+    match &agent.place {
+        ChatPlace::Elsewhere(remote) => format!(
+            "{CHAT_ELSEWHERE} · {}",
+            remote.host.clone().unwrap_or_else(|| CHAT_CLOUD.into())
+        ),
+        _ => String::new(),
+    }
 }
 
 /// The Chat page's key for the agent of a sessions-table `row`.
