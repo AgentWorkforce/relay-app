@@ -11,8 +11,9 @@ use super::state::Page;
 use super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
     chat_agents, chat_elsewhere_agents, chat_filter_choices, merge_local_sessions, ChatAgent,
-    ChatPlace, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE, CHAT_HIDE_LIST,
-    CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_SEARCH, CHAT_SEND, CHAT_SHOW_LIST, CHAT_TITLE,
+    ChatPlace, CHAT_DETAILS, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE,
+    CHAT_HIDE_LIST, CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_SEARCH, CHAT_SEND, CHAT_SHOW_LIST,
+    CHAT_TITLE,
 };
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
@@ -21,6 +22,7 @@ use std::cell::{Cell, RefCell};
 mod controls;
 mod elsewhere;
 mod filters;
+mod images;
 mod open;
 mod send;
 mod thread;
@@ -137,13 +139,33 @@ impl ChatPage {
         words.append(&header_summary);
         header.append(&words);
         let controls = Controls::build();
-        let open = open::open_button();
-        header.append(&open);
-        header.append(&controls.root);
+        let open = controls.open.clone();
+        let details = gtk::ToggleButton::with_label(CHAT_DETAILS);
+        details.add_css_class("flat");
+        details.set_active(true);
+        details.set_valign(gtk::Align::Center);
+        widgets::action_cursor(&details);
+        let shown = controls.root.clone();
+        details.connect_toggled(move |toggle| shown.set_visible(toggle.is_active()));
+        header.append(&details);
         view.append(&header);
         view.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let body = hbox(0, &[]);
+        body.set_vexpand(true);
+        let conversation = vbox(0, &[]);
+        conversation.set_hexpand(true);
+        body.append(&conversation);
+        let edge = gtk::Separator::new(gtk::Orientation::Vertical);
+        controls
+            .root
+            .bind_property("visible", &edge, "visible")
+            .sync_create()
+            .build();
+        body.append(&edge);
+        body.append(&controls.root);
+        view.append(&body);
         let thread = Thread::build();
-        view.append(&thread.scroll);
+        conversation.append(&thread.scroll);
 
         let dock = vbox(6, &["chat-dock"]);
         widgets::pad(&dock, 8, Some(24), Some(14));
@@ -164,7 +186,7 @@ impl ChatPage {
         let note = text("", &["caption"]).wrapped();
         column.append(&note);
         dock.append(&holder);
-        view.append(&dock);
+        conversation.append(&dock);
         stack.add_named(&view, Some(THREAD));
         split.set_end_child(Some(&stack));
         split.set_shrink_end_child(false);
@@ -411,7 +433,8 @@ impl App {
                             .is_some_and(|upload| upload.included))
             })
         });
-        page.controls.show(agent, upload);
+        page.controls
+            .show(agent, upload, self.chat_web_url(agent).as_deref());
         self.render_chat_open(&page.open, agent);
         page.header_name.set_text(&agent.name());
         let mut meta = agent.meta();

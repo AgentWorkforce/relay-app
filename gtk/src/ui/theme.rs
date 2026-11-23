@@ -264,6 +264,8 @@ label.elsewhere-tag { font-size: 11px; font-weight: 600; color: $accent; backgro
 .chat-header { background-color: $panel; }
 .chat-dock { background-color: $window; }
 .chat-pending { opacity: 0.7; }
+picture.chat-inline-image { border-radius: 8px; border: 1px solid $border; }
+.chat-details { background-color: $panel; }
 .relay-turn { border-left: 3px solid $accent; padding-left: 10px; }
 label.relay-marker { font-size: 11px; font-weight: 600; color: $accent; }
 .chat-working { padding: 4px 2px; }

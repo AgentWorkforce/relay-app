@@ -233,6 +233,7 @@ impl Thread {
         let mut remaining = self.table_cells.get();
         let widget = entry_view(&turn.entry, source, &turn.author, None, &mut remaining);
         self.table_cells.set(remaining);
+        super::images::expand_attachments(&widget);
         if !is_tool(&turn.entry) {
             self.group.borrow_mut().take();
             match &turn.relay {
@@ -244,6 +245,10 @@ impl Thread {
         let mut group = self.group.borrow_mut();
         let (_, children) = group.get_or_insert_with(|| self.activity_group());
         children.append(&widget);
+        // A tool's screenshot shows without opening the activity.
+        if let Some(path) = &turn.entry.image_path {
+            self.messages.append(&super::images::inline_image(path));
+        }
     }
 
     /// A new Activity disclosure at the end, for a run of tool work.

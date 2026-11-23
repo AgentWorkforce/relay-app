@@ -3,7 +3,10 @@
 //! filters over that list, and the words its conversation is drawn with.
 //! The Mac's `ChatModel` matches this word for word.
 
-use super::{session_key, source_name, LocalSessionRow, SpawnHandover};
+use super::{
+    cloud_session_url, session_key, source_name, uploaded_session_url, LocalSessionRow,
+    SpawnHandover,
+};
 use agent_relay_node::relay::contract::agents::{LocalSession, SessionHolder, SessionRegistration};
 use agent_relay_node::relay::contract::transcript::LocalTranscriptEntry;
 use agent_relay_node::relay::people::{Liveness, RosterAgent, RosterWhere};
@@ -192,6 +195,10 @@ pub const CHAT_DELIVERED: &str = "Delivered: your message is in the session.";
 pub const CHAT_HIDE_LIST: &str = "Hide agent list";
 pub const CHAT_SHOW_LIST: &str = "Show agent list";
 pub const CHAT_NAME: &str = "Agent name";
+pub const CHAT_MESSAGING: &str = "Messaging";
+pub const CHAT_DETAILS: &str = "Details";
+pub const CHAT_VIEW_WEB: &str = "View on web";
+pub const CHAT_VIEW_WEB_HELP: &str = "Open this session in Cloud in your browser";
 pub const CHAT_NAME_HELP: &str =
     "The name other agents see on Agent Relay. Press Return to rename; your session title stays the same.";
 pub const CHAT_UPLOAD: &str = "Upload";
@@ -294,6 +301,22 @@ pub fn chat_elsewhere_tag(agent: &ChatAgent) -> String {
             remote.host.clone().unwrap_or_else(|| CHAT_CLOUD.into())
         ),
         _ => String::new(),
+    }
+}
+
+/// Where `agent`'s session is on the web, at `site`: an uploaded session
+/// here, or the session an agent elsewhere uploads.
+pub fn chat_web_url(agent: &ChatAgent, site: &str) -> Option<String> {
+    match &agent.place {
+        ChatPlace::Elsewhere(remote) => remote
+            .session_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .and_then(|id| cloud_session_url(site, id)),
+        _ => agent
+            .row()
+            .and_then(|row| row.upload.as_ref())
+            .and_then(|upload| uploaded_session_url(site, upload)),
     }
 }
 
