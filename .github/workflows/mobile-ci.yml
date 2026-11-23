@@ -33,12 +33,19 @@ concurrency:
 jobs:
   simulator:
     name: iPhone handoff and unit tests
-    runs-on: macos-26
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Show the selected Xcode
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Validate extra UI test classes
         id: extra
@@ -75,15 +82,36 @@ jobs:
           import json, os, subprocess
           inventory = json.loads(subprocess.check_output(
               ["xcrun", "simctl", "list", "devices", "available", "--json"]))
-          phones = [device for runtime, devices in inventory["devices"].items()
-                    if ".iOS-" in runtime for device in devices
-                    if device.get("isAvailable") and device["name"].startswith("iPhone")]
-          if not phones:
+          # Newest iOS runtime first; the runtime key ends like iOS-27-2.
+          runtimes = []
+          for runtime, devices in inventory["devices"].items():
+              if ".iOS-" not in runtime:
+                  continue
+              version = tuple(int(part) for part in
+                              runtime.rsplit(".iOS-", 1)[1].split("-") if part.isdigit())
+              runtimes.append((version, devices))
+          runtimes.sort(key=lambda entry: entry[0], reverse=True)
+          # Skip the Duo: the tests are written for a regular iPhone.
+          def rank(device):
+              name = device["name"]
+              if name == "iPhone 17":
+                  return (0, name)
+              if name.startswith("iPhone 17"):
+                  return (1, name)
+              return (2, name)
+          for version, devices in runtimes:
+              phones = [device for device in devices
+                        if device.get("isAvailable")
+                        and device["name"].startswith("iPhone")
+                        and "Duo" not in device["name"]]
+              if phones:
+                  phone = min(phones, key=rank)
+                  break
+          else:
               raise SystemExit("No available iPhone simulator installed")
-          phone = phones[0]
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("udid=" + phone["udid"] + "\n")
-          print("Testing on " + phone["name"])
+          print("Testing on " + phone["name"] + " (iOS " + ".".join(map(str, version)) + ")")
           PY
 
       # A cold simulator left to xcodebuild boots while the first test waits,
@@ -170,10 +198,21 @@ jobs:
           import json, os, subprocess
           inventory = json.loads(subprocess.check_output(
               ["xcrun", "simctl", "list", "devices", "available", "--json"]))
-          ipads = [device for runtime, devices in inventory["devices"].items()
-                   if ".iOS-" in runtime for device in devices
-                   if device.get("isAvailable") and device["name"].startswith("iPad")]
-          if not ipads:
+          # Newest iOS runtime first; the runtime key ends like iOS-27-2.
+          runtimes = []
+          for runtime, devices in inventory["devices"].items():
+              if ".iOS-" not in runtime:
+                  continue
+              version = tuple(int(part) for part in
+                              runtime.rsplit(".iOS-", 1)[1].split("-") if part.isdigit())
+              runtimes.append((version, devices))
+          runtimes.sort(key=lambda entry: entry[0], reverse=True)
+          for version, devices in runtimes:
+              ipads = [device for device in devices
+                       if device.get("isAvailable") and device["name"].startswith("iPad")]
+              if ipads:
+                  break
+          else:
               raise SystemExit("No available iPad simulator installed")
           # Fewer screen pixels make a lighter simulator. Each preferred
           # model is at least 744 points wide in portrait, the orientation
@@ -184,12 +223,12 @@ jobs:
           def rank(device):
               for index, prefix in enumerate(preferred):
                   if device["name"].startswith(prefix):
-                      return index
-              return len(preferred)
+                      return (index, device["name"])
+              return (len(preferred), device["name"])
           ipad = min(ipads, key=rank)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("udid=" + ipad["udid"] + "\n")
-          print("Testing on " + ipad["name"])
+          print("Testing on " + ipad["name"] + " (iOS " + ".".join(map(str, version)) + ")")
           PY
 
       # Nothing after the iPad steps uses the iPhone simulator: the export
