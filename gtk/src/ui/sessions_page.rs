@@ -348,8 +348,7 @@ struct DrawnRow {
     presence: Option<Presence>,
     relay_error: Option<String>,
     can_relay: bool,
-    /// Why an off switch cannot turn on while the session is not seen
-    /// running; the switch stays pressable to say so.
+    /// Why an off switch can't turn on: the session is not seen running.
     not_running: Option<&'static str>,
     hidden: bool,
     requesting: bool,
@@ -691,11 +690,7 @@ impl App {
                         .relay
                         .as_ref()
                         .is_some_and(|s| state.can_toggle(s, state.presence_of(s)));
-                    let not_running = session
-                        .relay
-                        .as_ref()
-                        .and_then(|s| state.not_running_reason(s, state.presence_of(s)));
-                    (presence, error, can, not_running)
+                    (presence, error, can, state.relay_not_running(session.relay.as_ref()))
                 });
                 DrawnRow {
                     activity: activity.activity(session),
@@ -1106,19 +1101,12 @@ impl App {
             &relay,
             &format!("Receive messages: {title}, {}", presence.message_status()),
         );
-        let help = if drawn.can_relay {
-            presence.message_help()
-        } else if let Some(reason) = drawn.not_running {
-            reason
-        } else if let Some(local) = &session.relay {
-            if local.live {
-                "Connect a workspace to receive messages."
-            } else {
-                "Start this session to receive messages."
-            }
-        } else {
-            "Start this session in a supported harness to receive messages."
-        };
+        let help = super::state::view::message_switch_help(
+            drawn.can_relay,
+            drawn.not_running,
+            presence,
+            session.relay.as_ref(),
+        );
         relay.set_tooltip_text(Some(help));
         let relay_holder = gtk::CenterBox::new();
         relay_holder.add_css_class("session-message-column");

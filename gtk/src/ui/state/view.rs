@@ -74,6 +74,11 @@ impl State {
         blocked.then(|| not_running_message(session.target.kind))
     }
 
+    /// `not_running_reason` for a row's local session, when it has one.
+    pub fn relay_not_running(&self, session: Option<&LocalSession>) -> Option<&'static str> {
+        session.and_then(|session| self.not_running_reason(session, self.presence_of(session)))
+    }
+
     /// What a session's switch does, or why it can't.
     pub fn switch_help(&self, session: &LocalSession, presence: Presence) -> &'static str {
         if SpawnHandover::can_end(Some(session)) {
@@ -218,5 +223,25 @@ pub fn not_running_message(kind: agent_relay_node::relay::store::SessionKind) ->
             "Agent Relay can't see this Codex chat running. Open it in Codex and try again."
         }
         _ => "Agent Relay can't see this session running. Open it and try again.",
+    }
+}
+
+/// A session row's Messages switch tooltip: what it does, or why it can't.
+pub fn message_switch_help(
+    can_relay: bool,
+    not_running: Option<&'static str>,
+    presence: Presence,
+    session: Option<&LocalSession>,
+) -> &'static str {
+    if can_relay {
+        return presence.message_help();
+    }
+    if let Some(reason) = not_running {
+        return reason;
+    }
+    match session {
+        Some(local) if local.live => "Connect a workspace to receive messages.",
+        Some(_) => "Start this session to receive messages.",
+        None => "Start this session in a supported harness to receive messages.",
     }
 }

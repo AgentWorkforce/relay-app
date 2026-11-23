@@ -31,7 +31,7 @@ rust_roots = ["src"]
 "src/ui/app.rs" = 974
 "src/ui/messages.rs" = 641
 "src/ui/session_controls.rs" = 655
-"src/ui/sessions_page.rs" = 1775
+"src/ui/sessions_page.rs" = 1771
 "src/ui/settings_page.rs" = 953
 "src/ui/transcript.rs" = 653
 "src/ui/widgets.rs" = 770
@@ -41,7 +41,7 @@ rust_roots = ["src"]
 "src/ui/session_controls.rs::SessionControls::build" = 33
 "src/ui/sessions_page.rs::App::render_selection_bar" = 23
 "src/ui/sessions_page.rs::App::render_sessions" = 44
-"src/ui/sessions_page.rs::App::session_list_row" = 41
+"src/ui/sessions_page.rs::App::session_list_row" = 39
 "src/updates.rs::validate" = 25
 
 [baseline.cognitive]
@@ -55,7 +55,7 @@ rust_roots = ["src"]
 "src/ui/sessions_page.rs::App::drive_upload" = 25
 "src/ui/sessions_page.rs::App::render_selection_bar" = 30
 "src/ui/sessions_page.rs::App::render_sessions" = 149
-"src/ui/sessions_page.rs::App::session_list_row" = 69
+"src/ui/sessions_page.rs::App::session_list_row" = 64
 "src/ui/settings_page.rs::App::render_settings" = 24
 "src/ui/settings_page.rs::App::request_log_view" = 34
 "src/ui/transcript.rs::App::connect_transcript" = 31

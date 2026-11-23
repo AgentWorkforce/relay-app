@@ -85,9 +85,7 @@ struct LocalSessionSidebar: View {
                             Text(session.map { relay.presence(of: $0).messageStatus } ?? "Offline")
                                 .foregroundStyle(CloudTheme.secondary)
                         }
-                        if let session, let reason = relay.notRunningReason(session, presence: relay.presence(of: session)) {
-                            Text(reason).foregroundStyle(CloudTheme.secondary)
-                        } else if session == nil || (session?.live == false && session?.registration == nil) {
+                        if session == nil || (session?.live == false && session?.registration == nil) {
                             Text("Start session to receive messages.")
                                 .foregroundStyle(CloudTheme.secondary)
                         } else if relay.workspace == nil {

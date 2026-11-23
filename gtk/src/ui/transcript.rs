@@ -525,13 +525,7 @@ impl App {
                     .as_ref()
                     .and_then(|s| state.relay_errors.get(&s.target.key()).cloned())
             });
-            let not_running = row
-                .relay
-                .as_ref()
-                .and_then(|s| state.not_running_reason(s, state.presence_of(s)));
-            let help = if let Some(reason) = not_running {
-                reason
-            } else if row
+            let help = if row
                 .relay
                 .as_ref()
                 .is_none_or(|s| !s.live && s.registration.is_none())
