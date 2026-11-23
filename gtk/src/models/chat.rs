@@ -7,6 +7,7 @@ use super::{
     cloud_session_url, session_key, source_name, uploaded_session_url, LocalSessionRow,
     SpawnHandover,
 };
+use agent_relay_node::relay::activity::AgentTurn;
 use agent_relay_node::relay::contract::agents::{LocalSession, SessionHolder, SessionRegistration};
 use agent_relay_node::relay::contract::transcript::LocalTranscriptEntry;
 use agent_relay_node::relay::people::{Liveness, RosterAgent, RosterWhere};
@@ -395,6 +396,24 @@ fn listed(agent: &RosterAgent, rows: &[LocalSessionRow]) -> bool {
     })
 }
 
+/// What an agent elsewhere is doing: the turn its desktop reports when it
+/// reports one (working only while a turn runs), else its liveness.
+fn elsewhere_activity(agent: &RosterAgent) -> ChatActivity {
+    if agent.liveness == Liveness::Offline {
+        return ChatActivity::Offline;
+    }
+    match agent
+        .activity
+        .as_ref()
+        .and_then(|activity| activity.turn.as_ref())
+    {
+        Some(AgentTurn::Working) => ChatActivity::Working,
+        Some(AgentTurn::Idle) => ChatActivity::Idle,
+        None if agent.liveness == Liveness::Live => ChatActivity::Working,
+        None => ChatActivity::Idle,
+    }
+}
+
 /// Your agents on other computers and in Cloud, from the workspace roster:
 /// agents you own that are not registered from this computer and that no
 /// row of the sessions list (`rows`) already shows.
@@ -414,11 +433,7 @@ pub fn chat_elsewhere_agents(roster: &[RosterAgent], rows: &[LocalSessionRow]) -
                 .as_ref()
                 .and_then(|activity| activity.doing.clone())
                 .unwrap_or_default(),
-            activity: match agent.liveness {
-                Liveness::Live => ChatActivity::Working,
-                Liveness::Idle => ChatActivity::Idle,
-                Liveness::Offline => ChatActivity::Offline,
-            },
+            activity: elsewhere_activity(agent),
             last_activity_ms: agent.last_seen_ms,
             place: ChatPlace::Elsewhere(agent.clone()),
         })

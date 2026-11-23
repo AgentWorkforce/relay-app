@@ -304,3 +304,29 @@ fn a_heartbeat_does_not_reorder_agents() {
         Some(3)
     );
 }
+
+#[test]
+fn an_agent_elsewhere_works_only_while_its_turn_runs() {
+    let roster: Vec<RosterAgent> = serde_json::from_value(serde_json::json!([
+        {"name": "busy", "address": "busy@desk.example.test", "kind": "agent", "where": "other_desktop",
+         "status": "active", "liveness": "live", "last_seen_ms": 5, "description": "", "host": null,
+         "owner_hash": null, "session_id": null, "is_self": true, "activity": {"turn": "working"}},
+        {"name": "waiting", "address": "waiting@desk.example.test", "kind": "agent", "where": "other_desktop",
+         "status": "active", "liveness": "live", "last_seen_ms": 5, "description": "", "host": null,
+         "owner_hash": null, "session_id": null, "is_self": true, "activity": {"turn": "idle"}},
+        {"name": "gone", "address": "gone@desk.example.test", "kind": "agent", "where": "other_desktop",
+         "status": "idle", "liveness": "offline", "last_seen_ms": 5, "description": "", "host": null,
+         "owner_hash": null, "session_id": null, "is_self": true, "activity": {"turn": "working"}}
+    ]))
+    .unwrap();
+    let agents = chat_elsewhere_agents(&roster, &[]);
+    let by = |name: &str| {
+        agents
+            .iter()
+            .find(|agent| agent.name() == name)
+            .map(|agent| agent.activity)
+    };
+    assert_eq!(by("busy"), Some(ChatActivity::Working));
+    assert_eq!(by("waiting"), Some(ChatActivity::Idle));
+    assert_eq!(by("gone"), Some(ChatActivity::Offline));
+}
