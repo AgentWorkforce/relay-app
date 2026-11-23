@@ -957,7 +957,9 @@ impl App {
         }
     }
 
-    fn poll(&self) {
+    /// One tick of the poll timer (every 5 s); public so the GTK suite can
+    /// drive it without waiting on the timer.
+    pub fn poll(&self) {
         let ticks = self.update_state(|state| {
             state.poll_ticks = super::uploader_safety_net::next_tick(state.poll_ticks);
             state.poll_ticks
@@ -974,14 +976,11 @@ impl App {
         if (visible && page == Page::Settings(Pane::Diagnostics)) || ticks % 6 == 0 {
             self.refresh_request_log();
         }
-        // The roster has no push: it is read every 30 s while a page shows
-        // it.
-        if ticks % 6 == 0 && (!visible || !matches!(page, Page::Settings(_))) {
-            self.refresh_roster();
-        }
+        self.roster_tick(ticks, visible, page);
         if visible && ticks % 6 == 0 {
             self.refresh_settings_delivery(page);
         }
+        self.notification_display_tick(ticks);
     }
 
     // Account.

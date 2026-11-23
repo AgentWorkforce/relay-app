@@ -635,6 +635,7 @@ and auto-activation waits.
 | `messages.send` | `{"to"\|"address","text","reply_to"?}` | `{"message_id","conversation_id","to","recipient":{…roster.get's answer for this message}}`, read just after the send; no agent at the name or address is `not_found` | 2a |
 | `sessions.overview.get` | `{"session_id"}` | Cloud's saved session analysis, including request status and any generated brief | 2a |
 | `sessions.overview.request` | `{"session_id"}` | Cloud's accepted summary request; the app reads status with `sessions.overview.get` | 2a |
+| `sessions.cloud_transcript` | `{"session_id","cursor"?,"limit"?}` | `{"entries":[{"id","role","kind","text","timestamp_ms",…}],"next_cursor"?}`: one page of an uploaded session from Cloud, newest first, as transcript entries (`limit` 200 by default, at most 1,000); events with nothing to show are left out | 2a |
 | `sessions.overview.events` | `{"session_id"}` | A bounded excerpt of the first uploaded session events, used to show the original user request when no generated brief exists | 2a |
 | `people.list` | — | `{"people":[{"name","avatar_url","identity_hash","is_self"}]}` | 2a |
 
@@ -654,6 +655,7 @@ dropped in the core. `identity_hash` joins a person to `roster.list`'s
 | `coordination_advisories.status` | — | `{"enabled","notifications_enabled","notification_status"}`: whether agents receive urgent or turn-end notes about teammates' overlapping work; off by default; `refused` from a core built without an account | turn-end advisories |
 | `coordination_advisories.set` | `{"enabled"}` | The same state as `.status`, as saved in the app's data folder; off forgets every advisory waiting; `refused` from a core built without an account, `store_failed` when it cannot be saved | turn-end advisories |
 | `coordination_advisories.notifications.set` | `{"enabled"}` | The same state as `.status`; a separate persisted human OS notification preference, off by default. Enabling requires coordination notes on; a failed save returns `store_failed`. | urgent coordination |
+| `coordination_advisories.notifications.display` | `{"permission": "allowed"\|"denied"\|"unknown"}` | The same state as `.status`. An app's report of what the OS lets it show, kept in memory for 150 s; an urgent system notification is requested (and counted against the hourly cap) only while a live report says `allowed` or `unknown`, and `denied` shows as the status. The apps report on connect and at least once a minute: macOS reads its notification settings without prompting, Linux and Windows report `unknown`. `refused` from a core built without an account. | urgent coordination |
 
 Coordination ranking comes from the pipeline. Only an explicit high-urgency,
 priority-one row enters local immediate delivery; older responses without a

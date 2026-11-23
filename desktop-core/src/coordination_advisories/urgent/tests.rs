@@ -34,6 +34,10 @@ struct Api {
     answer: Mutex<Option<Ack>>,
     /// Incarnations whose v2 ack finds no match (404).
     stale: Mutex<HashSet<String>>,
+    /// List under the legacy contract instead of [`CONTRACT_V3`].
+    legacy: AtomicBool,
+    /// Answer every listing with [`Listing::Failed`].
+    failed: AtomicBool,
 }
 impl AdvisoryApi for Api {
     fn list<'a>(&'a self, _: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing> {
@@ -44,7 +48,15 @@ impl AdvisoryApi for Api {
             .get(target)
             .cloned()
             .unwrap_or_default();
-        Box::pin(async move { Listing::Advisories(rows) })
+        if self.failed.load(Ordering::SeqCst) {
+            return Box::pin(async { Listing::Failed });
+        }
+        let contract = if self.legacy.load(Ordering::SeqCst) {
+            ListingContract::Legacy
+        } else {
+            ListingContract::V3
+        };
+        Box::pin(async move { Listing::Advisories(rows, contract) })
     }
     fn ack<'a>(
         &'a self,
@@ -153,10 +165,16 @@ fn key_of(t: &Target, id: &str, incarnation: &str) -> String {
     let scope = receipts::Scope::from(&Tokens.principal().unwrap());
     instance::key(&scope, t, id, Some(incarnation))
 }
+/// `advisories`, with a live report that an app can show its system
+/// notifications, as a connected app keeps sending.
+fn displayed(advisories: Arc<Advisories>) -> Arc<Advisories> {
+    advisories.report_display(NotificationPermission::Allowed);
+    advisories
+}
 fn setup() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>) {
     let dir = tempfile::tempdir().unwrap();
     let api = Arc::new(Api::default());
-    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     advisories.set_enabled(true).unwrap();
     advisories.set_notifications_enabled(true).unwrap();
     (dir, api, advisories)
@@ -181,7 +199,7 @@ async fn both_owned_recipients_get_the_ping_but_one_human_notification_survives_
     assert_eq!(sink.calls.lock().unwrap().len(), 2);
     assert_eq!(sink.notices.lock().unwrap().len(), 1);
     assert!(api.acked.lock().unwrap().is_empty());
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     let next = Sink::default();
     restarted.poll(&live, now).await;
     restarted.deliver_urgent(&next, now).await;
@@ -266,7 +284,7 @@ async fn uncertain_or_crashed_reservations_never_blindly_reinject() {
             unix_now(),
         );
         assert!(advisories.save_urgent().await);
-        let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+        let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
         let sink = Sink::default();
         api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
         let now = Instant::now();
@@ -309,7 +327,7 @@ async fn human_cap_is_per_event_and_persisted() {
     }
     assert_eq!(sink.notices.lock().unwrap().len(), 3);
     assert!(advisories.urgent_status().contains("limit"));
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api);
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api));
     let next = Sink::default();
     restarted.poll(&[t], now).await;
     restarted.deliver_urgent(&next, now).await;
@@ -328,7 +346,7 @@ async fn storage_failures_precede_every_external_side_effect() {
             std::fs::create_dir(dir.path().join(FILE)).unwrap();
         }
         let advisories = if corrupt {
-            Advisories::new(dir.path(), Arc::new(Tokens), api.clone())
+            displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()))
         } else {
             advisories
         };
@@ -393,9 +411,9 @@ async fn list_and_ack_share_one_device_request_budget() {
         paced.ack(&token, &target, "ack", None),
         paced.list(&token, &target)
     );
-    assert!(matches!(a, Listing::Advisories(_)));
+    assert!(matches!(a, Listing::Advisories(..)));
     assert_eq!(b, Ack::Done);
-    assert!(matches!(c, Listing::Advisories(_)));
+    assert!(matches!(c, Listing::Advisories(..)));
     assert!(tokio::time::Instant::now() - start >= Duration::from_secs(1));
 }
 
@@ -436,7 +454,7 @@ async fn an_existing_notes_setting_does_not_opt_the_human_into_os_alerts() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(super::super::FILE), r#"{"enabled":true}"#).unwrap();
     let api = Arc::new(Api::default());
-    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     assert!(advisories.enabled());
     assert!(!advisories.notifications_enabled());
     let t = target(A);
@@ -625,7 +643,7 @@ fn switchable() -> (tempfile::TempDir, Arc<Api>, Arc<Switch>, Arc<Advisories>) {
     let dir = tempfile::tempdir().unwrap();
     let api = Arc::new(Api::default());
     let tokens = Arc::new(Switch(Mutex::new("alice")));
-    let advisories = Advisories::new(dir.path(), tokens.clone(), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), tokens.clone(), api.clone()));
     advisories.set_enabled(true).unwrap();
     advisories.set_notifications_enabled(true).unwrap();
     (dir, api, tokens, advisories)
@@ -748,7 +766,7 @@ async fn read_access_unavailable_survives_the_urgent_pass_and_clears_when_reads_
     let dir = tempfile::tempdir().unwrap();
     let api = Arc::new(Api::default());
     let tokens = Arc::new(NoToken(AtomicBool::new(false)));
-    let advisories = Advisories::new(dir.path(), tokens.clone(), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), tokens.clone(), api.clone()));
     advisories.set_enabled(true).unwrap();
     advisories.set_notifications_enabled(true).unwrap();
     let t = target(A);
@@ -847,6 +865,225 @@ async fn a_session_in_its_own_backoff_counts_as_checked() {
     let mut schedule = PollSchedule::default();
     schedule.checked_at(&answered, now);
     assert!(schedule.due(&live, &HashSet::new(), now + Duration::from_secs(1)).is_empty());
+}
+
+/// [`setup`] with no app's report that it can show a notification.
+fn unreported() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>) {
+    let dir = tempfile::tempdir().unwrap();
+    let api = Arc::new(Api::default());
+    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    advisories.set_enabled(true).unwrap();
+    advisories.set_notifications_enabled(true).unwrap();
+    (dir, api, advisories)
+}
+
+#[tokio::test]
+async fn a_legacy_only_listing_says_the_workspace_has_no_urgent_alerts_and_v3_is_idle() {
+    let (_dir, api, advisories) = setup();
+    let t = target(A);
+    let now = Instant::now();
+    // Nothing listed yet: idle.
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+    api.legacy.store(true, Ordering::SeqCst);
+    advisories.poll(&[t.clone()], now).await;
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert_eq!(advisories.report().notification_status, LEGACY_STATUS);
+    // Turning notes off forgets the listing's contract.
+    advisories.set_enabled(false).unwrap();
+    advisories.set_enabled(true).unwrap();
+    advisories.set_notifications_enabled(true).unwrap();
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+    advisories.poll(&[t.clone()], now).await;
+    assert_eq!(advisories.report().notification_status, LEGACY_STATUS);
+    api.legacy.store(false, Ordering::SeqCst);
+    advisories.poll(&[t], now).await;
+    advisories.deliver_urgent(&Sink::default(), now).await;
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+}
+
+#[tokio::test]
+async fn a_legacy_listing_is_forgotten_when_the_account_changes() {
+    let (_dir, api, tokens, advisories) = switchable();
+    let t = target(A);
+    let now = Instant::now();
+    api.legacy.store(true, Ordering::SeqCst);
+    advisories.poll(&[t.clone()], now).await;
+    assert_eq!(advisories.report().notification_status, LEGACY_STATUS);
+    *tokens.0.lock().unwrap() = "bob";
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+    // The cache now belongs to bob, through a poll that lists nothing: the
+    // previous account's legacy listing is not his.
+    api.failed.store(true, Ordering::SeqCst);
+    advisories.poll(&[t], now).await;
+    assert_eq!(
+        advisories.state().principal,
+        Some(Switch::principal_for("bob"))
+    );
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+}
+
+/// An account with no user identity.
+struct NoUser;
+impl TokenSource for NoUser {
+    fn principal(&self) -> Option<Principal> {
+        Tokens.principal().map(|p| Principal { user_id: None, ..p })
+    }
+    fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
+        let principal = self.principal().unwrap();
+        Box::pin(async move {
+            Some(ReadToken {
+                origin: "https://test.example".into(),
+                bearer: Secret::new("synthetic-read-token"),
+                workspace_id: principal.workspace_id.clone(),
+                principal,
+            })
+        })
+    }
+    fn refused(&self, _: &ReadToken) {}
+}
+
+/// [`setup`] for an account with no user identity ([`NoUser`]).
+fn no_user() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>) {
+    let dir = tempfile::tempdir().unwrap();
+    let api = Arc::new(Api::default());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(NoUser), api.clone()));
+    advisories.set_enabled(true).unwrap();
+    advisories.set_notifications_enabled(true).unwrap();
+    (dir, api, advisories)
+}
+
+#[tokio::test]
+async fn an_account_with_no_user_identity_says_so_in_the_pass_and_at_read_time() {
+    let (_dir, api, advisories) = no_user();
+    // A standing condition: shown before any pass ran.
+    assert_eq!(advisories.report().notification_status, NO_USER_STATUS);
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t], now).await;
+    let sink = Sink::default();
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.notices.lock().unwrap().is_empty());
+    assert_eq!(advisories.urgent_status(), NO_USER_STATUS);
+    assert_eq!(advisories.report().notification_status, NO_USER_STATUS);
+}
+
+#[tokio::test]
+async fn an_agent_path_failure_shows_over_a_standing_condition_until_a_clean_pass() {
+    let (dir, api, advisories) = no_user();
+    let t = target(A);
+    let now = Instant::now();
+    // The agent path's receipt cannot be written.
+    std::fs::create_dir(dir.path().join(FILE)).unwrap();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t], now).await;
+    let sink = Sink::default();
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.calls.lock().unwrap().is_empty());
+    assert_eq!(advisories.urgent_status(), SAVE_FAILED_STATUS);
+    assert_eq!(advisories.report().notification_status, SAVE_FAILED_STATUS);
+    // Storage works again: the next pass is clean, and the standing
+    // condition is the status again.
+    std::fs::remove_dir(dir.path().join(FILE)).unwrap();
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.calls.lock().unwrap().len(), 1);
+    assert_eq!(advisories.urgent_status(), NO_USER_STATUS);
+    assert_eq!(advisories.report().notification_status, NO_USER_STATUS);
+}
+
+#[tokio::test]
+async fn no_app_report_requests_nothing_until_one_arrives_then_notifies_once() {
+    let (_dir, api, advisories) = unreported();
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t.clone()], now).await;
+    // The agent is mid-turn, so the row is still waiting on the next pass.
+    let sink = Sink::default();
+    *sink.outcome.lock().unwrap() = Some(InjectOutcome::WaitingForTurn("busy".into()));
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.notices.lock().unwrap().is_empty());
+    assert!(advisories.urgent.lock().unwrap().saved.humans.is_empty());
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+    advisories.report_display(NotificationPermission::Allowed);
+    advisories.deliver_urgent(&sink, now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    let notices = sink.notices.lock().unwrap().clone();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].1.contains("Review overlap p1."), "{notices:?}");
+    assert_eq!(advisories.urgent.lock().unwrap().saved.humans.len(), 1);
+}
+
+#[tokio::test]
+async fn a_report_older_than_its_lifetime_counts_as_none() {
+    let (_dir, api, advisories) = unreported();
+    let stale = Instant::now()
+        .checked_sub(DISPLAY_REPORT_LIVE + Duration::from_secs(1))
+        .unwrap();
+    advisories.report_display_at(NotificationPermission::Allowed, stale);
+    let t = target(A);
+    let now = Instant::now();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t], now).await;
+    let sink = Sink::default();
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.notices.lock().unwrap().is_empty());
+    assert!(advisories.urgent.lock().unwrap().saved.humans.is_empty());
+    // A stale denial is no denial either.
+    advisories.report_display_at(NotificationPermission::Denied, stale);
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+}
+
+#[tokio::test]
+async fn denied_requests_nothing_says_so_and_never_spends_the_hourly_cap() {
+    let (_dir, api, advisories) = unreported();
+    advisories.report_display(NotificationPermission::Denied);
+    let now = Instant::now();
+    let sink = Sink::default();
+    for (i, session) in [A, B, "33333333-3333-4333-8333-333333333333"]
+        .into_iter()
+        .enumerate()
+    {
+        let t = target(session);
+        api.rows
+            .lock()
+            .unwrap()
+            .insert(t.clone(), vec![p1(&format!("denied-{i}"))]);
+        advisories.poll(&[t], now).await;
+        advisories.deliver_urgent(&sink, now).await;
+        assert_eq!(advisories.urgent_status(), DENIED_STATUS);
+        assert_eq!(advisories.report().notification_status, DENIED_STATUS);
+    }
+    assert!(sink.notices.lock().unwrap().is_empty());
+    assert!(advisories.urgent.lock().unwrap().saved.humans.is_empty());
+    advisories.report_display(NotificationPermission::Allowed);
+    let t = target("44444444-4444-4444-8444-444444444444");
+    api.rows
+        .lock()
+        .unwrap()
+        .insert(t.clone(), vec![p1("allowed")]);
+    advisories.poll(&[t], now).await;
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.notices.lock().unwrap().len(), 1);
+    assert_ne!(advisories.report().notification_status, DENIED_STATUS);
+}
+
+#[tokio::test]
+async fn allowed_and_unknown_both_notify_as_before() {
+    for permission in [
+        NotificationPermission::Allowed,
+        NotificationPermission::Unknown,
+    ] {
+        let (_dir, api, advisories) = unreported();
+        advisories.report_display(permission);
+        let t = target(A);
+        let now = Instant::now();
+        api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+        advisories.poll(&[t], now).await;
+        let sink = Sink::default();
+        advisories.deliver_urgent(&sink, now).await;
+        assert_eq!(sink.notices.lock().unwrap().len(), 1, "{permission:?}");
+    }
 }
 
 mod instances;

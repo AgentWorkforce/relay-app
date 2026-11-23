@@ -240,7 +240,8 @@ async fn login_item_call(
     }
 }
 
-/// `coordination_advisories.status` and `coordination_advisories.set`.
+/// `coordination_advisories.status`, `.set`, `.notifications.set` and
+/// `.notifications.display`.
 async fn coordination_call(
     account: &Arc<Account>,
     method: &str,
@@ -289,6 +290,14 @@ async fn coordination_call(
                     Err("The urgent notification setting could not be saved.".into())
                 })
                 .map_err(|message| RpcError::new(ErrorKind::StoreFailed, message))
+            })
+            .await,
+        ),
+        method::CoordinationNotificationsDisplay::NAME => Some(
+            answer::<method::CoordinationNotificationsDisplay, _>(raw, |request| async move {
+                let advisories = advisories.ok_or_else(unavailable)?;
+                advisories.report_display(request.permission);
+                Ok(advisories.report())
             })
             .await,
         ),

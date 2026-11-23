@@ -146,7 +146,7 @@ impl AdvisoryApi for FakeApi {
         let mut listings = self.listings.lock().unwrap();
         let answers = listings.entry(target.clone()).or_default();
         let answer = match answers.len() {
-            0 => Listing::Advisories(Vec::new()),
+            0 => Listing::Advisories(Vec::new(), ListingContract::V3),
             1 => answers[0].clone(),
             _ => answers.remove(0),
         };
@@ -205,7 +205,10 @@ async fn pending_is_cached_and_never_consumes_an_advisory() {
     assert!(!w.advisories.pending(&session));
     w.api.answer(
         &session,
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let now = Instant::now();
     w.advisories.poll(&[session.clone()], now).await;
@@ -226,7 +229,10 @@ async fn shown_receipts_resume_ack_after_restart_and_new_sign_in_generation() {
     let now = Instant::now();
     w.api.answer(
         &session,
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     *w.api.acks.lock().unwrap() = vec![Ack::Failed];
     w.advisories.poll(&[session.clone()], now).await;
@@ -265,7 +271,10 @@ async fn restart_receipts_never_suppress_another_persons_advisory() {
     let now = Instant::now();
     w.api.answer(
         &session,
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     *w.api.acks.lock().unwrap() = vec![Ack::Failed];
     w.advisories.poll(&[session.clone()], now).await;
@@ -287,7 +296,10 @@ async fn a_failed_receipt_write_keeps_the_ack_retryable() {
     let now = Instant::now();
     w.api.answer(
         &session,
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     w.advisories.poll(&[session.clone()], now).await;
     let shown = w.advisories.take_at(&session, now).unwrap();
@@ -313,6 +325,7 @@ async fn a_failed_new_checkpoint_does_not_block_previously_saved_acks() {
         &principal("alice"),
         &session,
         vec![advisory("saved", "low")],
+        ListingContract::V3,
         now,
     );
     let shown = w.advisories.take_at(&session, now).unwrap();
@@ -322,6 +335,7 @@ async fn a_failed_new_checkpoint_does_not_block_previously_saved_acks() {
         &principal("alice"),
         &session,
         vec![advisory("unsaved", "low")],
+        ListingContract::V3,
         now,
     );
     let shown = w.advisories.take_at(&session, now).unwrap();
@@ -511,7 +525,10 @@ async fn while_off_nothing_is_fetched_or_taken() {
     let w = world(false);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     w.advisories.poll(&[claude()], Instant::now()).await;
     assert_eq!(w.tokens.asked.load(Ordering::SeqCst), 0);
@@ -584,7 +601,7 @@ async fn a_renewed_token_that_works_delivers() {
         &claude(),
         vec![
             Listing::Unauthorized,
-            Listing::Advisories(vec![advisory("a1", "low")]),
+            Listing::Advisories(vec![advisory("a1", "low")], ListingContract::V3),
         ],
     );
     w.advisories.poll(&[claude()], Instant::now()).await;
@@ -597,7 +614,10 @@ async fn a_failed_listing_backs_off_only_its_session() {
     w.api.answer(&claude(), vec![Listing::Failed]);
     w.api.answer(
         &codex(),
-        vec![Listing::Advisories(vec![advisory("c1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("c1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude(), codex()], start).await;
@@ -709,10 +729,10 @@ async fn take_is_one_shot_and_its_text_names_each_advisory_and_ends_with_the_foo
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![
-            advisory("a1", "low"),
-            advisory("a2", "high"),
-        ])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low"), advisory("a2", "high")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -743,7 +763,10 @@ async fn an_advisory_listed_by_several_polls_is_cached_once() {
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -764,7 +787,10 @@ async fn an_unacked_advisory_comes_back_only_after_thirty_minutes_while_still_li
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -786,8 +812,8 @@ async fn an_unacked_advisory_no_longer_listed_never_comes_back() {
     w.api.answer(
         &claude(),
         vec![
-            Listing::Advisories(vec![advisory("a1", "low")]),
-            Listing::Advisories(Vec::new()),
+            Listing::Advisories(vec![advisory("a1", "low")], ListingContract::V3),
+            Listing::Advisories(Vec::new(), ListingContract::V3),
         ],
     );
     let start = Instant::now();
@@ -807,7 +833,10 @@ async fn the_note_stays_within_four_kib_and_the_rest_waits_for_the_next_turn() {
             ..advisory(&format!("a{n}"), "low")
         })
         .collect();
-    w.api.answer(&claude(), vec![Listing::Advisories(long)]);
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(long, ListingContract::V3)],
+    );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
     let mut ids = Vec::new();
@@ -828,10 +857,10 @@ async fn shown_acks_each_id_once_and_an_acked_one_never_returns() {
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![
-            advisory("a1", "low"),
-            advisory("a2", "low"),
-        ])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low"), advisory("a2", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -857,7 +886,10 @@ async fn shown_from_the_hook_path_acks_in_the_background() {
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     w.advisories.poll(&[claude()], Instant::now()).await;
     let taken = w.advisories.take(&claude()).unwrap();
@@ -878,7 +910,10 @@ async fn an_ack_answered_not_the_recipient_counts_as_done() {
     // Done (see `the_http_api_maps_every_answer`).
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -895,7 +930,10 @@ async fn a_failed_ack_is_retried_later_and_a_forbidden_one_at_most_hourly() {
     *w.api.acks.lock().unwrap() = vec![Ack::Failed, Ack::Forbidden, Ack::Done];
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -1028,8 +1066,9 @@ async fn the_http_api_maps_every_answer() {
     let token = ReadToken { origin, ..token() };
     let api = HttpApi;
     let session = claude();
-    let Listing::Advisories(listed) = api.list(&token, &session).await else {
-        panic!("a listing");
+    let Listing::Advisories(listed, ListingContract::Legacy) = api.list(&token, &session).await
+    else {
+        panic!("a legacy listing");
     };
     assert_eq!(listed[0].id, "a1");
     for expected in [
@@ -1087,8 +1126,9 @@ async fn the_http_api_reads_v3_incarnations_and_maps_v2_ack_answers() {
     ]);
     let token = ReadToken { origin, ..token() };
     let session = claude();
-    let Listing::Advisories(listed) = HttpApi.list(&token, &session).await else {
-        panic!("a listing");
+    let Listing::Advisories(listed, ListingContract::V3) = HttpApi.list(&token, &session).await
+    else {
+        panic!("a v3 listing");
     };
     assert_eq!(listed[0].incarnation.as_deref(), Some(incarnation));
     assert!(listed[1].incarnation.is_none());
@@ -1398,7 +1438,7 @@ async fn an_exchange_that_answers_after_the_account_changed_is_dropped() {
 #[tokio::test]
 async fn cached_notes_are_dropped_when_the_account_signs_out_or_changes() {
     let w = world(true);
-    let listed = Listing::Advisories(vec![advisory("a1", "low")]);
+    let listed = Listing::Advisories(vec![advisory("a1", "low")], ListingContract::V3);
     w.api.answer(&claude(), vec![listed.clone()]);
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -1424,7 +1464,10 @@ async fn a_listing_that_answers_after_the_account_changed_is_dropped() {
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let tokens = w.tokens.clone();
     *w.api.during_list.lock().unwrap() = Some(Box::new(move || tokens.sign_in("bob")));
@@ -1440,7 +1483,10 @@ async fn a_shown_note_is_never_handed_again_while_its_ack_is_retried() {
     *w.api.acks.lock().unwrap() = vec![Ack::Forbidden, Ack::Done];
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -1501,7 +1547,10 @@ async fn a_listing_that_answers_after_the_setting_was_turned_off_is_dropped() {
     let w = world(true);
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let advisories = Arc::downgrade(&w.advisories);
     *w.api.during_list.lock().unwrap() = Some(Box::new(move || {
@@ -1530,7 +1579,7 @@ impl AdvisoryApi for BearerApi {
             if refused {
                 Listing::Unauthorized
             } else {
-                Listing::Advisories(vec![advisory("a1", "low")])
+                Listing::Advisories(vec![advisory("a1", "low")], ListingContract::V3)
             }
         })
     }
@@ -1632,11 +1681,14 @@ async fn ended_sessions_keep_only_pending_acks_and_only_for_a_while() {
     *w.api.acks.lock().unwrap() = vec![Ack::Failed];
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![
-            advisory("done", "low"),
-            advisory("shown", "low"),
-            advisory("unshown", "low"),
-        ])],
+        vec![Listing::Advisories(
+            vec![
+                advisory("done", "low"),
+                advisory("shown", "low"),
+                advisory("unshown", "low"),
+            ],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -1675,7 +1727,10 @@ async fn an_ended_session_gives_up_its_ack_after_a_few_failures() {
     *w.api.acks.lock().unwrap() = vec![Ack::Failed];
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     let start = Instant::now();
     w.advisories.poll(&[claude()], start).await;
@@ -1697,7 +1752,10 @@ async fn a_listing_429_pauses_both_lists_and_acks_for_the_device() {
     let now = Instant::now();
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![advisory("a1", "low")])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low")],
+            ListingContract::V3,
+        )],
     );
     w.advisories.poll(&[claude()], now).await;
     let ids = w.advisories.take_at(&claude(), now).unwrap().ids;
@@ -1710,7 +1768,10 @@ async fn a_listing_429_pauses_both_lists_and_acks_for_the_device() {
     w.advisories.send_shown(now + Duration::from_secs(1)).await;
     assert_eq!(w.api.lists(), 2);
     assert!(w.api.acked().is_empty());
-    w.api.answer(&claude(), vec![Listing::Advisories(vec![])]);
+    w.api.answer(
+        &claude(),
+        vec![Listing::Advisories(vec![], ListingContract::V3)],
+    );
     w.advisories.poll(&[claude()], now + SESSION_BACKOFF).await;
     assert_eq!(w.api.acked(), vec!["a1"]);
 }
@@ -1721,10 +1782,10 @@ async fn an_ack_429_releases_the_unsent_batch_without_spending_failure_budgets()
     let now = Instant::now();
     w.api.answer(
         &claude(),
-        vec![Listing::Advisories(vec![
-            advisory("a1", "low"),
-            advisory("a2", "low"),
-        ])],
+        vec![Listing::Advisories(
+            vec![advisory("a1", "low"), advisory("a2", "low")],
+            ListingContract::V3,
+        )],
     );
     w.advisories.poll(&[claude()], now).await;
     let ids = w.advisories.take_at(&claude(), now).unwrap().ids;
