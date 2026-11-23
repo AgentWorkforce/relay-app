@@ -259,13 +259,16 @@ impl App {
                 || self.chat_unread(&agent.relay_names()) > 0
         };
         self.with_state(|state| {
-            // The same rows the sessions list shows, a search's included.
-            let local = state
-                .session_query
-                .local_sessions
-                .as_deref()
-                .unwrap_or(&state.local_sessions);
-            let rows = merge_local_sessions(&state.sessions, local);
+            // Every session here, whatever the sessions list's search shows
+            // (Chat has its own search); sessions that search found beyond
+            // them are kept, so one opened from its results is listed.
+            let mut local = state.local_sessions.clone();
+            for found in state.session_query.local_sessions.iter().flatten() {
+                if !local.iter().any(|s| s.target.key() == found.target.key()) {
+                    local.push(found.clone());
+                }
+            }
+            let rows = merge_local_sessions(&state.sessions, &local);
             let now_ms = chrono::Utc::now().timestamp_millis();
             chat_agents(
                 &rows,

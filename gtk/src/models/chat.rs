@@ -358,7 +358,9 @@ pub fn chat_elsewhere_tag(agent: &ChatAgent) -> String {
 
 /// The link that opens the session of `row` in its own app instead of a
 /// conversation here, for a harness that is an app of its own: a Grok Bot
-/// chat opens in Grok Bot (its thread, when the id is one Grok Bot takes).
+/// chat opens in Grok Bot on that bot. Grok Bot keeps one session per bot,
+/// under the bot's id, which its `agent` route opens; a thread link with
+/// that id is refused and leaves Grok Bot behind.
 pub fn chat_app_link(row: &LocalSessionRow) -> Option<String> {
     chat_app_link_for(row.source(), &row.session_id())
 }
@@ -369,13 +371,12 @@ fn chat_app_link_for(source: &str, id: &str) -> Option<String> {
     if source != "grokbot" {
         return None;
     }
-    let hex = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_hexdigit());
-    let parts: Vec<&str> = id.split('-').collect();
-    let uuid =
-        parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12]) && parts.iter().all(|p| hex(p));
-    let thread = (id.len() == 10 && hex(id)) || uuid;
-    Some(if thread {
-        format!("grokbot://app/v1/thread?id={id}")
+    // Grok Bot's agent ids: letters, digits, `_` and `-`, at most 128.
+    let agent = !id.is_empty()
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    Some(if agent {
+        format!("grokbot://app/v1/agent?id={id}")
     } else {
         "grokbot://app/v1/open".to_string()
     })

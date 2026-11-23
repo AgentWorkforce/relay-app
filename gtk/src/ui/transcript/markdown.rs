@@ -56,9 +56,11 @@ fn append_table<'a>(
     grid.set_row_spacing(8);
     for (row, cells) in rows.iter().enumerate() {
         for column in 0..columns {
-            let label = text("", &["transcript-text"]).wrapped();
+            // Cells do not wrap: the table scrolls sideways instead. A
+            // wrapped cell is measured at its narrowest and drawn wider,
+            // which left the table's height mostly blank.
+            let label = text("", &["transcript-text"]);
             label.set_selectable(true);
-            label.set_max_width_chars(40);
             let value = inline_markup(cells.get(column).map(String::as_str).unwrap_or(""));
             label.set_markup(&if row == 0 {
                 format!("<b>{value}</b>")
@@ -71,6 +73,7 @@ fn append_table<'a>(
     }
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    scroll.set_propagate_natural_height(true);
     scroll.set_child(Some(&grid));
     body.append(&scroll);
 }

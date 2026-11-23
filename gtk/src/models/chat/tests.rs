@@ -386,13 +386,10 @@ fn a_grok_bot_chat_opens_in_grok_bot() {
     // The link is built from the row's source and session id alone.
     let link = |source: &str, id: &str| chat_app_link_for(source, id).unwrap_or_default();
     assert_eq!(
-        link("grok-bot", "0123456789"),
-        "grokbot://app/v1/thread?id=0123456789"
+        link("grok-bot", "2f29a52e-a042-477f-90d5-715b037cce0e"),
+        "grokbot://app/v1/agent?id=2f29a52e-a042-477f-90d5-715b037cce0e"
     );
-    assert_eq!(
-        link("Grok Bot", "01a18b2c-f231-7f42-833a-af9d597774d9"),
-        "grokbot://app/v1/thread?id=01a18b2c-f231-7f42-833a-af9d597774d9"
-    );
-    assert_eq!(link("grokbot", "not a thread"), "grokbot://app/v1/open");
+    assert_eq!(link("Grok Bot", "bot_1"), "grokbot://app/v1/agent?id=bot_1");
+    assert_eq!(link("grokbot", "not a bot id"), "grokbot://app/v1/open");
     assert_eq!(link("claude", "0123456789"), "");
 }
