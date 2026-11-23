@@ -1437,7 +1437,8 @@ private enum SecureStore {
             case .carryOver(let plan): carryOver = plan
             }
         }
-        if let answer { readState.apply(inbox: answer, ticket: ticket) } else { readState.inboxUnanswered() }
+        var keepNotifications: Set<String> = []
+        if let answer { keepNotifications = readState.apply(inbox: answer, ticket: ticket) } else { readState.inboxUnanswered() }
         if let threads {
             latestConversationThreads = threads
             updateConversations(threads, metadata: conversationAgentMetadata)
@@ -1445,7 +1446,7 @@ private enum SecureStore {
         } else if answer != nil, conversationsInitialized {
             updateConversations(latestConversationThreads, metadata: conversationAgentMetadata)
         }
-        if answer != nil { await removeReadNotifications(deliveredBefore: inboxStarted) }
+        if answer != nil { await removeReadNotifications(deliveredBefore: inboxStarted, unread: keepNotifications) }
         if !carryOver.isEmpty {
             carryingOverSeen = true
             var outcomes: [ConversationReadState.Outcome] = []
@@ -1721,13 +1722,22 @@ private enum SecureStore {
         let outcome = await postRead(messageID)
         guard session == sessionGeneration else { return }
         readState.finishRead(conversationID: conversationID, messageID: messageID, outcome: outcome)
-        if outcome == .success { await removeReadNotifications(deliveredBefore: postStarted) }
+        if outcome == .success {
+            await removeReadNotifications(deliveredBefore: postStarted, unread: readState.unreadConversationIDs)
+        }
     }
+    /// Tests only: replaces the read POST, so a test can hold it in flight
+    /// or fail it (the Debug fixture hook can do neither).
+    var readPostOverride: (@MainActor (_ messageID: String) async throws -> Void)?
     private func postRead(_ messageID: String) async -> ConversationReadState.Outcome {
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let encoded = messageID.addingPercentEncoding(withAllowedCharacters: allowed) ?? messageID
         do {
-            _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
+            if let readPostOverride {
+                try await readPostOverride(messageID)
+            } else {
+                _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
+            }
             return .success
         } catch let failure as RelayAPIError {
             return ConversationReadState.outcome(forFailureStatus: failure.status)
@@ -1735,11 +1745,10 @@ private enum SecureStore {
             return .failed
         }
     }
-    /// Clears delivered notifications of direct conversations that are read,
-    /// delivered before the read that decided it started.
-    private func removeReadNotifications(deliveredBefore cutoff: Date) async {
+    /// Clears delivered notifications of direct conversations not in
+    /// `unread`, delivered before the read that decided it started.
+    private func removeReadNotifications(deliveredBefore cutoff: Date, unread: Set<String>) async {
         let direct = Set(conversationIDs.values)
-        let unread = readState.unreadConversationIDs
         let read = ConversationReadState.deliveredNotificationsToRemove(
             await notificationCenter.delivered(), before: cutoff, directConversationIDs: direct, unread: unread)
         if !read.isEmpty { notificationCenter.remove(read) }

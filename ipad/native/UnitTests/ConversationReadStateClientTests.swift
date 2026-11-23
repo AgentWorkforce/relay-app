@@ -19,6 +19,18 @@ final class ConversationReadStateClientTests: XCTestCase {
         var unread = false
         var inboxFails = false
         var reads: [String] = []
+        /// How many of the next read POSTs fail (through `readPostOverride`).
+        var readFails = 0
+
+        /// A read POST as the server takes it, for `readPostOverride`.
+        func read(_ id: String) throws {
+            reads.append(id)
+            if readFails > 0 {
+                readFails -= 1
+                throw RelayAPIError(message: "Invented outage", status: 503)
+            }
+            if id == incoming.last { unread = false }
+        }
 
         func respond(_ path: String, _ method: String, _ body: JSONObject?) -> Any? {
             if path == "/inbox" {
@@ -50,6 +62,30 @@ final class ConversationReadStateClientTests: XCTestCase {
             }
             if path == "/nodes" || path == "/channels" || path.hasSuffix("/readers") { return [JSONObject]() }
             return JSONObject()
+        }
+    }
+
+    /// Holds a read POST in flight until opened.
+    @MainActor private final class Gate {
+        private var held: CheckedContinuation<Void, Never>?
+        private var waiter: CheckedContinuation<Void, Never>?
+        private(set) var entered = false
+
+        func enter() async {
+            entered = true
+            waiter?.resume()
+            waiter = nil
+            await withCheckedContinuation { held = $0 }
+        }
+
+        func untilEntered() async {
+            guard !entered else { return }
+            await withCheckedContinuation { waiter = $0 }
+        }
+
+        func open() {
+            held?.resume()
+            held = nil
         }
     }
 
@@ -186,5 +222,88 @@ final class ConversationReadStateClientTests: XCTestCase {
         server.incoming = ["m1", "m2", "m3"]
         await client.pollMessages()
         XCTAssertEqual(center.posted, ["m2", "m3"])
+    }
+
+    func testAReloadKeepsANewerNotificationWhileAnOlderReadIsInFlight() async throws {
+        server.incoming = ["m1", "m2"]
+        server.unread = true
+        await client.refresh()
+        let agent = try XCTUnwrap(client.conversations.first { $0.name == peer })
+        client.selectConversation(agent)
+        let gate = Gate()
+        let server = server
+        client.readPostOverride = { id in
+            try server.read(id)
+            await gate.enter()
+        }
+
+        // The read POST for m2 starts and is held in flight.
+        let reading = Task { await client.loadHistory(for: agent) }
+        await gate.untilEntered()
+        XCTAssertEqual(server.reads, ["m2"])
+
+        // m3 arrives meanwhile, unread on the server; its push is delivered
+        // before the reload.
+        server.incoming = ["m1", "m2", "m3"]
+        server.unread = true
+        center.delivered = [(identifier: "n3", userInfo: ["conversation_id": conversationID], date: Date())]
+        await client.pollMessages()
+        XCTAssertTrue(center.removed.isEmpty, "The server lists m3 as unread: its notification stays")
+
+        // The read of m2 finishes: it does not cover m3.
+        gate.open()
+        await reading.value
+        XCTAssertTrue(center.removed.isEmpty)
+        await client.pollMessages()
+        XCTAssertTrue(center.removed.isEmpty)
+        XCTAssertTrue(client.unreadConversationIDs.contains(peerRow), "m3 is unread")
+        XCTAssertEqual(server.reads, ["m2"], "m3 is not loaded yet, so it is not marked read")
+    }
+
+    func testAFailedReadPostIsRetriedByTheNextReload() async throws {
+        server.incoming = ["m1", "m2"]
+        server.unread = true
+        let server = server
+        client.readPostOverride = { try server.read($0) }
+        await client.refresh()
+        let agent = try XCTUnwrap(client.conversations.first { $0.name == peer })
+        client.selectConversation(agent)
+
+        server.readFails = 1
+        await client.loadHistory(for: agent)
+        XCTAssertEqual(server.reads, ["m2"])
+        XCTAssertTrue(server.unread, "The failed read changed nothing on the server")
+
+        // The reload finds it unread again and posts the read once more.
+        await client.pollMessages()
+        XCTAssertEqual(server.reads, ["m2", "m2"])
+        XCTAssertFalse(server.unread)
+        XCTAssertFalse(client.unreadConversationIDs.contains(peerRow))
+
+        await client.pollMessages()
+        XCTAssertEqual(server.reads, ["m2", "m2"], "Not posted again once it succeeded")
+        XCTAssertFalse(client.unreadConversationIDs.contains(peerRow))
+    }
+
+    func testAReloadPostsNoReadWhileATerminalIsAttached() async throws {
+        server.incoming = ["m1", "m2"]
+        server.unread = true
+        await client.refresh()
+        let agent = try XCTUnwrap(client.conversations.first { $0.name == peer })
+        client.selectConversation(agent)
+        // History loads while the app is in the background: nothing is posted.
+        client.isAppActive = { false }
+        await client.loadHistory(for: agent)
+        XCTAssertTrue(server.reads.isEmpty)
+
+        client.isAppActive = { true }
+        client.attachedID = "terminal-session"
+        await client.pollMessages()
+        XCTAssertTrue(server.reads.isEmpty, "A reload posts nothing while a terminal is attached")
+
+        client.attachedID = nil
+        await client.pollMessages()
+        XCTAssertEqual(server.reads, ["m2"], "The reload marks the open conversation read")
+        XCTAssertFalse(client.unreadConversationIDs.contains(peerRow))
     }
 }

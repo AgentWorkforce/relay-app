@@ -150,6 +150,26 @@ final class ConversationReadStateTests: XCTestCase {
         XCTAssertFalse(state.unreadConversationIDs.contains("dm_a"), "Requested before the post finished")
     }
 
+    func testAnAnswerProtectsNotificationsOfConversationsItListsOrThisDeviceIsReading() {
+        var state = answered(["dm_a": "m1", "dm_b": "m4"])
+        let before = state.inboxRequested()
+        XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"))   // in flight
+        XCTAssertTrue(state.beginRead(conversationID: "dm_c", messageID: "m7"))
+        state.finishRead(conversationID: "dm_c", messageID: "m7", outcome: .success)   // finished after the ticket
+        XCTAssertTrue(state.beginRead(conversationID: "dm_d", messageID: "m9"))
+        state.finishRead(conversationID: "dm_d", messageID: "m9", outcome: .success)
+        let protected = state.apply(inbox: ["dm_a": "m2", "dm_b": "m4"], ticket: before)
+        XCTAssertEqual(protected, ["dm_a", "dm_b", "dm_c", "dm_d"],
+                       "Listed as unread, or kept read only by this device's own read")
+        XCTAssertEqual(state.unreadConversationIDs, ["dm_b"])
+
+        // Once the reads are older than the request, only the answer counts.
+        let after = state.inboxRequested()
+        XCTAssertEqual(state.apply(inbox: ["dm_b": "m4"], ticket: after), ["dm_a", "dm_b"], "dm_a is still in flight")
+        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .success)
+        XCTAssertEqual(state.apply(inbox: ["dm_b": "m4"], ticket: state.inboxRequested()), ["dm_b"])
+    }
+
     func testAnAnswerRequestedAfterThePostFinishedIsTrusted() {
         var state = answered(["dm_a": "m1"])
         XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"))
@@ -207,12 +227,21 @@ final class ConversationReadStateTests: XCTestCase {
     }
 
     func testRefusedMeansAnyClientErrorButATimeoutOrRateLimit() {
-        for status in [400, 403, 404, 410, 422, 499] {
+        for status in [400, 404, 410, 422, 499] {
             XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: status), .refused, "\(status)")
         }
         for status in [nil, 408, 429, 500, 503, 302] as [Int?] {
             XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: status), .failed, "\(String(describing: status))")
         }
+    }
+
+    func testACredentialRefusalIsRetried() {
+        XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: 401), .failed)
+        XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: 403), .failed)
+        var state = ConversationReadState()
+        XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"))
+        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: ConversationReadState.outcome(forFailureStatus: 403))
+        XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"), "Posted again once the credential works")
     }
 
     private func step(_ unread: [String: String], cursor: [String: String]?, running: Bool = false,

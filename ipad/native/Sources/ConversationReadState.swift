@@ -16,16 +16,19 @@ import Foundation
 struct ConversationReadState {
     enum Outcome: Equatable {
         case success
-        /// The server refused the read (a 4xx other than 408 or 429, such as
-        /// 404 for an unknown message): it is not posted again.
+        /// The server refused the read (a 4xx other than 401, 403, 408 or
+        /// 429, such as 404 for an unknown message): it is not posted again.
         case refused
-        /// Anything else, a rate limit or timeout included: may be tried again.
+        /// Anything else, a rate limit, timeout or credential refusal included:
+        /// may be tried again.
         case failed
     }
 
-    /// What the server's refusal with `status` means for a read POST.
+    /// What the server's refusal with `status` means for a read POST. A 401
+    /// or 403 is about the credential, not the message, so it is retried.
     static func outcome(forFailureStatus status: Int?) -> Outcome {
-        guard let status, (400..<500).contains(status), status != 408, status != 429 else { return .failed }
+        guard let status, (400..<500).contains(status),
+              ![401, 403, 408, 429].contains(status) else { return .failed }
         return .refused
     }
 
@@ -84,18 +87,27 @@ struct ConversationReadState {
 
     /// Applies an inbox answer requested with `ticket`. A conversation this
     /// device is reading, or read after the request was sent, stays read.
-    mutating func apply(inbox unread: [String: String], ticket: Int) {
+    ///
+    /// Returns the conversations whose notifications this answer must not
+    /// clear: those it lists as unread, and those kept read only by this
+    /// device's own read. Such a read covers the message it posted, not one
+    /// that arrived since, which the answer may not reflect.
+    @discardableResult
+    mutating func apply(inbox unread: [String: String], ticket: Int) -> Set<String> {
         var next = Set(unread.keys)
+        var keptRead: Set<String> = []
         for (conversationID, mark) in marks {
             if let finished = mark.finishedAt, finished <= ticket {
                 marks.removeValue(forKey: conversationID)
             } else {
                 next.remove(conversationID)
+                keptRead.insert(conversationID)
             }
         }
         unreadConversationIDs = next
         hasAnswer = true
         answerIsCurrent = true
+        return Set(unread.keys).union(keptRead)
     }
 
     /// The latest inbox read failed or was not applied: the last known set
