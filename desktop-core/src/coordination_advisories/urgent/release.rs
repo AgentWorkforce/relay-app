@@ -53,7 +53,7 @@ impl Advisories {
             .unwrap_or(false);
         let mut journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
         if !saved {
-            journal.status = "Urgent delivery unavailable: receipt storage could not be saved.";
+            journal.status = SAVE_FAILED_STATUS;
             return;
         }
         journal.set_agent(principal, target, id, Attempt::Released, epoch);

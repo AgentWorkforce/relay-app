@@ -206,20 +206,20 @@ impl Journal {
 
     pub(super) fn save(&mut self, directory: &Path) -> bool {
         if self.blocked() || records(&self.saved) > MAX_RECORDS {
-            self.status = "Urgent delivery unavailable: receipt storage is blocked or full.";
+            self.status = STORAGE_BLOCKED_STATUS;
             return false;
         }
         let Some(bytes) = serde_json::to_vec(&self.saved)
             .ok()
             .filter(|b| b.len() as u64 <= MAX_BYTES)
         else {
-            self.status = "Urgent delivery unavailable: receipt storage is full.";
+            self.status = STORAGE_FULL_STATUS;
             return false;
         };
         let ok = agent_relay_node::platform::fs::create_private_dir_all(directory).is_ok()
             && agent_relay_node::platform::fs::write_atomic(&directory.join(FILE), &bytes).is_ok();
         if !ok {
-            self.status = "Urgent delivery unavailable: receipt storage could not be saved.";
+            self.status = SAVE_FAILED_STATUS;
         }
         ok
     }

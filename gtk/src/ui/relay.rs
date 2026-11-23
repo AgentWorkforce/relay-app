@@ -290,6 +290,14 @@ impl App {
         );
     }
 
+    /// The poll's roster read: the roster has no push, so it is read every
+    /// 30 s while a page shows it.
+    pub(super) fn roster_tick(&self, ticks: u32, visible: bool, page: Page) {
+        if ticks % 6 == 0 && (!visible || !matches!(page, Page::Settings(_))) {
+            self.refresh_roster();
+        }
+    }
+
     /// The workspace roster, which says which sessions' agents are idle;
     /// signed out, it reads as empty.
     pub fn refresh_roster(&self) {

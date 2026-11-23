@@ -30,6 +30,35 @@ pub(super) const NO_USER_STATUS: &str =
 pub(super) const DENIED_STATUS: &str =
     "System notifications are not allowed for Agent Relay in your system settings.";
 const READ_ACCESS_STATUS: &str = "Read access unavailable";
+/// A receipt could not be written (either path's save).
+const SAVE_FAILED_STATUS: &str = "Urgent delivery unavailable: receipt storage could not be saved.";
+/// The receipts would not fit the file's size limit.
+const STORAGE_FULL_STATUS: &str = "Urgent delivery unavailable: receipt storage is full.";
+/// The receipts are over their count limit, or the journal is blocked.
+const STORAGE_BLOCKED_STATUS: &str =
+    "Urgent delivery unavailable: receipt storage is blocked or full.";
+
+/// Whether `status` is a failure of the agent path: a receipt that could
+/// not be saved, or a v2 ack that found no match. It is shown over the
+/// standing conditions (platform, person, OS permission), which say only
+/// why no system notification is requested.
+fn agent_path_failure(status: &str) -> bool {
+    [
+        SAVE_FAILED_STATUS,
+        STORAGE_FULL_STATUS,
+        STORAGE_BLOCKED_STATUS,
+        super::poller::NO_MATCH_STATUS,
+    ]
+    .contains(&status)
+}
+
+/// Sets a standing condition's status, unless the pass already set a
+/// failure of the agent path, which it never replaces.
+fn set_standing(journal: &mut Journal, status: &'static str) {
+    if !agent_path_failure(journal.status) {
+        journal.status = status;
+    }
+}
 
 /// Whether this build's platform can request a system notification at all.
 pub(super) fn platform_notifies() -> bool {
@@ -200,8 +229,7 @@ impl Advisories {
             .await
             .unwrap_or(false);
         if !result {
-            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status =
-                "Urgent delivery unavailable: receipt storage could not be saved.";
+            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status = SAVE_FAILED_STATUS;
         }
         result
     }
@@ -238,10 +266,11 @@ impl Advisories {
         journal.fault.clone().unwrap_or_else(|| journal.status.into())
     }
 
-    /// The status line while notes and notifications are on and no receipt
-    /// fault stands. Standing conditions come first, at read time too: read
-    /// access, the platform, a person to notify, the OS permission; then
-    /// the last pass's status, then a legacy-only listing.
+    /// The status line while notes and notifications are on: a blocked
+    /// journal's fault, then read access, then a failure of the agent path
+    /// ([`agent_path_failure`]); then the standing conditions, at read time
+    /// too: the platform, a person to notify, the OS permission; then the
+    /// last pass's status, then a legacy-only listing.
     pub(super) fn notification_status(&self) -> String {
         let (status, fault) = {
             let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
@@ -250,7 +279,7 @@ impl Advisories {
         if let Some(fault) = fault {
             return fault;
         }
-        if status.starts_with(READ_ACCESS_STATUS) {
+        if status.starts_with(READ_ACCESS_STATUS) || agent_path_failure(status) {
             return status.into();
         }
         if !platform_notifies() {
@@ -401,11 +430,17 @@ impl Advisories {
             return;
         }
         if !delivery.notifications_available() {
-            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status = PLATFORM_STATUS;
+            set_standing(
+                &mut self.urgent.lock().unwrap_or_else(|p| p.into_inner()),
+                PLATFORM_STATUS,
+            );
             return;
         }
         if principal.user_id.is_none() {
-            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status = NO_USER_STATUS;
+            set_standing(
+                &mut self.urgent.lock().unwrap_or_else(|p| p.into_inner()),
+                NO_USER_STATUS,
+            );
             return;
         }
         let scope = receipts::Scope::from(&principal);
@@ -459,7 +494,7 @@ impl Advisories {
                     return;
                 }
                 Some(NotificationPermission::Denied) => {
-                    journal.status = DENIED_STATUS;
+                    set_standing(&mut journal, DENIED_STATUS);
                     return;
                 }
                 Some(NotificationPermission::Allowed | NotificationPermission::Unknown) => {}
