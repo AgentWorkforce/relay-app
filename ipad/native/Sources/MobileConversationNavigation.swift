@@ -16,6 +16,10 @@ enum MobileChatScrollTarget: Hashable {
     case pending(String)
     case message(String)
 
+    /// The thread's last row, after every message, pending bubble, session
+    /// row and the "Working…" row.
+    static let end = Self.message("chat-bottom")
+
     static func latest(pending: [String], messages: [String]) -> Self? {
         if let id = pending.last { return .pending(id) }
         return messages.last.map(Self.message)
@@ -31,5 +35,16 @@ struct MobileChatScrollRequest: Hashable {
     init(pending: [String], messages: [String]) {
         target = MobileChatScrollTarget.latest(pending: pending, messages: messages)
         latestMessageID = messages.last
+    }
+
+    /// Where the chat scrolls for this request: the end of the thread
+    /// whenever there is a target. The target row (the newest bubble or
+    /// message) is what makes a new request; it is not where the scroll
+    /// stops, because session rows and the "Working…" row can follow it,
+    /// and the scroll for a new session page goes to the end too. Both
+    /// scrolls then agree whichever runs last. A thread without a target
+    /// (no messages, no bubble) is not scrolled.
+    var destination: MobileChatScrollTarget? {
+        target == nil ? nil : .end
     }
 }
