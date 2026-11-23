@@ -10,7 +10,10 @@ public struct RelayEnvelope: Equatable, Sendable {
     public let messageID: String?
     /// The sender handle without `@`, or nil when the header names none.
     public let sender: String?
-    /// The text after the envelope and any preamble, as `withoutPreamble` reads it.
+    /// The message the envelope carries: the text after it and any preamble,
+    /// as `withoutPreamble` reads it, without the bracketed hint lines and
+    /// blank lines before the message and from its
+    /// `[end of Agent Relay message …]` line on (`messageBody`).
     public let body: String
 
     public init(messageID: String?, sender: String?, body: String) {
@@ -29,13 +32,31 @@ public struct RelayEnvelope: Equatable, Sendable {
                 let fields = headerFields(header)
                 return RelayEnvelope(messageID: value(after: "message ", in: fields),
                                      sender: value(after: "from ", in: fields).map { $0.hasPrefix("@") ? String($0.dropFirst()) : $0 },
-                                     body: withoutPreamble(String(after)))
+                                     body: messageBody(withoutPreamble(String(after))))
             }
             guard rest.first == "<", let close = rest.firstIndex(of: ">") else { return nil }
             let tag = rest[rest.index(after: rest.startIndex)..<close]
             guard preambleTags.contains(tag), let end = rest.range(of: "</\(tag)>") else { return nil }
             rest = rest[end.upperBound...].drop(while: { $0.isWhitespace })
         }
+    }
+
+    /// The message in the text under an envelope: bracketed `[…]` lines and
+    /// blank lines before it starts are hints, not the message, and the
+    /// `[end of Agent Relay message …]` line ends it. A bracketed line once
+    /// the message has started is the message's own. The desktop's
+    /// `chat_user_text`.
+    static func messageBody(_ text: String) -> String {
+        var body: [Substring] = []
+        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            if line.hasPrefix("[end of Agent Relay message") { break }
+            let hint = line.hasPrefix("[") && line.trimmingCharacters(in: .whitespaces).hasSuffix("]")
+            if body.isEmpty && (hint || line.trimmingCharacters(in: .whitespaces).isEmpty) { continue }
+            body.append(line)
+        }
+        var joined = body.joined(separator: "\n")
+        while joined.last?.isWhitespace == true { joined.removeLast() }
+        return joined
     }
 
     /// The header's fields: `[via Agent Relay — from @a to @b · message m_1 · ref …]`
