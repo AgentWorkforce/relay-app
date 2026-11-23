@@ -67,11 +67,17 @@ enum SessionEventsFixture {
             ["kind": "future_kind", "eventId": "b6", "ts": "2026-10-08T12:00:40.000Z", "content": "Checkpoint saved"],
         ]
         if ProcessInfo.processInfo.arguments.contains("-RelayUITestSessionWorking") {
-            let now = Date.ISO8601FormatStyle(includingFractionalSeconds: true).format(Date().addingTimeInterval(-5))
-            rows.append(event("b7", at: now, kind: "tool_use", role: "assistant", content: "swift test", tool: "Bash", status: "running"))
+            rows.append(event("b7", at: workingCallAt, kind: "tool_use", role: "assistant", content: "swift test",
+                              tool: "Bash", status: "running"))
         }
         return rows
     }
+
+    /// When the working fixture's running tool call started: a few seconds
+    /// before launch, the same on every read, as a stored event is. Stamped
+    /// per read, it changed the store on every poll.
+    private static let workingCallAt = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+        .format(Date().addingTimeInterval(-5))
 
     private static func event(_ id: String, at ts: String, kind: String, role: String, content: String,
                               tool: String? = nil, status: String? = nil, files: [String] = []) -> [String: Any] {
