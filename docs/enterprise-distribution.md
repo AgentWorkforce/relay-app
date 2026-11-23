@@ -427,6 +427,8 @@ and result codes below are the draft's and may change.
   `github` path needs neither beyond what it needed before.
 - Updating a server stays "run the command again", with a fresh install
   token or a signed-in core. An automatic update timer is a follow-up.
+- Moving a Mac from a self-built core to the site build:
+  [headless-mac-migration.md](headless-mac-migration.md).
 
 ### Publish pipeline
 
