@@ -251,6 +251,18 @@ button.session-open:focus-visible { outline: 2px solid $accent; }
 .transcript-tool-group > title { padding: 8px 0; font-size: 12px; color: $secondary; }
 .transcript-text { font-size: 14px; line-height: 2; }
 /* The session composer: one chat-bubble shell (Cloud's --radius-bubble-lg) around the growing input and Send, with one focus ring. */
+/* Chat: the header's tabs, the agent list and the docked composer (Pear's chat, in the Cloud palette). */
+button.header-tab { border-radius: 7px; padding: 4px 12px; min-height: 0; color: $secondary; font-weight: 500; }
+button.header-tab.selected { background-color: $accent_soft; color: $text; font-weight: 600; }
+.chat-sidebar { background-color: $sidebar; }
+label.chat-status { font-size: 10px; font-weight: 600; border-radius: 9px; padding: 0 7px; color: $secondary; background-color: alpha($secondary, 0.14); }
+label.chat-status.working, .presence-badge.working { color: $green; background-color: alpha($green, 0.16); }
+label.chat-status.offline { color: $tertiary; background-color: transparent; }
+label.chat-glance { font-size: 12px; color: $secondary; }
+.chat-header { background-color: $panel; }
+.chat-dock { background-color: $window; }
+.chat-pending { opacity: 0.7; }
+.chat-working { padding: 4px 2px; }
 .chat-composer { background-color: $card; border: 1px solid $border; border-radius: 20px 20px 20px 3px; padding: 6px 6px 6px 14px; }
 .chat-composer.typing { border-color: $ring; box-shadow: inset 0 0 0 1px $ring; }
 textview.chat-input, textview.chat-input text { background: transparent; color: $text; border: 0; outline: none; box-shadow: none; padding: 0; caret-color: $text; }

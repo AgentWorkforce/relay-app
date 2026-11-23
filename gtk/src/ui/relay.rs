@@ -316,7 +316,7 @@ impl App {
             return;
         }
         self.refresh_presentation_query();
-        if matches!(self.page(), Page::Sessions | Page::Settings(Pane::Relay)) {
+        if matches!(self.page(), Page::Sessions | Page::Chat | Page::Settings(Pane::Relay)) {
             self.render_page();
         }
         self.render_chrome();

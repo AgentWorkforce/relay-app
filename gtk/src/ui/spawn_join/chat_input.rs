@@ -14,7 +14,7 @@ pub struct ChatInput {
 }
 
 impl ChatInput {
-    pub(super) fn build() -> ChatInput {
+    pub(in crate::ui) fn build() -> ChatInput {
         let view = gtk::TextView::new();
         view.set_wrap_mode(gtk::WrapMode::WordChar);
         view.set_accepts_tab(false);

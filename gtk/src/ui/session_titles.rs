@@ -145,6 +145,11 @@ impl App {
                 });
                 app.refresh_session_title_cells();
                 app.preload_session_titles();
+                // A summary read for Chat's list redraws it, which reads
+                // the next one it lists.
+                if app.page() == super::state::Page::Chat {
+                    app.render_chat();
+                }
             },
         );
     }

@@ -10,6 +10,7 @@
 //! | `time` | Relative times and local clock times |
 //! | `agent_relay_desktop_core::history::session_model` (re-exported) | Session rows, the search language, harness names, sharing modes, upload states, filters and stages |
 //! | `agents` | Session presence and initials |
+//! | `chat` | The Chat page: every agent on this computer, what it is doing, the list's filters and its conversation's words |
 //! | `messages` | The composer: delivery notes, recipient warnings, endpoints |
 //! | `openclaw_tools` | The Settings row that gives OpenClaw agents Agent Relay's tools |
 //! | `overview` | The Cloud session brief and the session's original request |
@@ -26,6 +27,7 @@
 mod agent_settings;
 mod agents;
 mod capy_setup;
+mod chat;
 mod cloud_provider_setup;
 mod core_crates;
 mod cursor_hooks;
@@ -66,6 +68,7 @@ pub use agent_relay_desktop_core::history::session_model::*;
 pub use agent_settings::*;
 pub use agents::*;
 pub use capy_setup::*;
+pub use chat::*;
 pub use cloud_provider_setup::*;
 pub use core_crates::*;
 pub use cursor_hooks::*;

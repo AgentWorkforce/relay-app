@@ -23,6 +23,8 @@ mod upgrade_notice;
 pub struct Shell {
     pub root: gtk::Box,
     pub sessions_button: gtk::Button,
+    /// The header's Sessions and Chat tabs.
+    pub nav: [(Page, gtk::Button); 2],
     pub header: gtk::Box,
     pub header_search: gtk::Box,
     pub settings_back: gtk::Button,
@@ -67,6 +69,26 @@ impl Shell {
         let home = app.on(|app| app.open_section(Section::Mine));
         sessions_button.connect_clicked(move |_| home());
         header.append(&sessions_button);
+        let nav_box = hbox(2, &["header-nav"]);
+        nav_box.set_valign(gtk::Align::Center);
+        let nav = [Page::Sessions, Page::Chat].map(|page| {
+            let tab = gtk::Button::with_label(page.title());
+            tab.add_css_class("flat");
+            tab.add_css_class("header-tab");
+            widgets::action_cursor(&tab);
+            widgets::name(&tab, page.title());
+            let open = app.on(move |app| {
+                if page == Page::Sessions {
+                    app.open_section(Section::Mine);
+                } else {
+                    app.show_chat_page(None);
+                }
+            });
+            tab.connect_clicked(move |_| open());
+            nav_box.append(&tab);
+            (page, tab)
+        });
+        header.append(&nav_box);
         let header_search = hbox(0, &[]);
         header_search.set_hexpand(true);
         header_search.set_valign(gtk::Align::Center);
@@ -119,6 +141,7 @@ impl Shell {
         }
         app.connect_sessions_page(&pages.sessions, &root);
         app.connect_messages_page(&pages.messages);
+        app.connect_chat_page(&pages.chat);
         let settings = SettingsPage::build();
         page_stack.add_named(&settings.scroller, Some("settings"));
         main.append(&page_stack);
@@ -147,6 +170,7 @@ impl Shell {
         Rc::new(Shell {
             root,
             sessions_button,
+            nav,
             header,
             header_search,
             settings_back,
@@ -298,8 +322,16 @@ impl App {
             return;
         };
         let page = self.page();
-        shell.topbar.set_visible(page != Page::Sessions);
-        shell.topbar_separator.set_visible(page != Page::Sessions);
+        for (tab_page, tab) in &shell.nav {
+            if *tab_page == page {
+                tab.add_css_class("selected");
+            } else {
+                tab.remove_css_class("selected");
+            }
+        }
+        let own_title = matches!(page, Page::Sessions | Page::Chat);
+        shell.topbar.set_visible(!own_title);
+        shell.topbar_separator.set_visible(!own_title);
         // A status refresh must not take the search field from someone
         // typing; only the same page's search keeps it, since another page
         // has its own query.

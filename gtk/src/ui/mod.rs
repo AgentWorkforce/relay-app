@@ -18,6 +18,7 @@
 //! | `spawn_join` | A spawned agent's live transcript and message box, and opening its session |
 //! | `spawn_end` | Ending a spawned agent after confirmation and confirmed harness shutdown |
 //! | `spawn_take_over` | Taking a spawned Claude over: stopping it headless and resuming it in Terminal |
+//! | `chat` | Chat: every agent on this computer, what it is doing, its live conversation and a message box |
 //! | `messages` | Messages: conversations, delivery and reply notes |
 //! | `rows` | Pointer handling and context menus shared by list rows |
 //! | `widgets` | Shared rows, banners, settings rows, avatars, marks and dots |
@@ -43,6 +44,7 @@
 mod agent_names;
 mod agent_settings_rows;
 pub mod app;
+pub mod chat;
 mod appearance_preview;
 mod core_settings;
 pub mod desktop;

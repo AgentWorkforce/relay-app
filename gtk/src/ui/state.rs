@@ -47,6 +47,7 @@ pub use panes::Pane;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Sessions,
+    Chat,
     Messages,
     Settings(Pane),
 }
@@ -54,7 +55,7 @@ pub enum Page {
 impl Page {
     pub fn section(self) -> Section {
         match self {
-            Page::Sessions | Page::Messages => Section::Mine,
+            Page::Sessions | Page::Chat | Page::Messages => Section::Mine,
             Page::Settings(_) => Section::Settings,
         }
     }
@@ -63,6 +64,7 @@ impl Page {
     pub fn stack_name(self) -> &'static str {
         match self {
             Page::Sessions => "sessions",
+            Page::Chat => "chat",
             Page::Messages => "messages",
             Page::Settings(_) => "settings",
         }
@@ -71,6 +73,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Sessions => "Sessions",
+            Page::Chat => crate::models::CHAT_TITLE,
             Page::Messages => "Messages",
             Page::Settings(pane) => pane.title(),
         }
@@ -79,6 +82,7 @@ impl Page {
     pub fn subtitle(self) -> &'static str {
         match self {
             Page::Sessions => "This machine",
+            Page::Chat => crate::models::CHAT_SUBTITLE,
             Page::Messages => "Message an agent by name or exact address.",
             Page::Settings(pane) => pane.subtitle(),
         }

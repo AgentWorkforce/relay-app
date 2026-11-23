@@ -150,7 +150,7 @@ impl Page {
         use agent_relay_desktop_core::telemetry::TelemetrySurface as Surface;
         match self {
             Self::Sessions => Surface::Sessions,
-            Self::Messages => Surface::Messages,
+            Self::Chat | Self::Messages => Surface::Messages,
             Self::Settings(pane) => match pane {
                 Pane::General => Surface::SettingsGeneral,
                 Pane::Tools => Surface::SettingsTools,

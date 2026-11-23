@@ -248,7 +248,7 @@ impl App {
 
     /// The actions the tray, notifications and keyboard shortcuts reach.
     pub fn install_actions(&self, application: &gtk::Application) {
-        let simple: [(&str, Action); 12] = [
+        let simple: [(&str, Action); 13] = [
             ("show", |app| app.show_window()),
             ("sessions", |app| app.go(Page::Sessions)),
             ("settings", |app| app.go(Page::Settings(Pane::General))),
@@ -258,6 +258,7 @@ impl App {
             ("refresh", |app| app.refresh_page()),
             ("find", |app| app.focus_search()),
             ("message", |app| app.show_message_composer("")),
+            ("chat", |app| app.show_chat_page(None)),
             ("check-updates", |app| app.check_updates(true)),
             ("sign-in", |app| app.sign_in(false, None)),
             ("quit", |app| app.quit()),
@@ -998,6 +999,7 @@ impl App {
         shell.page_error.set_visible(error.is_some());
         match page {
             Page::Sessions => self.render_sessions(),
+            Page::Chat => self.render_chat(),
             Page::Messages => self.render_messages(),
             Page::Settings(_) => self.render_settings(),
         }
@@ -1008,6 +1010,12 @@ impl App {
             Page::Sessions => {
                 self.refresh_uploader(true);
                 self.refresh_local();
+            }
+            Page::Chat => {
+                self.refresh_local();
+                if let Some(key) = self.with_chat(|page| page.selected.borrow().clone()).flatten() {
+                    self.load_chat_thread(&key);
+                }
             }
             Page::Messages => {
                 if let Some(shown) = self.shown_chat() {

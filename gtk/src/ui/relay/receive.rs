@@ -20,7 +20,7 @@ impl App {
     }
 
     /// Preserve the acknowledged change even if the subsequent list fails.
-    fn remember_receive_registration(&self, key: &str, registered: Option<Registered>) {
+    pub(in crate::ui) fn remember_receive_registration(&self, key: &str, registered: Option<Registered>) {
         self.update_state(|state| {
             // Retire every list started before this acknowledgement, even if
             // the next authoritative read fails instead of superseding it.
