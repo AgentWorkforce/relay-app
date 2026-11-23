@@ -222,7 +222,7 @@ fn your_agents_elsewhere_are_listed_from_the_roster() {
          "host": null, "owner_hash": null, "session_id": null, "is_self": false}
     ]))
     .unwrap();
-    let agents = chat_elsewhere_agents(&roster);
+    let agents = chat_elsewhere_agents(&roster, &[]);
     assert_eq!(agents.len(), 1);
     let ops = &agents[0];
     assert_eq!(ops.name(), "layered-infra-ops");
@@ -256,4 +256,27 @@ fn agents_elsewhere_are_tagged_with_where_they_run() {
         chat_elsewhere_tag(&agent(session("a", None), ChatActivity::Idle)),
         ""
     );
+}
+
+#[test]
+fn an_agent_the_sessions_list_shows_is_not_listed_elsewhere_too() {
+    let roster: Vec<RosterAgent> = serde_json::from_value(serde_json::json!([
+        {"name": "custsuccessgrok", "address": "custsuccessgrok@cloud", "kind": "agent",
+         "where": "cloud", "status": "active", "liveness": "live", "last_seen_ms": 5,
+         "description": "", "host": null, "owner_hash": null, "session_id": null,
+         "is_self": true},
+        {"name": "other", "address": "other@cloud", "kind": "agent", "where": "cloud",
+         "status": "active", "liveness": "live", "last_seen_ms": 5, "description": "",
+         "host": null, "owner_hash": null, "session_id": "s-9", "is_self": true}
+    ]))
+    .unwrap();
+    let mut titled = session("a", None);
+    titled.title = "custsuccessgrok".into();
+    assert!(chat_elsewhere_agents(&roster, &[row(titled)]).len() == 1);
+    let uploaded = session("s-9", None);
+    assert!(chat_elsewhere_agents(&roster, &[row(uploaded)]).len() == 1);
+    let named = session("b", Some("other"));
+    let left = chat_elsewhere_agents(&roster, &[row(named)]);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].name(), "custsuccessgrok");
 }

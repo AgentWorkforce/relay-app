@@ -8,8 +8,8 @@
 use super::super::app::App;
 use super::super::widgets::{self, hbox, text, vbox, LabelStyle};
 use crate::models::{
-    chat_elsewhere_agents, chat_elsewhere_tag, relative_ms, ChatActivity, ChatAgent, Presence,
-    SessionColumn,
+    chat_elsewhere_agents, chat_elsewhere_tag, merge_local_sessions, relative_ms, ChatActivity,
+    ChatAgent, Presence, SessionColumn,
 };
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
@@ -69,9 +69,14 @@ impl App {
             return;
         };
         let (list, chat) = (&shell.pages.sessions, &shell.pages.chat);
-        let (roster, search) =
-            self.with_state(|state| (state.roster.clone(), state.session_search.clone()));
-        let agents: Vec<ChatAgent> = chat_elsewhere_agents(&roster)
+        let (roster, search, rows) = self.with_state(|state| {
+            (
+                state.roster.clone(),
+                state.session_search.clone(),
+                merge_local_sessions(&state.sessions, &state.local_sessions),
+            )
+        });
+        let agents: Vec<ChatAgent> = chat_elsewhere_agents(&roster, &rows)
             .into_iter()
             .filter(|agent| matches_search(agent, &search))
             .collect();

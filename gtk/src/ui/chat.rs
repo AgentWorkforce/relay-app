@@ -247,7 +247,7 @@ impl App {
                 chrono::Utc::now().timestamp_millis(),
             )
             .into_iter()
-            .chain(chat_elsewhere_agents(&state.roster))
+            .chain(chat_elsewhere_agents(&state.roster, &rows))
             .collect()
         })
     }

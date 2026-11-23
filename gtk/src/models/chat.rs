@@ -317,11 +317,31 @@ fn sort_agents(agents: &mut [ChatAgent]) {
     });
 }
 
+/// Whether the sessions list already has a row for the roster `agent`: its
+/// uploaded session, a session registered under its name, or a session
+/// titled with its name. Such an agent is that row, not another one.
+fn listed(agent: &RosterAgent, rows: &[LocalSessionRow]) -> bool {
+    rows.iter().any(|row| {
+        agent.session_id.as_deref() == Some(row.session_id().as_str())
+            || row
+                .relay
+                .as_ref()
+                .and_then(|session| session.registration.as_ref())
+                .is_some_and(|registration| {
+                    registration.name == agent.name
+                        || registration.alias.as_deref() == Some(agent.name.as_str())
+                })
+            || row.title() == agent.name
+    })
+}
+
 /// Your agents on other computers and in Cloud, from the workspace roster:
-/// agents you own that are not registered from this computer.
-pub fn chat_elsewhere_agents(roster: &[RosterAgent]) -> Vec<ChatAgent> {
+/// agents you own that are not registered from this computer and that no
+/// row of the sessions list (`rows`) already shows.
+pub fn chat_elsewhere_agents(roster: &[RosterAgent], rows: &[LocalSessionRow]) -> Vec<ChatAgent> {
     let mut agents: Vec<ChatAgent> = roster
         .iter()
+        .filter(|agent| !listed(agent, rows))
         .filter(|agent| {
             agent.is_self
                 && agent.kind == "agent"
