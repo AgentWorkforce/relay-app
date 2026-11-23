@@ -35,15 +35,66 @@ final class SessionStreamUITests: XCTestCase {
         return element.exists
     }
 
+    private func waitFor(_ format: String, _ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// Why the working row is missing, recorded before the test fails: a
+    /// screenshot, the element tree, and the facts that tell the causes apart.
+    private func diagnoseMissingWorking(_ working: XCUIElement, in app: XCUIApplication) -> String {
+        attach(app, "working-missing")
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "working-missing-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
+        let newest = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS 'All release checks passed.'")).firstMatch
+        let group = app.descendants(matching: .any).matching(identifier: "Session activity group").firstMatch
+        let thread = app.scrollViews["Conversation thread"].firstMatch
+        let threadShown = thread.exists
+        var facts = [
+            "b5 'All release checks passed.' exists: \(newest.exists)",
+            "Session activity group exists: \(group.exists)",
+            "Conversation thread exists: \(threadShown)" + (threadShown ? ", frame \(thread.frame)" : ""),
+            "window frame: \(app.windows.firstMatch.frame)",
+        ]
+        if threadShown && thread.isHittable {
+            thread.swipeUp()
+            facts.append("working after one swipeUp of the thread: \(working.waitForExistence(timeout: 3))")
+        } else {
+            facts.append("working after one swipeUp of the thread: not tried, the thread is not hittable")
+        }
+        let summary = facts.joined(separator: "; ")
+        let text = XCTAttachment(string: summary)
+        text.name = "working-missing-facts"
+        text.lifetime = .keepAlways
+        add(text)
+        return summary
+    }
+
     func testLoadingRowGivesWayToTheMergedTimeline() throws {
         let app = open("builder", ["-RelayUITestSessionEventsDelay"])
-        // Relay messages show at once; the session is still loading, so the
-        // empty text never shows.
+        // Relay messages show at once; the fixture holds the session's first
+        // page until the test releases it, so the loading row shows and the
+        // empty text never does.
         XCTAssertTrue(app.staticTexts["Ship it"].waitForExistence(timeout: 10))
         let loading = app.descendants(matching: .any).matching(identifier: "Conversation loading").firstMatch
-        XCTAssertTrue(loading.exists)
+        XCTAssertTrue(loading.waitForExistence(timeout: 10), "The loading row must show while the first page is held")
         XCTAssertFalse(app.staticTexts["No messages yet. Send one to keep this agent moving."].exists)
         attach(app, "loading")
+
+        // Release the held page. A hold that ran out reads "timed out" and
+        // fails here, rather than letting the timeline arrive on a timer.
+        let release = app.buttons["ui-test-release-session-events"].firstMatch
+        XCTAssertTrue(release.waitForExistence(timeout: 5), "The fixture's release control must show")
+        XCTAssertEqual(release.value as? String, "held", "The fixture's hold ran out before the test released it")
+        release.tap()
+        if !waitFor("value == 'released'", release, timeout: 3) {
+            release.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(waitFor("value == 'released'", release, timeout: 5),
+                      "The fixture's hold ran out before the test released it (control reads \((release.value as? String) ?? "nil"))")
 
         XCTAssertTrue(app.staticTexts["Running the build checks now."].waitForExistence(timeout: 10))
         XCTAssertFalse(loading.exists)
@@ -99,7 +150,9 @@ final class SessionStreamUITests: XCTestCase {
     func testRecentToolCallShowsWorking() throws {
         let app = open("builder", ["-RelayUITestSessionWorking"])
         let working = app.descendants(matching: .any).matching(identifier: "Agent working").firstMatch
-        XCTAssertTrue(working.waitForExistence(timeout: 10))
+        let shown = working.waitForExistence(timeout: 10)
+        let facts = shown ? "" : diagnoseMissingWorking(working, in: app)
+        XCTAssertTrue(shown, "The working row did not show. \(facts)")
         XCTAssertTrue(working.label.contains("Working…"))
         attach(app, "working")
     }
