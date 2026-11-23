@@ -28,6 +28,20 @@ final class SessionNavigationTests: XCTestCase {
                                                 workspaceID: "w"))
     }
 
+    func testUploaderStatusNamesTheInstallUploadWorkspace() throws {
+        let encoded = try JSONEncoder().encode(Fixture.uploaderStatus())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(try JSONDecoder().decode(UploaderStatus.self, from: encoded).workspaceId)
+        object["workspace_id"] = "w-upload"
+        let status = try JSONDecoder().decode(UploaderStatus.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(status.workspaceId, "w-upload")
+        let uploaded = Fixture.uploadSession(sessionId: "one", status: .uploaded)
+        XCTAssertEqual(
+            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", session: uploaded, workspaceID: status.workspaceId)?.absoluteString,
+            "https://agentrelay.com/cloud/dashboard/sessions/one?source=\(uploaded.source)&workspace=w-upload"
+        )
+    }
+
     func testCloudURLNamesSourceAndWorkspaceLikeDesktopCore() {
         XCTAssertEqual(
             SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", sessionId: "a b", source: "cursor",

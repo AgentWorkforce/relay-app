@@ -482,19 +482,6 @@ impl ProbeRunner for ProcessRunner {
     }
 }
 
-/// `--site-url/--account/--workspace` for `target`, the install a command
-/// acts on.
-pub fn target_arguments(target: &Target) -> Vec<String> {
-    let mut args = vec!["--site-url".to_string(), target.site_url.clone()];
-    if let Some(account) = target.account_id.as_ref().filter(|a| !a.is_empty()) {
-        args.extend(["--account".to_string(), account.clone()]);
-    }
-    if let Some(workspace) = target.workspace_id.as_ref().filter(|w| !w.is_empty()) {
-        args.extend(["--workspace".to_string(), workspace.clone()]);
-    }
-    args
-}
-
 /// `uploader.status`'s answer from the probe's `status --json` answer, with
 /// the derived fields ([`with_derived`]) and the install's `directory`
 /// merged in.
@@ -541,6 +528,7 @@ pub fn status_report(status: &Value) -> UploaderStatus {
         enforced_settings: Default::default(),
         uploads_withheld: false,
         suggested_sharing_mode: None,
+        workspace_id: None,
     }
 }
 

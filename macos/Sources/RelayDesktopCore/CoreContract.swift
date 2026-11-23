@@ -12673,8 +12673,11 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
     /// read: the read at the first sign-in to the workspace failed. The
     /// apps lock the upload policy and say why.
     public let uploadsWithheld: Bool?
+    /// The Cloud workspace the attached install uploads to, which its
+    /// uploaded sessions are in. Absent without an install or a workspace.
+    public let workspaceId: String?
 
-    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, enforcedSettings: [String: String]? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, suggestedSharingMode: SharingMode? = nil, upgrading: Bool, uploadPolicyRevision: Int64? = nil, uploadsWithheld: Bool? = nil) {
+    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, enforcedSettings: [String: String]? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, suggestedSharingMode: SharingMode? = nil, upgrading: Bool, uploadPolicyRevision: Int64? = nil, uploadsWithheld: Bool? = nil, workspaceId: String? = nil) {
         self.claudeCloud = claudeCloud
         self.collectorOutdated = collectorOutdated
         self.collectorReplacing = collectorReplacing
@@ -12694,6 +12697,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         self.upgrading = upgrading
         self.uploadPolicyRevision = uploadPolicyRevision
         self.uploadsWithheld = uploadsWithheld
+        self.workspaceId = workspaceId
     }
 
     enum CodingKeys: String, CodingKey {
@@ -12716,6 +12720,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         case upgrading
         case uploadPolicyRevision = "upload_policy_revision"
         case uploadsWithheld = "uploads_withheld"
+        case workspaceId = "workspace_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -12739,6 +12744,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         self.upgrading = try c.decode(Bool.self, forKey: .upgrading)
         self.uploadPolicyRevision = try c.decodeIfPresent(Int64.self, forKey: .uploadPolicyRevision)
         self.uploadsWithheld = try c.decodeIfPresent(Bool.self, forKey: .uploadsWithheld)
+        self.workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -12762,6 +12768,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.upgrading, forKey: .upgrading)
         try c.encode(self.uploadPolicyRevision, forKey: .uploadPolicyRevision)
         try c.encodeIfPresent(self.uploadsWithheld, forKey: .uploadsWithheld)
+        try c.encodeIfPresent(self.workspaceId, forKey: .workspaceId)
     }
 }
 
