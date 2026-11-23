@@ -1,16 +1,15 @@
-//! Your unread messages from agents, as in Pear: a system notification for
-//! each new message, which opens its conversation here; an unread count on
-//! the agent's row; and the conversation marked read when you open it, or
-//! when a message arrives in the one you are reading. Read state is
-//! Relaycast's own, so what you read here is read on the iOS app and the
-//! dashboard, and the other way round.
+//! New messages from agents, as in Pear: a system notification for each,
+//! which opens its conversation here; an unread count on the agent's row
+//! until you open it; and, when the core offers it, the conversation marked
+//! read on Relaycast as you open it, for the iOS app and the dashboard.
+//! What counts as new is in `models/chat/inbox.rs`.
 
 use super::super::app::App;
 use crate::models::{ChatAgent, CHAT_LINK};
 use agent_relay_node::relay::contract::connection::CoreNotification;
 use agent_relay_node::relay::contract::directory::MarkReadParams;
 use agent_relay_node::relay::contract::method;
-use agent_relay_node::relay::contract::{Method, NoParams};
+use agent_relay_node::relay::contract::NoParams;
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 use std::time::Duration;
@@ -35,17 +34,17 @@ impl App {
     /// Reads what is unread, announces what arrived since the last reading
     /// and redraws the counts.
     pub fn refresh_chat_inbox(&self) {
-        if !self.bridge().offers(method::MessagesInbox::NAME)
+        if !self.bridge().offers(method::MessagesConversations::NAME)
             || !self.with_state(|state| state.connected())
         {
             return;
         }
-        self.call::<method::MessagesInbox>(NoParams {}, |app, result| {
-            let Ok(inbox) = result else {
+        self.call::<method::MessagesConversations>(NoParams {}, |app, result| {
+            let Ok(listing) = result else {
                 return;
             };
             let notices = app
-                .with_chat(|page| page.inbox.borrow_mut().update(&inbox))
+                .with_chat(|page| page.inbox.borrow_mut().update(&listing))
                 .unwrap_or_default();
             let reading = app.shown_peer_unread();
             for notice in notices {
