@@ -7,6 +7,8 @@ final class RelayLinesTests: XCTestCase {
         let incoming = RelayLines.incoming(output)
         XCTAssertEqual(incoming?.sender, "pilot")
         XCTAssertEqual(incoming?.body, "Ship it.")
+        XCTAssertNil(incoming?.messageID)
+        XCTAssertEqual(RelayLines.incoming("[via Agent Relay — from @pilot to @scout · message m_8 · ref 1a]\n\nGo.")?.messageID, "m_8")
         XCTAssertNil(RelayLines.incoming("exit: 0\nlint-ok"))
         // A frame inside other text is a mention of it, not a message.
         XCTAssertNil(RelayLines.incoming("grep '[via Agent Relay' file"))
@@ -27,6 +29,8 @@ final class RelayLinesTests: XCTestCase {
         let channel = RelayLines.outgoing("agent-relay-probe send --channel=#crew --body \"Deploy is green.\"")
         XCTAssertEqual(channel?.recipient, "#crew")
         XCTAssertEqual(channel?.body, "Deploy is green.")
+        // A channel named without its "#" gets one, so it never reads as a person.
+        XCTAssertEqual(RelayLines.outgoing("agent-relay-probe send --channel crew --body 'Deploy is green.'")?.recipient, "#crew")
         XCTAssertEqual(RelayLines.outgoing("agent-relay-probe send --to @pilot --body ok")?.recipient, "pilot")
         XCTAssertNil(RelayLines.outgoing("Bash agent-relay-probe relay read --socket s ab12"))
         XCTAssertNil(RelayLines.outgoing("agent-relay-probe send --to pilot --body '   '"))
@@ -38,7 +42,10 @@ final class RelayLinesTests: XCTestCase {
         XCTAssertEqual(sent?.recipient, "pilot")
         XCTAssertEqual(sent?.body, "Please run the gate.")
         let post = RelayLines.outgoing(##"post_relay_channel {"channel": "#crew", "text": "Merged {main}."} trailing"##)
-        XCTAssertEqual(post?.recipient, "crew")
+        XCTAssertEqual(post?.recipient, "#crew")
+        // A channel named without its "#" gets one; a person loses only "@".
+        XCTAssertEqual(RelayLines.outgoing(#"post_relay_channel {"channel": "crew", "text": "Hi."}"#)?.recipient, "#crew")
+        XCTAssertEqual(RelayLines.outgoing(#"send_relay_message {"to": "@@pilot", "text": "Hi."}"#)?.recipient, "pilot")
         XCTAssertEqual(post?.body, "Merged {main}.")
         XCTAssertNil(RelayLines.outgoing(#"send_relay_message {"to": "pilot"}"#))
         XCTAssertNil(RelayLines.outgoing("send_relay_message without input"))
