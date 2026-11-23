@@ -1780,8 +1780,14 @@ impl App {
 
     /// An uploaded session's page in Agent Relay Cloud.
     pub fn open_cloud(&self, session: &UploadSession) {
-        let site = self.with_state(|state| state.account().site_url.unwrap_or_default());
-        if let Some(url) = cloud_session_url(&site, &session.session_id) {
+        let (site, workspace) = self.with_state(|state| {
+            let account = state.account();
+            (account.site_url.unwrap_or_default(), account.workspace_id)
+        });
+        let source = Some(session.source.as_str());
+        if let Some(url) =
+            cloud_session_url(&site, &session.session_id, source, workspace.as_deref())
+        {
             self.inner.desktop.open_uri(&url);
         }
     }

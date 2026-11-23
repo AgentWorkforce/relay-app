@@ -89,6 +89,11 @@ public enum SessionHost {
     /// A Claude Code on the web session's host, as the core names it.
     public static let claudeWeb = "claude-web"
 
+    /// A Cursor editor chat's host, as the core names it. The core lists the
+    /// Cursor editor's agent chats under `cursor-cli`; a Cursor CLI session
+    /// has no host.
+    public static let cursorEditor = "Cursor"
+
     /// Whether a Claude Code web session id body uses the provider's shape.
     public static func isClaudeSessionBody(_ body: Substring) -> Bool {
         (8...64).contains(body.utf8.count) && body.utf8.allSatisfy { byte in
@@ -136,6 +141,15 @@ extension SessionKind {
         case .omp: return "Oh My Pi"
         case .unknown(let kind): return kind
         }
+    }
+
+    /// The kind with the app hosting it, as the Kind detail names it: a
+    /// Cursor editor chat is "Cursor", a Cursor CLI session "Cursor CLI".
+    /// desktop-core's `hosted_kind_label` matches it.
+    public func label(host: String?) -> String {
+        if host == SessionHost.claudeWeb { return SessionHost.claudeCloudPlace(host) }
+        if self == .cursorCli, host == SessionHost.cursorEditor { return "Cursor" }
+        return SessionHost.name(host).map { "\(label) in \($0)" } ?? label
     }
 
     /// The icon and history source name.

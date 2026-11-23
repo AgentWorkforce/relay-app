@@ -2674,12 +2674,19 @@ fn session_opening_settings_route_clicks(runtime: &tokio::runtime::Runtime) {
     page.details.set_active(true);
     assert!(page.view_web.is_visible());
     page.view_web.emit_clicked();
-    let site = case
-        .app
-        .with_state(|state| state.account().site_url.unwrap());
+    let (site, workspace) = case.app.with_state(|state| {
+        let account = state.account();
+        (account.site_url.unwrap(), account.workspace_id)
+    });
     assert_eq!(
         case.desktop.opened.borrow().last(),
-        agent_relay_app::models::cloud_session_url(&site, "one").as_ref()
+        agent_relay_app::models::cloud_session_url(
+            &site,
+            "one",
+            Some("codex"),
+            workspace.as_deref()
+        )
+        .as_ref()
     );
     assert_session_open_action(&page.open, "codex", "Open session");
     let opened_count = case.desktop.opened.borrow().len();
