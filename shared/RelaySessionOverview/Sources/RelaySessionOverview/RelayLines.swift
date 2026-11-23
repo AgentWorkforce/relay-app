@@ -15,19 +15,19 @@ public enum RelayLines {
     /// The relay message in `text`, a tool's output, when it carries one: the
     /// first frame, which has to open a line (not a mention of it inside other
     /// text), read as `RelayEnvelope` reads it. Nil when the message is empty.
-    public static func incoming(_ text: String) -> (sender: String?, body: String)? {
+    public static func incoming(_ text: String) -> (sender: String?, messageID: String?, body: String)? {
         guard let start = frames.compactMap({ text.range(of: $0)?.lowerBound }).min() else { return nil }
         if start > text.startIndex, text[text.index(before: start)].isNewline == false { return nil }
         guard let envelope = RelayEnvelope.parse(String(text[start...])),
               !envelope.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return (envelope.sender, envelope.body)
+        return (envelope.sender, envelope.messageID, envelope.body)
     }
 
     /// The relay message `text`, a tool call, sends, when it sends one: the
     /// `agent-relay-probe send` command (`--to`, `--address` or `--channel`;
     /// `--body` or a heredoc into a variable it passes), or the
     /// `send_relay_message` / `post_relay_channel` tool. A leading `@` is
-    /// dropped from the recipient (and `#` from a tool's channel).
+    /// dropped from the recipient; a channel is named with its `#`.
     public static func outgoing(_ text: String) -> (recipient: String?, body: String)? {
         if text.contains("send_relay_message") || text.contains("post_relay_channel") {
             return toolCall(text)
@@ -36,12 +36,18 @@ public enum RelayLines {
         let rest = text[command.lowerBound...]
         guard let send = rest.range(of: " send ") else { return nil }
         let args = rest[send.lowerBound...]
-        let recipient = flag(args, "--to") ?? flag(args, "--address") ?? flag(args, "--channel")
+        let person = (flag(args, "--to") ?? flag(args, "--address")).map { String($0.drop(while: { $0 == "@" })) }
+        let recipient = person ?? flag(args, "--channel").map(channelName)
         let flagBody = flag(args, "--body").flatMap { $0.hasPrefix("$") ? nil : $0 }
         guard let raw = flagBody ?? heredoc(text) else { return nil }
         let body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return nil }
-        return (recipient.map { String($0.drop(while: { $0 == "@" })) }, body)
+        return (recipient, body)
+    }
+
+    /// A channel keeps its "#", and gets one when the send leaves it out.
+    private static func channelName(_ channel: String) -> String {
+        channel.hasPrefix("#") ? channel : "#" + channel
     }
 
     /// The `to` (or `channel`) and `text` of a relay tool call's JSON input:
@@ -52,8 +58,10 @@ public enum RelayLines {
               let raw = value["text"] as? String else { return nil }
         let body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return nil }
-        let to = (value["to"] as? String) ?? (value["channel"] as? String)
-        return (to.map { String($0.drop(while: { $0 == "@" || $0 == "#" })) }, body)
+        if let to = value["to"] as? String {
+            return (String(to.drop(while: { $0 == "@" })), body)
+        }
+        return ((value["channel"] as? String).map(channelName), body)
     }
 
     /// The JSON object that starts at the first `{` of `text`, through its

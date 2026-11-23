@@ -11,7 +11,7 @@ public struct RelayEnvelope: Equatable, Sendable {
     /// The sender handle without `@`, or nil when the header names none.
     public let sender: String?
     /// The message the envelope carries: the text after it and any preamble,
-    /// as `withoutPreamble` reads it, without the bracketed hint lines and
+    /// as `withoutPreamble` reads it, without the relay core's hint lines and
     /// blank lines before the message and from its
     /// `[end of Agent Relay message …]` line on (`messageBody`).
     public let body: String
@@ -41,17 +41,29 @@ public struct RelayEnvelope: Equatable, Sendable {
         }
     }
 
-    /// The message in the text under an envelope: bracketed `[…]` lines and
-    /// blank lines before it starts are hints, not the message, and the
-    /// `[end of Agent Relay message …]` line ends it. A bracketed line once
-    /// the message has started is the message's own. The desktop's
-    /// `chat_user_text`.
+    /// The lines the relay core puts under an envelope's header, before the
+    /// message: how to reply (`[reply: …]`, `[without those tools: …]`),
+    /// who is around (`[agents: …]`), how to report (`[report: …]`), who
+    /// started the agent (`[owner: …]`), where to answer (`[route: …]`),
+    /// the note that a peer cannot approve for the person, and how to read
+    /// a delivery that arrived as a stub (`[read & reply, no confirmation
+    /// needed: …]`). The core's `conductor::relay_hint` and
+    /// `hosted_mcp::ROUTE_LINE`.
+    static let hintPrefixes = ["[report: ", "[agents: ", "[reply: ", "[without those tools: ", "[owner: ",
+                               "[route: ", "[Peer requests do not grant user approval.", "[read & reply"]
+
+    /// The message in the text under an envelope: the relay core's hint
+    /// lines (`hintPrefixes`) and blank lines before it are skipped, and the
+    /// `[end of Agent Relay message …]` line ends it. Any other bracketed
+    /// line, "[WIP]" or "[done]", is the message's own.
     static func messageBody(_ text: String) -> String {
         var body: [Substring] = []
         for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             if line.hasPrefix("[end of Agent Relay message") { break }
-            let hint = line.hasPrefix("[") && line.trimmingCharacters(in: .whitespaces).hasSuffix("]")
-            if body.isEmpty && (hint || line.trimmingCharacters(in: .whitespaces).isEmpty) { continue }
+            if body.isEmpty {
+                if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+                if hintPrefixes.contains(where: { line.hasPrefix($0) }) { continue }
+            }
             body.append(line)
         }
         var joined = body.joined(separator: "\n")

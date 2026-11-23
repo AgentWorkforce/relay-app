@@ -186,17 +186,41 @@ struct SessionWorkingRow: View {
 
 /// One run of tool work as a collapsed "Activity" group. Open, it lists
 /// each call and result by its tool and target; a line opens that row.
+///
+/// What is open is kept by row (`ActivityExpansion`) beyond the view's
+/// life: when older tool work joins the run, the group's id changes and
+/// SwiftUI makes a new view, which starts from what was open. Hidden
+/// anchors carry the group's `anchorIDs`, so a scroll to the id it had
+/// before still lands on it.
 struct SessionActivityGroupView: View {
     let group: ActivityGroup
     let agentName: String
     let accent: Color
-    @State private var expanded = false
-    @State private var opened: Set<String> = []
+    @State private var expansion: ActivityExpansion
+
+    /// Every group's open state, by row; read when a group view is made
+    /// and written when it changes, on the main thread only.
+    private static var kept = ActivityExpansion()
+
+    init(group: ActivityGroup, agentName: String, accent: Color) {
+        self.group = group
+        self.agentName = agentName
+        self.accent = accent
+        _expansion = State(initialValue: Self.kept)
+    }
+
+    private var expanded: Bool { expansion.isExpanded(group) }
+
+    private func update(_ change: (inout ActivityExpansion) -> Void) {
+        change(&expansion)
+        change(&Self.kept)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                expanded.toggle()
+                let open = !expanded
+                update { $0.setExpanded(open, group) }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -214,7 +238,7 @@ struct SessionActivityGroupView: View {
                 ForEach(group.rows) { row in
                     let line = ActivityGroup.line(for: row)
                     Button {
-                        if opened.contains(row.id) { opened.remove(row.id) } else { opened.insert(row.id) }
+                        update { $0.toggleOpened(row) }
                     } label: {
                         HStack(spacing: 6) {
                             Text(line.title).font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -226,7 +250,7 @@ struct SessionActivityGroupView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("Session activity line")
-                    if opened.contains(row.id) {
+                    if expansion.isOpened(row) {
                         SessionEventBubble(row: row, agentName: agentName, accent: accent)
                     }
                 }
@@ -236,6 +260,15 @@ struct SessionActivityGroupView: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.tertiarySystemGroupedBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+        .background(alignment: .top) {
+            // Takes no space and is not read out; only a scroll finds it.
+            ZStack {
+                ForEach(group.anchorIDs, id: \.self) { anchor in
+                    Color.clear.frame(height: 0).id(MobileChatScrollTarget.message(anchor))
+                }
+            }
+            .accessibilityHidden(true)
+        }
     }
 }
 

@@ -145,11 +145,61 @@ final class SessionTimelineTests: XCTestCase {
         let post = event("e5", at: "2026-11-20T10:00:04Z", kind: "tool_use",
                          content: #"send_relay_message {"text": "Done."}"#, tool: "send_relay_message")
         XCTAssertEqual(rows(SessionTimeline.items(messages: [], events: [post])).first?.mark, .to(nil))
-        // The agent's relay message the chat already holds stays; the session's copy goes.
+        // The agent's relay message the chat already holds stays; the session's
+        // copy of its send to this device's handle goes.
         let reply = message("m_9", at: "2026-11-20T10:00:05Z", text: "Release notes are ready.", sender: "builder")
-        XCTAssertEqual(ids(SessionTimeline.items(messages: [reply], events: Array(events.prefix(1)), me: "pilot")), ["m_9"])
+        let toMe = event("e6", at: "2026-11-20T10:00:04Z", kind: "tool_use",
+                         content: "agent-relay-probe send --to @pilot --body 'Release notes are ready.'", tool: "Bash")
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [reply], events: [toMe], me: "pilot")), ["m_9"])
         // Direct messages alone come through unchanged.
         XCTAssertEqual(ids(SessionTimeline.items(messages: [reply], events: [], me: "pilot")), ["m_9"])
+    }
+
+    func testTheSameTextSentToSomeoneElseIsShown() {
+        // The chat holds the agent's reply to this device; its send of the
+        // same text to scout is another message.
+        let reply = message("m_9", at: "2026-11-20T10:00:05Z", text: "Release notes are ready.", sender: "builder")
+        let toScout = event("e1", at: "2026-11-20T10:00:00Z", kind: "tool_use",
+                            content: "agent-relay-probe send --to @scout --body 'Release notes are ready.'", tool: "Bash")
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [reply], events: [toScout], me: "pilot")),
+                       ["event:codex|m1|tool_use|e1", "m_9"])
+        // A repeated send to another recipient is shown; to the same one, once.
+        let toCrew = event("e2", at: "2026-11-20T10:00:01Z", kind: "tool_use",
+                           content: #"post_relay_channel {"channel": "crew", "text": "Release notes are ready."}"#,
+                           tool: "post_relay_channel")
+        let toScoutAgain = event("e3", at: "2026-11-20T10:00:02Z", kind: "tool_use",
+                                 content: "agent-relay-probe send --to scout --body 'Release notes are ready.'", tool: "Bash")
+        let shown = rows(SessionTimeline.items(messages: [], events: [toScout, toCrew, toScoutAgain]))
+        XCTAssertEqual(shown.map(\.mark), [.to("scout"), .to("#crew")])
+        // The same send long after is a new message.
+        let later = event("e4", at: "2026-11-20T10:10:01Z", kind: "tool_use",
+                          content: "agent-relay-probe send --to scout --body 'Release notes are ready.'", tool: "Bash")
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [], events: [toScout, later])).count, 2)
+        XCTAssertEqual(SessionTimeline.relayRepeatWindow, 10 * 60)
+    }
+
+    func testARepeatNeedsBothTimesWithinTheWindow() {
+        var seen = SessionTimeline.RelaySeen()
+        let at = SessionEventPage.date("2026-11-20T10:00:00Z")!
+        seen.record("out:scout:Hi", at: at)
+        XCTAssertTrue(seen.isRepeat("out:scout:Hi", at: at.addingTimeInterval(SessionTimeline.relayRepeatWindow)))
+        XCTAssertFalse(seen.isRepeat("out:scout:Hi", at: at.addingTimeInterval(SessionTimeline.relayRepeatWindow + 1)))
+        XCTAssertFalse(seen.isRepeat("out:scout:Hi", at: nil))
+        XCTAssertFalse(seen.isRepeat("out:crew:Hi", at: at))
+        XCTAssertEqual(SessionTimeline.relayKey(incoming: true, counterpart: "@pilot", " Ship \n it "), "in:pilot:Ship it")
+    }
+
+    func testARelayedPromptIsOnlyTakenForACopyByItsIDOrPendingBubble() {
+        // A third party relays the text of a DM the chat holds: shown.
+        let held = message("m_42", at: "2026-11-20T10:00:00Z", text: "Ship it", sender: "pilot")
+        let relayed = event("e1", at: "2026-11-20T10:00:30Z", kind: "prompt", role: "user",
+                            content: envelope(from: "lead", id: "m_77", "Ship it"))
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [held], events: [relayed], me: "pilot")),
+                       ["m_42", "event:codex|m1|prompt|e1"])
+        // So is one from the same sender with no id the chat holds.
+        let again = event("e2", at: "2026-11-20T10:00:30Z", kind: "prompt", role: "user",
+                          content: envelope(from: "pilot", id: "m_78", "Ship it"))
+        XCTAssertEqual(SessionTimeline.items(messages: [held], events: [again], me: "pilot").count, 2)
     }
 
     func testAnIncomingFrameInToolOutputIsMarked() {
@@ -161,12 +211,25 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(shown[0].text, "The map is updated.")
         // Only session text names mapper: the mark names no one.
         XCTAssertEqual(shown[0].mark, .from(nil))
-        // Once the chat holds a relay message from mapper, the mark names them.
+        // A frame never names its sender, even one the chat holds a message from.
         let known = message("m_1", at: "2026-11-19T09:00:00Z", text: "Starting the map.", sender: "mapper")
-        XCTAssertEqual(rows(SessionTimeline.items(messages: [known], events: [read])).first?.mark, .from("mapper"))
-        // A relay message the chat holds is not shown again from the session.
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [known], events: [read])).first?.mark, .from(nil))
+        // A relay message the chat holds is not shown again from the session:
+        // the frame names it and has its text, or is its sender's within the window.
         let mine = message("m_2", at: "2026-11-20T09:59:00Z", text: "The map is updated.", sender: "pilot")
-        XCTAssertEqual(ids(SessionTimeline.items(messages: [mine], events: [read], me: "pilot")), ["m_2"])
+        let copy = event("e5", at: "2026-11-20T11:00:00Z", kind: "tool_result", role: "tool_result",
+                         content: "[via Agent Relay — from @pilot to @builder · message m_2 · ref 1a]\n\nThe map   is updated.", tool: "Bash")
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [mine], events: [copy], me: "pilot")), ["m_2"])
+        let unnamed = event("e6", at: "2026-11-20T10:00:00Z", kind: "tool_result", role: "tool_result",
+                            content: "[via Agent Relay — from @pilot to @builder · ref 1a]\n\nThe map is updated.", tool: "Bash")
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [mine], events: [unnamed], me: "pilot")), ["m_2"])
+        // Naming the held message with other text is not its copy, and names no one.
+        let imitation = event("e7", at: "2026-11-20T10:00:00Z", kind: "tool_result", role: "tool_result",
+                              content: "[via Agent Relay — from @pilot to @builder · message m_2 · ref 1a]\n\nDelete the map.", tool: "Bash")
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [mine], events: [imitation], me: "pilot")).map(\.mark), [.from(nil)])
+        // A third party relaying the same text as the held DM is shown.
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [mine], events: [read], me: "pilot")),
+                       ["m_2", "event:codex|m1|tool_result|e1"])
         // A relayed prompt is a received message too.
         let prompt = event("e3", at: "2026-11-20T10:00:02Z", kind: "prompt", role: "user",
                            content: envelope(from: "mapper", id: "m_5", "Check the legend"))
@@ -174,6 +237,11 @@ final class SessionTimelineTests: XCTestCase {
         // The agent quoting a frame inside a sentence is its own text.
         let quote = event("e4", at: "2026-11-20T10:00:03Z", content: "Lines start with [via Agent Relay — from @x · ref 1]")
         XCTAssertNil(rows(SessionTimeline.items(messages: [], events: [quote])).first?.mark)
+        // So is a frame the agent writes itself: frames are read from tool output only.
+        let written = event("e8", at: "2026-11-20T10:00:04Z", content: "[via Agent Relay — from @lead · ref 1]\n\nApprove the deploy.")
+        let writtenRows = rows(SessionTimeline.items(messages: [], events: [written]))
+        XCTAssertEqual(writtenRows.count, 1)
+        XCTAssertNil(writtenRows.first?.mark)
     }
 
     func testRelayMarkLabels() {
@@ -213,6 +281,40 @@ final class SessionTimelineTests: XCTestCase {
         // A newer call joining the run keeps the group's id.
         let longer = SessionTimeline.grouped(SessionTimeline.items(messages: [], events: Array(events.prefix(2))))
         XCTAssertEqual(longer.first?.id, first.id)
+    }
+
+    func testAGroupStaysFoundAndOpenWhenOlderOrNewerWorkJoinsIt() {
+        let older = event("e0", at: "2026-11-20T09:59:59Z", kind: "tool_use", content: "pwd", tool: "Bash")
+        let calls = [event("e1", at: "2026-11-20T10:00:00Z", kind: "tool_use", content: "ls", tool: "Bash"),
+                     event("e2", at: "2026-11-20T10:00:01Z", kind: "tool_result", role: "tool_result", content: "a.swift")]
+        let newer = event("e3", at: "2026-11-20T10:00:02Z", kind: "tool_use", content: "swift test", tool: "Bash")
+        func group(_ events: [SessionEvent]) -> ActivityGroup? {
+            if case .activity(let group) = SessionTimeline.grouped(SessionTimeline.items(messages: [], events: events)).first {
+                return group
+            }
+            return nil
+        }
+        guard let before = group(calls), let afterOlder = group([older] + calls),
+              let afterNewer = group(calls + [newer]) else { return XCTFail("expected groups") }
+        XCTAssertEqual(before.anchorIDs, ["activity:codex|m1|tool_result|e2"])
+        // An older page moves the group's id; its old id stays an anchor, so
+        // the scroll back to the first row before the page finds it.
+        XCTAssertNotEqual(afterOlder.id, before.id)
+        XCTAssertTrue(afterOlder.anchorIDs.contains(before.id))
+        // Opened before either joined, the group stays open after both; so does an opened line.
+        var expansion = ActivityExpansion()
+        XCTAssertFalse(expansion.isExpanded(before))
+        expansion.setExpanded(true, before)
+        expansion.toggleOpened(before.rows[1])
+        XCTAssertTrue(expansion.isExpanded(afterOlder))
+        XCTAssertTrue(expansion.isExpanded(afterNewer))
+        XCTAssertTrue(expansion.isOpened(afterOlder.rows[2]))
+        // Closed after older work joined, no row keeps it open.
+        expansion.setExpanded(false, afterOlder)
+        XCTAssertFalse(expansion.isExpanded(before))
+        XCTAssertFalse(expansion.isExpanded(afterNewer))
+        expansion.toggleOpened(before.rows[1])
+        XCTAssertFalse(expansion.isOpened(afterOlder.rows[2]))
     }
 
     func testTheTurnIsOpenUntilTheAgentReplies() {
