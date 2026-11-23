@@ -58,11 +58,17 @@ pub fn claude_cloud_place(host: Option<&str>) -> &'static str {
     }
 }
 
+/// A Cursor editor chat's host, as the core names it. The core lists the
+/// Cursor editor's agent chats under `cursor-cli`; a Cursor CLI session has
+/// no host.
+pub const CURSOR_EDITOR_HOST: &str = "Cursor";
+
 /// A session kind with the app hosting it, as the Kind detail names it.
 pub fn hosted_kind_label(kind: SessionKind, host: Option<&str>) -> String {
     let provider = kind_label(kind);
     match host {
         Some(CLAUDE_WEB_HOST) => claude_cloud_place(host).to_string(),
+        Some(CURSOR_EDITOR_HOST) if matches!(kind, SessionKind::CursorCli) => "Cursor".to_string(),
         Some("paseo") => format!("{provider} in Paseo"),
         Some("conductor") => format!("{provider} in Conductor"),
         _ => provider.to_string(),
@@ -86,6 +92,14 @@ mod kind_label_tests {
     #[test]
     fn kind_label_names_copilot() {
         assert_eq!(kind_label(SessionKind::Copilot), "Copilot");
+    }
+
+    #[test]
+    fn hosted_kind_label_names_a_cursor_editor_chat_cursor() {
+        assert_eq!(hosted_kind_label(SessionKind::CursorCli, Some("Cursor")), "Cursor");
+        assert_eq!(hosted_kind_label(SessionKind::CursorCli, None), "Cursor CLI");
+        assert_eq!(hosted_kind_label(SessionKind::Codex, Some("Cursor")), "Codex");
+        assert_eq!(hosted_kind_label(SessionKind::Codex, Some("conductor")), "Codex in Conductor");
     }
 
     #[test]

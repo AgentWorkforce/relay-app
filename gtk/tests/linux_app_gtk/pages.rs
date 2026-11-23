@@ -2275,9 +2275,10 @@ fn an_uploaded_session_opens_in_cloud(runtime: &tokio::runtime::Runtime) {
     case.sign_in();
     let session = case.app.with_state(|state| state.sessions[0].clone());
     case.app.open_cloud(&session);
+    // The workspace the install uploads to, not the account's current one.
     assert_eq!(
         *case.desktop.opened.borrow(),
-        ["https://agentrelay.com/cloud/dashboard/sessions/one"]
+        ["https://agentrelay.com/cloud/dashboard/sessions/one?source=codex&workspace=w-upload"]
     );
 }
 
