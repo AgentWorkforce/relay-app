@@ -4,10 +4,7 @@ use gtk4::prelude::*;
 impl App {
     // A slow status read cannot delay history invalidations or pagination.
     pub(super) fn refresh_upload_sessions(&self) {
-        if self
-            .bridge()
-            .offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME)
-        {
+        if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
             self.refresh_session_query();
         } else {
             self.refresh_legacy_upload_sessions();
@@ -86,10 +83,7 @@ impl App {
     }
 
     pub(in crate::ui) fn refresh_presentation_query(&self) {
-        if !self
-            .bridge()
-            .offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME)
-        {
+        if !self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
             return;
         }
         let changed = self.update_state(|state| {
@@ -245,43 +239,40 @@ impl App {
         let Some((generation, query_revision, selection, title, request)) = request else {
             return;
         };
-        self.call::<agent_relay_desktop_core::contract::method::UploaderSessionsQuery>(
-            request,
-            move |app, result| {
-                if app.with_state(|state| state.generation) != generation {
-                    return;
+        self.call::<agent_relay_desktop_core::contract::method::UploaderSessionsQuery>(request, move |app, result| {
+            if app.with_state(|state| state.generation) != generation {
+                return;
+            }
+            let current = app.update_state(|state| {
+                state.refreshing_sessions = false;
+                let current = state.connected()
+                    && state.session_query.revision == query_revision
+                    && state.upload_selection_revision == selection
+                    && state.title_write_revision == title;
+                if !current {
+                    state.stale_sessions = true;
                 }
-                let current = app.update_state(|state| {
-                    state.refreshing_sessions = false;
-                    let current = state.connected()
-                        && state.session_query.revision == query_revision
-                        && state.upload_selection_revision == selection
-                        && state.title_write_revision == title;
-                    if !current {
-                        state.stale_sessions = true;
+                current
+            });
+            if current {
+                match result {
+                    Ok(page) => {
+                        app.accept_session_query_page(page);
+                        app.reconcile_hidden_sessions();
+                        app.refresh_session_facets();
+                        app.update_uploader_views();
                     }
-                    current
-                });
-                if current {
-                    match result {
-                        Ok(page) => {
-                            app.accept_session_query_page(page);
-                            app.reconcile_hidden_sessions();
-                            app.refresh_session_facets();
-                            app.update_uploader_views();
-                        }
-                        Err(error)
-                            if error.kind() == Some(ErrorKind::Busy)
-                                && app.with_state(|state| state.session_query.cursor.is_some()) =>
-                        {
-                            app.session_query_changed();
-                        }
-                        Err(error) => app.refresh_failed(&error),
+                    Err(error)
+                        if error.kind() == Some(ErrorKind::Busy)
+                            && app.with_state(|state| state.session_query.cursor.is_some()) =>
+                    {
+                        app.session_query_changed();
                     }
+                    Err(error) => app.refresh_failed(&error),
                 }
-                app.refresh_if_stale();
-            },
-        );
+            }
+            app.refresh_if_stale();
+        });
     }
 
     fn accept_session_query_page(

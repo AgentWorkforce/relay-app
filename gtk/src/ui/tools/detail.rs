@@ -3,8 +3,8 @@
 use super::presentation::{NextAction, Presentation};
 use super::provider_status::ProviderStatus;
 use super::*;
-use crate::models::CloudProviderSetup;
 use crate::models::CAPY_SETUP_COPIED;
+use crate::models::CloudProviderSetup;
 use crate::ui::widgets::{self, button, hbox, text, vbox, Dot, LabelStyle};
 use agent_relay_desktop_core::contract::tool_integrations::ToolIntegration;
 use gtk::prelude::*;
@@ -60,16 +60,11 @@ impl App {
             link.set_halign(gtk::Align::Start);
             column.append(&link);
         }
-        if tool.id == "capy"
-            && tool.state != "configured"
-            && self.with_state(|state| state.capy_prompt_copied)
-        {
+        if tool.id == "capy" && tool.state != "configured" && self.with_state(|state| state.capy_prompt_copied) {
             column.append(&text(CAPY_SETUP_COPIED, &["caption", "secondary"]));
         }
         if tool.id != "capy" && ui.setup_started.contains(&tool.id) {
-            if let Some(copied) =
-                CloudProviderSetup::for_id(&tool.id).and_then(|setup| setup.copied())
-            {
+            if let Some(copied) = CloudProviderSetup::for_id(&tool.id).and_then(|setup| setup.copied()) {
                 column.append(&text(copied, &["caption", "secondary"]).wrapped());
             }
         }
@@ -111,12 +106,10 @@ impl App {
         );
         let offered = match action {
             NextAction::Account => true,
-            NextAction::Check => self
-                .bridge()
-                .offers(agent_relay_desktop_core::contract::method::ToolsCheck::NAME),
-            NextAction::Install | NextAction::Repair | NextAction::Enable => self
-                .bridge()
-                .offers(agent_relay_desktop_core::contract::method::ToolsManage::NAME),
+            NextAction::Check => self.bridge().offers(agent_relay_desktop_core::contract::method::ToolsCheck::NAME),
+            NextAction::Install | NextAction::Repair | NextAction::Enable => {
+                self.bridge().offers(agent_relay_desktop_core::contract::method::ToolsManage::NAME)
+            }
         };
         primary.set_sensitive(!ui.busy && offered);
         Some(primary)
@@ -169,12 +162,7 @@ impl App {
         }
         popover.set_child(Some(&list));
         menu.set_popover(Some(&popover));
-        menu.set_sensitive(
-            !ui.busy
-                && self
-                    .bridge()
-                    .offers(agent_relay_desktop_core::contract::method::ToolsManage::NAME),
-        );
+        menu.set_sensitive(!ui.busy && self.bridge().offers(agent_relay_desktop_core::contract::method::ToolsManage::NAME));
         actions.append(&menu);
     }
 
@@ -214,9 +202,7 @@ impl App {
         }
         facts.append(&text(&tool.status_label, &["caption", "secondary"]));
         facts.append(&text(&tool.detail, &["settings-row-detail"]).wrapped());
-        if (tool.supported && !super::external::is_external(&tool.id))
-            || matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot")
-        {
+        if (tool.supported && !super::external::is_external(&tool.id)) || matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot") {
             let check = button(
                 if ui.checking {
                     "Checking…"
@@ -226,12 +212,7 @@ impl App {
                 &[],
                 self.on(App::check_tools),
             );
-            check.set_sensitive(
-                !ui.busy
-                    && self
-                        .bridge()
-                        .offers(agent_relay_desktop_core::contract::method::ToolsCheck::NAME),
-            );
+            check.set_sensitive(!ui.busy && self.bridge().offers(agent_relay_desktop_core::contract::method::ToolsCheck::NAME));
             let checked = hbox(8, &[]);
             checked.append(&check);
             if let Some(time) = &ui.last_checked {

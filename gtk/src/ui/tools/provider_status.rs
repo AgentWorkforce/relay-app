@@ -14,10 +14,7 @@ impl ProviderStatus {
     pub(in crate::ui) fn for_tool(tool: &ToolIntegration, health: Option<&str>) -> Self {
         // Cloud-connected providers, Amp included, are on once Agent Relay Cloud
         // reports them configured and the account is ready, selected or not.
-        if matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot" | "amp")
-            && tool.state == "configured"
-            && health == Some("ready")
-        {
+        if matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot" | "amp") && tool.state == "configured" && health == Some("ready") {
             return Self::On;
         }
         if tool.state == "external_setup"

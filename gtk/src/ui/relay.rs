@@ -87,9 +87,7 @@ impl App {
     /// this one ends.
     pub fn refresh_uploader(&self, sessions: bool) {
         if !self.with_state(|state| state.connected())
-            || !self
-                .bridge()
-                .offers(agent_relay_desktop_core::contract::method::UploaderStatus::NAME)
+            || !self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderStatus::NAME)
         {
             return;
         }
@@ -116,23 +114,20 @@ impl App {
         let current = move |app: &App| {
             app.with_state(|state| state.generation == generation && state.connected())
         };
-        self.call::<agent_relay_desktop_core::contract::method::UploaderStatus>(
-            NoParams {},
-            move |app, result| {
-                if app.with_state(|state| state.generation) != generation {
-                    return;
-                }
-                app.update_state(|state| state.refreshing_uploader = false);
-                if !current(app) {
-                    return;
-                }
-                match result {
-                    Ok(status) => app.upload_status_answered(&status),
-                    Err(error) => app.refresh_failed(&error),
-                }
-                app.refresh_if_stale();
-            },
-        );
+        self.call::<agent_relay_desktop_core::contract::method::UploaderStatus>(NoParams {}, move |app, result| {
+            if app.with_state(|state| state.generation) != generation {
+                return;
+            }
+            app.update_state(|state| state.refreshing_uploader = false);
+            if !current(app) {
+                return;
+            }
+            match result {
+                Ok(status) => app.upload_status_answered(&status),
+                Err(error) => app.refresh_failed(&error),
+            }
+            app.refresh_if_stale();
+        });
     }
 
     fn refresh_if_stale(&self) {

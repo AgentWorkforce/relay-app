@@ -78,11 +78,7 @@ impl Presentation {
                 Some(NextAction::Check),
             )
         } else if tool.state == "installed" && tool.status_label == "Connection not verified" {
-            (
-                "Connection not verified",
-                Some(tool.detail.clone()),
-                Some(NextAction::Check),
-            )
+            ("Connection not verified", Some(tool.detail.clone()), Some(NextAction::Check))
         } else if tool.state == "installed" {
             (
                 "Setup saved",
@@ -90,11 +86,7 @@ impl Presentation {
                 None,
             )
         } else if tool.state == "configured" && health == Some("ready") {
-            (
-                "Connected",
-                (tool.status_label == "Connected").then(|| tool.detail.clone()),
-                (tool.status_label == "Connected").then_some(NextAction::Check),
-            )
+            ("Connected", (tool.status_label == "Connected").then(|| tool.detail.clone()), (tool.status_label == "Connected").then_some(NextAction::Check))
         } else {
             (
                 "Needs attention",
@@ -140,14 +132,10 @@ impl Presentation {
     /// Remote connection proofs and provider-specific availability are authoritative.
     fn connection_override(tool: &ToolIntegration, health: Option<&str>) -> Option<Self> {
         if (matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot") || tool.selected)
-            && matches!(
-                tool.id.as_str(),
-                "capy" | "grok-bot" | "dot" | "conductor" | "paseo"
-            )
+            && matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot" | "conductor" | "paseo")
             && tool.state == "configured"
         {
-            let action = matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot")
-                .then_some(NextAction::Check);
+            let action = matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot").then_some(NextAction::Check);
             return Some(Self {
                 status: if health == Some("ready") {
                     "Connected"
@@ -176,9 +164,7 @@ impl Presentation {
                 label: None,
             });
         }
-        if matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot")
-            && tool.status_label != "Cloud integration"
-        {
+        if matches!(tool.id.as_str(), "capy" | "grok-bot" | "dot") && tool.status_label != "Cloud integration" {
             return Some(Self {
                 status: tool.status_label.clone(),
                 summary: Some(tool.detail.clone()),
@@ -324,28 +310,13 @@ mod tests {
         assert!(!tool.selected);
         tool.id = "grok-bot".into();
         assert_eq!(Presentation::new(&tool, Some("ready")).status, "Connected");
-        assert_eq!(
-            Presentation::new(&tool, Some("ready")).action,
-            Some(NextAction::Check)
-        );
-        assert_eq!(
-            super::super::provider_status::ProviderStatus::for_tool(&tool, Some("ready")),
-            super::super::provider_status::ProviderStatus::On
-        );
-        assert_eq!(
-            Presentation::new(&tool, Some("offline")).status,
-            "Connection not verified"
-        );
+        assert_eq!(Presentation::new(&tool, Some("ready")).action, Some(NextAction::Check));
+        assert_eq!(super::super::provider_status::ProviderStatus::for_tool(&tool, Some("ready")), super::super::provider_status::ProviderStatus::On);
+        assert_eq!(Presentation::new(&tool, Some("offline")).status, "Connection not verified");
         tool.state = "external_setup".into();
         tool.status_label = "No active Grok Bot".into();
-        assert_eq!(
-            Presentation::new(&tool, Some("ready")).status,
-            "No active Grok Bot"
-        );
-        assert_ne!(
-            super::super::provider_status::ProviderStatus::for_tool(&tool, Some("ready")),
-            super::super::provider_status::ProviderStatus::On
-        );
+        assert_eq!(Presentation::new(&tool, Some("ready")).status, "No active Grok Bot");
+        assert_ne!(super::super::provider_status::ProviderStatus::for_tool(&tool, Some("ready")), super::super::provider_status::ProviderStatus::On);
         tool.state = "configured".into();
         for host in ["conductor", "paseo"] {
             tool.id = host.into();
@@ -374,16 +345,10 @@ mod tests {
         tool.selected = false;
         tool.state = "not_installed".into();
         tool.can_install = true;
-        assert_eq!(
-            Presentation::new(&tool, Some("ready")).action,
-            Some(NextAction::Install)
-        );
+        assert_eq!(Presentation::new(&tool, Some("ready")).action, Some(NextAction::Install));
         tool.selected = true;
         tool.state = "action_required".into();
-        assert_eq!(
-            Presentation::new(&tool, Some("ready")).action,
-            Some(NextAction::Repair)
-        );
+        assert_eq!(Presentation::new(&tool, Some("ready")).action, Some(NextAction::Repair));
     }
 
     fn provider() -> ToolIntegration {
@@ -567,7 +532,10 @@ mod tests {
         tool.detail="GitHub Copilot needs the Copilot desktop app on macOS, or VS Code with the GitHub Copilot Chat extension, signed in to GitHub. VS Code: detected at /usr/bin/code. GitHub Copilot Chat extension: detected at /home/person/.vscode/extensions/github.copilot-chat-0.72.0.".into();
         let ready = Presentation::new(&tool, Some("ready"));
         assert_eq!(ready.action, Some(NextAction::Install));
-        assert_eq!(ready.action_label(), Some("Connect GitHub Copilot"));
+        assert_eq!(
+            ready.action_label(),
+            Some("Connect GitHub Copilot")
+        );
         tool.selected = true;
         tool.can_install = false;
         tool.state = "installed".into();

@@ -3,11 +3,11 @@
 //! `CallerRequestsSection` in the Mac's `SettingsView.swift`.
 
 use super::*;
+use gtk::glib;
 use agent_relay_desktop_core::contract::method::{SpawnCallersDecide, SpawnCallersList};
 use agent_relay_desktop_core::contract::service_callers::{
     CallerDecideParams, CallerListParams, CallerState, CallerSummary,
 };
-use gtk::glib;
 
 pub(crate) const TITLE: &str = "Caller requests";
 pub(crate) const DESCRIPTION: &str =

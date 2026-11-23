@@ -24,15 +24,15 @@ use crate::models::{
 };
 use crate::prefs::Preferences;
 use crate::service::UserService;
-use agent_relay_desktop_core::contract::account::SignInProvider;
 use agent_relay_desktop_core::install::InstallKind;
-use agent_relay_desktop_core::telemetry::{
-    TelemetryFailure, TelemetryOperation, TelemetryOutcome, TelemetrySurface,
-};
+use agent_relay_desktop_core::contract::account::SignInProvider;
 use agent_relay_node::relay::contract::account::SignInLink;
 use agent_relay_node::relay::contract::connection::CoreNotification;
 use agent_relay_node::relay::contract::{method, Method, NoParams};
 use agent_relay_node::relay::state::{SignInState, Status};
+use agent_relay_desktop_core::telemetry::{
+    TelemetryFailure, TelemetryOperation, TelemetryOutcome, TelemetrySurface,
+};
 pub(super) use connection::web_link;
 use gtk::{gio, glib, prelude::*};
 use gtk4 as gtk;
@@ -147,9 +147,7 @@ impl App {
             }
         });
         app.theme_changed(app.inner.styling.theme());
-        app.inner
-            .window
-            .set_title(Some(&crate::build_profile::window_title()));
+        app.inner.window.set_title(Some(&crate::build_profile::window_title()));
         app.prepare_zoom();
         app.inner.window.set_hide_on_close(true);
         app.follow(events);
@@ -792,13 +790,10 @@ impl App {
             limit: None,
             refresh: true,
         };
-        self.call::<agent_relay_desktop_core::contract::method::UploaderSessionsPreview>(
-            params,
-            |app, result| {
-                let count = result.map(|preview| preview.sessions.len()).unwrap_or(0);
-                app.update_state(|state| state.preview_count = count);
-            },
-        );
+        self.call::<agent_relay_desktop_core::contract::method::UploaderSessionsPreview>(params, |app, result| {
+            let count = result.map(|preview| preview.sessions.len()).unwrap_or(0);
+            app.update_state(|state| state.preview_count = count);
+        });
     }
 
     /// The sign-in screen drawn from what is known, asking nothing.
@@ -815,10 +810,7 @@ impl App {
         let divider = gtk::Separator::new(gtk::Orientation::Horizontal);
         divider.add_css_class("signin-divider");
         works.append(&divider);
-        let caption = text(
-            "Works with all your agents",
-            &["secondary", "signin-works-caption"],
-        );
+        let caption = text("Works with all your agents", &["secondary", "signin-works-caption"]);
         super::zoom::margins(&caption, 24, 0, 14, 0);
         works.append(&caption);
         let agents = widgets::login_agent_strip();
@@ -978,10 +970,7 @@ impl App {
             state.sign_in_error = None;
             state.sign_in_link = None;
         });
-        self.call::<agent_relay_desktop_core::contract::method::AccountSignInCancel>(
-            NoParams {},
-            |_, _| {},
-        );
+        self.call::<agent_relay_desktop_core::contract::method::AccountSignInCancel>(NoParams {}, |_, _| {});
     }
 
     // Signed in.

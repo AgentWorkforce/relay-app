@@ -44,7 +44,9 @@ fn profile() -> String {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
     };
-    let is_repository = |value: &str| matches!(value.split_once('/'), Some((owner, name)) if is_name(owner) && is_name(name) && !name.contains('/'));
+    let is_repository = |value: &str| {
+        matches!(value.split_once('/'), Some((owner, name)) if is_name(owner) && is_name(name) && !name.contains('/'))
+    };
     let prefix = read("DESKTOP_ASSET_PREFIX").unwrap_or_else(|| "AgentRelay".into());
     assert!(
         prefix == "AgentRelay"
@@ -63,10 +65,7 @@ fn profile() -> String {
     println!("cargo:rustc-env=DESKTOP_ASSET_PREFIX={prefix}");
     // The profile's opaque id is the one its asset prefix carries; the
     // default profile has none.
-    let derived = prefix
-        .strip_prefix("Desktop-")
-        .unwrap_or_default()
-        .to_owned();
+    let derived = prefix.strip_prefix("Desktop-").unwrap_or_default().to_owned();
     let profile_id = read("DESKTOP_PROFILE_ID").unwrap_or_else(|| derived.clone());
     assert!(
         profile_id == derived,

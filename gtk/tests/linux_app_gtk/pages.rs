@@ -134,15 +134,10 @@ fn cursor_messaging_and_history_share_the_upload_control(runtime: &tokio::runtim
         case.called("uploader.sessions.include")[0],
         json!({"session_keys": [key]})
     );
-    case.pump(|case| {
-        case.app.with_state(|state| {
-            state
-                .sessions
-                .iter()
-                .any(|session| session.session_id == id && session.included)
-                && state.busy_uploads.is_empty()
-        })
-    });
+    case.pump(|case| case.app.with_state(|state| {
+        state.sessions.iter().any(|session| session.session_id == id && session.included)
+            && state.busy_uploads.is_empty()
+    }));
     assert!(page.transcript.save.is_active());
 }
 
@@ -2185,41 +2180,24 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     case.pump(|_| page.transcript.refresh.is_mapped() && page.transcript.refresh.is_sensitive());
     let reads = case.called("sessions.transcript").len();
     page.transcript.refresh.emit_clicked();
-    assert!(
-        !page.transcript.refresh.is_sensitive(),
-        "Refresh starts a genuine transcript read"
-    );
+    assert!(!page.transcript.refresh.is_sensitive(), "Refresh starts a genuine transcript read");
     case.pump(|case| case.called("sessions.transcript").len() > reads);
     let refreshed = &case.called("sessions.transcript")[reads];
     assert_eq!(refreshed["source"], "claude");
     assert_eq!(refreshed["session_id"], "two");
     assert!(refreshed.get("cursor").is_none_or(Value::is_null));
     assert_eq!(refreshed["following"], false);
-    case.pump(|_| {
-        page.transcript.refresh.is_sensitive()
-            && labels(&page.transcript.messages).contains(&"Last message".into())
-    });
+    case.pump(|_| page.transcript.refresh.is_sensitive()
+        && labels(&page.transcript.messages).contains(&"Last message".into()));
     assert!(!page.transcript.retry.get_visible());
     case.settle();
     assert_session_open_action(&page.transcript.open, "claudecode", "Resume in Terminal");
     let actions = page.transcript.open.parent().unwrap();
     let open = page.transcript.open.compute_bounds(&actions).unwrap();
     let refresh = page.transcript.refresh.compute_bounds(&actions).unwrap();
-    assert_eq!(
-        open.width(),
-        actions.width() as f32,
-        "Refreshed Claude action still fills its sidebar row"
-    );
-    assert_eq!(
-        open.width(),
-        refresh.width(),
-        "Open and Refresh have the same full width after a real plan reply"
-    );
-    assert_eq!(
-        open.height(),
-        refresh.height(),
-        "Open and Refresh retain matching outer height after refresh"
-    );
+    assert_eq!(open.width(), actions.width() as f32, "Refreshed Claude action still fills its sidebar row");
+    assert_eq!(open.width(), refresh.width(), "Open and Refresh have the same full width after a real plan reply");
+    assert_eq!(open.height(), refresh.height(), "Open and Refresh retain matching outer height after refresh");
     assert_eq!(
         *case.desktop.opened.borrow(),
         vec!["cd -- '/w/web' && claude --resume 'two'"]

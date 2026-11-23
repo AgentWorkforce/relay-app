@@ -32,10 +32,7 @@ impl App {
         {
             return;
         }
-        if self
-            .bridge()
-            .offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME)
-        {
+        if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
             return;
         }
         let adjustment = page.scroller.vadjustment();
@@ -130,9 +127,8 @@ impl App {
                 let config = &view.configuration;
                 page.grouping.set(config.grouping.min(4));
                 page.sort.set(
-                    if self.bridge().offers(
-                        agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
-                    ) && config.sort.column == crate::models::LocalSessionSortColumn::Reasoning
+                    if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME)
+                        && config.sort.column == crate::models::LocalSessionSortColumn::Reasoning
                     {
                         LocalSessionSort::default()
                     } else {

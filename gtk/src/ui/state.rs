@@ -18,10 +18,9 @@ use crate::models::{
 };
 use crate::service::ServiceState;
 use crate::updates::Release;
-use agent_relay_desktop_core::contract::account::UploadSession;
-use agent_relay_desktop_core::contract::account::{SharingMode, Stage};
 use agent_relay_desktop_core::install::InstallKind;
 use agent_relay_node::relay::contract::account::SignInLink;
+use agent_relay_desktop_core::contract::account::UploadSession;
 use agent_relay_node::relay::contract::agents::{
     ArchivedAgent, LocalAgent, LocalSession, SettingsChange, SettingsValues,
 };
@@ -31,6 +30,7 @@ use agent_relay_node::relay::push::PushState;
 use agent_relay_node::relay::state::{
     AccountAction, AccountStatus, SignInState, Status, WorkspaceState, WorkspaceStatus,
 };
+use agent_relay_desktop_core::contract::account::{SharingMode, Stage};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// The window's top-level content areas, shared with macOS.
@@ -549,8 +549,7 @@ impl State {
         self.busy
             || self.status.as_ref().is_none_or(|status| {
                 status.upgrading
-                    || status.sharing_mode
-                        == agent_relay_desktop_core::contract::account::SharingMode::All
+                    || status.sharing_mode == agent_relay_desktop_core::contract::account::SharingMode::All
             })
             || self.account_state() != SignInState::SignedIn
     }
@@ -836,17 +835,12 @@ mod tests {
                 None,
             ]
         );
-        assert!(!state.can_toggle(
-            &state.local_sessions[0],
-            state.presence_of(&state.local_sessions[0])
-        ));
+        let first = &state.local_sessions[0];
+        assert!(!state.can_toggle(first, state.presence_of(first)));
         // Without a workspace, connecting one is the next step instead.
         state.snapshot.as_mut().unwrap().workspace.state = WorkspaceState::Missing;
         let first = &state.local_sessions[0];
-        assert_eq!(
-            state.not_running_reason(first, state.presence_of(first)),
-            None
-        );
+        assert_eq!(state.not_running_reason(first, state.presence_of(first)), None);
     }
 
     #[test]

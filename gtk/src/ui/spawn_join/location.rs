@@ -159,9 +159,7 @@ impl App {
             result => {
                 page.join.opening.borrow_mut().remove(&key);
                 page.open.set_sensitive(true);
-                let error = result
-                    .err()
-                    .unwrap_or_else(|| PENDING_RESUME_MESSAGE.into());
+                let error = result.err().unwrap_or_else(|| PENDING_RESUME_MESSAGE.into());
                 page.show_opening_error(&error);
                 self.render_spawn_join();
                 return;
@@ -213,10 +211,7 @@ impl App {
             });
             if let Err(error) = result {
                 if may_retry {
-                    page.join
-                        .resume_failures
-                        .borrow_mut()
-                        .insert(key.clone(), error.clone());
+                    page.join.resume_failures.borrow_mut().insert(key.clone(), error.clone());
                     if !page.join.pending_resumes.borrow().contains(&key) {
                         app.offer_default_terminal(key, error);
                     }
@@ -304,26 +299,13 @@ impl App {
         let weak = self.downgrade();
         dialog.connect_response(move |dialog, response| {
             dialog.close();
-            if response != gtk::ResponseType::Accept {
-                return;
-            }
+            if response != gtk::ResponseType::Accept { return; }
             let Some(app) = weak.upgrade() else { return };
-            if app.with_state(|state| state.generation) != generation {
-                return;
-            }
+            if app.with_state(|state| state.generation) != generation { return; }
             let Some(shell) = app.shell() else { return };
             let page = &shell.pages.sessions.transcript;
-            if page
-                .selected
-                .borrow()
-                .as_ref()
-                .map(|row| row.key())
-                .as_ref()
-                != Some(&key)
-                || page.join.pending_resumes.borrow().contains(&key)
-            {
-                return;
-            }
+            if page.selected.borrow().as_ref().map(|row| row.key()).as_ref() != Some(&key)
+                || page.join.pending_resumes.borrow().contains(&key) { return; }
             // A fresh core request must prove the previous owner remains stopped.
             app.request_session_open(None, true);
         });

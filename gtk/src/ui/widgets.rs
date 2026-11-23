@@ -512,10 +512,7 @@ fn raster_tinted(
         return found;
     }
     let data = if let Some(tint) = tint {
-        String::from_utf8_lossy(data)
-            .replace("currentColor", tint)
-            .replace("#D97757", tint)
-            .into_bytes()
+        String::from_utf8_lossy(data).replace("currentColor", tint).replace("#D97757", tint).into_bytes()
     } else {
         data.to_vec()
     };
@@ -562,20 +559,15 @@ mod login_ribbons;
 pub use login_ribbons::login_ribbons;
 
 pub fn login_agent_strip() -> gtk::Widget {
-    svg_picture(
-        "login-agent-strip",
-        include_bytes!("../../../assets/login-agents.svg"),
-        22,
-        "Claude, Codex, OpenCode, Antigravity, Copilot, Cursor, Grok and Muse",
-    )
-    .map(|picture| picture.upcast())
-    .unwrap_or_else(|| gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast())
+    svg_picture("login-agent-strip", include_bytes!("../../../assets/login-agents.svg"), 22,
+                "Claude, Codex, OpenCode, Antigravity, Copilot, Cursor, Grok and Muse")
+        .map(|picture| picture.upcast()).unwrap_or_else(|| gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast())
 }
 
 pub use art::{brand, header_brand, signin_lockup, wordmark};
 
-use art::mark_label;
 pub use art::{mark_brand, mark_file, BrandShape, MarkBrand};
+use art::mark_label;
 
 /// A harness badge: its mark in a rounded square when the app bundles one
 /// (Capy, Codex, Claude, Devin, Grok, Cursor, OpenCode, OpenAI, Muse, Pi), else its
@@ -613,22 +605,13 @@ fn harness_mark(source: &str, size: i32, inner: i32, tint: &str, class: &str) ->
         let (scale, brand) = (display_scale(), art::badge_brand(source, tint));
         let tint = match brand {
             Some(_) => Some("#ffffff"),
-            None if TEMPLATE_MARKS.contains(&mark) => {
-                Some(if tint.starts_with('#') || tint.starts_with("rgb") {
-                    tint
-                } else {
-                    color(tint)
-                })
-            }
+            None if TEMPLATE_MARKS.contains(&mark) => Some(if tint.starts_with('#') || tint.starts_with("rgb") { tint } else { color(tint) }),
             _ => None,
         };
         if let Some(texture) = raster_tinted(mark, data, inner * scale, inner * scale, tint) {
             let holder = gtk::CenterBox::new();
             add_classes(&holder, &[class]);
-            if let Some(brand) = brand {
-                holder.add_css_class(brand.class);
-                holder.add_css_class(brand.shape_class());
-            }
+            if let Some(brand) = brand { holder.add_css_class(brand.class); holder.add_css_class(brand.shape_class()); }
             holder.set_size_request(size, size);
             holder.set_halign(gtk::Align::Center);
             holder.set_valign(gtk::Align::Center);
@@ -988,25 +971,12 @@ mod tests {
 
     #[test]
     fn branded_tiles_use_the_providers_primary_colour() {
-        let brand = |background, shape, class| MarkBrand {
-            background,
-            shape,
-            class,
-        };
-        assert_eq!(
-            mark_brand("muse"),
-            Some(brand("#4091ff", BrandShape::Circle, "brand-muse"))
-        );
+        let brand = |background, shape, class| MarkBrand { background, shape, class };
+        assert_eq!(mark_brand("muse"), Some(brand("#4091ff", BrandShape::Circle, "brand-muse")));
         assert_eq!(mark_brand("muse-open"), mark_brand("muse"));
-        assert_eq!(
-            mark_brand("grok"),
-            Some(brand("#000000", BrandShape::Circle, "brand-grok"))
-        );
+        assert_eq!(mark_brand("grok"), Some(brand("#000000", BrandShape::Circle, "brand-grok")));
         assert_eq!(mark_brand("xai"), mark_brand("grok"));
-        assert_eq!(
-            mark_brand("claude"),
-            Some(brand("#d97757", BrandShape::RoundedSquare, "brand-claude"))
-        );
+        assert_eq!(mark_brand("claude"), Some(brand("#d97757", BrandShape::RoundedSquare, "brand-claude")));
         for source in ["codex", "grok-bot", "claude-code", "cursor"] {
             assert_eq!(mark_brand(source), None, "{source}");
         }

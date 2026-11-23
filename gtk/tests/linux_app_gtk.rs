@@ -15,7 +15,8 @@ use agent_relay_app::install::InstallKind;
 use agent_relay_app::models::{
     AGENT_CHANGES_TITLE, AUTO_JOIN_GENERAL_DETAIL, AUTO_JOIN_GENERAL_JOINED_DETAIL,
     AUTO_JOIN_GENERAL_TITLE, AUTO_JOIN_GENERAL_TURN_ON_HELP, DETECTED_TOOLS_DETAIL,
-    SHOW_RELAY_MESSAGES_DETAIL, SHOW_RELAY_MESSAGES_TITLE, SHOW_RELAY_MESSAGES_TURN_ON_HELP,
+    SHOW_RELAY_MESSAGES_DETAIL, SHOW_RELAY_MESSAGES_TITLE,
+    SHOW_RELAY_MESSAGES_TURN_ON_HELP,
 };
 use agent_relay_app::prefs::{Appearance, Preferences};
 use agent_relay_app::service::{ServiceStart, ServiceState, UserService};
@@ -65,21 +66,14 @@ fn assert_session_open_action(button: &gtk::Button, source: &str, title: &str) {
     assert_eq!(labels(button), vec![title.to_string()]);
     assert_eq!(button.halign(), gtk::Align::Fill);
     let child = button.child().expect("The action has a composed label");
-    assert!(
-        child.is::<gtk::Box>(),
-        "Provider and text share the real button child"
-    );
+    assert!(child.is::<gtk::Box>(), "Provider and text share the real button child");
     let mut marks = Vec::new();
     walk(&child, &mut |widget| {
         if widget.has_css_class("agent-icon") {
             marks.push(widget.clone());
         }
     });
-    assert_eq!(
-        marks.len(),
-        1,
-        "Keep one provider badge after rendering or refresh"
-    );
+    assert_eq!(marks.len(), 1, "Keep one provider badge after rendering or refresh");
     assert_eq!(marks[0].widget_name(), format!("agent-mark-{source}"));
     let mut loaded = false;
     walk(&marks[0], &mut |widget| {
@@ -87,10 +81,7 @@ fn assert_session_open_action(button: &gtk::Button, source: &str, title: &str) {
             loaded |= picture.paintable().is_some();
         }
     });
-    assert!(
-        loaded,
-        "The badge renders bundled artwork, not just a source name"
-    );
+    assert!(loaded, "The badge renders bundled artwork, not just a source name");
 }
 
 // What the fake core answers.
@@ -616,8 +607,7 @@ impl Desktop for FakeDesktop {
     }
     fn open_uri(&self, uri: &str) -> bool {
         self.opened.borrow_mut().push(uri.to_string());
-        !(self.cloud_app_open_fails.get()
-            && (uri.starts_with("capy:") || uri.starts_with("grokbot:")))
+        !(self.cloud_app_open_fails.get() && (uri.starts_with("capy:") || uri.starts_with("grokbot:")))
     }
 
     fn notify(&self, notification: &CoreNotification) {
@@ -1220,9 +1210,7 @@ fn sign_in_has_no_tool_checkbox_or_setting_writes(runtime: &tokio::runtime::Runt
     let case = Case::new(runtime);
     case.tools_found();
     assert!(case.checks().is_empty());
-    assert!(!case
-        .window_labels()
-        .contains(&DETECTED_TOOLS_DETAIL.to_string()));
+    assert!(!case.window_labels().contains(&DETECTED_TOOLS_DETAIL.to_string()));
     case.app.sign_in(false, None);
     case.pump(|case| !case.called("account.sign_in").is_empty());
     assert!(case.called("settings.set").is_empty());
@@ -1337,10 +1325,7 @@ fn signed_out_offers_google_and_microsoft_sign_in(runtime: &tokio::runtime::Runt
         let case = Case::new(runtime);
         assert!(buttons(case.app.window(), "Use another account").is_empty());
         assert_eq!(buttons(case.app.window(), "Continue with Google").len(), 1);
-        assert_eq!(
-            buttons(case.app.window(), "Continue with Microsoft").len(),
-            1
-        );
+        assert_eq!(buttons(case.app.window(), "Continue with Microsoft").len(), 1);
         assert!(case.checks().is_empty());
         buttons(case.app.window(), label)[0].emit_clicked();
         case.pump(|case| !case.called("account.sign_in").is_empty());
@@ -1373,10 +1358,8 @@ fn a_self_host_login_config_opens_the_sites_own_sign_in_page(runtime: &tokio::ru
     assert!(buttons(case.app.window(), "Continue with Microsoft").is_empty());
     let labels = case.window_labels();
     assert!(labels.iter().any(|label| label == "Example Org"));
-    assert!(labels
-        .iter()
-        .any(|label| label
-            == "Sign in with Example SSO, an email link or a password in your browser."));
+    assert!(labels.iter().any(|label| label
+        == "Sign in with Example SSO, an email link or a password in your browser."));
     buttons(case.app.window(), "Continue in browser")[0].emit_clicked();
     case.pump(|case| !case.called("account.sign_in").is_empty());
     let request = &case.called("account.sign_in")[0];
@@ -2522,15 +2505,9 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     // latest-message navigation is its own row, never over the messages.
     let shell = page.join.send.parent().unwrap();
     assert!(shell.has_css_class("chat-composer"));
-    assert_eq!(
-        shell.last_child().as_ref(),
-        Some(page.join.send.upcast_ref())
-    );
+    assert_eq!(shell.last_child().as_ref(), Some(page.join.send.upcast_ref()));
     assert_eq!(page.latest.label().as_deref(), Some("Latest message"));
-    assert_eq!(
-        page.latest.parent().as_ref(),
-        Some(page.latest_row.upcast_ref())
-    );
+    assert_eq!(page.latest.parent().as_ref(), Some(page.latest_row.upcast_ref()));
     assert!(page.latest_row.has_css_class("transcript-latest-row"));
     assert_eq!(
         page.join.entry.placeholder_text().as_deref(),
@@ -2592,10 +2569,7 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     let resume = format!("cd -- '/work/api' && claude --resume '{SESSION}'");
     case.pump(|case| case.desktop.opened.borrow().contains(&resume));
     // A background app-server owner has no ordinary GUI/TTY planner target.
-    case.answer(
-        "sessions.open_plan",
-        json!({"action":"unavailable","reason":"Background owner", "choices":[]}),
-    );
+    case.answer("sessions.open_plan", json!({"action":"unavailable","reason":"Background owner", "choices":[]}));
     let planned_before_codex = case.called("sessions.open_plan").len();
     // A spawned Codex thread opens live in Codex, never in Terminal.
     case.app.open_local_session(LocalSessionRow {
@@ -2627,10 +2601,7 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
         case.desktop.opened.borrow().last().unwrap(),
         "codex://threads/thread-9"
     );
-    assert_eq!(
-        case.called("sessions.open_plan").len(),
-        planned_before_codex
-    );
+    assert_eq!(case.called("sessions.open_plan").len(), planned_before_codex);
     case.desktop.codex_installed.set(false);
     case.app.open_local_session(LocalSessionRow {
         upload: None,
@@ -2895,12 +2866,9 @@ fn session_opening_explicit_default_retry_replans_before_dispatch(
     );
 }
 
-fn session_opening_pending_failure_requires_resolution_before_default_retry(
-    runtime: &tokio::runtime::Runtime,
-) {
+fn session_opening_pending_failure_requires_resolution_before_default_retry(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
-    *case.desktop.session_resume_error.borrow_mut() =
-        Some("Launch acknowledgement timed out".into());
+    *case.desktop.session_resume_error.borrow_mut() = Some("Launch acknowledgement timed out".into());
     case.answer("sessions.open_plan", Answer::with(|params| async move {
         if params["use_default_terminal"] == true {
             Ok(json!({"action":"unavailable","reason":"The session now has an owner.","choices":[]}))
@@ -2909,113 +2877,53 @@ fn session_opening_pending_failure_requires_resolution_before_default_retry(
         }
     }));
     case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
-            upload: Some(
-                serde_json::from_value(upload_row(
-                    "claude",
-                    "one",
-                    "Session",
-                    "/w/api",
-                    false,
-                    "not_shared",
-                ))
-                .unwrap(),
-            ),
-            relay: None,
-        });
+    case.app.open_local_session(agent_relay_app::models::LocalSessionRow {
+        upload: Some(serde_json::from_value(upload_row("claude","one","Session","/w/api",false,"not_shared")).unwrap()),
+        relay: None,
+    });
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions.transcript;
     page.open.emit_clicked();
-    case.pump(|_| {
-        labels(&page.root)
-            .iter()
-            .any(|label| label.contains("Launch acknowledgement timed out"))
-    });
+    case.pump(|_| labels(&page.root).iter().any(|label| label.contains("Launch acknowledgement timed out")));
     assert_eq!(case.desktop.session_plans.borrow().len(), 1);
     page.open.emit_clicked();
-    case.pump(|_| {
-        labels(&page.root)
-            .iter()
-            .any(|label| label == agent_relay_app::models::PENDING_RESUME_MESSAGE)
-    });
+    case.pump(|_| labels(&page.root).iter().any(|label| label == agent_relay_app::models::PENDING_RESUME_MESSAGE));
     case.settle();
     assert_eq!(case.desktop.session_plans.borrow().len(), 1);
-    let dialog_named = |title: &str| {
-        gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|window| window.downcast::<gtk::MessageDialog>().ok())
-            .find(|dialog| dialog.is_visible() && dialog.text().as_deref() == Some(title))
-    };
+    let dialog_named = |title: &str| gtk::Window::list_toplevels().into_iter()
+        .filter_map(|window| window.downcast::<gtk::MessageDialog>().ok())
+        .find(|dialog| dialog.is_visible() && dialog.text().as_deref() == Some(title));
     assert!(dialog_named("The original application couldn’t resume this session").is_none());
-    buttons(&page.root, "Resolve earlier launch…")[0].emit_clicked();
+    buttons(&page.root,"Resolve earlier launch…")[0].emit_clicked();
     case.pump(|_| dialog_named("Did you close or stop the earlier launch?").is_some());
-    dialog_named("Did you close or stop the earlier launch?")
-        .unwrap()
-        .response(gtk::ResponseType::Accept);
+    dialog_named("Did you close or stop the earlier launch?").unwrap().response(gtk::ResponseType::Accept);
     case.pump(|_| dialog_named("The original application couldn’t resume this session").is_some());
     assert_eq!(case.desktop.session_plans.borrow().len(), 1);
-    dialog_named("The original application couldn’t resume this session")
-        .unwrap()
-        .response(gtk::ResponseType::Accept);
-    case.pump(|case| {
-        case.called("sessions.open_plan")
-            .iter()
-            .any(|params| params["use_default_terminal"] == true)
-    });
-    case.pump(|_| {
-        labels(&page.root)
-            .iter()
-            .any(|label| label.contains("state changed"))
-    });
-    assert_eq!(
-        case.desktop.session_plans.borrow().len(),
-        1,
-        "Fresh ownership prevents the explicitly requested replacement"
-    );
+    dialog_named("The original application couldn’t resume this session").unwrap().response(gtk::ResponseType::Accept);
+    case.pump(|case| case.called("sessions.open_plan").iter().any(|params|params["use_default_terminal"]==true));
+    case.pump(|_| labels(&page.root).iter().any(|label|label.contains("state changed")));
+    assert_eq!(case.desktop.session_plans.borrow().len(), 1, "Fresh ownership prevents the explicitly requested replacement");
 }
 
-fn session_opening_reloads_pending_launches_and_blocks_corrupt_storage(
-    runtime: &tokio::runtime::Runtime,
-) {
+fn session_opening_reloads_pending_launches_and_blocks_corrupt_storage(runtime: &tokio::runtime::Runtime) {
     use agent_relay_app::models::{LocalSessionRow, PendingSessionResumes};
     for corrupt in [false, true] {
         let row = LocalSessionRow {
-            upload: Some(
-                serde_json::from_value(upload_row(
-                    "claude",
-                    "one",
-                    "Session",
-                    "/w/api",
-                    false,
-                    "not_shared",
-                ))
-                .unwrap(),
-            ),
+            upload: Some(serde_json::from_value(upload_row("claude","one","Session","/w/api",false,"not_shared")).unwrap()),
             relay: None,
         };
         let key = row.key();
-        let case = Case::seeded(
-            runtime,
-            |_| {},
-            Arc::new(FakeService::default()),
-            |prefs| {
-                if corrupt {
-                    std::fs::write(
-                        prefs.path().with_file_name("pending-session-resumes.json"),
-                        "{broken",
-                    )
-                    .unwrap();
-                } else {
-                    // The previous desktop reserved this launch, then exited while
-                    // its shell was still starting. Drop all in-memory state.
-                    let mut previous = PendingSessionResumes::load(prefs.path());
-                    let plan =
-                        serde_json::from_value(json!({"action":"resume","choices":[]})).unwrap();
-                    assert!(previous.begin(&key, &plan).unwrap());
-                }
-            },
-        );
+        let case = Case::seeded(runtime, |_| {}, Arc::new(FakeService::default()), |prefs| {
+            if corrupt {
+                std::fs::write(prefs.path().with_file_name("pending-session-resumes.json"), "{broken").unwrap();
+            } else {
+                // The previous desktop reserved this launch, then exited while
+                // its shell was still starting. Drop all in-memory state.
+                let mut previous = PendingSessionResumes::load(prefs.path());
+                let plan = serde_json::from_value(json!({"action":"resume","choices":[]})).unwrap();
+                assert!(previous.begin(&key, &plan).unwrap());
+            }
+        });
         case.sign_in();
         case.app.open_local_session(row);
         let shell = case.app.shell().unwrap();
@@ -3023,19 +2931,10 @@ fn session_opening_reloads_pending_launches_and_blocks_corrupt_storage(
         page.open.emit_clicked();
         case.pump(|case| !case.called("sessions.open_plan").is_empty());
         case.pump(|_| page.open.is_sensitive());
-        assert!(
-            case.desktop.session_plans.borrow().is_empty(),
-            "No native resume after restart/corrupt storage"
-        );
+        assert!(case.desktop.session_plans.borrow().is_empty(), "No native resume after restart/corrupt storage");
         assert!(case.desktop.opened.borrow().is_empty());
-        let message = if corrupt {
-            "Resume is blocked."
-        } else {
-            "A resume request was already sent."
-        };
-        assert!(labels(&page.root)
-            .iter()
-            .any(|label| label.contains(message)));
+        let message = if corrupt { "Resume is blocked." } else { "A resume request was already sent." };
+        assert!(labels(&page.root).iter().any(|label|label.contains(message)));
     }
 }
 
@@ -3555,25 +3454,12 @@ fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runti
         assert!(shown.contains(&line.to_string()), "{line} in {shown:?}");
     }
     let with_help = |help: &str| {
-        buttons(
-            case.app.window(),
-            if help == QUESTION_ESCALATION_TURN_ON_HELP {
-                "Turn On"
-            } else {
-                "Turn Off"
-            },
-        )
-        .into_iter()
-        .find(|button| button.tooltip_text().as_deref() == Some(help))
+        buttons(case.app.window(), if help == QUESTION_ESCALATION_TURN_ON_HELP { "Turn On" } else { "Turn Off" })
+            .into_iter()
+            .find(|button| button.tooltip_text().as_deref() == Some(help))
     };
-    assert!(
-        with_help(QUESTION_ESCALATION_TURN_ON_HELP).is_none(),
-        "an older core offers no switch"
-    );
-    assert!(
-        with_help(QUESTION_ESCALATION_TURN_OFF_HELP).is_none(),
-        "an older core offers no switch"
-    );
+    assert!(with_help(QUESTION_ESCALATION_TURN_ON_HELP).is_none(), "an older core offers no switch");
+    assert!(with_help(QUESTION_ESCALATION_TURN_OFF_HELP).is_none(), "an older core offers no switch");
     // A core that reads an unset value as on says so; the app shows it as on.
     let mut values = settings();
     values["question_escalation"] = json!("on");
@@ -3586,31 +3472,16 @@ fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runti
             .contains(&"Works for Claude Code sessions.".to_string())
     });
     let shown = case.settings_labels();
-    assert!(
-        shown.contains(&"Questions go to lead.".to_string()),
-        "{shown:?}"
-    );
+    assert!(shown.contains(&"Questions go to lead.".to_string()), "{shown:?}");
     let mut status_lines = None;
-    walk(
-        case.app.shell().unwrap().settings.column.upcast_ref(),
-        &mut |widget| {
-            if widget.widget_name() == "question-escalation-status" {
-                status_lines = widget
-                    .downcast_ref::<gtk::Label>()
-                    .map(|label| label.lines());
-            }
-        },
-    );
-    assert_eq!(
-        status_lines,
-        Some(4),
-        "the core's status text is capped at four lines"
-    );
+    walk(case.app.shell().unwrap().settings.column.upcast_ref(), &mut |widget| {
+        if widget.widget_name() == "question-escalation-status" {
+            status_lines = widget.downcast_ref::<gtk::Label>().map(|label| label.lines());
+        }
+    });
+    assert_eq!(status_lines, Some(4), "the core's status text is capped at four lines");
     assert!(!shown.contains(&QUESTION_ESCALATION_UNAVAILABLE.to_string()));
-    assert!(
-        case.called("settings.set").is_empty(),
-        "showing the row never writes it"
-    );
+    assert!(case.called("settings.set").is_empty(), "showing the row never writes it");
     with_help(QUESTION_ESCALATION_TURN_OFF_HELP)
         .expect("the question escalation row has Turn Off while on")
         .emit_clicked();
@@ -3639,29 +3510,22 @@ fn question_escalation_shows_the_core_value_and_turns_off(runtime: &tokio::runti
         .emit_clicked();
     let row_labels = |name: &str| -> Vec<String> {
         let mut found = Vec::new();
-        walk(
-            case.app.shell().unwrap().settings.column.upcast_ref(),
-            &mut |widget| {
-                if widget.widget_name() == name {
-                    found.extend(labels(widget));
-                }
-            },
-        );
+        walk(case.app.shell().unwrap().settings.column.upcast_ref(), &mut |widget| {
+            if widget.widget_name() == name {
+                found.extend(labels(widget));
+            }
+        });
         found
     };
     // Widget names from `settings_page::hook_rows` and `general`.
     case.pump(|_| row_labels("question-escalation").contains(&FAILED.to_string()));
     assert!(!row_labels("claude-session-prompt").contains(&FAILED.to_string()));
     case.app.with_state(|state| {
-        assert_eq!(
-            state.hook_errors.question_escalation.as_deref(),
-            Some(FAILED)
-        );
+        assert_eq!(state.hook_errors.question_escalation.as_deref(), Some(FAILED));
         assert_eq!(state.hook_errors.claude_session, None);
         assert_eq!(state.settings_error, None);
     });
-    let in_row: Vec<String> = case
-        .settings_labels()
+    let in_row: Vec<String> = case.settings_labels()
         .into_iter()
         .filter(|label| label == FAILED)
         .collect();
@@ -4605,9 +4469,9 @@ fn relay_settings_deliver_directly(runtime: &tokio::runtime::Runtime) {
         json!({"claude_session_hook": true})
     );
     case.settle();
-    assert!(case
-        .settings_labels()
-        .contains(&agent_relay_app::models::CLAUDE_SESSION_HOOK_ON.to_string()));
+    assert!(case.settings_labels().contains(
+        &agent_relay_app::models::CLAUDE_SESSION_HOOK_ON.to_string()
+    ));
     tools::open_session_provider(&case, "devin");
     assert!(case.settings_labels().contains(&"Devin sessions".into()));
     case.app.set_setting(
@@ -4636,15 +4500,9 @@ fn relay_settings_deliver_directly(runtime: &tokio::runtime::Runtime) {
         &"Agent Relay's hooks are in ~/.config/devin/config.json. Messages reach a Devin session mid-turn and when its turn ends. Start Devin sessions that were open before it was on again.".to_string()
     ));
     tools::open_session_provider(&case, "cursor");
-    assert!(case
-        .settings_labels()
-        .contains(&agent_relay_app::models::CURSOR_HOOKS_TITLE.into()));
-    assert!(case
-        .settings_labels()
-        .contains(&agent_relay_app::models::CURSOR_HOOKS_OFF_DETAIL.into()));
-    assert!(case
-        .settings_labels()
-        .contains(&agent_relay_app::models::CURSOR_HOOKS_LOCAL_ONLY_NOTE.into()));
+    assert!(case.settings_labels().contains(&agent_relay_app::models::CURSOR_HOOKS_TITLE.into()));
+    assert!(case.settings_labels().contains(&agent_relay_app::models::CURSOR_HOOKS_OFF_DETAIL.into()));
+    assert!(case.settings_labels().contains(&agent_relay_app::models::CURSOR_HOOKS_LOCAL_ONLY_NOTE.into()));
     case.app.set_setting(
         SettingsChange {
             cursor_direct_delivery: Some(true),
@@ -4827,10 +4685,7 @@ fn a_failed_sharing_preview_shows_and_only_an_older_core_gets_the_usual_question
     // A core without the preview gets the usual question.
     case.core.answer(
         "uploader.sharing.preview",
-        Answer::fail(
-            ErrorKind::MethodNotFound,
-            "No method uploader.sharing.preview.",
-        ),
+        Answer::fail(ErrorKind::MethodNotFound, "No method uploader.sharing.preview."),
     );
     case.app.change_sharing(SharingMode::New);
     case.pump(|case| !case.called("uploader.sharing.set").is_empty());
@@ -5224,8 +5079,7 @@ fn not_connected_within(seconds: u64) -> String {
 fn a_link_while_the_core_stays_down_gives_up_after_the_deadline(runtime: &tokio::runtime::Runtime) {
     let mut case = Case::new(runtime);
     case.sign_in();
-    case.app
-        .update_state(|state| state.startup_timeout = Duration::from_secs(1));
+    case.app.update_state(|state| state.startup_timeout = Duration::from_secs(1));
     runtime.block_on(case.core.stop());
     case.pump(|case| !case.app.with_state(|state| state.core_connected));
     case.app.window().hide();
@@ -5242,9 +5096,7 @@ fn a_link_while_the_core_stays_down_gives_up_after_the_deadline(runtime: &tokio:
     // app says it is still starting.
     case.pump(|case| case.app.with_state(|state| state.pending_links.is_empty()));
     assert_eq!(
-        case.app
-            .with_state(|state| state.page_error.clone())
-            .as_deref(),
+        case.app.with_state(|state| state.page_error.clone()).as_deref(),
         Some(STILL_STARTING)
     );
     let cause = not_connected_within(1);
@@ -5302,10 +5154,7 @@ fn a_link_the_core_cannot_answer_says_it_is_still_starting(runtime: &tokio::runt
     case.sign_in();
     // A slow runner can leave >500 ms between retries of the same bridge
     // call. Do not infer separate app attempts from those timing gaps.
-    case.answer(
-        "links.parse",
-        fail(ErrorKind::ShuttingDown, "Agent Relay is shutting down."),
-    );
+    case.answer("links.parse", fail(ErrorKind::ShuttingDown, "Agent Relay is shutting down."));
     case.app.open_link(CONNECT_LINK);
     // The bridge tries again for 5 s and gives up reconnecting; the link
     // is held for its one more try.
@@ -5319,9 +5168,7 @@ fn a_link_the_core_cannot_answer_says_it_is_still_starting(runtime: &tokio::runt
     case.pump(|case| case.app.with_state(|state| state.page_error.is_some()));
     assert!(case.called("links.parse").len() > first_attempt_calls);
     assert_eq!(
-        case.app
-            .with_state(|state| state.page_error.clone())
-            .unwrap(),
+        case.app.with_state(|state| state.page_error.clone()).unwrap(),
         STILL_STARTING
     );
     assert!(case.app.with_state(|state| state.pending_links.is_empty()));
@@ -5332,9 +5179,7 @@ fn a_link_the_core_cannot_answer_says_it_is_still_starting(runtime: &tokio::runt
     assert_eq!(failed[0]["failure"], "unexpected");
     let cause = "Agent Relay is reconnecting to its background service. Try again in a moment.";
     assert_eq!(
-        case.app
-            .with_state(|state| state.link_error.clone())
-            .as_deref(),
+        case.app.with_state(|state| state.link_error.clone()).as_deref(),
         Some(cause)
     );
     // The cause is for Diagnostics only; the page error says what is shown.
@@ -5354,9 +5199,7 @@ fn a_refused_link_is_an_invalid_connection(runtime: &tokio::runtime::Runtime) {
     case.app.open_link(CONNECT_LINK);
     case.pump(|case| case.app.with_state(|state| state.page_error.is_some()));
     assert_eq!(
-        case.app
-            .with_state(|state| state.page_error.clone())
-            .unwrap(),
+        case.app.with_state(|state| state.page_error.clone()).unwrap(),
         refused
     );
     // A refusal is not tried again.
@@ -5442,9 +5285,7 @@ fn a_held_link_is_tried_again_while_the_core_stays_connected(runtime: &tokio::ru
         case.app.with_state(|state| state.page_error.is_some())
     });
     assert_eq!(
-        case.app
-            .with_state(|state| state.page_error.clone())
-            .unwrap(),
+        case.app.with_state(|state| state.page_error.clone()).unwrap(),
         STILL_STARTING
     );
     assert!(case.app.with_state(|state| state.pending_links.is_empty()));
@@ -6221,14 +6062,8 @@ const TESTS: &[(&str, Test)] = &[
         "session_opening_explicit_default_retry_replans_before_dispatch",
         session_opening_explicit_default_retry_replans_before_dispatch,
     ),
-    (
-        "session_opening_pending_failure_requires_resolution_before_default_retry",
-        session_opening_pending_failure_requires_resolution_before_default_retry,
-    ),
-    (
-        "session_opening_reloads_pending_launches_and_blocks_corrupt_storage",
-        session_opening_reloads_pending_launches_and_blocks_corrupt_storage,
-    ),
+    ("session_opening_pending_failure_requires_resolution_before_default_retry", session_opening_pending_failure_requires_resolution_before_default_retry),
+    ("session_opening_reloads_pending_launches_and_blocks_corrupt_storage", session_opening_reloads_pending_launches_and_blocks_corrupt_storage),
     (
         "session_opening_multiple_owners_requires_an_explicit_choice",
         session_opening_multiple_owners_requires_an_explicit_choice,

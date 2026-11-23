@@ -1155,7 +1155,8 @@ fn other_hides_keep_an_old_cursor_hide_in_its_old_form(runtime: &tokio::runtime:
         Some(json!(["codex:other", "cursor-cli:x"]))
     );
     assert!(case.app.session_hidden("cursor:x"));
-    case.app.set_sessions_hidden(vec!["cursor:x".into()], false);
+    case.app
+        .set_sessions_hidden(vec!["cursor:x".into()], false);
     assert_eq!(saved_hidden(&case), Some(json!(["codex:other"])));
     assert!(case.called("uploader.sessions.exclude").is_empty());
 }

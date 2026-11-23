@@ -327,9 +327,11 @@ fn the_updater_installs_the_packaged_tarball() {
     );
     let unit = fs::read_to_string(unit).unwrap();
     assert!(
-        unit.lines().any(
-            |line| line == format!("ExecStart={} serve --headless", tree.join(PROBE).display())
-        ),
+        unit.lines().any(|line| line
+            == format!(
+                "ExecStart={} serve --headless",
+                tree.join(PROBE).display()
+            )),
         "{unit}"
     );
     let entry =

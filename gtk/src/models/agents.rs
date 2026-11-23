@@ -175,22 +175,10 @@ mod tests {
         assert_eq!(Presence::Leaving.header_badge(), None);
         // The tooltips match the Mac's `RelayPresence.detail` word for word.
         for (presence, detail) in [
-            (
-                Presence::Off,
-                "Turn on to make this session reachable on the relay.",
-            ),
-            (
-                Presence::Online,
-                "Connected to the relay. Check each message’s delivery status.",
-            ),
-            (
-                Presence::Connecting,
-                "Connecting to the relay. Messages wait for delivery.",
-            ),
-            (
-                Presence::Offline,
-                "The session isn't running. Messages wait until it is.",
-            ),
+            (Presence::Off, "Turn on to make this session reachable on the relay."),
+            (Presence::Online, "Connected to the relay. Check each message’s delivery status."),
+            (Presence::Connecting, "Connecting to the relay. Messages wait for delivery."),
+            (Presence::Offline, "The session isn't running. Messages wait until it is."),
             (Presence::Joining, "Registering a name on the relay."),
             (Presence::Leaving, "Releasing its name on the relay."),
         ] {

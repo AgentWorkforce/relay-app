@@ -64,11 +64,7 @@ impl App {
         outcome: TelemetryOutcome,
         failure: Option<TelemetryFailure>,
     ) {
-        if !self
-            .inner
-            .bridge
-            .offers(agent_relay_desktop_core::contract::method::TelemetryRecord::NAME)
-        {
+        if !self.inner.bridge.offers(agent_relay_desktop_core::contract::method::TelemetryRecord::NAME) {
             return;
         }
         let mut event = TelemetryEvent::new(operation, outcome);
@@ -84,11 +80,7 @@ impl App {
         outcome: TelemetryOutcome,
         surface: TelemetrySurface,
     ) {
-        if self
-            .inner
-            .bridge
-            .offers(agent_relay_desktop_core::contract::method::TelemetryRecord::NAME)
-        {
+        if self.inner.bridge.offers(agent_relay_desktop_core::contract::method::TelemetryRecord::NAME) {
             self.call::<agent_relay_desktop_core::contract::method::TelemetryRecord>(
                 TelemetryEvent::new(operation, outcome).surface(surface),
                 |_, _| {},

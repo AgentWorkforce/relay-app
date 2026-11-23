@@ -16,15 +16,7 @@ const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 const DOCUMENTS: [&str; 6] = ["log", "txt", "json", "jsonl", "md", "csv"];
 /// Schemes handed to Windows. Others (`ms-msdt:` and the like run programs)
 /// are not opened from the app.
-const SCHEMES: [&str; 7] = [
-    "http",
-    "https",
-    "mailto",
-    "codex",
-    "agentrelay",
-    "capy",
-    "grokbot",
-];
+const SCHEMES: [&str; 7] = ["http", "https", "mailto", "codex", "agentrelay", "capy", "grokbot"];
 
 /// A clicked notification: its link, else `None` for the window.
 pub type Activations = mpsc::UnboundedSender<Option<String>>;
@@ -61,26 +53,18 @@ fn shell_open(file: String, parameters: Option<String>, fallback: Option<String>
         .spawn(move || {
             use windows_sys::Win32::UI::Shell::ShellExecuteW;
             use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-            for (file, parameters) in
-                std::iter::once((file, parameters)).chain(fallback.map(|link| (link, None)))
-            {
+            for (file, parameters) in std::iter::once((file, parameters))
+                .chain(fallback.map(|link| (link, None))) {
                 let (verb, file) = (wide("open"), wide(&file));
                 let parameters = parameters.as_deref().map(wide);
                 // SAFETY: NUL-terminated UTF-16 strings outlive the call.
                 // Values above 32 mean the shell accepted the handoff.
                 let result = unsafe {
-                    ShellExecuteW(
-                        std::ptr::null_mut(),
-                        verb.as_ptr(),
-                        file.as_ptr(),
+                    ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(),
                         parameters.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
-                        std::ptr::null(),
-                        SW_SHOWNORMAL,
-                    )
+                        std::ptr::null(), SW_SHOWNORMAL)
                 };
-                if result as isize > 32 {
-                    break;
-                }
+                if result as isize > 32 { break; }
             }
         })
         .is_ok()
@@ -315,10 +299,7 @@ mod tests {
 
     #[test]
     fn only_links_documents_and_folders_open() {
-        for link in [
-            "capy://app/new?prompt=Set%20me%20up",
-            "grokbot://app/v1/prompt?text=Set%20me%20up",
-        ] {
+        for link in ["capy://app/new?prompt=Set%20me%20up", "grokbot://app/v1/prompt?text=Set%20me%20up"] {
             assert_eq!(opening(link), Opening::Link(link.into()));
         }
         assert_eq!(

@@ -17,7 +17,10 @@ async fn main() -> ExitCode {
         .iter()
         .position(|argument| argument == "--socket")
         .and_then(|index| arguments.get(index + 1));
-    let (true, Some(socket)) = (arguments.starts_with(&["serve".into()]), socket) else {
+    let (true, Some(socket)) = (
+        arguments.starts_with(&["serve".into()]),
+        socket,
+    ) else {
         eprintln!("usage: agent-relay-fake-core serve --socket PATH [--exit-on-stdin-eof]");
         return ExitCode::from(2);
     };

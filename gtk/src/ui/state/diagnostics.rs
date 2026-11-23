@@ -21,8 +21,7 @@ impl State {
             self.status
                 .as_ref()
                 .filter(|status| {
-                    status.stage
-                        == agent_relay_desktop_core::contract::account::Stage::NeedsAttention
+                    status.stage == agent_relay_desktop_core::contract::account::Stage::NeedsAttention
                 })
                 .map(|status| {
                     status

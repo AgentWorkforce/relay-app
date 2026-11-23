@@ -58,12 +58,7 @@ pub struct SpawnJoin {
     pub(super) ending: RefCell<HashSet<String>>,
     pub(super) opening: RefCell<HashSet<String>>,
     /// Last verified current-row decision, for wording only. Every Open replans.
-    pub(super) open_plan: RefCell<
-        Option<(
-            String,
-            agent_relay_desktop_core::session_locations::SessionOpenPlan,
-        )>,
-    >,
+    pub(super) open_plan: RefCell<Option<(String, agent_relay_desktop_core::session_locations::SessionOpenPlan)>>,
     pub(super) pending_resumes: RefCell<PendingSessionResumes>,
     pub(super) resume_failures: RefCell<HashMap<String, String>>,
     pub(super) pending_resume_note: gtk::Label,
@@ -404,22 +399,13 @@ impl App {
         let listed = self.listed_session(&row);
         let opening = SessionOpening::for_session(&row, session.as_ref(), listed.as_ref());
         let spawned_plan = SessionOpening::spawned_live_plan(&row, session.as_ref());
-        let can_open =
-            SessionOpening::may_request_plan(&row, session.as_ref()) || spawned_plan.is_some();
+        let can_open = SessionOpening::may_request_plan(&row, session.as_ref()) || spawned_plan.is_some();
         page.open.set_visible(can_open);
         page.open
             .set_sensitive(!page.join.opening.borrow().contains(&row.key()));
         if can_open {
-            let title = super::session_open::title_for(
-                &row.key(),
-                spawned_plan.as_ref(),
-                &page.join.open_plan.borrow(),
-            );
-            page.open
-                .set_child(Some(&super::session_open::open_session_label(
-                    &row.icon_source(),
-                    &title,
-                )));
+            let title = super::session_open::title_for(&row.key(), spawned_plan.as_ref(), &page.join.open_plan.borrow());
+            page.open.set_child(Some(&super::session_open::open_session_label(&row.icon_source(), &title)));
             page.open.set_tooltip_text(Some(&title));
             widgets::name(&page.open, &title);
         }

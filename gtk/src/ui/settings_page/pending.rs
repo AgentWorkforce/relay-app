@@ -157,39 +157,38 @@ impl App {
             self.render_settings();
             return;
         };
-        let started = self
-            .uploader_command::<agent_relay_desktop_core::contract::method::UploaderSharingSet>(
-                SharingParams {
-                    mode,
-                    replay_confirmed,
-                },
-                "Changing the upload policy…",
-                move |app, error| {
-                    let again = app.update_state(|state| match error {
-                        Some(error) => {
-                            // A later choice still gets its turn; a failed final
-                            // choice falls back to the confirmed policy.
-                            if state.sharing_mode_wanted.finish(token) {
-                                state.settings_error = Some(error.message);
-                                false
-                            } else {
-                                true
-                            }
+        let started = self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderSharingSet>(
+            SharingParams {
+                mode,
+                replay_confirmed,
+            },
+            "Changing the upload policy…",
+            move |app, error| {
+                let again = app.update_state(|state| match error {
+                    Some(error) => {
+                        // A later choice still gets its turn; a failed final
+                        // choice falls back to the confirmed policy.
+                        if state.sharing_mode_wanted.finish(token) {
+                            state.settings_error = Some(error.message);
+                            false
+                        } else {
+                            true
                         }
-                        None => {
-                            if let Some(status) = state.status.as_mut() {
-                                status.sharing_mode = mode;
-                            }
-                            !state.sharing_mode_wanted.finish(token)
-                        }
-                    });
-                    if again {
-                        app.drive_sharing();
-                    } else {
-                        app.render_settings();
                     }
-                },
-            );
+                    None => {
+                        if let Some(status) = state.status.as_mut() {
+                            status.sharing_mode = mode;
+                        }
+                        !state.sharing_mode_wanted.finish(token)
+                    }
+                });
+                if again {
+                    app.drive_sharing();
+                } else {
+                    app.render_settings();
+                }
+            },
+        );
         if !started {
             self.update_state(|state| {
                 state.sharing_mode_wanted.clear();

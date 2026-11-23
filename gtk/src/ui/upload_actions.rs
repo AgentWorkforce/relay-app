@@ -69,18 +69,16 @@ impl App {
             app.render_stages();
         };
         let started = match action {
-            StageAction::Compact => self
-                .uploader_command::<agent_relay_desktop_core::contract::method::UploaderCompact>(
-                    NoParams {},
-                    "Compacting the upload journal…",
-                    finished,
-                ),
-            StageAction::Retry => self
-                .uploader_command::<agent_relay_desktop_core::contract::method::UploaderRetry>(
-                    NoParams {},
-                    "Retrying uploads…",
-                    finished,
-                ),
+            StageAction::Compact => self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderCompact>(
+                NoParams {},
+                "Compacting the upload journal…",
+                finished,
+            ),
+            StageAction::Retry => self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderRetry>(
+                NoParams {},
+                "Retrying uploads…",
+                finished,
+            ),
         };
         if !started {
             self.update_state(|state| {

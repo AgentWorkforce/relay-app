@@ -103,10 +103,7 @@ impl App {
             state.openclaw.tools != before
         });
         self.poll_openclaw_tools();
-        if changed
-            && self.page() == Page::Settings(Pane::Tools)
-            && self.with_state(|state| state.tools.provider_id.as_deref() == Some("openclaw"))
-        {
+        if changed && self.page() == Page::Settings(Pane::Tools) && self.with_state(|state| state.tools.provider_id.as_deref() == Some("openclaw")) {
             self.render_settings();
         }
     }
@@ -128,8 +125,7 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            let shown = app.page() == Page::Settings(Pane::Tools)
-                && app.with_state(|state| state.tools.provider_id.as_deref() == Some("openclaw"));
+            let shown = app.page() == Page::Settings(Pane::Tools) && app.with_state(|state| state.tools.provider_id.as_deref() == Some("openclaw"));
             app.update_state(|state| {
                 state.openclaw.tools.polling = false;
                 if !shown {

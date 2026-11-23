@@ -58,9 +58,7 @@ impl App {
         if let Some(shell) = self.shell() {
             shell.pages.sessions.grouping.set(config.grouping.min(4));
             shell.pages.sessions.sort.set(
-                if self
-                    .bridge()
-                    .offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME)
+                if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME)
                     && config.sort.column == crate::models::LocalSessionSortColumn::Reasoning
                 {
                     crate::models::LocalSessionSort::default()

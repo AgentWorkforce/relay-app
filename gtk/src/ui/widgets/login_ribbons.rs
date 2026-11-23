@@ -22,11 +22,7 @@ pub fn login_ribbons() -> gtk::Widget {
         start.set(Some(since));
         let enabled = area.settings().is_gtk_enable_animations();
         if (enabled && now - last.get() >= 33_333) || last_enabled.get() != Some(enabled) {
-            elapsed.set(if enabled {
-                14.0 + (now - since) as f64 / 1_000_000.0
-            } else {
-                14.0
-            });
+            elapsed.set(if enabled { 14.0 + (now - since) as f64 / 1_000_000.0 } else { 14.0 });
             area.queue_draw();
             last.set(now);
         }
@@ -42,8 +38,7 @@ fn ribbon(x: f64, index: usize, aspect: f64, time: f64) -> f64 {
     let wave = 0.07 * (x * aspect * 1.7 + time * 0.22 + fi * 1.3).sin()
         + 0.04 * (x * aspect * 3.3 - time * 0.17 + fi * 2.1).sin()
         + 0.05 * (noise(x * aspect * 1.2 + fi * 7.0, time * 0.08) - 0.5);
-    (0.12 + fi * 0.095) * (1.0 - converge * 0.94)
-        + 0.5 * converge * 0.94
+    (0.12 + fi * 0.095) * (1.0 - converge * 0.94) + 0.5 * converge * 0.94
         + wave * (1.0 - 0.9 * converge)
 }
 
@@ -61,14 +56,7 @@ fn noise(x: f64, y: f64) -> f64 {
 fn draw(context: &cairo::Context, width: f64, height: f64, time: f64) {
     context.set_source_rgb(0.012, 0.027, 0.05);
     let _ = context.paint();
-    let haze = cairo::RadialGradient::new(
-        width,
-        height / 2.0,
-        0.0,
-        width,
-        height / 2.0,
-        width.max(height),
-    );
+    let haze = cairo::RadialGradient::new(width, height / 2.0, 0.0, width, height / 2.0, width.max(height));
     haze.add_color_stop_rgba(0.0, 0.08, 0.19, 0.29, 1.0);
     haze.add_color_stop_rgba(1.0, 0.08, 0.19, 0.29, 0.0);
     let _ = context.set_source(&haze);
@@ -77,11 +65,8 @@ fn draw(context: &cairo::Context, width: f64, height: f64, time: f64) {
     for index in 0..9 {
         let fi = index as f64;
         let mix = (fi * 0.37).fract();
-        let (r, g, b) = if [2, 6].contains(&index) {
-            (0.86, 0.55, 0.42)
-        } else {
-            (0.20 - 0.18 * mix, 0.50 + 0.30 * mix, 0.78 + 0.18 * mix)
-        };
+        let (r, g, b) = if [2, 6].contains(&index) { (0.86, 0.55, 0.42) }
+            else { (0.20 - 0.18 * mix, 0.50 + 0.30 * mix, 0.78 + 0.18 * mix) };
         let point = |x| (x * width, (1.0 - ribbon(x, index, aspect, time)) * height);
         for (line, alpha) in [(5.0, 0.08), (1.0, 0.36)] {
             context.new_path();

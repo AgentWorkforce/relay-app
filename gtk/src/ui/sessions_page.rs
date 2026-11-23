@@ -603,9 +603,7 @@ impl App {
                 button,
                 column,
                 next,
-                self.bridge().offers(
-                    agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
-                ),
+                self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME),
             );
             widgets::name(
                 button,
@@ -998,18 +996,14 @@ impl App {
                 self,
                 &query,
                 facets.as_ref().map(|f| f.harnesses.as_slice()).unwrap_or(
-                    if self.bridge().offers(
-                        agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
-                    ) {
+                    if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
                         &[]
                     } else {
                         &data.sources
                     },
                 ),
                 facets.as_ref().map(|f| f.projects.as_slice()).unwrap_or(
-                    if self.bridge().offers(
-                        agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
-                    ) {
+                    if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
                         &[]
                     } else {
                         &data.projects
@@ -1786,15 +1780,13 @@ impl App {
             }
         };
         if include {
-            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsInclude>(
-                params,
-                move |app, result| finished(app, result.err()),
-            );
+            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsInclude>(params, move |app, result| {
+                finished(app, result.err())
+            });
         } else {
-            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsDelete>(
-                params,
-                move |app, result| finished(app, result.err()),
-            );
+            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsDelete>(params, move |app, result| {
+                finished(app, result.err())
+            });
         }
     }
 

@@ -6,9 +6,9 @@ use super::{upgrade_notice, Shell};
 use crate::models;
 use crate::ui::app::App;
 use crate::ui::widgets::{self, hbox, text, vbox};
-use agent_relay_desktop_core::contract::account::SharingMode;
 use agent_relay_desktop_core::contract::account::{Flow, SignInRequest};
 use agent_relay_node::relay::state::SignInState;
+use agent_relay_desktop_core::contract::account::SharingMode;
 use gtk::prelude::*;
 use gtk4 as gtk;
 
@@ -60,29 +60,26 @@ impl App {
             provider: None,
             enrollment_key_file: None,
         };
-        self.call::<agent_relay_desktop_core::contract::method::AccountSignIn>(
-            params,
-            |app, result| {
-                match result {
-                    Ok(report) if report.account.state == SignInState::PendingApproval => {
-                        let renewing = app.update_state(|state| {
-                            state.renew_answered = state.renew_requested;
-                            state.renew_requested
-                        });
-                        if renewing {
-                            app.sign_in_link(report.link);
-                        }
+        self.call::<agent_relay_desktop_core::contract::method::AccountSignIn>(params, |app, result| {
+            match result {
+                Ok(report) if report.account.state == SignInState::PendingApproval => {
+                    let renewing = app.update_state(|state| {
+                        state.renew_answered = state.renew_requested;
+                        state.renew_requested
+                    });
+                    if renewing {
+                        app.sign_in_link(report.link);
                     }
-                    // The core already holds a usable session.
-                    Ok(_) => app.update_state(|state| state.renew_requested = false),
-                    Err(error) => app.update_state(|state| {
-                        state.renew_requested = false;
-                        state.sign_in_error = Some(error.message);
-                    }),
                 }
-                app.render_status_bar();
-            },
-        );
+                // The core already holds a usable session.
+                Ok(_) => app.update_state(|state| state.renew_requested = false),
+                Err(error) => app.update_state(|state| {
+                    state.renew_requested = false;
+                    state.sign_in_error = Some(error.message);
+                }),
+            }
+            app.render_status_bar();
+        });
     }
 
     /// The sign-in-again notice and its button, made under the header the

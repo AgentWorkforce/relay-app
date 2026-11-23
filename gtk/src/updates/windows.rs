@@ -710,14 +710,18 @@ mod tests {
     fn the_release_names_the_zip_for_this_architecture() {
         let data = release_json(VERSION).to_string().into_bytes();
         let arm = parse_release_for(&data, "arm64", Platform::Windows).unwrap();
-        assert!(arm.tarball_url.ends_with(&format!(
-            "{}-2026.10.9-Windows-arm64.zip",
-            crate::build_profile::ASSET_PREFIX
-        )));
-        assert!(arm.tarball_checksum_url.ends_with(&format!(
-            "{}-2026.10.9-Windows-arm64.zip.sha256",
-            crate::build_profile::ASSET_PREFIX
-        )));
+        assert!(arm
+            .tarball_url
+            .ends_with(&format!(
+                "{}-2026.10.9-Windows-arm64.zip",
+                crate::build_profile::ASSET_PREFIX
+            )));
+        assert!(arm
+            .tarball_checksum_url
+            .ends_with(&format!(
+                "{}-2026.10.9-Windows-arm64.zip.sha256",
+                crate::build_profile::ASSET_PREFIX
+            )));
         assert_eq!(arm.deb_url, None);
         let x64 = parse_release_for(&data, "x64", Platform::Windows).unwrap();
         assert!(x64.tarball_url.ends_with("Windows-x64.zip"));

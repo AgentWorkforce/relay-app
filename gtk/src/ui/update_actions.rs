@@ -124,12 +124,14 @@ impl App {
                             state.update_message = None;
                         }
                         Ok(Some(release)) => {
-                            state.update_state =
-                                if updates::is_newer(&release.version, agent_relay_node::VERSION) {
-                                    UpdateState::Available
-                                } else {
-                                    UpdateState::UpToDate
-                                };
+                            state.update_state = if updates::is_newer(
+                                &release.version,
+                                agent_relay_node::VERSION,
+                            ) {
+                                UpdateState::Available
+                            } else {
+                                UpdateState::UpToDate
+                            };
                             state.update_release = Some(release);
                             state.update_message = None;
                         }
@@ -273,9 +275,7 @@ impl App {
                 // allowing the core's two-second success flush before relaunch.
                 let answer = self.inner.runtime.spawn(async move {
                     wait_for_update_telemetry(
-                        bridge.call::<agent_relay_desktop_core::contract::method::TelemetryRecord>(
-                            event,
-                        ),
+                        bridge.call::<agent_relay_desktop_core::contract::method::TelemetryRecord>(event),
                         std::time::Duration::from_secs(3),
                     )
                     .await;
