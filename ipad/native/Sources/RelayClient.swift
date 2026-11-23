@@ -94,6 +94,11 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
     /// A person's display name; empty for agents.
     var displayName = ""
     var lastSeen: Date?
+    /// The turn the agent's desktop publishes (`metadata.activity.turn`).
+    var activityTurn: AgentTurn?
+    /// What it says it is doing (`metadata.activity.doing`): another
+    /// machine's text, one line of at most 120 characters, shown as plain text.
+    var activityDoing = ""
     var isDesktopRegistration = false
     /// Renamed registrations only forward messages to the current name.
     var isListed = true
@@ -141,6 +146,9 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         mobileNativeContinuationEnabled = metadata["mobile_native_continuation_enabled"] as? Bool ?? false
         mobileNativeCommandFileApprovals = metadata["mobile_native_continuation_approvals"] as? String == "command_file"
         isDesktopRegistration = string(metadata["source"]) == "relay-desktop"
+        let activity = object(metadata["activity"])
+        activityTurn = AgentTurn(reported: string(activity["turn"]))
+        activityDoing = String(string(activity["doing"]).split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
         isListed = string(metadata["renamed_to"]).isEmpty
         let seen = string(data["last_seen"])
         lastSeen = (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(seen))
@@ -1800,7 +1808,8 @@ private enum SecureStore {
             rowSummary: id.isEmpty ? nil : rowSummaries[id],
             recordedSummary: id.isEmpty ? nil : sessionSummaryState(for: id),
             goal: id.isEmpty ? "" : goals[id] ?? "",
-            unread: agent.source == .conversation && unreadConversationIDs.contains(agent.id))
+            unread: agent.source == .conversation && unreadConversationIDs.contains(agent.id),
+            lastEventAt: id.isEmpty ? nil : loadedLastEventAt(for: agent))
         return AgentRowModel(agent: agent, loaded: loaded, now: now)
     }
     /// Keeps what the summary list reported for a session: its revision and

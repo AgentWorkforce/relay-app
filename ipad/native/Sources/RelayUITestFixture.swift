@@ -88,7 +88,7 @@ enum RelayUITestFixture {
                 ["name": "reviewer-before-rename", "status": "active",
                  "metadata": ["renamed_to": "reviewer", "source": "relay-desktop"]],
                 ["name": "builder", "status": mixed ? "waiting" : "active", "address": "builder@test-mini-456",
-                 "metadata": ["host": "test-mini", "session_id": "session-builder", "cli": "claudecode"]],
+                 "metadata": (["host": "test-mini", "session_id": "session-builder", "cli": "claudecode"] as JSONObject).merging(mixed ? ["activity": ["turn": "working", "doing": "Running the fixture checks"]] : [:]) { first, _ in first }],
                 ["name": "sam-lee", "type": "human", "persona": "Sam Lee",
                  "address": "sam-lee@cloud-1234567890", "status": offlinePerson ? "offline" : "active"],
             ]

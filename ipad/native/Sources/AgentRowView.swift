@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// One row of the agent and conversation lists: the avatar with its status
-/// circle, the name, the session's title and one-line summary, a caption
-/// with the CLI and the machine, and the unread dot.
+/// circle, the name with an agent's Working, Idle or Offline badge, the
+/// session's title and one-line summary, a caption with the CLI and the
+/// machine, and the unread dot.
 ///
 /// Every line uses a text style, so the row grows with Dynamic Type instead
 /// of clipping; `minHeight` is a floor, never a fixed height.
@@ -31,6 +32,9 @@ struct AgentRowLabel<Avatar: View>: View {
                         // A person's handle is what agents address them by.
                         Text(handle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             .layoutPriority(-1)
+                    }
+                    if let activity = model.activity {
+                        AgentActivityBadge(activity: activity, accent: accent)
                     }
                 }
                 // The title and the caption wrap to a second line so they
@@ -70,6 +74,31 @@ struct AgentRowLabel<Avatar: View>: View {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, minHeight: Self.minHeight, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+/// What an agent is doing: Working with a small spinner, Idle, or Offline.
+struct AgentActivityBadge: View {
+    let activity: ChatActivity
+    let accent: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if activity == .working {
+                ProgressView().controlSize(.mini).tint(accent)
+            }
+            Text(activity.label).font(.caption2.weight(.semibold)).lineLimit(1)
+        }
+        .foregroundStyle(activity == .working ? accent : .secondary)
+        .padding(.horizontal, 6).padding(.vertical, 1)
+        .background(Capsule().fill(activity == .working ? accent.opacity(0.12) : Color(.tertiarySystemFill)))
+        .overlay {
+            if activity == .offline { Capsule().strokeBorder(Color(.systemGray3), lineWidth: 1) }
+        }
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(activity.label)
+        .accessibilityIdentifier("Agent row activity")
     }
 }
 
