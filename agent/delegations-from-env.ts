@@ -1,22 +1,26 @@
 /**
  * Writes the delegated-approval list (delegations.json, a lane file the kit
  * ships to the host, where delegation-decide.py reads it) from the
- * LAYERED_AGENT_DELEGATIONS variable of the agent-deploy environment, which
- * only the owner can write. The list is not tracked in the repository.
+ * LAYERED_AGENT_DELEGATIONS secret of the agent-deploy environment. Whoever
+ * can edit that environment's secrets can grant. The list is not tracked in
+ * the repository.
  *
- *   node delegations-from-env.ts <out.json>
+ *   node delegations-from-env.ts [--warn-unset] <out.json>
  *
- * The variable holds a JSON array of grant entries; version and owners are
- * constants here, so the variable can add grants but never change who the
- * owner is. Unset or blank: the list is empty and no agent holds a permit.
- * Anything else that is not a valid array of valid entries exits 1 and writes
- * nothing. The output is deterministic (fixed key order, 2-space JSON, one
- * trailing newline), written atomically with mode 0600.
+ * The secret holds a JSON array of grant entries on one line; version and
+ * owners are constants here, so the secret can add grants but never change
+ * who the owner is. Whitespace at both ends is ignored; a line break (CR or
+ * LF) anywhere else is refused, because GitHub masks a multi-line secret line
+ * by line. Unset or blank: the list is empty and no agent holds a permit, and
+ * with --warn-unset (Agent Deploy) it prints a ::warning:: annotation saying
+ * so. Anything else that is not a valid array of valid entries exits 1 and
+ * writes nothing. The output is deterministic (fixed key order, 2-space JSON,
+ * one trailing newline), written atomically with mode 0600.
  *
  * Workflow logs are public: it prints the number of grants only, and an error
  * names the entry index and the field, never a value.
  */
-import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeSync, chmodSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, realpathSync, renameSync, rmSync, writeSync, chmodSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,7 +52,7 @@ export interface DelegationsDoc {
   delegations: Grant[];
 }
 
-/** A refusal; its message never carries a value from the variable. */
+/** A refusal; its message never carries a value from the secret. */
 export class DelegationsError extends Error {}
 
 const AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -104,9 +108,11 @@ export function delegationsFromEnv(value: string | undefined): DelegationsDoc {
   const doc: DelegationsDoc = { version: DELEGATIONS_VERSION, owners: [...OWNERS], delegations: [] };
   if (value === undefined || value.trim() === "") return doc;
   if (Buffer.byteLength(value, "utf8") > MAX_VALUE_BYTES) throw new DelegationsError(`the value is larger than ${MAX_VALUE_BYTES} bytes`);
+  const text = value.trim();
+  if (/[\r\n]/.test(text)) throw new DelegationsError("the value contains a line break: the secret must be compact JSON on one line");
   let parsed: unknown;
   // JSON.parse's message quotes the text: it is never passed on.
-  try { parsed = JSON.parse(value); } catch { throw new DelegationsError("the value is not valid JSON"); }
+  try { parsed = JSON.parse(text); } catch { throw new DelegationsError("the value is not valid JSON"); }
   if (!Array.isArray(parsed)) throw new DelegationsError("the value must be a JSON array of grant entries");
   if (parsed.length > MAX_ENTRIES) throw new DelegationsError(`more than ${MAX_ENTRIES} entries`);
   const ids = new Set<string>();
@@ -151,15 +157,28 @@ export function writeAtomic(path: string, text: string): void {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+export const UNSET_WARNING = "::warning::The LAYERED_AGENT_DELEGATIONS secret of the agent-deploy environment is not set or blank: the delegation list is empty and no agent holds a permit.";
+
+/** True when this file is the program node runs, also through a symlinked path. */
+function isMain(): boolean {
+  const arg = process.argv[1];
+  if (arg === undefined) return false;
+  try { return realpathSync(arg) === fileURLToPath(import.meta.url); } catch { return false; }
+}
+
+if (isMain()) {
   const args = process.argv.slice(2);
-  if (args.length !== 1 || args[0] === "") {
-    console.error("usage: delegations-from-env.ts <out.json>  (reads LAYERED_AGENT_DELEGATIONS)");
+  const warnUnset = args[0] === "--warn-unset";
+  if (warnUnset) args.shift();
+  if (args.length !== 1 || args[0] === "" || args[0]!.startsWith("-")) {
+    console.error("usage: delegations-from-env.ts [--warn-unset] <out.json>  (reads LAYERED_AGENT_DELEGATIONS)");
     process.exit(64);
   }
   try {
-    const doc = delegationsFromEnv(process.env.LAYERED_AGENT_DELEGATIONS);
+    const value = process.env.LAYERED_AGENT_DELEGATIONS;
+    const doc = delegationsFromEnv(value);
     writeAtomic(args[0]!, render(doc));
+    if (warnUnset && (value === undefined || value.trim() === "")) console.log(UNSET_WARNING);
     const n = doc.delegations.length;
     console.log(`delegation list written: ${n} grant${n === 1 ? "" : "s"}`);
   } catch (error) {

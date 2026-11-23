@@ -1,19 +1,19 @@
 /**
  * The delegation list leaves the repository: Agent Deploy writes
  * delegations.json from the agent-deploy environment's
- * LAYERED_AGENT_DELEGATIONS variable with delegations-from-env.ts. The
+ * LAYERED_AGENT_DELEGATIONS secret with delegations-from-env.ts. The
  * generator is run for real (node, a temporary directory); the fixtures are
  * synthetic. Workflow logs are public, so no refusal and no success line may
- * carry a value from the variable.
+ * carry a value from the secret.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DelegationsError, MAX_ENTRIES, MAX_VALUE_BYTES, delegationsFromEnv, render } from "../delegations-from-env.ts";
+import { DelegationsError, MAX_ENTRIES, MAX_VALUE_BYTES, UNSET_WARNING, delegationsFromEnv, render } from "../delegations-from-env.ts";
 
 const script = fileURLToPath(new URL("../delegations-from-env.ts", import.meta.url));
 const repo = fileURLToPath(new URL("../..", import.meta.url));
@@ -35,8 +35,12 @@ const second = grant({ agent: "example-bot-2", agentId: "100000000000000002", ow
 
 interface Run { status: number | null; stdout: string; stderr: string; file: string | null; mode: number | null; dir: string[] }
 
-/** Runs the CLI with the variable set to value (undefined: unset) into a fresh directory. */
-function run(value: string | undefined, existing?: string): Run {
+/**
+ * Runs the CLI with the secret set to value (undefined: unset) into a fresh
+ * directory; flags go before the output path. link: run it through a symlink
+ * to the script, made in the same directory.
+ */
+function run(value: string | undefined, existing?: string, flags: string[] = [], link = false): Run {
   const dir = mkdtempSync(join(tmpdir(), "delegations-"));
   try {
     const out = join(dir, "delegations.json");
@@ -44,7 +48,13 @@ function run(value: string | undefined, existing?: string): Run {
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.LAYERED_AGENT_DELEGATIONS;
     if (value !== undefined) env.LAYERED_AGENT_DELEGATIONS = value;
-    const r = spawnSync(process.execPath, [script, out], { env, encoding: "utf8" });
+    let program = script;
+    if (link) {
+      program = join(dir, "linked-generator.ts");
+      symlinkSync(script, program);
+    }
+    const r = spawnSync(process.execPath, [program, ...flags, out], { env, encoding: "utf8" });
+    if (link) rmSync(program);
     return {
       status: r.status, stdout: r.stdout, stderr: r.stderr,
       file: existsSync(out) ? readFileSync(out, "utf8") : null,
@@ -86,9 +96,11 @@ test("one and two entries: fixed key order, 2-space JSON, one trailing newline, 
   }
 });
 
-test("the bytes do not depend on whitespace or key order in the variable, and a rerun replaces the file", () => {
+test("the bytes do not depend on whitespace or key order in the secret, and a rerun replaces the file", () => {
   const compact = run(JSON.stringify([grant(), second]));
-  const spaced = run(`\n ${JSON.stringify([Object.fromEntries(Object.entries(grant()).reverse()), second], null, 4)} \n`);
+  // Spaces inside the line and whitespace (a trailing newline too) at both ends are fine.
+  const spaced = run(`\n ${JSON.stringify([Object.fromEntries(Object.entries(grant()).reverse()), second], null, 4).replace(/\n\s*/g, " ")} \n`);
+  assert.equal(spaced.status, 0, spaced.stderr);
   assert.equal(compact.file, spaced.file);
   assert.equal(compact.file, render(delegationsFromEnv(JSON.stringify([grant(), second]))));
   const over = run(JSON.stringify([grant()]), "stale\n");
@@ -97,6 +109,9 @@ test("the bytes do not depend on whitespace or key order in the variable, and a 
 });
 
 const refusals: Array<[string, string, RegExp]> = [
+  ["JSON over several lines", JSON.stringify([grant()], null, 2), /contains a line break: the secret must be compact JSON on one line/],
+  ["a CR inside the line", `[${JSON.stringify(grant())},\r${JSON.stringify(second)}]`, /contains a line break: the secret must be compact JSON on one line/],
+  ["an LF inside the line, whitespace around", ` [${JSON.stringify(grant())},\n${JSON.stringify(second)}]\n`, /contains a line break: the secret must be compact JSON on one line/],
   ["not JSON", "[{\"agent\": \"example-bot\"", /not valid JSON/],
   ["an object, not an array", JSON.stringify(grant()), /must be a JSON array/],
   ["null", "null", /must be a JSON array/],
@@ -141,15 +156,68 @@ for (const [label, value, why] of refusals) {
       assert.match(r.stderr, /^refusing LAYERED_AGENT_DELEGATIONS, nothing written: /);
       assert.equal(r.file, existing ?? null, "an existing file is left as it was, none is created");
       assert.deepEqual(r.dir, existing === undefined ? [] : ["delegations.json"], "no temporary file is left");
-      // No value from the variable reaches the output: names, ids, reasons, the raw text.
+      // No value from the secret reaches the output: names, ids, reasons, the raw text.
       assert.doesNotMatch(r.stderr, /example|1000000000000000|2000000000000000|Synthetic|xxxx|yesterday|release-only|2026-/);
       assert.ok(!r.stderr.includes(value.slice(0, 12)) || value.length < 4, "the raw value is not echoed");
     }
   });
 }
 
-test("usage: exactly one output path", () => {
-  for (const args of [[], ["a", "b"]]) {
+test("--warn-unset: unset or blank warns once, still writes the empty list and exits 0", () => {
+  for (const value of [undefined, "", " \n "]) {
+    const r = run(value, undefined, ["--warn-unset"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.file, empty);
+    assert.equal(r.mode, 0o600);
+    assert.equal(r.stdout, `${UNSET_WARNING}\ndelegation list written: 0 grants\n`);
+    assert.match(r.stdout, /^::warning::The LAYERED_AGENT_DELEGATIONS secret .*the delegation list is empty and no agent holds a permit\.$/m);
+    assert.equal(r.stderr, "");
+  }
+});
+
+test("--warn-unset: an explicit [] or a list writes without a warning; without the flag unset does not warn", () => {
+  const explicit = run("[]", undefined, ["--warn-unset"]);
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.equal(explicit.file, empty);
+  assert.equal(explicit.stdout, "delegation list written: 0 grants\n");
+  const one = run(JSON.stringify([grant()]), undefined, ["--warn-unset"]);
+  assert.equal(one.status, 0, one.stderr);
+  assert.equal(one.stdout, "delegation list written: 1 grant\n");
+  const plain = run(undefined);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.doesNotMatch(plain.stdout + plain.stderr, /::warning::/);
+});
+
+test("a run through a symlinked path writes the file", () => {
+  const r = run(JSON.stringify([grant()]), undefined, [], true);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.file, render(delegationsFromEnv(JSON.stringify([grant()]))));
+  assert.equal(r.stdout, "delegation list written: 1 grant\n");
+});
+
+test("a grant of exactly 30 days is accepted; one second longer is refused", () => {
+  const exact = grant({ grantedAt: "2026-11-19T10:21:40Z", expiresAt: "2026-12-19T10:21:40Z" });
+  const r = run(JSON.stringify([exact]));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.file, `${JSON.stringify({ version: 2, owners: ["khaliq-gant"], delegations: [exact] }, null, 2)}\n`);
+  const longer = run(JSON.stringify([{ ...exact, expiresAt: "2026-12-19T10:21:41Z" }]));
+  assert.equal(longer.status, 1);
+  assert.equal(longer.file, null);
+  assert.match(longer.stderr, /entry 0: expiresAt: must be at most 30 days after grantedAt/);
+});
+
+// The generator checks the shape, not the clock: delegation-decide.py on the
+// host refuses an expired grant when it is used.
+test("a grant that has already expired is accepted and written", () => {
+  const expired = grant({ grantedAt: "2020-01-01T00:00:00Z", expiresAt: "2020-01-02T00:00:00Z" });
+  const r = run(JSON.stringify([expired]));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.file, `${JSON.stringify({ version: 2, owners: ["khaliq-gant"], delegations: [expired] }, null, 2)}\n`);
+  assert.equal(r.stdout, "delegation list written: 1 grant\n");
+});
+
+test("usage: exactly one output path, the only flag is --warn-unset before it", () => {
+  for (const args of [[], ["a", "b"], ["--warn-unset"], ["--warn-unset", "a", "b"], ["a", "--warn-unset"], ["--other", "a"]]) {
     const r = spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
     assert.equal(r.status, 64);
     assert.match(r.stderr, /^usage: /);
@@ -173,13 +241,13 @@ test("no tracked file under agent/, docs/, flows/, scripts/ or .github/ carries 
   assert.deepEqual(real.map((line) => line.split(":").slice(0, 2).join(":")), []);
 });
 
-test("Agent Deploy writes the list with the same step in preview and deploy, before the kit reads agent/", () => {
+test("Agent Deploy writes the list from the secret with the same step in preview and deploy, before the kit reads agent/", () => {
   const workflow = readFileSync(join(repo, ".github/workflows/agent-deploy.yml"), "utf8");
   const step = [
     "      - name: Write the delegation list",
     "        env:",
-    "          LAYERED_AGENT_DELEGATIONS: ${{ vars.LAYERED_AGENT_DELEGATIONS }}",
-    "        run: node agent/delegations-from-env.ts agent/delegations.json",
+    "          LAYERED_AGENT_DELEGATIONS: ${{ secrets.LAYERED_AGENT_DELEGATIONS }}",
+    "        run: node agent/delegations-from-env.ts --warn-unset agent/delegations.json",
   ].join("\n");
   const job = (name: string) => {
     const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -195,10 +263,14 @@ test("Agent Deploy writes the list with the same step in preview and deploy, bef
     assert.ok(text.indexOf("- name: Check out\n") < at, `${name}: after the checkout`);
     assert.ok(at < text.indexOf(reader), `${name}: before ${reader}`);
     assert.ok(text.includes("node-version: '24'") && text.indexOf("node-version: '24'") < at, `${name}: node 24 is set up first`);
+    // An environment secret resolves only in a job that names the environment.
+    assert.match(text, /^    environment: agent-deploy$/m, `${name} runs in the agent-deploy environment`);
   }
-  // The value reaches the step only through env, never interpolated into a script.
-  assert.equal(workflow.split("vars.LAYERED_AGENT_DELEGATIONS").length, 3);
+  // The value reaches the step only through env, from a secret, never interpolated into a script.
+  assert.equal(workflow.split("secrets.LAYERED_AGENT_DELEGATIONS").length, 3);
+  assert.doesNotMatch(workflow, /vars\.LAYERED_AGENT_DELEGATIONS/);
   const ci = readFileSync(join(repo, ".github/workflows/agent-ci.yml"), "utf8");
   assert.doesNotMatch(ci, /LAYERED_AGENT_DELEGATIONS|^\s*environment:/m);
+  assert.doesNotMatch(ci, /delegations-from-env\.ts --warn-unset/, "Agent CI does not warn");
   assert.match(ci, /node agent\/delegations-from-env\.ts agent\/delegations\.json/);
 });

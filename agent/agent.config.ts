@@ -35,7 +35,7 @@ export default defineLayeredAgent({
   // to them is a hot change the deploy sees and runs setup-lane.sh for.
   // delegations.json is the delegated-approval allowlist delegation-decide.py
   // reads. It is not tracked: Agent Deploy writes it from the agent-deploy
-  // environment's LAYERED_AGENT_DELEGATIONS variable (delegations-from-env.ts,
+  // environment's LAYERED_AGENT_DELEGATIONS secret (delegations-from-env.ts,
   // tested in test/delegations-from-env.test.ts) before the kit reads agent/;
   // unset, the list is empty.
   laneFiles: ["lead-prompt.md", "setup-lane.sh", "load-secrets-lane.sh", "share-lead-session.sh", "lane-scripts.sha", "delegations.json"],

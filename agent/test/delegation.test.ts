@@ -219,12 +219,66 @@ test("delegations.json is a lane file", async () => {
 });
 
 // The grants are not in the repository: Agent Deploy writes delegations.json
-// from the agent-deploy environment (test/delegations-from-env.test.ts checks
-// the generator). What stays pinned here is what the variable cannot change:
-// the version and who the owner is.
-test("the generated delegation list is version 2 with the owner, and empty without the variable", async () => {
+// from the agent-deploy environment's secret (test/delegations-from-env.test.ts
+// checks the generator). What stays pinned here is what the secret cannot
+// change: the version and who the owner is.
+test("the generated delegation list is version 2 with the owner, and empty without the secret", async () => {
   const { delegationsFromEnv, render } = await import("../delegations-from-env.ts");
   assert.equal(render(delegationsFromEnv(undefined)), `${JSON.stringify({ version: 2, owners: ["khaliq-gant"], delegations: [] }, null, 2)}\n`);
+});
+
+// The secret can change between the preview and the deploy: the deploy job
+// deploys only the list the preview wrote, compared by sha256 in step
+// conditions so that no digest is printed.
+test("Agent Deploy's deploy job stops when its delegation list differs from the preview's", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/agent-deploy.yml", import.meta.url), "utf8");
+  const job = (name: string) => {
+    const start = workflow.indexOf(`\n  ${name}:\n`);
+    assert.ok(start >= 0, name);
+    const next = workflow.slice(start + 1).search(/\n  [a-z][a-z-]*:\n/);
+    return next < 0 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+  };
+  const hash = [
+    "      - name: Hash the delegation list",
+    "        id: delegations",
+    "        run: |",
+    "          set -euo pipefail",
+    "          sum=$(sha256sum agent/delegations.json)",
+    "          echo \"sha256=${sum%% *}\" >> \"$GITHUB_OUTPUT\"",
+  ].join("\n");
+  const write = "      - name: Write the delegation list\n";
+  const preview = job("preview");
+  const deploy = job("deploy");
+  for (const [name, text] of [["preview", preview], ["deploy", deploy]] as const) {
+    assert.equal(text.split(hash).length, 2, `${name} hashes the list once`);
+    assert.ok(text.indexOf(write) >= 0 && text.indexOf(write) < text.indexOf(hash), `${name}: after the list is written`);
+  }
+  assert.match(preview, /^    outputs:\n      fresh: \$\{\{ steps\.preview\.outputs\.fresh \}\}\n(?: +#.*\n)*      delegations-sha256: \$\{\{ steps\.delegations\.outputs\.sha256 \}\}\n/m);
+  // The deploy runs only after a successful preview.
+  assert.match(deploy, /^    needs: \[changed, preview\]$/m);
+  assert.match(deploy, /^      && needs\.preview\.result == 'success'$/m);
+  const none = [
+    "      - name: Stop if the preview recorded no delegation list digest",
+    "        if: needs.preview.outputs.delegations-sha256 == ''",
+    "        run: |",
+    "          echo \"::error::The preview recorded no digest of the delegation list: run the deploy again.\"",
+    "          exit 1",
+  ].join("\n");
+  const changed = [
+    "      - name: Stop if the delegation list changed after the preview",
+    "        if: needs.preview.outputs.delegations-sha256 != steps.delegations.outputs.sha256",
+    "        run: |",
+    "          echo \"::error::The delegation list changed after the preview: run the deploy again.\"",
+    "          exit 1",
+  ].join("\n");
+  for (const step of [none, changed]) {
+    assert.equal(deploy.split(step).length, 2, step.split("\n")[0]);
+    assert.ok(deploy.indexOf(hash) < deploy.indexOf(step), "after the deploy's own hash");
+    assert.ok(deploy.indexOf(step) < deploy.indexOf("      - name: Deploy\n"), "before the kit deploys");
+  }
+  // Neither digest reaches a step's env or script, where the log would print it.
+  assert.equal(workflow.split("outputs.delegations-sha256").length, 3);
+  assert.equal(workflow.split("steps.delegations.outputs.sha256").length, 3);
 });
 
 const row = (over: Record<string, unknown> = {}) => ({ channel: "stable", sha: SHA, run_id: RUN, dispatched_at: "2026-11-19T00:00:00Z", status: "ready", version: "2026.11.99", auto: false, profile: null, ...over });

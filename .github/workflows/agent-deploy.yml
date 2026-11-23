@@ -22,15 +22,19 @@
 #
 # The delegated-approval list (agent/delegations.json, a lane file the host's
 # delegation-decide.py reads) is not tracked in the repository. It lives in
-# the LAYERED_AGENT_DELEGATIONS variable of the agent-deploy environment,
-# which only the owner can change: a JSON array of grant entries. The preview
-# and deploy jobs each write agent/delegations.json from it with the same
-# command (agent/delegations-from-env.ts) before anything reads agent/; unset
-# or blank, the list is empty and no agent holds a permit, and a value that is
-# not a valid list fails the job before the kit runs. A change to the variable
-# reaches the host only with the next deploy: a dispatch of this workflow by
-# the owner, or the next landing that changes agent/ or these workflows. A
-# deploy that changes only that file is a hot update, without a restart.
+# the LAYERED_AGENT_DELEGATIONS secret of the agent-deploy environment: a
+# JSON array of grant entries on one line. It is a secret, not a variable,
+# because the runner prints a step's env with values expanded and masks only
+# secrets. The preview and deploy jobs each write agent/delegations.json from
+# it with the same command (agent/delegations-from-env.ts) before anything
+# reads agent/; unset or blank, the list is empty, no agent holds a permit and
+# the job shows a warning; a value that is not a valid list fails the job
+# before the kit runs. The deploy job fails if its file differs from the one
+# the preview wrote (the two sha256 digests are compared). A change to the
+# secret reaches the host only with the next deploy: a dispatch of this
+# workflow by the owner, or the next landing that changes agent/ or these
+# workflows. A deploy that changes only that file is a hot update, without a
+# restart.
 name: Agent Deploy
 
 # A landing on main that changes agent/ or its workflows deploys it once
@@ -151,6 +155,8 @@ jobs:
       packages: read
     outputs:
       fresh: ${{ steps.preview.outputs.fresh }}
+      # The deploy job compares its own file with this digest.
+      delegations-sha256: ${{ steps.delegations.outputs.sha256 }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -165,12 +171,21 @@ jobs:
           scope: '@agentworkforce'
 
       # Before anything of the kit reads agent/ (the preview's template
-      # reads every lane file): the same command as the deploy job's, so both
-      # see the same bytes. The value reaches the generator only through env.
+      # reads every lane file): the same command as the deploy job's. The
+      # value reaches the generator only through env, from a secret, so the
+      # runner masks it in the log. The digest goes to a step output only,
+      # never to the log.
       - name: Write the delegation list
         env:
-          LAYERED_AGENT_DELEGATIONS: ${{ vars.LAYERED_AGENT_DELEGATIONS }}
-        run: node agent/delegations-from-env.ts agent/delegations.json
+          LAYERED_AGENT_DELEGATIONS: ${{ secrets.LAYERED_AGENT_DELEGATIONS }}
+        run: node agent/delegations-from-env.ts --warn-unset agent/delegations.json
+
+      - name: Hash the delegation list
+        id: delegations
+        run: |
+          set -euo pipefail
+          sum=$(sha256sum agent/delegations.json)
+          echo "sha256=${sum%% *}" >> "$GITHUB_OUTPUT"
 
       - name: Install
         working-directory: agent
@@ -270,12 +285,37 @@ jobs:
           node-version: '24'
 
       # Before anything of the kit reads agent/ (the Deploy step ships
-      # the lane files): the same command as the preview job's, so both
-      # see the same bytes. The value reaches the generator only through env.
+      # the lane files): the same command as the preview job's. The value
+      # reaches the generator only through env, from a secret, so the runner
+      # masks it in the log.
       - name: Write the delegation list
         env:
-          LAYERED_AGENT_DELEGATIONS: ${{ vars.LAYERED_AGENT_DELEGATIONS }}
-        run: node agent/delegations-from-env.ts agent/delegations.json
+          LAYERED_AGENT_DELEGATIONS: ${{ secrets.LAYERED_AGENT_DELEGATIONS }}
+        run: node agent/delegations-from-env.ts --warn-unset agent/delegations.json
+
+      - name: Hash the delegation list
+        id: delegations
+        run: |
+          set -euo pipefail
+          sum=$(sha256sum agent/delegations.json)
+          echo "sha256=${sum%% *}" >> "$GITHUB_OUTPUT"
+
+      # The secret can change between the preview and this job: deploy only
+      # the list the preview saw. This job runs only after the preview
+      # succeeded, and its hash step always sets the digest, so an empty one
+      # means something went wrong and stops the deploy too. The digests are
+      # compared in the step conditions, so neither is printed.
+      - name: Stop if the preview recorded no delegation list digest
+        if: needs.preview.outputs.delegations-sha256 == ''
+        run: |
+          echo "::error::The preview recorded no digest of the delegation list: run the deploy again."
+          exit 1
+
+      - name: Stop if the delegation list changed after the preview
+        if: needs.preview.outputs.delegations-sha256 != steps.delegations.outputs.sha256
+        run: |
+          echo "::error::The delegation list changed after the preview: run the deploy again."
+          exit 1
 
       # The kit runs with the deploy role's credentials, so it is pinned: a
       # kit change reaches this deploy only through a deliberate bump of this
