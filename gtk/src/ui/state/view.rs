@@ -41,7 +41,7 @@ impl Section {
     /// The page the section opens on.
     pub fn home(self) -> Page {
         match self {
-            Section::Mine => Page::Chat,
+            Section::Mine => Page::Sessions,
             Section::Settings => Page::Settings(Pane::General),
         }
     }

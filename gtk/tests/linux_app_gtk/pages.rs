@@ -151,14 +151,27 @@ fn sessions_show_uploads_and_mutate_through_the_core(runtime: &tokio::runtime::R
         .into_iter()
         .next()
         .expect("live agents badge");
-    // The live-agents badge opens Chat, the one interface for agents.
     for start_page in [Page::Sessions, Page::Settings(Pane::Account)] {
+        case.app
+            .set_session_search("title:NoSuchSession is:off-relay");
         case.app.go(start_page);
         badge.emit_clicked();
         case.settle();
-        assert_eq!(case.app.with_state(|state| state.page), Page::Chat);
+        assert_eq!(case.app.with_state(|state| state.page), Page::Sessions);
+        assert_eq!(
+            case.app.with_state(|state| state.session_search.clone()),
+            "is:active is:on-relay"
+        );
+        let shown = labels(&page.list);
+        assert!(shown.contains(&"Web".into()));
+        assert!(
+            !shown.contains(&"Old".into()),
+            "Offline registrations are not live agents"
+        );
+        assert!(!shown.contains(&"API work".into()));
+        assert!(!shown.contains(&"Fix login".into()));
     }
-    case.app.go(Page::Sessions);
+    case.app.set_session_search("");
     case.settle();
     let keys = page.row_keys();
     assert_eq!(keys.len(), 5);

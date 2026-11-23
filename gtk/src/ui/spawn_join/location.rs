@@ -4,7 +4,7 @@ use agent_relay_desktop_core::session_locations::{
 };
 
 impl App {
-    pub(super) fn open_transcript_session(&self) {
+    pub(in crate::ui) fn open_transcript_session(&self) {
         self.plan_transcript_open(None);
     }
 

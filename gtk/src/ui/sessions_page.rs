@@ -1059,7 +1059,7 @@ impl App {
         let selected = session.clone();
         let open = button("", &["session-open"], move || {
             if let Some(app) = weak.upgrade() {
-                app.open_local_session(selected.clone());
+                app.open_session_conversation(&selected);
             }
         });
         open.set_child(Some(&details));
@@ -1183,7 +1183,7 @@ impl App {
                     let selected = session.clone();
                     let cell = button("", &["session-open"], move || {
                         if let Some(app) = weak.upgrade() {
-                            app.open_local_session(selected.clone());
+                            app.open_session_conversation(&selected);
                         }
                     });
                     widgets::name(&cell, &format!("Open session: {title}"));
@@ -1279,7 +1279,7 @@ impl App {
                 }
                 Some(false) => {
                     if let Some(app) = weak.upgrade() {
-                        app.open_local_session(clicked_session.clone());
+                        app.open_session_conversation(&clicked_session);
                     }
                 }
                 None => {}
@@ -1648,7 +1648,7 @@ impl App {
             .find(|row| row.key() == key)
         });
         if let Some(session) = session {
-            self.open_local_session(session);
+            self.open_session_conversation(&session);
         }
     }
 

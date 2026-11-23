@@ -8,7 +8,7 @@ impl App {
     pub fn install_actions(&self, application: &gtk::Application) {
         let simple: [(&str, Action); 13] = [
             ("show", |app| app.show_window()),
-            ("sessions", |app| app.show_chat_page(None)),
+            ("sessions", |app| app.go(Page::Sessions)),
             ("settings", |app| app.go(Page::Settings(Pane::General))),
             ("account", |app| app.go(Page::Settings(Pane::Account))),
             ("pause", |app| app.set_paused(true)),

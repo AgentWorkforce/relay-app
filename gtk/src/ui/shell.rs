@@ -73,7 +73,7 @@ impl Shell {
         header_search.set_hexpand(true);
         header_search.set_valign(gtk::Align::Center);
         header.append(&header_search);
-        let settings_back = super::session_open::back_to_chat_button();
+        let settings_back = super::session_open::back_to_sessions_button();
         let back_home = app.on(|app| app.open_section(Section::Mine));
         settings_back.connect_clicked(move |_| back_home());
         header.insert_child_after(&settings_back, Some(&sessions_button));

@@ -20,6 +20,7 @@ use std::cell::{Cell, RefCell};
 
 mod controls;
 mod filters;
+mod open;
 mod send;
 mod thread;
 
@@ -42,6 +43,10 @@ pub struct ChatPage {
     list: gtk::Box,
     stack: gtk::Stack,
     pub toggle_list: gtk::Button,
+    /// Back to the sessions list, which every conversation opens from.
+    pub back: gtk::Button,
+    /// Opens the agent in its own app, where it has one.
+    pub open: gtk::Button,
     pub header_badge: gtk::Box,
     pub header_name: gtk::Label,
     pub header_meta: gtk::Label,
@@ -104,6 +109,8 @@ impl ChatPage {
         let toggle_list =
             widgets::icon_button("sidebar-show-symbolic", CHAT_HIDE_LIST, &["flat"], || {});
         toggle_list.set_valign(gtk::Align::Center);
+        let back = super::session_open::back_to_sessions_button();
+        header.append(&back);
         header.append(&toggle_list);
         let header_badge = hbox(0, &[]);
         header_badge.set_valign(gtk::Align::Center);
@@ -126,6 +133,8 @@ impl ChatPage {
         words.append(&header_summary);
         header.append(&words);
         let controls = Controls::build();
+        let open = open::open_button();
+        header.append(&open);
         header.append(&controls.root);
         view.append(&header);
         view.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -163,6 +172,8 @@ impl ChatPage {
             list,
             stack,
             toggle_list,
+            back,
+            open,
             header_badge,
             header_name,
             header_meta,
@@ -189,6 +200,10 @@ impl App {
         let send = self.on(App::send_chat_message);
         page.send.connect_clicked(move |_| send());
         self.connect_chat_controls(&page.controls);
+        let home = self.on(|app| app.open_section(super::state::Section::Mine));
+        page.back.connect_clicked(move |_| home());
+        let native = self.on(App::open_chat_agent_natively);
+        page.open.connect_clicked(move |_| native());
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
         self.follow_chat_thread();
@@ -245,6 +260,11 @@ impl App {
         if let Some(key) = key {
             self.select_chat_agent(key);
         }
+    }
+
+    /// Opens a sessions-table row as a conversation with its agent.
+    pub fn open_session_conversation(&self, row: &crate::models::LocalSessionRow) {
+        self.show_chat_page(Some(&crate::models::chat_key(row)));
     }
 
     /// Draws the filters, the list and the header from what was last read.
@@ -386,6 +406,7 @@ impl App {
             })
         });
         page.controls.show(agent, upload);
+        self.render_chat_open(&page.open, agent);
         page.header_name.set_text(&agent.name());
         let mut meta = agent.meta();
         if let Some(address) = agent.address() {

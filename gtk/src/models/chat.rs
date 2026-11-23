@@ -156,6 +156,7 @@ pub struct ChatAgent {
 }
 
 pub const CHAT_TITLE: &str = "Chat";
+pub const CHAT_OPEN_FALLBACK: &str = "Open";
 pub const CHAT_AGENT: &str = "Agent";
 pub const CHAT_RELAY_MARK: &str = "⇄ Agent Relay";
 
@@ -198,8 +199,6 @@ pub const CHAT_UPLOAD_HELP: &str =
 pub const CHAT_RECEIVES: &str = "Receives messages";
 pub const CHAT_RECEIVES_HELP: &str =
     "Receive messages from other agents. This also uploads the session to Cloud.";
-pub const CHAT_BACK: &str = "‹ Back to chat";
-pub const CHAT_BACK_HELP: &str = "Back to your agents";
 
 pub const CHAT_NOT_LIVE: &str =
     "This session can't take a message right now. What you send waits until it can.";
@@ -283,6 +282,14 @@ pub fn chat_agents(
         .collect();
     sort_agents(&mut agents);
     agents
+}
+
+/// The Chat page's key for the agent of a sessions-table `row`.
+pub fn chat_key(row: &LocalSessionRow) -> String {
+    match &row.relay {
+        Some(session) => session.target.key(),
+        None => format!("history:{}", row.key()),
+    }
 }
 
 /// Working first, then idle, offline and ended, most recently active first

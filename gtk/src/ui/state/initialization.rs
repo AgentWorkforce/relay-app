@@ -31,7 +31,7 @@ impl State {
             signing_out: false,
             sign_out_answered: false,
             preview_count: 0,
-            page: Page::Chat,
+            page: Page::Sessions,
             session_source: None,
             session_search: String::new(),
             restored_default_session_view: false,
