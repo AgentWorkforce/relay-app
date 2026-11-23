@@ -281,6 +281,23 @@ impl App {
         }
     }
 
+    /// Opening Chat never shows an empty screen while an agent runs: the
+    /// most recently active one (`first`) is shown, unless something is
+    /// chosen meanwhile, such as a row opened from the sessions list.
+    fn pick_first_chat_agent(&self, first: Option<String>) {
+        let Some(key) = first else {
+            return;
+        };
+        glib::idle_add_local_once(self.on(move |app| {
+            let chosen = app
+                .with_chat(|page| page.selected.borrow().is_some())
+                .unwrap_or(true);
+            if !chosen {
+                app.select_chat_agent(&key);
+            }
+        }));
+    }
+
     /// Opens a sessions-table row as a conversation with its agent.
     pub fn open_session_conversation(&self, row: &crate::models::LocalSessionRow) {
         self.show_chat_page(Some(&crate::models::chat_key(row)));
@@ -300,22 +317,8 @@ impl App {
             .iter()
             .filter(|agent| filters.admits(agent))
             .collect();
-        // Opening Chat never shows an empty screen while an agent runs:
-        // the most recently active one is shown.
         if page.selected.borrow().is_none() {
-            if let Some(first) = shown.first() {
-                let key = first.key();
-                // Only if nothing was chosen meanwhile: a row opened from
-                // the sessions list selects its own agent.
-                glib::idle_add_local_once(self.on(move |app| {
-                    let open = app
-                        .with_chat(|page| page.selected.borrow().is_some())
-                        .unwrap_or(true);
-                    if !open {
-                        app.select_chat_agent(&key);
-                    }
-                }));
-            }
+            self.pick_first_chat_agent(shown.first().map(|agent| agent.key()));
         }
         let selected = page.selected.borrow().clone();
         let drawn: Vec<String> = shown
