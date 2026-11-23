@@ -177,4 +177,17 @@ final class AgentListOrderTests: XCTestCase {
         let booleanRecord = (try? JSONSerialization.jsonObject(with: boolean)) as? JSONObject ?? [:]
         XCTAssertNil(RelayAgent(relay: booleanRecord).activityUpdatedAt)
     }
+
+    func testAFutureActivityTimeDoesNotOutrankAPeerActiveNow() {
+        let future = rosterAgent("zeta", seenAt: now,
+                                 metadata: ["activity": ["turn": "idle", "updated_ms": 1_800_086_400_000]])
+        let current = rosterAgent("alpha", seenAt: now,
+                                  metadata: ["activity": ["turn": "idle", "updated_ms": 1_800_000_000_000]])
+        // A day ahead counts as now: same bucket, so the name decides.
+        XCTAssertEqual(listOrder([future, current], at: now), ["alpha", "zeta"])
+        XCTAssertEqual(AgentListOrder.entry(for: future, name: "zeta", lastEventAt: nil, now: now).lastActivity, now)
+        // A past time is kept as it is.
+        XCTAssertEqual(AgentListOrder.entry(for: current, name: "alpha", lastEventAt: nil,
+                                            now: now.addingTimeInterval(60)).lastActivity, now)
+    }
 }

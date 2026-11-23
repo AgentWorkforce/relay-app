@@ -24,11 +24,13 @@ extension AgentListOrder {
     /// so the order and the badge always agree; a person, who has no badge,
     /// is ranked by the same rule without session events. Recency is the
     /// newer of the reported activity time and the loaded event, never the
-    /// heartbeat (`lastSeen`).
+    /// heartbeat (`lastSeen`). The reported time comes from the agent's own
+    /// clock, so one later than `now` counts as `now`: a fast clock or a
+    /// future value cannot lift an agent above its peers.
     static func entry(for agent: RelayAgent, name: String, lastEventAt: Date?, now: Date) -> Entry {
         let activity = AgentRowModel.activity(for: agent, lastEventAt: lastEventAt, now: now)
             ?? Self.activity(turn: agent.activityTurn, reachable: agent.isReachable(at: now), lastEventAt: nil, now: now)
         return Entry(name: name, activity: activity,
-                     lastActivity: [agent.activityUpdatedAt, lastEventAt].compactMap { $0 }.max(), id: agent.id)
+                     lastActivity: [agent.activityUpdatedAt.map { min($0, now) }, lastEventAt].compactMap { $0 }.max(), id: agent.id)
     }
 }
