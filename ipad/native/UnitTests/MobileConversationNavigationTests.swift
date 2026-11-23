@@ -42,4 +42,24 @@ final class MobileConversationNavigationTests: XCTestCase {
         XCTAssertEqual(incoming.latestMessageID, "reply")
     }
 
+    func testEveryScrollRequestEndsAtTheEndOfTheThread() {
+        // Session rows and "Working…" can follow the newest message or
+        // bubble: the scroll goes past them to the thread's end row.
+        XCTAssertEqual(MobileChatScrollTarget.end, .message("chat-bottom"))
+        XCTAssertEqual(MobileChatScrollRequest(pending: [], messages: ["first", "newest"]).destination, MobileChatScrollTarget.end)
+        XCTAssertEqual(MobileChatScrollRequest(pending: ["sending"], messages: ["first"]).destination, MobileChatScrollTarget.end)
+        // Nothing to show, no scroll.
+        XCTAssertNil(MobileChatScrollRequest(pending: [], messages: []).destination)
+    }
+
+    func testAnOlderHistoryPageMakesNoNewScrollRequest() {
+        // Messages prepended by an older history read leave the newest
+        // message and bubble as they were, so the chat is not pulled to its end.
+        let before = MobileChatScrollRequest(pending: [], messages: ["m3", "m4"])
+        let afterOlderPage = MobileChatScrollRequest(pending: [], messages: ["m1", "m2", "m3", "m4"])
+        XCTAssertEqual(afterOlderPage, before)
+        // A newer message is a new request.
+        XCTAssertNotEqual(MobileChatScrollRequest(pending: [], messages: ["m3", "m4", "m5"]), before)
+    }
+
 }

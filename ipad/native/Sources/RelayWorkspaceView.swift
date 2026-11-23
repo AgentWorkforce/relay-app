@@ -1491,7 +1491,7 @@ struct RelayWorkspaceView: View {
                                 SessionWorkingRow(open: turnOpen, newestEventAt: store.newest?.ts, offline: offline)
                             }
                             Color.clear.frame(height: 1)
-                                .id(MobileChatScrollTarget.message("chat-bottom"))
+                                .id(MobileChatScrollTarget.end)
                                 .onAppear { chatPosition.atBottom = true }
                                 .onDisappear { chatPosition.atBottom = false }
                         }.padding(20)
@@ -1516,17 +1516,18 @@ struct RelayWorkspaceView: View {
                     )
                     .task(id: scrollRequest) {
                         // A send can insert history and remove its pending row in
-                        // one update. Reconcile once, then scroll to the surviving
-                        // row; a superseded task must never target a removed row.
+                        // one update. Reconcile once, then scroll to the end:
+                        // the new bubble or message is there, with any session
+                        // rows and "Working…" after it, and the end row is never removed.
                         await Task.yield()
-                        guard !Task.isCancelled, let scrollTarget = scrollRequest.target else { return }
-                        withAnimation { proxy.scrollTo(scrollTarget, anchor: .bottom) }
+                        guard !Task.isCancelled, let destination = scrollRequest.destination else { return }
+                        withAnimation { proxy.scrollTo(destination, anchor: .bottom) }
                     }
                     .onChange(of: lastEventID) { previous, _ in
                         // The first page lands at the end; later events only
                         // follow a reader who is already there.
                         guard previous == nil || chatPosition.atBottom else { return }
-                        proxy.scrollTo(MobileChatScrollTarget.message("chat-bottom"), anchor: .bottom)
+                        proxy.scrollTo(MobileChatScrollTarget.end, anchor: .bottom)
                     }
                     .onChange(of: store?.events.first?.id) { _, oldest in
                         // An older page's rows are in the chat now: keep the
