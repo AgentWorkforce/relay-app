@@ -451,13 +451,16 @@ impl App {
             return;
         };
         let url = self.with_state(|state| {
-            let site = state.account().site_url.unwrap_or_default();
+            let account = state.account();
+            let site = account.site_url.unwrap_or_default();
             merge_local_sessions(&state.sessions, &state.local_sessions)
                 .into_iter()
                 .find(|row| row.key() == original.key())
                 .unwrap_or(original)
                 .upload
-                .and_then(|upload| uploaded_session_url(&site, &upload))
+                .and_then(|upload| {
+                    uploaded_session_url(&site, &upload, account.workspace_id.as_deref())
+                })
         });
         if let Some(url) = url {
             self.inner.desktop.open_uri(&url);
@@ -490,7 +493,7 @@ impl App {
             page.view_web.set_visible(
                 row.upload
                     .as_ref()
-                    .and_then(|upload| uploaded_session_url(&site, upload))
+                    .and_then(|upload| uploaded_session_url(&site, upload, None))
                     .is_some(),
             );
             // Turning an uploading session off deletes it from Cloud; when

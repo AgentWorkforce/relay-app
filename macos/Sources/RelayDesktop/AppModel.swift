@@ -824,7 +824,7 @@ final class AppModel {
 
     /// Uploaded sessions open in Cloud; others open their row in Session Uploads.
     func openSession(_ session: UploadSession) {
-        if let url = SessionNavigation.cloudURL(siteURL: siteURL, session: session) {
+        if let url = SessionNavigation.cloudURL(siteURL: siteURL, session: session, workspaceID: workspaceID) {
             NSWorkspace.shared.open(url)
             return
         }

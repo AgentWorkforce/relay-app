@@ -485,13 +485,38 @@ pub fn upload_stages(
     stages::show_pending([reading, collecting, uploading], pending)
 }
 
-/// The Cloud page of an uploaded session; the id is one path segment.
-pub fn cloud_session_url(site_url: &str, session_id: &str) -> Option<String> {
+/// The Cloud page of an uploaded session; the id is one path segment. The
+/// session's history `source` and the Cloud `workspace` it was uploaded to,
+/// when known, go in the query: without them Cloud reads the session in the
+/// browser's current workspace and has to guess its source.
+pub fn cloud_session_url(
+    site_url: &str,
+    session_id: &str,
+    source: Option<&str>,
+    workspace: Option<&str>,
+) -> Option<String> {
     if session_id.is_empty() {
         return None;
     }
     let origin = super::origin(site_url)?;
-    let segment: String = session_id
+    let mut url = format!("{origin}/cloud/dashboard/sessions/{}", url_component(session_id));
+    let query: Vec<String> = [("source", source), ("workspace", workspace)]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+            Some(format!("{name}={}", url_component(value)))
+        })
+        .collect();
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    Some(url)
+}
+
+/// `value` percent-encoded but for RFC 3986's unreserved characters.
+fn url_component(value: &str) -> String {
+    value
         .bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
@@ -499,15 +524,20 @@ pub fn cloud_session_url(site_url: &str, session_id: &str) -> Option<String> {
             }
             _ => format!("%{byte:02X}"),
         })
-        .collect();
-    Some(format!("{origin}/cloud/dashboard/sessions/{segment}"))
+        .collect()
 }
 
-/// The Cloud page of a session that has finished uploading; Cloud has no page
-/// for one that hasn't.
-pub fn uploaded_session_url(site_url: &str, session: &UploadSession) -> Option<String> {
+/// The Cloud page of a session that has finished uploading to `workspace`;
+/// Cloud has no page for one that hasn't.
+pub fn uploaded_session_url(
+    site_url: &str,
+    session: &UploadSession,
+    workspace: Option<&str>,
+) -> Option<String> {
     (SessionUploadState::of(session, None) == SessionUploadState::Uploaded)
-        .then(|| cloud_session_url(site_url, &session.session_id))
+        .then(|| {
+            cloud_session_url(site_url, &session.session_id, Some(&session.source), workspace)
+        })
         .flatten()
 }
 
@@ -921,26 +951,51 @@ pub(super) mod tests {
     #[test]
     fn cloud_links_take_the_id_as_one_segment() {
         assert_eq!(
-            cloud_session_url("https://agentrelay.com/x?y", "a/b").as_deref(),
+            cloud_session_url("https://agentrelay.com/x?y", "a/b", None, None).as_deref(),
             Some("https://agentrelay.com/cloud/dashboard/sessions/a%2Fb")
         );
         assert_eq!(
-            cloud_session_url("http://user:pw@localhost:8787", "s").as_deref(),
+            cloud_session_url("http://user:pw@localhost:8787", "s", None, None).as_deref(),
             Some("http://localhost:8787/cloud/dashboard/sessions/s")
         );
-        assert!(cloud_session_url("ftp://x", "a").is_none());
-        assert!(cloud_session_url("https://agentrelay.com", "").is_none());
+        assert!(cloud_session_url("ftp://x", "a", None, None).is_none());
+        assert!(cloud_session_url("https://agentrelay.com", "", Some("cursor"), None).is_none());
+    }
+
+    #[test]
+    fn cloud_links_name_the_source_and_workspace() {
+        assert_eq!(
+            cloud_session_url(
+                "https://agentrelay.com",
+                "a b",
+                Some("cursor"),
+                Some("0f8fad5b-d9cb-469f-a165-70867728950e"),
+            )
+            .as_deref(),
+            Some(
+                "https://agentrelay.com/cloud/dashboard/sessions/a%20b\
+                 ?source=cursor&workspace=0f8fad5b-d9cb-469f-a165-70867728950e"
+            )
+        );
+        assert_eq!(
+            cloud_session_url("https://agentrelay.com", "s", Some("a&b=c"), Some(" ")).as_deref(),
+            Some("https://agentrelay.com/cloud/dashboard/sessions/s?source=a%26b%3Dc")
+        );
+        assert_eq!(
+            cloud_session_url("https://agentrelay.com", "s", None, Some("w")).as_deref(),
+            Some("https://agentrelay.com/cloud/dashboard/sessions/s?workspace=w")
+        );
     }
 
     #[test]
     fn only_uploaded_sessions_have_a_cloud_page() {
         let uploaded = row(json!({"session_id": "one", "included": true, "status": "uploaded"}));
         assert_eq!(
-            uploaded_session_url("https://agentrelay.com", &uploaded).as_deref(),
-            Some("https://agentrelay.com/cloud/dashboard/sessions/one")
+            uploaded_session_url("https://agentrelay.com", &uploaded, Some("w")).as_deref(),
+            Some("https://agentrelay.com/cloud/dashboard/sessions/one?source=codex&workspace=w")
         );
         let local = row(json!({"session_id": "one"}));
-        assert!(uploaded_session_url("https://agentrelay.com", &local).is_none());
+        assert!(uploaded_session_url("https://agentrelay.com", &local, Some("w")).is_none());
     }
 
     #[test]

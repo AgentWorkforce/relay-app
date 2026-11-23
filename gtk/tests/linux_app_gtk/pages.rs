@@ -2273,11 +2273,17 @@ fn a_right_click_outside_the_selection_acts_on_that_row(runtime: &tokio::runtime
 fn an_uploaded_session_opens_in_cloud(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
-    let session = case.app.with_state(|state| state.sessions[0].clone());
+    let (session, workspace) = case.app.with_state(|state| {
+        (state.sessions[0].clone(), state.account().workspace_id)
+    });
     case.app.open_cloud(&session);
+    let query = match workspace {
+        Some(workspace) => format!("?source={}&workspace={workspace}", session.source),
+        None => format!("?source={}", session.source),
+    };
     assert_eq!(
         *case.desktop.opened.borrow(),
-        ["https://agentrelay.com/cloud/dashboard/sessions/one"]
+        [format!("https://agentrelay.com/cloud/dashboard/sessions/one{query}")]
     );
 }
 
