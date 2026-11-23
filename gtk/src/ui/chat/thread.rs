@@ -166,52 +166,13 @@ impl Thread {
         let waiting = self.pending.first_child().is_some();
         let mut user_turn = false;
         let mut last: Option<bool> = None;
-        for mut entry in entries {
-            if !transcript_entry_visible(&entry) || !self.ids.borrow_mut().insert(entry.id.clone())
-            {
+        for entry in entries {
+            let Some(turn) = self.turn(entry, source, person) else {
                 continue;
-            }
-            let mut author = person.to_string();
-            let mut relay = None;
-            if entry.role == "user" && entry.kind == "text" {
-                let (sender, body) = chat_user_text(&entry.text);
-                if body.trim().is_empty() {
-                    continue;
-                }
-                if sender.is_some() || self.relay_only.get() {
-                    relay = Some(chat_relay_marker(sender.as_deref()));
-                }
-                if let Some(sender) = sender {
-                    author = format!("@{sender}");
-                }
-                entry.text = body;
-                user_turn = true;
-            } else if self.direct.get() && entry.kind == "text" {
-                relay = Some(chat_relay_marker(Some(source)));
-            }
-            last = Some(chat_turn_open(&entry));
-            let mut remaining = self.table_cells.get();
-            let widget = entry_view(&entry, source, &author, None, &mut remaining);
-            self.table_cells.set(remaining);
-            if !is_tool(&entry) {
-                self.group.borrow_mut().take();
-                match relay {
-                    Some(marker) => self.messages.append(&relay_turn(&widget, &marker)),
-                    None => self.messages.append(&widget),
-                }
-                continue;
-            }
-            let mut group = self.group.borrow_mut();
-            let (_, children) = group.get_or_insert_with(|| {
-                let disclosure = gtk::Expander::new(Some(&tool_group_label(0)));
-                disclosure.add_css_class("transcript-tool-group");
-                widgets::action_cursor(&disclosure);
-                let children = vbox(8, &[]);
-                disclosure.set_child(Some(&children));
-                self.messages.append(&disclosure);
-                (disclosure, children)
-            });
-            children.append(&widget);
+            };
+            user_turn |= turn.from_person;
+            last = Some(chat_turn_open(&turn.entry));
+            self.draw(&turn, source);
         }
         if user_turn {
             // The session's own turn for what was sent has arrived.
@@ -228,6 +189,77 @@ impl Thread {
         }
         waiting && user_turn
     }
+
+    /// `entry` as it is drawn, or `None` when it is hidden or already shown.
+    fn turn(&self, mut entry: LocalTranscriptEntry, source: &str, person: &str) -> Option<Turn> {
+        if !transcript_entry_visible(&entry) || !self.ids.borrow_mut().insert(entry.id.clone()) {
+            return None;
+        }
+        let from_person = entry.role == "user" && entry.kind == "text";
+        if !from_person {
+            let relay = (self.direct.get() && entry.kind == "text")
+                .then(|| chat_relay_marker(Some(source)));
+            return Some(Turn {
+                entry,
+                author: person.to_string(),
+                relay,
+                from_person,
+            });
+        }
+        let (sender, body) = chat_user_text(&entry.text);
+        if body.trim().is_empty() {
+            return None;
+        }
+        let relay = (sender.is_some() || self.relay_only.get())
+            .then(|| chat_relay_marker(sender.as_deref()));
+        let author = sender.map_or_else(|| person.to_string(), |sender| format!("@{sender}"));
+        entry.text = body;
+        Some(Turn {
+            entry,
+            author,
+            relay,
+            from_person,
+        })
+    }
+
+    /// Draws `turn`: a message on its own, tool work in the run's Activity.
+    fn draw(&self, turn: &Turn, source: &str) {
+        let mut remaining = self.table_cells.get();
+        let widget = entry_view(&turn.entry, source, &turn.author, None, &mut remaining);
+        self.table_cells.set(remaining);
+        if !is_tool(&turn.entry) {
+            self.group.borrow_mut().take();
+            match &turn.relay {
+                Some(marker) => self.messages.append(&relay_turn(&widget, marker)),
+                None => self.messages.append(&widget),
+            }
+            return;
+        }
+        let mut group = self.group.borrow_mut();
+        let (_, children) = group.get_or_insert_with(|| self.activity_group());
+        children.append(&widget);
+    }
+
+    /// A new Activity disclosure at the end, for a run of tool work.
+    fn activity_group(&self) -> (gtk::Expander, gtk::Box) {
+        let disclosure = gtk::Expander::new(Some(&tool_group_label(0)));
+        disclosure.add_css_class("transcript-tool-group");
+        widgets::action_cursor(&disclosure);
+        let children = vbox(8, &[]);
+        disclosure.set_child(Some(&children));
+        self.messages.append(&disclosure);
+        (disclosure, children)
+    }
+}
+
+/// One entry as it is drawn: who wrote it, and the relay marker over it
+/// when it came through the relay.
+struct Turn {
+    entry: LocalTranscriptEntry,
+    author: String,
+    relay: Option<String>,
+    /// The person's own turn (theirs or one sent to the agent).
+    from_person: bool,
 }
 
 /// A message that came through the relay: its marker over it, and an

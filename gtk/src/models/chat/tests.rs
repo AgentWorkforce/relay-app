@@ -215,9 +215,9 @@ fn the_agent_works_until_its_own_reply() {
 #[test]
 fn your_agents_elsewhere_are_listed_from_the_roster() {
     let roster: Vec<RosterAgent> = serde_json::from_value(serde_json::json!([
-        {"name": "layered-infra-ops", "address": "layered-infra-ops@ip-10", "kind": "agent",
+        {"name": "layered-infra-ops", "address": "layered-infra-ops@desk.example.test", "kind": "agent",
          "where": "other_desktop", "status": "active", "liveness": "live", "last_seen_ms": 5,
-         "description": "infra-ops lead", "host": "ip-10-98-0-4", "owner_hash": null,
+         "description": "infra-ops lead", "host": "build.example.test", "owner_hash": null,
          "session_id": null, "is_self": true, "provider": "claude",
          "activity": {"doing": "Rotating credentials", "repo": "infra"}},
         {"name": "here", "address": "here@desk", "kind": "agent", "where": "this_computer",
@@ -232,10 +232,10 @@ fn your_agents_elsewhere_are_listed_from_the_roster() {
     assert_eq!(agents.len(), 1);
     let ops = &agents[0];
     assert_eq!(ops.name(), "layered-infra-ops");
-    assert_eq!(ops.key(), "elsewhere:layered-infra-ops@ip-10");
+    assert_eq!(ops.key(), "elsewhere:layered-infra-ops@desk.example.test");
     assert_eq!(ops.activity, ChatActivity::Working);
     assert_eq!(ops.glance(), "Rotating credentials");
-    assert!(ops.meta().ends_with("infra · ip-10-98-0-4"));
+    assert!(ops.meta().ends_with("infra · build.example.test"));
     assert_eq!(ops.composer_note(), CHAT_ELSEWHERE_NOTE);
     assert!(ops.can_send() && ops.local().is_none());
     assert_eq!(ops.placeholder(), "Message @layered-infra-ops");

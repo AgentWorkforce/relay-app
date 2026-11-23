@@ -17,6 +17,8 @@ use std::rc::Rc;
 
 mod notices;
 mod providers;
+mod status_bar;
+use status_bar::status_bar;
 mod upgrade_notice;
 
 /// The shell's widgets that change after it is built.
@@ -71,9 +73,7 @@ impl Shell {
         header_search.set_hexpand(true);
         header_search.set_valign(gtk::Align::Center);
         header.append(&header_search);
-        let settings_back = super::session_open::back_to_sessions_button();
-        settings_back.set_label(crate::models::CHAT_BACK);
-        settings_back.set_tooltip_text(Some(crate::models::CHAT_BACK_HELP));
+        let settings_back = super::session_open::back_to_chat_button();
         let back_home = app.on(|app| app.open_section(Section::Mine));
         settings_back.connect_clicked(move |_| back_home());
         header.insert_child_after(&settings_back, Some(&sessions_button));
@@ -182,29 +182,6 @@ fn focused_within(widget: &impl IsA<gtk::Widget>) -> bool {
         .is_some_and(|focus| focus == *widget.as_ref() || focus.is_ancestor(widget))
 }
 
-fn status_bar(app: &App) -> (gtk::Box, Dot, gtk::Label) {
-    // Its 6-point insets are CSS padding, so the bar's color reaches the edges.
-    let bar = hbox(4, &["statusbar"]);
-    bar.append(&widgets::spacer());
-    let relay_count_button = gtk::Button::new();
-    crate::ui::widgets::action_cursor(&relay_count_button);
-    let counted = hbox(6, &[]);
-    let relay_count_dot = Dot::colored(6, widgets::Color::Grey);
-    counted.append(&relay_count_dot.widget);
-    let relay_count_text = text("Live Agents on Relay: 0", &[]);
-    counted.append(&relay_count_text);
-    relay_count_button.set_child(Some(&counted));
-    relay_count_button.set_tooltip_text(Some("Show live sessions on the relay"));
-    let on_relay = app.on(|app| {
-        app.set_session_search("is:active is:on-relay");
-        app.open_section(Section::Mine);
-        app.go(Page::Sessions);
-    });
-    relay_count_button.connect_clicked(move |_| on_relay());
-    bar.append(&relay_count_button);
-    (bar, relay_count_dot, relay_count_text)
-}
-
 impl App {
     // Navigation.
 
@@ -302,11 +279,9 @@ impl App {
             return;
         };
         let page = self.page();
-        // Chat is the home page; the session search belongs to the table.
-        shell.header_search.set_visible(page != Page::Chat);
-        let own_title = matches!(page, Page::Sessions | Page::Chat);
-        shell.topbar.set_visible(!own_title);
-        shell.topbar_separator.set_visible(!own_title);
+        shell.header_search.set_visible(page != Page::Chat); // The table's search.
+        shell.topbar.set_visible(!matches!(page, Page::Sessions | Page::Chat));
+        shell.topbar_separator.set_visible(!matches!(page, Page::Sessions | Page::Chat));
         // A status refresh must not take the search field from someone
         // typing; only the same page's search keeps it, since another page
         // has its own query.

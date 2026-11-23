@@ -433,6 +433,18 @@ impl App {
         page.input.view.grab_focus();
     }
 
+    /// Reads the sessions, the roster and the conversation shown again.
+    pub(super) fn refresh_chat_page(&self) {
+        self.refresh_local();
+        self.refresh_roster();
+        if let Some(key) = self
+            .with_chat(|page| page.selected.borrow().clone())
+            .flatten()
+        {
+            self.load_chat_thread(&key);
+        }
+    }
+
     /// Hides the agent list so the conversation takes the window, or shows
     /// it again.
     fn toggle_chat_list(&self) {

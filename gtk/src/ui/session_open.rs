@@ -4,6 +4,14 @@ use agent_relay_desktop_core::session_locations::{SessionOpenAction, SessionOpen
 use gtk::prelude::*;
 use gtk4 as gtk;
 
+/// Settings' way home: Chat is the home page.
+pub(super) fn back_to_chat_button() -> gtk::Button {
+    let back = back_to_sessions_button();
+    back.set_label(crate::models::CHAT_BACK);
+    back.set_tooltip_text(Some(crate::models::CHAT_BACK_HELP));
+    back
+}
+
 pub(super) fn back_to_sessions_button() -> gtk::Button {
     let back = gtk::Button::with_label("‹ Back to sessions");
     widgets::action_cursor(&back);
