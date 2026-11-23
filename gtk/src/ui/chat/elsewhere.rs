@@ -1,15 +1,16 @@
 //! Your agents on other computers and in Cloud, in the sessions list itself:
 //! the main screen shows every agent you can reach, with an "Elsewhere"
 //! tag where a local session shows what this computer knows of it. They
-//! follow the list's search words, lead the list, take no part in
+//! follow the list's search words and sort, take no part in
 //! selection (those actions act on this computer's sessions), and opening
 //! one opens Chat with it.
 
 use super::super::app::App;
 use super::super::widgets::{self, hbox, text, vbox, LabelStyle};
 use crate::models::{
-    chat_elsewhere_agents, chat_elsewhere_tag, merge_local_sessions, relative_ms, ChatActivity,
-    ChatAgent, Presence, SessionColumn,
+    chat_elsewhere_agents, chat_elsewhere_tag, chat_sort_elsewhere, chat_sorts_before,
+    merge_local_sessions, relative_ms, ChatActivity, ChatAgent, LocalSessionRow, Presence,
+    SessionColumn,
 };
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
@@ -58,7 +59,7 @@ fn drawn(agent: &ChatAgent) -> String {
 impl App {
     /// What every redraw of the sessions list also draws: the open
     /// conversation's controls, then, once the list is drawn, your agents
-    /// elsewhere at its head.
+    /// elsewhere in their places in its sort.
     pub(in crate::ui) fn render_session_extras(&self) {
         self.render_transcript_controls();
         glib::idle_add_local_once(self.on(App::render_elsewhere_rows));
@@ -80,34 +81,72 @@ impl App {
             .into_iter()
             .filter(|agent| matches_search(agent, &search))
             .collect();
-        let signature: Vec<String> = agents.iter().map(drawn).collect();
-        let mut rows = chat.elsewhere_rows.borrow_mut();
+        let sort = list.sort.get();
+        let mut agents = agents;
+        chat_sort_elsewhere(&mut agents, sort);
+        let mut signature: Vec<String> = agents.iter().map(drawn).collect();
+        signature.push(format!("{:?}|{}", sort, list.grouping.get()));
+        let mut drawn_rows = chat.elsewhere_rows.borrow_mut();
         // A rebuilt list dropped the rows and their keys with it.
-        let present = rows.first().is_some_and(|row| row.parent().is_some());
+        let present = drawn_rows.first().is_some_and(|row| row.parent().is_some());
         if present && *chat.elsewhere_drawn.borrow() == signature {
             return;
         }
         list.drawing.set(true);
         if present {
-            for row in rows.iter() {
-                list.list.remove(row);
-            }
-            let mut keys = list.keys.borrow_mut();
-            let drop = rows.len().min(keys.len());
-            keys.drain(..drop);
+            self.remove_elsewhere_rows(&drawn_rows);
         }
-        rows.clear();
-        for (index, agent) in agents.iter().enumerate() {
+        drawn_rows.clear();
+        let by_key: std::collections::HashMap<String, LocalSessionRow> =
+            rows.into_iter().map(|row| (row.key(), row)).collect();
+        // Grouped, they lead the list: they belong to no group of this
+        // computer's sessions. Otherwise each takes its place in the sort.
+        let grouped = list.grouping.get() != 0;
+        let mut floor = 0;
+        for agent in &agents {
+            let at = if grouped {
+                floor
+            } else {
+                let keys = list.keys.borrow();
+                (floor..keys.len())
+                    .find(|&index| {
+                        by_key
+                            .get(&keys[index])
+                            .is_some_and(|row| chat_sorts_before(agent, row, sort))
+                    })
+                    .unwrap_or(keys.len())
+            };
             let row = self.elsewhere_row(agent);
-            list.list.insert(&row, index as i32);
-            rows.push(row);
+            list.list.insert(&row, at as i32);
+            list.keys.borrow_mut().insert(at, String::new());
+            drawn_rows.push(row);
+            // The next sorts no earlier than this one.
+            floor = at + 1;
         }
-        list.keys
-            .borrow_mut()
-            .splice(0..0, std::iter::repeat_n(String::new(), rows.len()));
         restripe(&list.list);
         list.drawing.set(false);
         *chat.elsewhere_drawn.borrow_mut() = signature;
+    }
+
+    /// Takes the drawn agents elsewhere out of the list, with their keys.
+    fn remove_elsewhere_rows(&self, drawn_rows: &[gtk::ListBoxRow]) {
+        let Some(shell) = self.shell() else {
+            return;
+        };
+        let list = &shell.pages.sessions;
+        let mut keys = list.keys.borrow_mut();
+        for row in drawn_rows.iter().rev() {
+            let index = row.index();
+            if index >= 0 && (index as usize) < keys.len() && keys[index as usize].is_empty() {
+                keys.remove(index as usize);
+            }
+        }
+        drop(keys);
+        for row in drawn_rows {
+            if row.parent().is_some() {
+                list.list.remove(row);
+            }
+        }
     }
 
     /// A row laid out as a session's: the same height, selection lane,

@@ -1,7 +1,9 @@
 //! Bridge methods over Cloud's provider routes and session summaries: Cursor
-//! Cloud agents, Replicas, Capy and `sessions.overview.*`.
+//! Cloud agents, Replicas, Capy, `sessions.overview.*` and
+//! `sessions.cloud_transcript`.
 
 mod capy;
+mod cloud_transcript;
 mod cursor_cloud;
 mod replicas;
 
@@ -149,6 +151,12 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: &Value) -> Option<Result<
                     .request("POST", path, None)
                     .await
                     .map_err(overview_error)
+            })
+            .await
+        }
+        method::SessionsCloudTranscript::NAME => {
+            answer::<method::SessionsCloudTranscript, _>(raw.clone(), |request| {
+                cloud_transcript::read(core, request)
             })
             .await
         }

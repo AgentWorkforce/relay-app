@@ -5,6 +5,7 @@
 pub mod account;
 pub mod capy;
 pub mod chat;
+pub mod cloud_transcript;
 pub mod contractors;
 pub mod coordination;
 pub mod cursor_cloud;
@@ -21,6 +22,7 @@ use agent_relay_node::relay::contract::{Availability, Done, Method, MethodSpec, 
 use agent_relay_node::relay::state::WorkspaceStatus;
 use capy::*;
 use chat::*;
+use cloud_transcript::*;
 use contractors::*;
 use coordination::*;
 use cursor_cloud::*;
@@ -119,6 +121,7 @@ methods! {
     SessionsOverviewGet = "sessions.overview.get", SessionOverviewParams => serde_json::Value;
     SessionsOverviewRequest = "sessions.overview.request", SessionOverviewParams => serde_json::Value;
     SessionsOverviewEvents = "sessions.overview.events", SessionOverviewParams => serde_json::Value;
+    SessionsCloudTranscript = "sessions.cloud_transcript", CloudTranscriptParams => CloudTranscriptPage;
 
     // Launch at login.
     LoginItemSet = "login_item.set", LoginItemParams => Done;

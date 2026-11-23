@@ -17,12 +17,15 @@ use crate::models::{
     ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING,
     CHAT_WORKING,
 };
+use agent_relay_desktop_core::contract::cloud_transcript::CloudTranscriptParams;
+use agent_relay_desktop_core::contract::method as desktop_method;
 use agent_relay_node::relay::contract::directory::HistoryParams;
 use agent_relay_node::relay::contract::method;
 use agent_relay_node::relay::contract::transcript::{
     LocalTranscriptCursor, LocalTranscriptEntry, LocalTranscriptPage, LocalTranscriptParams,
 };
 use agent_relay_node::relay::messaging::DirectMessage;
+use agent_relay_node::relay::people::RosterAgent;
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
@@ -99,8 +102,11 @@ impl Thread {
 
     fn reset(&self, agent: &ChatAgent) -> u64 {
         self.relay_only.set(agent.relay_only());
-        self.direct
-            .set(matches!(agent.place, ChatPlace::Elsewhere(_)));
+        // Direct messages are the conversation only without a Cloud copy.
+        self.direct.set(match &agent.place {
+            ChatPlace::Elsewhere(remote) => remote.session_id.is_none(),
+            _ => false,
+        });
         clear(&self.messages);
         clear(&self.pending);
         self.ids.borrow_mut().clear();
@@ -273,6 +279,42 @@ fn relay_turn(widget: &gtk::Widget, marker: &str) -> gtk::Box {
     turn
 }
 
+/// The uploaded session of an agent elsewhere, when the core reads Cloud
+/// transcripts and the roster names one.
+fn cloud_session(app: &App, remote: &RosterAgent) -> Option<String> {
+    let session = remote.session_id.clone().filter(|id| !id.is_empty())?;
+    app.bridge()
+        .offers(desktop_method::SessionsCloudTranscript::NAME)
+        .then_some(session)
+}
+
+/// The newest events of an uploaded session from Cloud, in reading order: a
+/// whole recent stretch when it opens, the latest few while following.
+fn read_cloud(
+    app: &App,
+    session_id: String,
+    following: bool,
+    done: impl FnOnce(&App, Result<LocalTranscriptPage, crate::bridge::CoreError>) + 'static,
+) {
+    app.view_call::<desktop_method::SessionsCloudTranscript>(
+        CloudTranscriptParams {
+            session_id,
+            cursor: None,
+            limit: Some(if following { 50 } else { 500 }),
+        },
+        move |app, result| {
+            done(
+                app,
+                result.map(|page| LocalTranscriptPage {
+                    entries: page.entries.into_iter().rev().collect(),
+                    next_cursor: None,
+                    follow_cursor: None,
+                }),
+            )
+        },
+    );
+}
+
 /// A direct message as a conversation entry: yours as the person's turn,
 /// the agent's as its reply.
 fn direct_entry(message: &DirectMessage) -> LocalTranscriptEntry {
@@ -304,7 +346,11 @@ fn read_page(
     let (row, session) = match &agent.place {
         ChatPlace::Local { row, session } => (row, Some(session)),
         ChatPlace::History(row) => (row, None),
-        ChatPlace::Elsewhere(_) => {
+        ChatPlace::Elsewhere(remote) => {
+            // Its uploaded session, from Cloud, when the core can read it.
+            if let Some(session_id) = cloud_session(app, remote) {
+                return read_cloud(app, session_id, following, done);
+            }
             let endpoint = agent.address().unwrap_or_else(|| agent.name());
             app.view_call::<method::MessagesHistory>(
                 HistoryParams {

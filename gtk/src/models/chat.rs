@@ -424,6 +424,8 @@ pub fn chat_turn_open(entry: &LocalTranscriptEntry) -> bool {
 }
 
 mod agent;
+mod order;
+pub use order::{chat_sort_elsewhere, chat_sorts_before};
 
 #[cfg(test)]
 mod tests;

@@ -121,6 +121,7 @@ public enum CoreMethod {
     public static let sessionsOverviewGet = "sessions.overview.get"
     public static let sessionsOverviewRequest = "sessions.overview.request"
     public static let sessionsOverviewEvents = "sessions.overview.events"
+    public static let sessionsCloudTranscript = "sessions.cloud_transcript"
     public static let loginItemSet = "login_item.set"
     public static let loginItemStatus = "login_item.status"
     public static let coordinationAdvisoriesStatus = "coordination_advisories.status"
@@ -2607,6 +2608,72 @@ public struct ClaudeSessionDeliveryParams: Codable, Equatable, Hashable, Sendabl
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.direct, forKey: .direct)
+        try c.encode(self.sessionId, forKey: .sessionId)
+    }
+}
+
+/// One page of an uploaded session, newest entries first, as the local
+/// reader's entries.
+public struct CloudTranscriptPage: Codable, Equatable, Hashable, Sendable {
+    public let entries: [LocalTranscriptEntry]
+    /// Where the next, older page starts; absent at the session's start.
+    public let nextCursor: String?
+
+    public init(entries: [LocalTranscriptEntry], nextCursor: String? = nil) {
+        self.entries = entries
+        self.nextCursor = nextCursor
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case entries
+        case nextCursor = "next_cursor"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.entries = try c.decode([LocalTranscriptEntry].self, forKey: .entries)
+        self.nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.entries, forKey: .entries)
+        try c.encode(self.nextCursor, forKey: .nextCursor)
+    }
+}
+
+/// `sessions.cloud_transcript`'s parameters.
+public struct CloudTranscriptParams: Codable, Equatable, Hashable, Sendable {
+    /// Continues from where an earlier page ended.
+    public let cursor: String?
+    /// At most this many events, newest first; 200 when absent, 1000 at most.
+    public let limit: Int?
+    /// The uploaded session, as the roster names it.
+    public let sessionId: String
+
+    public init(cursor: String? = nil, limit: Int? = nil, sessionId: String) {
+        self.cursor = cursor
+        self.limit = limit
+        self.sessionId = sessionId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case cursor
+        case limit
+        case sessionId = "session_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.cursor = try c.decodeIfPresent(String.self, forKey: .cursor)
+        self.limit = try c.decodeIfPresent(Int.self, forKey: .limit)
+        self.sessionId = try c.decode(String.self, forKey: .sessionId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.cursor, forKey: .cursor)
+        try c.encodeIfPresent(self.limit, forKey: .limit)
         try c.encode(self.sessionId, forKey: .sessionId)
     }
 }
@@ -13681,6 +13748,12 @@ extension CoreClient {
     @discardableResult
     public func sessionsOverviewEvents(_ params: SessionOverviewParams) async throws -> JSONValue {
         try await call(CoreMethod.sessionsOverviewEvents, params)
+    }
+
+    /// `sessions.cloud_transcript`; only a core built with an account answers it.
+    @discardableResult
+    public func sessionsCloudTranscript(_ params: CloudTranscriptParams) async throws -> CloudTranscriptPage {
+        try await call(CoreMethod.sessionsCloudTranscript, params)
     }
 
     /// `login_item.set`; only a core built with an account answers it.
