@@ -487,4 +487,3 @@ fn relay_turn(widget: &gtk::Widget, marker: &str) -> gtk::Box {
     turn.append(widget);
     turn
 }
-

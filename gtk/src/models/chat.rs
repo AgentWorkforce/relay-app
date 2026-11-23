@@ -182,8 +182,10 @@ pub fn chat_relay_marker(sender: Option<&str>) -> String {
     }
 }
 pub const CHAT_ELSEWHERE: &str = "Elsewhere";
+/// An agent elsewhere someone else in the workspace owns.
+pub const CHAT_NOT_YOURS: &str = "Not yours";
 pub const CHAT_CLOUD: &str = "Cloud";
-pub const CHAT_ELSEWHERE_SECTION: &str = "Your agents elsewhere";
+pub const CHAT_ELSEWHERE_SECTION: &str = "Agents elsewhere";
 pub const CHAT_ELSEWHERE_NOTE: &str =
     "Sent as a direct message through Agent Relay. Its replies to you show here.";
 pub const CHAT_SUBTITLE: &str = "Every agent on this computer.";
@@ -326,11 +328,41 @@ pub fn chat_agents(
 pub fn chat_elsewhere_tag(agent: &ChatAgent) -> String {
     match &agent.place {
         ChatPlace::Elsewhere(remote) => format!(
-            "{CHAT_ELSEWHERE} · {}",
+            "{} · {}",
+            if remote.is_self {
+                CHAT_ELSEWHERE
+            } else {
+                CHAT_NOT_YOURS
+            },
             remote.host.clone().unwrap_or_else(|| CHAT_CLOUD.into())
         ),
         _ => String::new(),
     }
+}
+
+/// The link that opens the session of `row` in its own app instead of a
+/// conversation here, for a harness that is an app of its own: a Grok Bot
+/// chat opens in Grok Bot (its thread, when the id is one Grok Bot takes).
+pub fn chat_app_link(row: &LocalSessionRow) -> Option<String> {
+    chat_app_link_for(row.source(), &row.session_id())
+}
+
+/// [`chat_app_link`] for a session of `source` with id `id`.
+fn chat_app_link_for(source: &str, id: &str) -> Option<String> {
+    let source = source.to_lowercase().replace(['-', '_', ' '], "");
+    if source != "grokbot" {
+        return None;
+    }
+    let hex = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_hexdigit());
+    let parts: Vec<&str> = id.split('-').collect();
+    let uuid =
+        parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12]) && parts.iter().all(|p| hex(p));
+    let thread = (id.len() == 10 && hex(id)) || uuid;
+    Some(if thread {
+        format!("grokbot://app/v1/thread?id={id}")
+    } else {
+        "grokbot://app/v1/open".to_string()
+    })
 }
 
 /// Where `agent`'s session is on the web, at `site`: an uploaded session
@@ -419,17 +451,20 @@ fn elsewhere_activity(agent: &RosterAgent) -> ChatActivity {
 /// Your agents on other computers and in Cloud, from the workspace roster:
 /// agents you own that are not registered from this computer and that no
 /// row of the sessions list (`rows`) already shows.
+///
+/// Other people's agents in the workspace are many: one is listed only when
+/// `others` admits it (a search that matches it, or the one shown).
 pub fn chat_elsewhere_agents(
     roster: &[RosterAgent],
     rows: &[LocalSessionRow],
     now_ms: i64,
+    others: impl Fn(&ChatAgent) -> bool,
 ) -> Vec<ChatAgent> {
     let mut agents: Vec<ChatAgent> = roster
         .iter()
         .filter(|agent| !listed(agent, rows))
         .filter(|agent| {
-            agent.is_self
-                && agent.kind == "agent"
+            agent.kind == "agent"
                 && agent.where_runs != RosterWhere::ThisComputer
                 && agent.address.is_some()
         })
@@ -450,6 +485,7 @@ pub fn chat_elsewhere_agents(
                 .map(|at| at.min(now_ms)),
             place: ChatPlace::Elsewhere(agent.clone()),
         })
+        .filter(|agent| agent.is_yours() || others(agent))
         .collect();
     sort_agents(&mut agents);
     agents

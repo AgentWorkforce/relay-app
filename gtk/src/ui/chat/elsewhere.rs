@@ -84,7 +84,10 @@ impl App {
                 merge_local_sessions(&state.sessions, &state.local_sessions),
             )
         });
-        let agents: Vec<ChatAgent> = chat_elsewhere_agents(&roster, &rows, super::super::now_ms())
+        let agents: Vec<ChatAgent> =
+            chat_elsewhere_agents(&roster, &rows, super::super::now_ms(), |agent| {
+                !search.trim().is_empty() && matches_search(agent, &search)
+            })
             .into_iter()
             .filter(|agent| matches_search(agent, &search))
             .collect();

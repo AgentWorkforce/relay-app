@@ -222,7 +222,7 @@ fn your_agents_elsewhere_are_listed_from_the_roster() {
          "host": null, "owner_hash": null, "session_id": null, "is_self": false}
     ]))
     .unwrap();
-    let agents = chat_elsewhere_agents(&roster, &[], i64::MAX);
+    let agents = chat_elsewhere_agents(&roster, &[], i64::MAX, |_| false);
     assert_eq!(agents.len(), 1);
     let ops = &agents[0];
     assert_eq!(ops.name(), "layered-infra-ops");
@@ -234,6 +234,15 @@ fn your_agents_elsewhere_are_listed_from_the_roster() {
     assert!(ops.can_send() && ops.local().is_none());
     assert_eq!(ops.placeholder(), "Message @layered-infra-ops");
     assert_eq!(chat_elsewhere_tag(ops), "Elsewhere · build.example.test");
+    // Someone else's agent is listed when a search finds it, marked.
+    let found = chat_elsewhere_agents(&roster, &[], i64::MAX, |agent| agent.matches("teammate"));
+    assert_eq!(found.len(), 2);
+    let theirs = found
+        .iter()
+        .find(|agent| agent.name() == "teammate")
+        .unwrap();
+    assert!(!theirs.is_yours());
+    assert_eq!(chat_elsewhere_tag(theirs), "Not yours · Cloud");
 }
 
 #[test]
@@ -272,11 +281,11 @@ fn an_agent_the_sessions_list_shows_is_not_listed_elsewhere_too() {
     .unwrap();
     let mut titled = session("a", None);
     titled.title = "custsuccessgrok".into();
-    assert!(chat_elsewhere_agents(&roster, &[row(titled)], i64::MAX).len() == 1);
+    assert!(chat_elsewhere_agents(&roster, &[row(titled)], i64::MAX, |_| false).len() == 1);
     let uploaded = session("s-9", None);
-    assert!(chat_elsewhere_agents(&roster, &[row(uploaded)], i64::MAX).len() == 1);
+    assert!(chat_elsewhere_agents(&roster, &[row(uploaded)], i64::MAX, |_| false).len() == 1);
     let named = session("b", Some("other"));
-    let left = chat_elsewhere_agents(&roster, &[row(named)], i64::MAX);
+    let left = chat_elsewhere_agents(&roster, &[row(named)], i64::MAX, |_| false);
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].name(), "custsuccessgrok");
 }
@@ -319,7 +328,7 @@ fn an_agent_elsewhere_works_only_while_its_turn_runs() {
          "owner_hash": null, "session_id": null, "is_self": true, "activity": {"turn": "working"}}
     ]))
     .unwrap();
-    let agents = chat_elsewhere_agents(&roster, &[], i64::MAX);
+    let agents = chat_elsewhere_agents(&roster, &[], i64::MAX, |_| false);
     let by = |name: &str| {
         agents
             .iter()
@@ -349,7 +358,7 @@ fn a_heartbeat_does_not_reorder_agents_elsewhere() {
         .unwrap()
     };
     let names = |roster: Vec<RosterAgent>| -> Vec<String> {
-        chat_elsewhere_agents(&roster, &[], i64::MAX)
+        chat_elsewhere_agents(&roster, &[], i64::MAX, |_| false)
             .iter()
             .map(ChatAgent::name)
             .collect()
@@ -368,6 +377,22 @@ fn a_fast_clock_elsewhere_is_held_to_now() {
          "activity": {"turn": "idle", "updated_ms": 9_000_000}}
     ]))
     .unwrap();
-    let agents = chat_elsewhere_agents(&roster, &[], 1_000);
+    let agents = chat_elsewhere_agents(&roster, &[], 1_000, |_| false);
     assert_eq!(agents[0].last_activity_ms, Some(1_000));
+}
+
+#[test]
+fn a_grok_bot_chat_opens_in_grok_bot() {
+    // The link is built from the row's source and session id alone.
+    let link = |source: &str, id: &str| chat_app_link_for(source, id).unwrap_or_default();
+    assert_eq!(
+        link("grok-bot", "0123456789"),
+        "grokbot://app/v1/thread?id=0123456789"
+    );
+    assert_eq!(
+        link("Grok Bot", "01a18b2c-f231-7f42-833a-af9d597774d9"),
+        "grokbot://app/v1/thread?id=01a18b2c-f231-7f42-833a-af9d597774d9"
+    );
+    assert_eq!(link("grokbot", "not a thread"), "grokbot://app/v1/open");
+    assert_eq!(link("claude", "0123456789"), "");
 }

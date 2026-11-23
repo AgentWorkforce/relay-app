@@ -183,6 +183,15 @@ impl ChatAgent {
         self.activity != ChatActivity::Ended && (self.local().is_some() || self.address().is_some())
     }
 
+    /// Whether the agent is yours: every agent on this computer is, and an
+    /// agent elsewhere when the relay says so.
+    pub fn is_yours(&self) -> bool {
+        match &self.place {
+            ChatPlace::Elsewhere(remote) => remote.is_self,
+            _ => true,
+        }
+    }
+
     pub fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
         query.is_empty()

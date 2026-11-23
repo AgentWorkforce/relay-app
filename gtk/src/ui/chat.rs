@@ -227,6 +227,15 @@ impl App {
     /// Every agent on this computer, then your agents elsewhere, as the
     /// page lists them now.
     pub(super) fn chat_agents(&self) -> Vec<ChatAgent> {
+        // Someone else's agent is listed when the search finds it, and
+        // while it is the one shown.
+        let (query, shown) = self
+            .with_chat(|page| (page.filters.read().query, page.selected.borrow().clone()))
+            .unwrap_or_default();
+        let others = move |agent: &ChatAgent| {
+            (!query.trim().is_empty() && agent.matches(&query))
+                || shown.as_deref() == Some(agent.key().as_str())
+        };
         self.with_state(|state| {
             // The same rows the sessions list shows, a search's included.
             let local = state
@@ -259,7 +268,7 @@ impl App {
                 now_ms,
             )
             .into_iter()
-            .chain(chat_elsewhere_agents(&state.roster, &rows, now_ms))
+            .chain(chat_elsewhere_agents(&state.roster, &rows, now_ms, &others))
             .collect()
         })
     }
@@ -301,7 +310,18 @@ impl App {
 
     /// Opens a sessions-table row as a conversation with its agent.
     pub fn open_session_conversation(&self, row: &crate::models::LocalSessionRow) {
-        self.show_chat_page(Some(&crate::models::chat_key(row)));
+        // A session in an app of its own (a Grok Bot chat) opens there when
+        // the app is installed.
+        if !self.open_in_its_app(row) {
+            self.show_chat_page(Some(&crate::models::chat_key(row)));
+        }
+    }
+
+    /// Opens `row`'s session in its own app when it is one with an app of
+    /// its own and that app is installed; whether it did.
+    fn open_in_its_app(&self, row: &crate::models::LocalSessionRow) -> bool {
+        crate::models::chat_app_link(row)
+            .is_some_and(|link| app_installed_for(&link) && self.inner.desktop.open_uri(&link))
     }
 
     /// Draws the filters, the list and the header from what was last read.
@@ -419,7 +439,12 @@ impl App {
         row.set_tooltip_text(Some(&agent.title()));
         widgets::name(&row, &agent.name());
         let key = agent.key();
-        let open = self.on(move |app| app.select_chat_agent(&key));
+        let open = self.on(move |app| {
+            let row = app.chat_agent(&key).and_then(|agent| agent.row().cloned());
+            if !row.is_some_and(|row| app.open_in_its_app(&row)) {
+                app.select_chat_agent(&key);
+            }
+        });
         row.connect_clicked(move |_| open());
         row
     }
@@ -521,4 +546,10 @@ fn agent_badge(agent: &ChatAgent, size: i32) -> gtk::Widget {
         Some(row) => super::session_avatar::row_badge(row, size),
         None => widgets::agent_badge(&agent.icon_source(), size),
     }
+}
+
+/// Whether an installed app takes `link`'s scheme.
+fn app_installed_for(link: &str) -> bool {
+    link.split_once(':')
+        .is_some_and(|(scheme, _)| gtk::gio::AppInfo::default_for_uri_scheme(scheme).is_some())
 }
