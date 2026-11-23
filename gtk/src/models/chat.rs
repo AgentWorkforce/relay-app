@@ -356,8 +356,9 @@ pub fn chat_key(row: &LocalSessionRow) -> String {
     }
 }
 
-/// How coarsely recency orders agents: agents heartbeat every few seconds,
-/// and ordering by the exact time reshuffles the list on each refresh.
+/// How coarsely recency orders agents. Recency is when an agent last did
+/// something (a session event, a turn change), never a heartbeat; the
+/// bucket keeps a burst of events from reshuffling neighbours.
 pub const CHAT_ORDER_BUCKET_MS: i64 = 300_000;
 
 /// `ms` rounded down to its ordering bucket.
@@ -434,7 +435,12 @@ pub fn chat_elsewhere_agents(roster: &[RosterAgent], rows: &[LocalSessionRow]) -
                 .and_then(|activity| activity.doing.clone())
                 .unwrap_or_default(),
             activity: elsewhere_activity(agent),
-            last_activity_ms: agent.last_seen_ms,
+            // When its turn or what it is doing last changed, not when it
+            // was last seen: a heartbeat must not reorder the list.
+            last_activity_ms: agent
+                .activity
+                .as_ref()
+                .and_then(|activity| activity.updated_ms),
             place: ChatPlace::Elsewhere(agent.clone()),
         })
         .collect();

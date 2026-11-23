@@ -330,3 +330,31 @@ fn an_agent_elsewhere_works_only_while_its_turn_runs() {
     assert_eq!(by("waiting"), Some(ChatActivity::Idle));
     assert_eq!(by("gone"), Some(ChatActivity::Offline));
 }
+
+#[test]
+fn a_heartbeat_does_not_reorder_agents_elsewhere() {
+    // Two idle agents that last changed in the same five minutes, seen a
+    // heartbeat apart across a bucket boundary: names decide, either way.
+    let roster = |seen_a: i64, seen_b: i64| -> Vec<RosterAgent> {
+        serde_json::from_value(serde_json::json!([
+            {"name": "beta", "address": "beta@desk.example.test", "kind": "agent", "where": "other_desktop",
+             "status": "active", "liveness": "live", "last_seen_ms": seen_b, "description": "", "host": null,
+             "owner_hash": null, "session_id": null, "is_self": true,
+             "activity": {"turn": "idle", "updated_ms": CHAT_ORDER_BUCKET_MS + 10}},
+            {"name": "alpha", "address": "alpha@desk.example.test", "kind": "agent", "where": "other_desktop",
+             "status": "active", "liveness": "live", "last_seen_ms": seen_a, "description": "", "host": null,
+             "owner_hash": null, "session_id": null, "is_self": true,
+             "activity": {"turn": "idle", "updated_ms": CHAT_ORDER_BUCKET_MS + 20}}
+        ]))
+        .unwrap()
+    };
+    let names = |roster: Vec<RosterAgent>| -> Vec<String> {
+        chat_elsewhere_agents(&roster, &[])
+            .iter()
+            .map(ChatAgent::name)
+            .collect()
+    };
+    let boundary = CHAT_ORDER_BUCKET_MS * 4;
+    assert_eq!(names(roster(boundary - 2, boundary + 2)), ["alpha", "beta"]);
+    assert_eq!(names(roster(boundary + 2, boundary - 2)), ["alpha", "beta"]);
+}
