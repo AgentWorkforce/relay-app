@@ -160,6 +160,24 @@ enum RelayUITestFixture {
                 "ranking": "hybrid", "now": 1_760_860_800_000]
     }
 
+    /// `-RelayUITestRowSummaries` lets the list rows load their sessions'
+    /// briefs from this fixture; without it rows show only what the roster
+    /// states, as on a device that has not enabled summaries.
+    static var rowSummariesEnabled: Bool {
+        enabled && ProcessInfo.processInfo.arguments.contains("-RelayUITestRowSummaries")
+    }
+
+    /// The Cloud analysis response for a row's session. The builder's
+    /// session has no brief, so its row keeps the roster's text.
+    static func rowSummaryResponse(sessionID: String) -> JSONObject? {
+        guard rowSummariesEnabled, sessionID == "session-reviewer" else { return nil }
+        return ["sessionId": sessionID, "requests": [JSONObject](),
+                "analyses": [["id": "analysis-reviewer", "sessionId": sessionID, "sourceProvider": "codex",
+                              "status": "completed",
+                              "result": ["brief": ["title": "Mobile release review",
+                                                   "description": "Checked the release checklist\nand the CI status."]]]]]
+    }
+
     static var summarySearchIsOffline: Bool {
         enabled && ProcessInfo.processInfo.arguments.contains("-RelayUITestSummarySearchOffline")
     }

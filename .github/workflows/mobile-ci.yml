@@ -140,6 +140,7 @@ jobs:
           EXTRA_UI_CLASSES: ${{ steps.extra.outputs.classes }}
         run: |
           only_testing=(-only-testing:AgentRelayUITests/MobileHandoffUITests)
+          only_testing+=(-only-testing:AgentRelayUITests/AgentRowUITests)
           IFS=',' read -r -a extra_classes <<< "${EXTRA_UI_CLASSES:-}"
           for class in "${extra_classes[@]}"; do
             only_testing+=("-only-testing:AgentRelayUITests/$class")

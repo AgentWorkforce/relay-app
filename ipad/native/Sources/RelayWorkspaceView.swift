@@ -210,6 +210,7 @@ struct RelayWorkspaceView: View {
                 try? await Task.sleep(for: .seconds(30))
                 if Task.isCancelled { break }
                 await client.refresh()
+                client.refreshRowSummaries()
                 // A channel's history is read when it opens, when the app
                 // returns to the foreground and when its push arrives; the
                 // presence refresh never re-reads it.
@@ -231,6 +232,7 @@ struct RelayWorkspaceView: View {
             loadPinnedAgents()
         }
         .onChange(of: client.cloudWorkspaceID) { _, _ in loadPinnedAgents() }
+        .onChange(of: client.canLoadSummaries) { _, _ in client.refreshRowSummaries() }
         .onChange(of: client.sessionGeneration) { _, _ in
             // Drafts, uploads and unsent bubbles belong to the account that
             // made them; never carry them into the next one.
@@ -651,6 +653,7 @@ struct RelayWorkspaceView: View {
         }.buttonStyle(.plain)
     }
     private var filtered: [RelayAgent] {
+        let now = Date()
         let agents: [RelayAgent]
         switch page {
         case .agents: agents = client.relayAgents.filter { showAll || $0.isReachable() }
@@ -658,16 +661,10 @@ struct RelayWorkspaceView: View {
         }
         let matching = agents.filter { agent in
             (agent.source == .channel || MobileMachineFilter.matches(agent.machine, selected: machineFilter)) &&
-            (search.isEmpty || "\(agent.name) \(client.displayName(for: agent)) \(agent.subtitle) \(agent.objective) \(agent.sessionTitle) \(agent.address) \(agent.machine) \(client.summaries[agent.sessionID]?.title ?? "") \(client.goals[agent.sessionID] ?? "")".localizedCaseInsensitiveContains(search))
+            // Search matches what the row shows (`AgentRowModel.searchText`).
+            (search.isEmpty || client.rowModel(for: agent, now: now).matches(search))
         }
         return matching.filter { pinnedAgentIDs.contains($0.id) } + matching.filter { !pinnedAgentIDs.contains($0.id) }
-    }
-    private func rowSubtitle(_ agent: RelayAgent) -> String {
-        for candidate in [client.summaries[agent.sessionID]?.title ?? "", agent.objective, agent.sessionTitle,
-                          client.goals[agent.sessionID] ?? "", agent.subtitle, agent.address] where !candidate.isEmpty {
-            return candidate
-        }
-        return agent.name
     }
     private var machines: [String] {
         let agents = page == .agents ? client.relayAgents.filter { showAll || $0.isReachable() } : client.conversations
@@ -780,26 +777,7 @@ struct RelayWorkspaceView: View {
                 }.padding(.horizontal, 19).padding(.top, 16).padding(.bottom, 7)
                 List {
                         ForEach(filtered) { agent in
-                            HStack(spacing: 2) {
-                                Button { phonePath.append(MobileConversationRoute(agent: agent)) } label: {
-                                    HStack(spacing: 11) {
-                                        avatar(agent, size: 38)
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            agentName(agent, font: .subheadline.weight(.medium), machineFont: .caption2)
-                                            Text(rowSubtitle(agent))
-                                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                        }
-                                        Spacer(minLength: 0)
-                                        unreadIndicator(agent)
-                                        if agent.isReachable() {
-                                            Circle().fill(.green).frame(width: 7, height: 7)
-                                        }
-                                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                                    }.padding(.vertical, 12).padding(.leading, 12)
-                                        .contentShape(Rectangle())
-                                }.buttonStyle(.plain)
-                                pinButton(agent).padding(.trailing, 4)
-                            }
+                            agentRow(agent, phone: true)
                             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
                             .listRowInsets(EdgeInsets(top: 1.5, leading: 12, bottom: 1.5, trailing: 12))
                             .listRowSeparator(.hidden).listRowBackground(Color.clear)
@@ -892,34 +870,29 @@ struct RelayWorkspaceView: View {
                 Task { await client.closeTerminal() }
             }
     }
-    private func agentRow(_ agent: RelayAgent) -> some View {
-        HStack(spacing: 2) {
-            Button { selectAgent(agent) } label: {
-                HStack(spacing: 10) {
-                    avatar(agent, size: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        agentName(agent, font: .system(size: 13, weight: .medium), machineFont: .system(size: 10, weight: .medium, design: .monospaced))
-                        Text(rowSubtitle(agent))
-                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    unreadIndicator(agent)
-                    if agent.isReachable() {
-                        Circle().fill(.green).frame(width: 6, height: 6)
-                    }
+    /// A row of the agent or conversation list, in the sidebar and on iPhone.
+    private func agentRow(_ agent: RelayAgent, phone: Bool = false) -> some View {
+        let model = client.rowModel(for: agent)
+        return HStack(spacing: 2) {
+            Button {
+                if phone { phonePath.append(MobileConversationRoute(agent: agent)) } else { selectAgent(agent) }
+            } label: {
+                AgentRowLabel(model: model, accent: accent, showsChevron: phone) {
+                    avatar(agent, size: phone ? 40 : 36)
                 }
-                .padding(.leading, 9).frame(maxWidth: .infinity, minHeight: 51, alignment: .leading)
-                .background(selected?.id == agent.id ? accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .padding(.leading, phone ? 12 : 9)
+                .background(!phone && selected?.id == agent.id ? accent.opacity(0.10) : .clear,
+                            in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
-            pinButton(agent)
+            .accessibilityLabel(model.accessibilityLabel)
+            .accessibilityAddTraits(!phone && selected?.id == agent.id ? .isSelected : [])
+            pinButton(agent).padding(.trailing, phone ? 4 : 0)
         }
-    }
-    @ViewBuilder private func unreadIndicator(_ agent: RelayAgent) -> some View {
-        if agent.source == .conversation && client.unreadConversationIDs.contains(agent.id) {
-            Circle().fill(accent).frame(width: 9, height: 9)
-                .accessibilityLabel("Unread messages")
-        }
+        // Only rows on screen ask for their session's brief.
+        .onAppear { client.rowAppeared(agent) }
+        .onChange(of: agent.sessionID) { _, _ in client.rowAppeared(agent) }
+        .onDisappear { client.rowDisappeared(agent) }
     }
     @ViewBuilder
     private func avatar(_ agent: RelayAgent, size: CGFloat, identifier: String = "Person avatar") -> some View {
