@@ -406,6 +406,7 @@ private enum SecureStore {
             if cloudWorkspaceID != oldValue {
                 resetPeople()
                 resetRowSummaries()
+                resetSessionEvents()
             }
         }
     }
@@ -421,6 +422,41 @@ private enum SecureStore {
         loader.onUpdate = { [weak self] id, summary in self?.rowSummaries[id] = summary }
         return loader
     }()
+    /// Each session's stored events read so far, by session id, for the app
+    /// run and in the disk cache; both cleared at sign-out and workspace switch.
+    @Published private(set) var sessionEvents: [String: SessionEventStore] = [:]
+    private struct SessionEventRead {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+    private var sessionEventReads: [String: SessionEventRead] = [:]
+    private var sessionEventsGeneration = 0
+    /// Where session events persist between launches: the on-disk cache,
+    /// or nothing in UI tests.
+    private let sessionEventSnapshots: SessionEventSnapshotStore
+    /// Reads one page of a session's events instead of Cloud; unit tests
+    /// set it. With it set, every agent with a session id can load events.
+    typealias SessionEventFetch = @MainActor (_ sessionID: String, _ spec: SessionEventsRequest.Spec) async throws -> SessionEventPage
+    private let sessionEventFetch: SessionEventFetch?
+
+    init(sessionEventSnapshots: SessionEventSnapshotStore? = nil, sessionEventFetch: SessionEventFetch? = nil) {
+        self.sessionEventFetch = sessionEventFetch
+        #if DEBUG
+        let fixture = RelayUITestFixture.enabled
+        #else
+        let fixture = false
+        #endif
+        if let sessionEventSnapshots {
+            self.sessionEventSnapshots = sessionEventSnapshots
+        } else if !fixture, let disk = SessionEventDiskCache.standard() {
+            self.sessionEventSnapshots = disk
+        } else {
+            self.sessionEventSnapshots = MemoryOnlySessionEventSnapshots()
+        }
+    }
+    /// The conversation whose relay history read has finished, found no
+    /// thread or failed, so the chat can tell loading from empty.
+    @Published private(set) var historyCheckedConversation: String?
     /// Hosted session summaries (`GET /sessions/:id/summary`), by session ID.
     @Published var sessionSummaries: [String: SessionSummaryCacheEntry] = [:]
     /// The summary load running for each session; later callers await it.
@@ -1008,7 +1044,7 @@ private enum SecureStore {
         if previousToken != messagingIdentity.token || previousURL != messagingIdentity.baseURL {
             resetPeople()
             registeredPushToken = nil
-            sessionGeneration += 1
+            advanceSessionGeneration()
             // Row loads from the old session come back nil; abandon them so
             // they are not stored as attempts and the rows load again now.
             resetRowSummaries()
@@ -1066,7 +1102,7 @@ private enum SecureStore {
         // Invalidate work before the first suspension point so an in-flight
         // refresh cannot repopulate signed-out state while cleanup awaits.
         refreshGeneration += 1
-        sessionGeneration += 1
+        advanceSessionGeneration()
         conversationRefreshGeneration += 1
         conversationMetadataWorkerID = nil
         threadMisses.reset()
@@ -1118,6 +1154,8 @@ private enum SecureStore {
         summaries = [:]
         goals = [:]
         resetRowSummaries()
+        resetSessionEvents()
+        historyCheckedConversation = nil
         sessionSummaries = [:]
         sessionRevisions = [:]
         sessionSources = [:]
@@ -1829,12 +1867,147 @@ private enum SecureStore {
                                             description: summaries[id]?.description ?? "", error: UserFacingError.message(for: error))
         }
     }
+    // MARK: Session events
+
+    /// Whether the chat can show `agent`'s stored session: it has a session
+    /// id and Cloud access is approved.
+    func sessionEventsAvailable(for agent: RelayAgent) -> Bool {
+        guard !agent.sessionID.isEmpty, agent.source != .channel, !agent.isHuman else { return false }
+        if sessionEventFetch != nil { return true }
+        #if DEBUG
+        if SessionEventsFixture.covers(agent.sessionID) { return true }
+        #endif
+        return canLoadSummaries
+    }
+
+    /// Whether the first read of `agent`'s session finished, well or not.
+    func sessionEventsSettled(for agent: RelayAgent) -> Bool {
+        guard let store = sessionEvents[agent.sessionID] else { return false }
+        return store.loaded || store.failures > 0
+    }
+
+    /// How long the open chat waits before reading the newest page again.
+    func sessionEventPollDelay(for agent: RelayAgent, now: Date = Date()) -> TimeInterval {
+        let store = sessionEvents[agent.sessionID]
+        return SessionEventPolling.interval(newestEventAt: store?.newest?.ts, now: now, failures: store?.failures ?? 0)
+    }
+
+    /// Reads the session's newest page and merges it. One read runs per
+    /// session; a call while one runs waits for it instead of starting
+    /// another. A failure keeps what is shown.
+    func refreshSessionEvents(for agent: RelayAgent) async {
+        await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: false) { _ in
+            SessionEventsRequest.newest
+        }
+    }
+
+    /// Reads the next older page, or the newest page again after the server
+    /// dropped the cursor. Nothing once the start was reached.
+    func loadOlderSessionEvents(for agent: RelayAgent) async {
+        await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: true) { store in
+            store.olderRequest
+        }
+    }
+
+    private func readSessionEvents(_ id: String, available: Bool, older: Bool,
+                                   request: @escaping (SessionEventStore) -> SessionEventsRequest.Spec?) async {
+        guard available, !id.isEmpty else { return }
+        // Wait for a read already running for this session: one in flight.
+        while let running = sessionEventReads[id] {
+            await running.task.value
+            if Task.isCancelled { return }
+        }
+        let generation = sessionEventsGeneration
+        let workspaceID = cloudWorkspaceID
+        let cacheWorkspace = workspaceID ?? ""
+        let token = UUID()
+        // Not a child of the caller: a chat closed mid-read still stores what
+        // it read. It clears its own in-flight entry as its last step, so a
+        // read waiting on it never sees a finished one.
+        let read = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if self.sessionEventReads[id]?.token == token { self.sessionEventReads[id] = nil } }
+            if self.sessionEvents[id] == nil {
+                // The cached copy shows first; the network read merges into it.
+                let restored = await self.sessionEventSnapshots.load(workspaceID: cacheWorkspace, sessionID: id)
+                guard self.sessionEventsGeneration == generation else { return }
+                if self.sessionEvents[id] == nil {
+                    self.sessionEvents[id] = restored.flatMap { $0.sessionID == id ? SessionEventStore(snapshot: $0) : nil }
+                        ?? SessionEventStore(sessionID: id)
+                }
+            }
+            guard let store = self.sessionEvents[id], let spec = request(store) else { return }
+            do {
+                let page = try await self.fetchSessionEventPage(id, workspaceID: workspaceID, spec: spec)
+                guard self.sessionEventsGeneration == generation else { return }
+                guard var updated = self.sessionEvents[id] else { return }
+                let changed = updated.apply(page, for: spec)
+                // An unchanged poll publishes nothing, so the open chat is not re-rendered.
+                if updated != self.sessionEvents[id] { self.sessionEvents[id] = updated }
+                if changed { self.sessionEventSnapshots.save(updated.snapshot, workspaceID: cacheWorkspace) }
+            } catch {
+                guard self.sessionEventsGeneration == generation else { return }
+                let failure = error as? RelayAPIError
+                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "", older: older)
+                if SessionEventsRequest.accessRevoked(status: failure?.status) {
+                    // This account may no longer read it: off the screen and the disk.
+                    self.sessionEvents[id]?.forgetEvents()
+                    self.sessionEventSnapshots.remove(workspaceID: cacheWorkspace, sessionID: id)
+                } else if SessionEventsRequest.sessionGone(status: failure?.status) {
+                    // Gone from the server: forget the cached copy, keep what is shown.
+                    self.sessionEventSnapshots.remove(workspaceID: cacheWorkspace, sessionID: id)
+                }
+            }
+        }
+        sessionEventReads[id] = SessionEventRead(token: token, task: read)
+        await read.value
+    }
+
+    private func fetchSessionEventPage(_ id: String, workspaceID: String?,
+                                       spec: SessionEventsRequest.Spec) async throws -> SessionEventPage {
+        if let sessionEventFetch { return try await sessionEventFetch(id, spec) }
+        #if DEBUG
+        if SessionEventsFixture.covers(id) {
+            if SessionEventsFixture.delaysFirstPage, sessionEvents[id]?.loaded != true {
+                try await Task.sleep(for: .seconds(2))
+            }
+            guard let data = SessionEventsFixture.response(sessionID: id, spec: spec) else {
+                throw RelayAPIError(message: "No fixture events")
+            }
+            return try SessionEventPage.decode(data, sessionID: id)
+        }
+        #endif
+        guard let workspaceID, let path = SessionEventsRequest.path(workspaceID: workspaceID, sessionID: id, spec: spec) else {
+            throw RelayAPIError(message: "Sign in again to view this session")
+        }
+        let response = try await authorizedCloudCall(path)
+        return try SessionEventPage.decode(try JSONSerialization.data(withJSONObject: response), sessionID: id)
+    }
+
+    /// Starts a new identity session: work from the previous one is
+    /// invalidated and its session events, in memory and on disk, forgotten,
+    /// even when the workspace id stays the same.
+    func advanceSessionGeneration() {
+        sessionGeneration += 1
+        resetSessionEvents()
+    }
+
+    /// Forgets every session's events, in memory and on disk, and any read in flight.
+    private func resetSessionEvents() {
+        sessionEventsGeneration += 1
+        sessionEventReads.values.forEach { $0.task.cancel() }
+        sessionEventReads = [:]
+        sessionEvents = [:]
+        sessionEventSnapshots.removeAll()
+    }
+
     func selectConversation(_ agent: RelayAgent?) {
         let id = agent?.id
         guard selectedConversation != id else { return }
         selectedConversation = id
         messages = []
         loadedHistoryConversation = nil
+        historyCheckedConversation = nil
         refreshNotice = nil
     }
     /// Whether `messages` holds the history of `agent`'s conversation, read
@@ -1848,6 +2021,7 @@ private enum SecureStore {
     /// connection shows nothing the person didn't ask for.
     func loadHistory(for agent: RelayAgent, reportsErrors: Bool = true) async {
         guard selectedConversation == agent.id else { return }
+        defer { if selectedConversation == agent.id { historyCheckedConversation = agent.id } }
         let ticket = connectionReports.begin(.history)
         do {
             let path: String

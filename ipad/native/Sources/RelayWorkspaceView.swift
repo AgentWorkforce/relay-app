@@ -31,8 +31,12 @@ private enum ChatTimestamps {
     }
 
     static func startsGroup(_ message: RelayMessage, after previous: RelayMessage?) -> Bool {
-        guard let date = message.createdAt else { return false }
-        guard let previousDate = previous?.createdAt else { return true }
+        startsGroup(at: message.createdAt, after: previous?.createdAt)
+    }
+
+    static func startsGroup(at date: Date?, after previousDate: Date?) -> Bool {
+        guard let date else { return false }
+        guard let previousDate else { return true }
         return !Calendar.current.isDate(date, inSameDayAs: previousDate)
             || date.timeIntervalSince(previousDate) >= 15 * 60
             || date < previousDate
@@ -46,7 +50,7 @@ private struct SavedSpawnProject: Codable, Identifiable, Hashable {
     let path: String
 }
 
-private enum ChatLinks {
+enum ChatLinks {
     static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
     static func render(_ value: String) -> AttributedString {
@@ -102,6 +106,9 @@ struct RelayWorkspaceView: View {
     @State private var pinnedAgentIDs: Set<String> = []
     @State private var sidebarCollapsed = WorkspaceSidebarLayout.storedCollapsed()
     @GestureState private var revealedTimeWidth: CGFloat = 0
+    /// Whether the end of the open chat is on screen; new session events
+    /// scroll it only then, so reading older activity is not interrupted.
+    @State private var chatPosition = ChatScrollPosition()
     @State private var collapsedOverviewIDs: Set<String> = []
     @State private var commandDraft = ""
     @State private var newRecipient = ""
@@ -1311,6 +1318,21 @@ struct RelayWorkspaceView: View {
         let scrollRequest = MobileChatScrollRequest(
             pending: outgoing.messages(for: agent.id).map(\.id),
             messages: client.messages.map(\.id))
+        let sessionApplies = client.sessionEventsAvailable(for: agent)
+        let store = sessionApplies ? client.sessionEvents[agent.sessionID] : nil
+        let pending = outgoing.messages(for: agent.id)
+        let timeline = SessionTimeline.items(
+            messages: client.messages, events: store?.events ?? [],
+            pending: pending.map { SessionTimeline.Pending(text: $0.text, createdAt: $0.createdAt) },
+            me: client.messagingHandle)
+        let placeholder = SessionTimeline.placeholder(
+            hasRows: !timeline.isEmpty || !pending.isEmpty,
+            historyChecked: client.historyCheckedConversation == agent.id || client.historyLoaded(for: agent),
+            sessionApplies: sessionApplies, sessionSettled: client.sessionEventsSettled(for: agent))
+        let lastMineID = client.messages.last(where: \.mine)?.id
+        let lastEventID = store?.newest?.id
+        // Restarts on another chat, and stops in the background: no reads there.
+        let pollID = "\(agent.id)|\(agent.sessionID)|\(sessionApplies)|\(scenePhase == .active)"
         return VStack(spacing: 0) {
             if agent.source == .drive {
                 HStack(spacing: 10) {
@@ -1329,56 +1351,54 @@ struct RelayWorkspaceView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             if agent.source != .channel { summaryCard(for: agent) }
-                            if client.messages.isEmpty {
+                            if agent.source != .channel, !agent.isHuman, !sessionApplies {
+                                Text("This agent's session is not available here.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .accessibilityIdentifier("Session unavailable")
+                            }
+                            if let store, store.hasOlder {
+                                OlderSessionRow(cursorKey: "\(agent.id)|\(store.olderCursor ?? "restart")",
+                                                autoLoads: !store.olderAutoLoadStopped) {
+                                    await loadOlder(for: agent, keeping: timeline.first?.id, proxy: proxy)
+                                }
+                            }
+                            if placeholder == .loading {
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                    Text("Loading conversation…").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity).padding(.top, timeline.isEmpty ? 45 : 0)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityIdentifier("Conversation loading")
+                            } else if placeholder == .empty {
                                 Text(agent.source == .channel ? "No messages yet. Everyone in \(agent.address) will see what you send."
                                      : "No messages yet. Send one to keep this agent moving.")
                                     .font(.subheadline).foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity).padding(.top, 45)
                             }
-                            ForEach(Array(client.messages.enumerated()), id: \.element.id) { index, message in
-                                if let date = message.createdAt,
-                                   ChatTimestamps.startsGroup(message, after: index == 0 ? nil : client.messages[index - 1]) {
+                            if let store, store.failures > 0 {
+                                Text(store.loaded ? "Session activity could not refresh. Retrying…"
+                                     : "Session activity could not load. Retrying…")
+                                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                            }
+                            ForEach(Array(timeline.enumerated()), id: \.element.id) { index, item in
+                                if let date = item.date,
+                                   ChatTimestamps.startsGroup(at: date, after: index == 0 ? nil : timeline[index - 1].date) {
                                     Text(ChatTimestamps.divider(date))
                                         .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity)
                                         .padding(.top, 15).padding(.bottom, 4)
                                 }
-                                messageTimeRow(at: message.createdAt) {
-                                    VStack(alignment: .trailing, spacing: 3) {
-                                    HStack(alignment: .bottom) {
-                                        if message.mine {
-                                            Spacer(minLength: 45)
-                                        } else if agent.source == .channel {
-                                            // Several people and agents share a channel,
-                                            // so each message shows who sent it.
-                                            avatar(client.sender(of: message), size: 28, identifier: "Message sender avatar")
-                                        }
-                                        VStack(alignment: .leading, spacing: 5) {
-                                            Text(ChatLinks.render(message.text)).font(.system(size: 14))
-                                                .textSelection(.enabled).tint(accent)
-                                                .accessibilityValue(message.createdAt.map {
-                                                    "\(message.mine ? "Sent" : "Received") \(ChatTimestamps.divider($0))"
-                                                } ?? "")
-                                            ForEach(message.attachments) { attachment in
-                                                attachmentButton(attachment)
-                                            }
-                                            Text(senderLabel(message, in: agent))
-                                                .font(.system(size: 10)).foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        .padding(12).background(message.mine ? accent.opacity(0.12) : Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-                                        if !message.mine { Spacer(minLength: 45) }
-                                    }
-                                    // Part of the row so it scrolls into view and
-                                    // slides with the bubble when times are revealed.
-                                    if message.mine && message.id == client.messages.last(where: \.mine)?.id {
-                                        Text(client.deliveryLabel(for: message, to: agent))
-                                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                                            .accessibilityIdentifier("Delivery status")
-                                    }
-                                    }
-                                }.id(MobileChatScrollTarget.message(message.id))
+                                switch item {
+                                case .message(let message):
+                                    messageRow(message, in: agent, showsDelivery: message.mine && message.id == lastMineID)
+                                case .event(let row):
+                                    messageTimeRow(at: row.event.ts) {
+                                        SessionEventBubble(row: row, agentName: agent.name, accent: accent)
+                                    }.id(MobileChatScrollTarget.message(row.id))
+                                }
                             }
                             ForEach(outgoing.messages(for: agent.id)) { pending in
                                 messageTimeRow(at: pending.createdAt) {
@@ -1413,6 +1433,11 @@ struct RelayWorkspaceView: View {
                                     }
                                 }.id(MobileChatScrollTarget.pending(pending.id))
                             }
+                            if let store { SessionWorkingRow(events: store.events) }
+                            Color.clear.frame(height: 1)
+                                .id(MobileChatScrollTarget.message("chat-bottom"))
+                                .onAppear { chatPosition.atBottom = true }
+                                .onDisappear { chatPosition.atBottom = false }
                         }.padding(20)
                         // Fill the visible message area so a tap below a short
                         // thread counts as empty space too; the reader's height
@@ -1441,6 +1466,19 @@ struct RelayWorkspaceView: View {
                         guard !Task.isCancelled, let scrollTarget = scrollRequest.target else { return }
                         withAnimation { proxy.scrollTo(scrollTarget, anchor: .bottom) }
                     }
+                    .onChange(of: lastEventID) { previous, _ in
+                        // The first page lands at the end; later events only
+                        // follow a reader who is already there.
+                        guard previous == nil || chatPosition.atBottom else { return }
+                        proxy.scrollTo(MobileChatScrollTarget.message("chat-bottom"), anchor: .bottom)
+                    }
+                    .task(id: pollID) {
+                        guard sessionApplies, scenePhase == .active else { return }
+                        while !Task.isCancelled {
+                            await client.refreshSessionEvents(for: agent)
+                            try? await Task.sleep(for: .seconds(client.sessionEventPollDelay(for: agent)))
+                        }
+                    }
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -1448,6 +1486,50 @@ struct RelayWorkspaceView: View {
                     .background(Color(.systemBackground))
             }
         }
+    }
+    private func messageRow(_ message: RelayMessage, in agent: RelayAgent, showsDelivery: Bool) -> some View {
+        messageTimeRow(at: message.createdAt) {
+            VStack(alignment: .trailing, spacing: 3) {
+            HStack(alignment: .bottom) {
+                if message.mine {
+                    Spacer(minLength: 45)
+                } else if agent.source == .channel {
+                    // Several people and agents share a channel,
+                    // so each message shows who sent it.
+                    avatar(client.sender(of: message), size: 28, identifier: "Message sender avatar")
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(ChatLinks.render(message.text)).font(.system(size: 14))
+                        .textSelection(.enabled).tint(accent)
+                        .accessibilityValue(message.createdAt.map {
+                            "\(message.mine ? "Sent" : "Received") \(ChatTimestamps.divider($0))"
+                        } ?? "")
+                    ForEach(message.attachments) { attachment in
+                        attachmentButton(attachment)
+                    }
+                    Text(senderLabel(message, in: agent))
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(12).background(message.mine ? accent.opacity(0.12) : Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                if !message.mine { Spacer(minLength: 45) }
+            }
+            // Part of the row so it scrolls into view and
+            // slides with the bubble when times are revealed.
+            if showsDelivery {
+                Text(client.deliveryLabel(for: message, to: agent))
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("Delivery status")
+            }
+            }
+        }.id(MobileChatScrollTarget.message(message.id))
+    }
+    private func loadOlder(for agent: RelayAgent, keeping firstItemID: String?, proxy: ScrollViewProxy) async {
+        let before = client.sessionEvents[agent.sessionID]?.events.count ?? 0
+        await client.loadOlderSessionEvents(for: agent)
+        guard (client.sessionEvents[agent.sessionID]?.events.count ?? 0) > before, let firstItemID else { return }
+        // Relay and event rows share the `.message` scroll namespace.
+        proxy.scrollTo(MobileChatScrollTarget.message(firstItemID), anchor: .top)
     }
     @ViewBuilder
     private func outgoingStatus(_ state: OutgoingMessage.State) -> some View {
