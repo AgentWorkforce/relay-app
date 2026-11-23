@@ -34,7 +34,7 @@ export default defineLayeredAgent({
   // lane-scripts.sha is their content hash (lane-scripts.ts), so a change
   // to them is a hot change the deploy sees and runs setup-lane.sh for.
   // delegations.json is the delegated-approval allowlist delegation-decide.py
-  // reads; it ships with no delegations.
+  // reads; test/delegation.test.ts pins its grants.
   laneFiles: ["lead-prompt.md", "setup-lane.sh", "load-secrets-lane.sh", "share-lead-session.sh", "lane-scripts.sha", "delegations.json"],
   // Local CI lanes: cargo + GTK 4 under xvfb, shellcheck.
   aptPackages: ["pkg-config", "libgtk-4-dev", "libssl-dev", "libdbus-1-dev", "xvfb", "shellcheck"],

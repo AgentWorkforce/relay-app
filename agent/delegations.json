@@ -1,5 +1,17 @@
 {
   "version": 2,
   "owners": ["khaliq-gant"],
-  "delegations": []
+  "delegations": [
+    {
+      "agent": "iosgrok",
+      "agentId": "241657388808208384",
+      "expiresAt": "2026-12-19T00:00:00Z",
+      "grantedBy": "khaliq-gant",
+      "grantedAt": "2026-11-19T10:21:40Z",
+      "reason": "The owner's own Relay messages approved a one-entry grant for iosgrok (2026-11-19) and spawn ownership for it (2026-11-20, message 249404830023421952).",
+      "scope": "owner-equivalent",
+      "ownsSpawned": true,
+      "ownerMessageId": "249116914056548352"
+    }
+  ]
 }

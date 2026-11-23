@@ -218,8 +218,43 @@ test("delegations.json is a lane file", async () => {
   assert.ok(agent.files.some((f) => f.name === "delegations.json" && f.source !== "kit"));
 });
 
-test("delegations.json ships as version 2 with the owner and no delegations", () => {
-  assert.deepEqual(JSON.parse(source("delegations.json")), { version: 2, owners: ["khaliq-gant"], delegations: [] });
+// The whole file is pinned: a grant is added, renewed or removed only by a
+// reviewed landing that changes this test with it.
+test("delegations.json ships as version 2 with the owner and the one grant", () => {
+  const doc = JSON.parse(source("delegations.json"));
+  assert.deepEqual(doc, {
+    version: 2,
+    owners: ["khaliq-gant"],
+    delegations: [
+      {
+        agent: "iosgrok",
+        agentId: "241657388808208384",
+        expiresAt: "2026-12-19T00:00:00Z",
+        grantedBy: "khaliq-gant",
+        grantedAt: "2026-11-19T10:21:40Z",
+        reason: "The owner's own Relay messages approved a one-entry grant for iosgrok (2026-11-19) and spawn ownership for it (2026-11-20, message 249404830023421952).",
+        scope: "owner-equivalent",
+        ownsSpawned: true,
+        ownerMessageId: "249116914056548352",
+      },
+    ],
+  });
+});
+
+// This reads only what the file says about itself: it cannot tell who really
+// approved a grant. The owner's own message does that, at the landing.
+// Spawn ownership is its own decision by the owner, so the agents that hold it
+// are named here: no other grant turns it on in passing.
+const spawnOwners = ["iosgrok"];
+test("every grant names an owner in grantedBy, lasts at most 30 days and owns spawned agents only if named", () => {
+  const doc = JSON.parse(source("delegations.json"));
+  for (const grant of doc.delegations) {
+    assert.ok(doc.owners.includes(grant.grantedBy), grant.agent);
+    assert.equal(grant.ownsSpawned, spawnOwners.includes(grant.agent), grant.agent);
+    const granted = Date.parse(grant.grantedAt);
+    const expires = Date.parse(grant.expiresAt);
+    assert.ok(granted < expires && expires <= granted + 30 * 86_400_000, grant.agent);
+  }
 });
 
 const row = (over: Record<string, unknown> = {}) => ({ channel: "stable", sha: SHA, run_id: RUN, dispatched_at: "2026-11-19T00:00:00Z", status: "ready", version: "2026.11.99", auto: false, profile: null, ...over });
