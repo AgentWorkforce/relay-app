@@ -96,6 +96,8 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
     var lastSeen: Date?
     /// The turn the agent's desktop publishes (`metadata.activity.turn`).
     var activityTurn: AgentTurn?
+    /// When the turn or the doing line last changed (`metadata.activity.updated_ms`).
+    var activityUpdatedAt: Date?
     /// What it says it is doing (`metadata.activity.doing`): another
     /// machine's text, one line of at most 120 characters, shown as plain text.
     var activityDoing = ""
@@ -148,6 +150,7 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         isDesktopRegistration = string(metadata["source"]) == "relay-desktop"
         let activity = object(metadata["activity"])
         activityTurn = AgentTurn(reported: string(activity["turn"]))
+        activityUpdatedAt = AgentListOrder.activityTime(activity["updated_ms"])
         activityDoing = String(string(activity["doing"]).split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
         isListed = string(metadata["renamed_to"]).isEmpty
         let seen = string(data["last_seen"])

@@ -42,9 +42,10 @@ enum ChatActivity: Equatable, Sendable {
 }
 
 /// The agent list's order, the desktop Chat page's: by activity, then by
-/// recency in five-minute buckets, then by name. Agents heartbeat every few
-/// seconds; ordering by the exact time would reshuffle the list on each
-/// refresh, so a time only moves a row when it crosses a bucket.
+/// recency in five-minute buckets, then by name. Recency is when the agent
+/// last did something (its reported activity changed, or its loaded session
+/// wrote), never its presence heartbeat, so a heartbeat never moves a row;
+/// the bucket keeps a busy agent from moving on every event.
 enum AgentListOrder {
     /// How recently a loaded session must have written to count as working.
     static let workingWindow: TimeInterval = 120
@@ -55,8 +56,8 @@ enum AgentListOrder {
     struct Entry: Equatable {
         var name: String
         var activity: ChatActivity
-        /// The newest time the client knows the agent was active; nil when
-        /// it knows none.
+        /// The newest time the client knows the agent did something; nil
+        /// when it knows none. Never a heartbeat.
         var lastActivity: Date?
         /// Breaks a tie between equal names, so the order never depends on
         /// the input's.
@@ -77,6 +78,16 @@ enum AgentListOrder {
             if let lastEventAt, now.timeIntervalSince(lastEventAt) <= workingWindow { return .working }
             return .idle
         }
+    }
+
+    /// The time in a roster record's `metadata.activity.updated_ms`: whole
+    /// milliseconds since 1970. Absent, zero or less, a fraction, not finite,
+    /// a boolean or not a number is no time.
+    static func activityTime(_ value: Any?) -> Date? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, let ms = Int64(exactly: double), ms > 0 else { return nil }
+        return Date(timeIntervalSince1970: Double(ms) / 1000)
     }
 
     /// `date`'s five-minute bucket: `floor(ms / 300000)`.
