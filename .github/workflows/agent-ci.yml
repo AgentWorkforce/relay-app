@@ -35,6 +35,14 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@agentworkforce'
 
+      # delegations.json is not tracked: Agent Deploy writes it from the
+      # agent-deploy environment's secret. This job has no environment and no
+      # secret, so the generator writes the empty list (no grants, and no
+      # warning without --warn-unset), which is what the stack tests read as
+      # a lane file.
+      - name: Write the delegation list
+        run: node agent/delegations-from-env.ts agent/delegations.json
+
       # package-lock.json is committed from this run's artifact after each
       # pin bump (the lead's host cannot install from GitHub Packages); the
       # npm install branch covers the bump in progress, as now for 0.1.2.

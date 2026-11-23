@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["agent.config.ts", "alchemy.run.ts", "lane-scripts.ts", "preview-change-set.ts", "test"]
+  "include": ["agent.config.ts", "alchemy.run.ts", "delegations-from-env.ts", "lane-scripts.ts", "preview-change-set.ts", "test"]
 }

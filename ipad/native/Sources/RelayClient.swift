@@ -2128,7 +2128,9 @@ private enum SecureStore {
         #if DEBUG
         if SessionEventsFixture.covers(id) {
             if SessionEventsFixture.delaysFirstPage, sessionEvents[id]?.loaded != true {
-                try await Task.sleep(for: .seconds(2))
+                guard try await SessionEventsFixture.holdFirstPage() else {
+                    throw RelayAPIError(message: "UI test never released the session events")
+                }
             }
             guard let data = SessionEventsFixture.response(sessionID: id, spec: spec) else {
                 throw RelayAPIError(message: "No fixture events")

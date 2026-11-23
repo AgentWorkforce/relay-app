@@ -35,15 +35,66 @@ final class SessionStreamUITests: XCTestCase {
         return element.exists
     }
 
+    private func waitFor(_ format: String, _ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// Why the working row is missing, recorded before the test fails: a
+    /// screenshot, the element tree, and the facts that tell the causes apart.
+    private func diagnoseMissingWorking(_ working: XCUIElement, in app: XCUIApplication) -> String {
+        attach(app, "working-missing")
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "working-missing-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
+        let newest = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS 'All release checks passed.'")).firstMatch
+        let group = app.descendants(matching: .any).matching(identifier: "Session activity group").firstMatch
+        let thread = app.scrollViews["Conversation thread"].firstMatch
+        let threadShown = thread.exists
+        var facts = [
+            "b5 'All release checks passed.' exists: \(newest.exists)",
+            "Session activity group exists: \(group.exists)",
+            "Conversation thread exists: \(threadShown)" + (threadShown ? ", frame \(thread.frame)" : ""),
+            "window frame: \(app.windows.firstMatch.frame)",
+        ]
+        if threadShown && thread.isHittable {
+            thread.swipeUp()
+            facts.append("working after one swipeUp of the thread: \(working.waitForExistence(timeout: 3))")
+        } else {
+            facts.append("working after one swipeUp of the thread: not tried, the thread is not hittable")
+        }
+        let summary = facts.joined(separator: "; ")
+        let text = XCTAttachment(string: summary)
+        text.name = "working-missing-facts"
+        text.lifetime = .keepAlways
+        add(text)
+        return summary
+    }
+
     func testLoadingRowGivesWayToTheMergedTimeline() throws {
         let app = open("builder", ["-RelayUITestSessionEventsDelay"])
-        // Relay messages show at once; the session is still loading, so the
-        // empty text never shows.
+        // Relay messages show at once; the fixture holds the session's first
+        // page until the test releases it, so the loading row shows and the
+        // empty text never does.
         XCTAssertTrue(app.staticTexts["Ship it"].waitForExistence(timeout: 10))
         let loading = app.descendants(matching: .any).matching(identifier: "Conversation loading").firstMatch
-        XCTAssertTrue(loading.exists)
+        XCTAssertTrue(loading.waitForExistence(timeout: 10), "The loading row must show while the first page is held")
         XCTAssertFalse(app.staticTexts["No messages yet. Send one to keep this agent moving."].exists)
         attach(app, "loading")
+
+        // Release the held page. A hold that ran out reads "timed out" and
+        // fails here, rather than letting the timeline arrive on a timer.
+        let release = app.buttons["ui-test-release-session-events"].firstMatch
+        XCTAssertTrue(release.waitForExistence(timeout: 5), "The fixture's release control must show")
+        XCTAssertEqual(release.value as? String, "held", "The fixture's hold ran out before the test released it")
+        release.tap()
+        if !waitFor("value == 'released'", release, timeout: 3) {
+            release.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(waitFor("value == 'released'", release, timeout: 5),
+                      "The fixture's hold ran out before the test released it (control reads \((release.value as? String) ?? "nil"))")
 
         XCTAssertTrue(app.staticTexts["Running the build checks now."].waitForExistence(timeout: 10))
         XCTAssertFalse(loading.exists)
@@ -99,8 +150,50 @@ final class SessionStreamUITests: XCTestCase {
     func testRecentToolCallShowsWorking() throws {
         let app = open("builder", ["-RelayUITestSessionWorking"])
         let working = app.descendants(matching: .any).matching(identifier: "Agent working").firstMatch
-        XCTAssertTrue(working.waitForExistence(timeout: 10))
+        let shown = working.waitForExistence(timeout: 10)
+        let facts = shown ? "" : diagnoseMissingWorking(working, in: app)
+        XCTAssertTrue(shown, "The working row did not show. \(facts)")
         XCTAssertTrue(working.label.contains("Working…"))
         attach(app, "working")
+    }
+
+    /// Opens the builder with an older page behind its first one, lets the
+    /// page load on its own (its row is on screen in this short chat), and
+    /// returns once it has: the "Load earlier activity" row is gone. No
+    /// tap: the row can go between a check and the tap.
+    private func loadOlderPage(_ argument: String, firstRow: (XCUIApplication) -> XCUIElement) -> XCUIApplication {
+        let app = open("builder", [argument])
+        XCTAssertTrue(firstRow(app).waitForExistence(timeout: 10))
+        let older = app.buttons["Load earlier activity"]
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: older)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "the older page never loaded")
+        return app
+    }
+
+    /// The row the reader was looking at is on screen, not pushed below it
+    /// by the rows that loaded above.
+    private func assertOnScreen(_ element: XCUIElement, in app: XCUIApplication) {
+        let thread = app.scrollViews["Conversation thread"].firstMatch
+        XCTAssertTrue(element.isHittable, "\(element.frame) is not on screen")
+        XCTAssertTrue(thread.frame.intersects(element.frame), "\(element.frame) is outside \(thread.frame)")
+    }
+
+    func testOlderToolWorkJoiningTheTopGroupKeepsItInView() throws {
+        // The older page's tool work joins the top group (three steps become
+        // five) and more than a screen of notes lands above it.
+        let app = loadOlderPage("-RelayUITestSessionOlderTools") {
+            $0.buttons.matching(identifier: "Session activity group").firstMatch
+        }
+        let joined = app.buttons.matching(NSPredicate(format: "identifier == 'Session activity group' AND label CONTAINS '5 steps'")).firstMatch
+        XCTAssertTrue(joined.waitForExistence(timeout: 10))
+        assertOnScreen(joined, in: app)
+        attach(app, "older-tools-joined")
+    }
+
+    func testOlderNotesKeepTheFirstReplyInView() throws {
+        // More than a screen of notes lands above a plain reply.
+        let app = loadOlderPage("-RelayUITestSessionOlderNotes") { $0.staticTexts["Picking up the lantern checks."] }
+        assertOnScreen(app.staticTexts["Picking up the lantern checks."], in: app)
+        attach(app, "older-notes")
     }
 }

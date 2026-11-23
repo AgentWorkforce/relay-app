@@ -509,3 +509,64 @@ empty feed, with a warning, and any other failure fails the run. Given a
 `version`, the run does not list the feed and its candidate is marked
 unlisted: Desktop Promote lists the feed before it publishes and refuses a
 version the feed already holds other than as a draft.
+
+## Agent Deploy: the delegated-approval list
+
+The layered agent's delegated-approval list (`agent/delegations.json`, a lane
+file the agent host's permit validator reads) is not tracked in the
+repository. It lives in the `LAYERED_AGENT_DELEGATIONS` secret of the
+`agent-deploy` environment. It is a secret, not a variable: the runner prints
+a step's environment with the values expanded and masks only secrets, and
+workflow logs are public. Its value is a JSON array of grant entries; the
+list's version and owner are constants in `agent/delegations-from-env.ts`, so
+the secret can add grants but cannot change who the owner is. One synthetic
+entry, shown spread out here for reading:
+
+```json
+[
+  {
+    "agent": "example-bot",
+    "agentId": "100000000000000001",
+    "expiresAt": "2026-12-19T00:00:00Z",
+    "grantedBy": "khaliq-gant",
+    "grantedAt": "2026-11-19T10:21:40Z",
+    "reason": "Why the owner granted it, on one line.",
+    "scope": "owner-equivalent",
+    "ownsSpawned": false,
+    "ownerMessageId": "200000000000000001"
+  }
+]
+```
+
+Store it as compact JSON on one line (for example the output of
+`jq -c .`). GitHub masks a multi-line secret line by line, so short lines such
+as `[` or `}` would be masked everywhere in the logs. The generator ignores
+whitespace at both ends of the value, a trailing newline included, and
+refuses a value with a line break (CR or LF) anywhere else.
+
+Every key is required and no other key is accepted. `agentId` and
+`ownerMessageId` are digits, the timestamps are UTC to the second,
+`grantedBy` is an owner, a grant lasts at most 30 days, and no two entries
+share an agent or an `agentId`. The generator does not refuse a grant that
+has already expired; the host's validator refuses it when it is used. Agent
+Deploy's preview and deploy jobs write `agent/delegations.json` from the
+secret with the same command before anything reads `agent/`. Unset or blank,
+the list is empty, no agent holds a permit, and the job shows a warning that
+says so; an explicit `[]` writes the same empty list without the warning. A
+value that is not a valid list fails the job before the kit runs, and its log
+names the entry and field, never a value. The preview job keeps the sha256 of
+the file it wrote as a job output, and the deploy job fails if its own file
+has another digest (the secret changed in between): run the deploy again.
+Agent CI writes the empty list, without the warning.
+
+A change to the secret reaches the host only with the next deploy: a
+dispatch of Agent Deploy by the owner, or the next landing that changes
+`agent/` or the agent workflows. A deploy that changes only this file is a
+hot update, without a restart. A secret cannot be read back on GitHub: the
+list in force is the file the last deploy wrote on the host.
+
+**Trust root.** No list of allowed agents is kept in the repository. Whoever
+can edit the `agent-deploy` environment's secrets can grant, to any agent,
+including `ownsSpawned: true`. The generator fixes the owner, the scope and
+the 30-day limit, and checks nothing else. The environment should require a
+reviewer, so that a deploy with a changed list waits for the owner.

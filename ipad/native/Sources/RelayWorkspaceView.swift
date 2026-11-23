@@ -114,6 +114,8 @@ struct RelayWorkspaceView: View {
     /// Whether the end of the open chat is on screen; new session events
     /// scroll it only then, so reading older activity is not interrupted.
     @State private var chatPosition = ChatScrollPosition()
+    /// The row to keep in place while an older session page loads.
+    @State private var olderPageAnchor: OlderPageAnchor?
     @State private var collapsedOverviewIDs: Set<String> = []
     @State private var commandDraft = ""
     @State private var newRecipient = ""
@@ -1391,7 +1393,7 @@ struct RelayWorkspaceView: View {
                             if let store, store.hasOlder {
                                 OlderSessionRow(cursorKey: "\(agent.id)|\(store.olderCursor ?? "restart")",
                                                 autoLoads: !store.olderAutoLoadStopped) {
-                                    await loadOlder(for: agent, keeping: timeline.first?.id, proxy: proxy)
+                                    await loadOlder(for: agent)
                                 }
                             }
                             if placeholder == .loading {
@@ -1489,7 +1491,7 @@ struct RelayWorkspaceView: View {
                                 SessionWorkingRow(open: turnOpen, newestEventAt: store.newest?.ts, offline: offline)
                             }
                             Color.clear.frame(height: 1)
-                                .id(MobileChatScrollTarget.message("chat-bottom"))
+                                .id(MobileChatScrollTarget.end)
                                 .onAppear { chatPosition.atBottom = true }
                                 .onDisappear { chatPosition.atBottom = false }
                         }.padding(20)
@@ -1514,17 +1516,31 @@ struct RelayWorkspaceView: View {
                     )
                     .task(id: scrollRequest) {
                         // A send can insert history and remove its pending row in
-                        // one update. Reconcile once, then scroll to the surviving
-                        // row; a superseded task must never target a removed row.
+                        // one update. Reconcile once, then scroll to the end:
+                        // the new bubble or message is there, with any session
+                        // rows and "Working…" after it, and the end row is never removed.
                         await Task.yield()
-                        guard !Task.isCancelled, let scrollTarget = scrollRequest.target else { return }
-                        withAnimation { proxy.scrollTo(scrollTarget, anchor: .bottom) }
+                        guard !Task.isCancelled, let destination = scrollRequest.destination else { return }
+                        withAnimation { proxy.scrollTo(destination, anchor: .bottom) }
                     }
                     .onChange(of: lastEventID) { previous, _ in
                         // The first page lands at the end; later events only
                         // follow a reader who is already there.
                         guard previous == nil || chatPosition.atBottom else { return }
-                        proxy.scrollTo(MobileChatScrollTarget.message("chat-bottom"), anchor: .bottom)
+                        proxy.scrollTo(MobileChatScrollTarget.end, anchor: .bottom)
+                    }
+                    .onChange(of: store?.events.first?.id) { _, oldest in
+                        // An older page's rows are in the chat now: keep the
+                        // row that was first before it at the top.
+                        guard let anchor = olderPageAnchor else { return }
+                        switch anchor.step(sessionID: agent.sessionID, oldestID: oldest, items: timeline) {
+                        case .wait: break
+                        case .drop: olderPageAnchor = nil
+                        case .scroll(let id):
+                            olderPageAnchor = nil
+                            // Relay and event rows share the `.message` scroll namespace.
+                            proxy.scrollTo(MobileChatScrollTarget.message(id), anchor: .top)
+                        }
                     }
                     .task(id: pollID) {
                         guard sessionApplies, scenePhase == .active else { return }
@@ -1590,12 +1606,19 @@ struct RelayWorkspaceView: View {
             }
         }.id(MobileChatScrollTarget.message(message.id))
     }
-    private func loadOlder(for agent: RelayAgent, keeping firstItemID: String?, proxy: ScrollViewProxy) async {
-        let before = client.sessionEvents[agent.sessionID]?.events.count ?? 0
+    /// Reads the next older page. The scroll that keeps the reader's place
+    /// is not made here but when the page's rows are in the chat (the
+    /// conversation's change of oldest event), from the store as it is when
+    /// the load starts, not a row id captured when the load was scheduled.
+    private func loadOlder(for agent: RelayAgent) async {
+        let anchor = OlderPageAnchor(sessionID: agent.sessionID, oldest: client.sessionEvents[agent.sessionID]?.events.first)
+        olderPageAnchor = anchor
         await client.loadOlderSessionEvents(for: agent)
-        guard (client.sessionEvents[agent.sessionID]?.events.count ?? 0) > before, let firstItemID else { return }
-        // Relay and event rows share the `.message` scroll namespace.
-        proxy.scrollTo(MobileChatScrollTarget.message(firstItemID), anchor: .top)
+        // A load that moved nothing leaves no anchor for a later change.
+        if let anchor, olderPageAnchor == anchor,
+           client.sessionEvents[agent.sessionID]?.events.first?.id == anchor.oldestID {
+            olderPageAnchor = nil
+        }
     }
     @ViewBuilder
     private func outgoingStatus(_ state: OutgoingMessage.State) -> some View {
