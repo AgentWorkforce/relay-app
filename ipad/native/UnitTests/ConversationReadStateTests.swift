@@ -236,12 +236,55 @@ final class ConversationReadStateTests: XCTestCase {
     }
 
     func testACredentialRefusalIsRetried() {
-        XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: 401), .failed)
-        XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: 403), .failed)
-        var state = ConversationReadState()
+        XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: 401), .unauthorized)
+        XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: 403), .unauthorized)
+        var state = answered(["dm_a": "m1"])
         XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"))
         state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: ConversationReadState.outcome(forFailureStatus: 403))
-        XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"), "Posted again once the credential works")
+        XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"), "Posted again on the next load")
+        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .success)
+        XCTAssertFalse(state.beginRead(conversationID: "dm_a", messageID: "m1"), "Once it succeeded, never again")
+    }
+
+    func testACredentialRefusalStopsAfterTheCap() {
+        XCTAssertEqual(ConversationReadState.unauthorizedTries, 3)
+        var state = answered(["dm_a": "m1"])
+        var tries = 0
+        while state.beginRead(conversationID: "dm_a", messageID: "m1") {
+            tries += 1
+            state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .unauthorized)
+            XCTAssertLessThan(tries, 10, "must stop")
+            if tries >= 10 { break }
+        }
+        XCTAssertEqual(tries, ConversationReadState.unauthorizedTries)
+        // The mark was dropped: the server's answer still shows it unread.
+        state.apply(inbox: ["dm_a": "m1"], ticket: state.inboxRequested())
+        XCTAssertEqual(state.unreadConversationIDs, ["dm_a"])
+        XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m2"), "Each message has its own count")
+    }
+
+    func testRateLimitsAndTimeoutsAreRetriedBeyondTheCap() {
+        for outcome in [ConversationReadState.outcome(forFailureStatus: 429),
+                        ConversationReadState.outcome(forFailureStatus: 408),
+                        ConversationReadState.outcome(forFailureStatus: nil)] {
+            XCTAssertEqual(outcome, .failed)
+            var state = ConversationReadState()
+            for attempt in 1...(ConversationReadState.unauthorizedTries + 3) {
+                XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"), "Attempt \(attempt)")
+                state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: outcome)
+            }
+        }
+    }
+
+    func testACredentialRefusalCountsAsAFailedCarryOver() {
+        let plan = [(conversationID: "dm_a", messageID: "m_a"), (conversationID: "dm_b", messageID: "m_b")]
+        let next = ConversationReadState.cursorAfterCarryOver(seen: ["dm_a": "m_a", "dm_b": "m_b"], plan: plan,
+                                                              outcomes: [.unauthorized, .success], failedReloads: 0)
+        XCTAssertEqual(next.seen, ["dm_a": "m_a"])
+        XCTAssertEqual(next.failedReloads, 1)
+        let last = ConversationReadState.cursorAfterCarryOver(seen: ["dm_a": "m_a"], plan: [plan[0]], outcomes: [.unauthorized],
+                                                              failedReloads: ConversationReadState.carryOverAttempts - 1)
+        XCTAssertNil(last.seen, "It counts toward the reload limit")
     }
 
     private func step(_ unread: [String: String], cursor: [String: String]?, running: Bool = false,

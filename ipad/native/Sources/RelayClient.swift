@@ -1726,18 +1726,22 @@ private enum SecureStore {
             await removeReadNotifications(deliveredBefore: postStarted, unread: readState.unreadConversationIDs)
         }
     }
+    #if DEBUG
     /// Tests only: replaces the read POST, so a test can hold it in flight
     /// or fail it (the Debug fixture hook can do neither).
     var readPostOverride: (@MainActor (_ messageID: String) async throws -> Void)?
+    #endif
     private func postRead(_ messageID: String) async -> ConversationReadState.Outcome {
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let encoded = messageID.addingPercentEncoding(withAllowedCharacters: allowed) ?? messageID
         do {
+            #if DEBUG
             if let readPostOverride {
                 try await readPostOverride(messageID)
-            } else {
-                _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
+                return .success
             }
+            #endif
+            _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
             return .success
         } catch let failure as RelayAPIError {
             return ConversationReadState.outcome(forFailureStatus: failure.status)

@@ -21,13 +21,15 @@ final class ConversationReadStateClientTests: XCTestCase {
         var reads: [String] = []
         /// How many of the next read POSTs fail (through `readPostOverride`).
         var readFails = 0
+        /// The status a failing read POST answers with.
+        var readFailStatus = 503
 
         /// A read POST as the server takes it, for `readPostOverride`.
         func read(_ id: String) throws {
             reads.append(id)
             if readFails > 0 {
                 readFails -= 1
-                throw RelayAPIError(message: "Invented outage", status: 503)
+                throw RelayAPIError(message: "Invented outage", status: readFailStatus)
             }
             if id == incoming.last { unread = false }
         }
@@ -305,5 +307,25 @@ final class ConversationReadStateClientTests: XCTestCase {
         await client.pollMessages()
         XCTAssertEqual(server.reads, ["m2"], "The reload marks the open conversation read")
         XCTAssertFalse(client.unreadConversationIDs.contains(peerRow))
+    }
+
+    func testAReadRefusedForTheCredentialStopsAfterThreeTries() async throws {
+        server.incoming = ["m1", "m2"]
+        server.unread = true
+        let server = server
+        client.readPostOverride = { try server.read($0) }
+        await client.refresh()
+        let agent = try XCTUnwrap(client.conversations.first { $0.name == peer })
+        client.selectConversation(agent)
+
+        server.readFails = 100
+        server.readFailStatus = 403
+        await client.loadHistory(for: agent)
+        for _ in 0..<5 {
+            await client.pollMessages()
+            await client.loadHistory(for: agent)
+        }
+        XCTAssertEqual(server.reads, ["m2", "m2", "m2"], "Posted at most \(ConversationReadState.unauthorizedTries) times")
+        XCTAssertTrue(client.unreadConversationIDs.contains(peerRow), "The server still says unread")
     }
 }
