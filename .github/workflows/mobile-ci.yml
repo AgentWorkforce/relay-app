@@ -36,7 +36,9 @@ jobs:
     runs-on: xcode-27
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
-    timeout-minutes: 40
+    # The Xcode 27 image builds and boots simulators more slowly than the
+    # macOS 26 one did: a passing run took 41 minutes there.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
