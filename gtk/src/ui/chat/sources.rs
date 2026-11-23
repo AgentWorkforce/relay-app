@@ -14,7 +14,9 @@ use agent_relay_node::relay::contract::transcript::{
 };
 use agent_relay_node::relay::messaging::DirectMessage;
 use agent_relay_node::relay::people::RosterAgent;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 /// Cloud records a tool call twice, as the call and as assistant text with
 /// the same words: the text copy goes.
@@ -41,50 +43,98 @@ fn cloud_session(app: &App, remote: &RosterAgent) -> Option<String> {
         .then_some(session)
 }
 
-/// The newest events of an uploaded session from Cloud, in reading order: a
-/// whole recent stretch when it opens, the latest few while following.
+/// How many of an uploaded session's newest events a conversation opens
+/// with, and how many a follow reads.
+const CLOUD_OPEN: u32 = 100;
+const CLOUD_FOLLOW: u32 = 30;
+
+type Read = Result<LocalTranscriptPage, crate::bridge::CoreError>;
+
+/// The newest events of an uploaded session from Cloud, in reading order,
+/// merged by time with your direct messages with the agent. Both are read
+/// at once, so a conversation waits for the slower of the two, not both.
 fn read_cloud(
     app: &App,
     session_id: String,
     endpoint: String,
     following: bool,
-    done: impl FnOnce(&App, Result<LocalTranscriptPage, crate::bridge::CoreError>) + 'static,
+    done: impl FnOnce(&App, Read) + 'static,
 ) {
+    let both = Rc::new(RefCell::new(Both {
+        cloud: None,
+        direct: None,
+        done: Some(Box::new(done)),
+        following,
+    }));
+    let held = both.clone();
     app.view_call::<desktop_method::SessionsCloudTranscript>(
         CloudTranscriptParams {
             session_id,
             cursor: None,
-            limit: Some(if following { 50 } else { 500 }),
+            limit: Some(if following { CLOUD_FOLLOW } else { CLOUD_OPEN }),
         },
         move |app, result| {
             // Cloud's copy can lag hours behind (or be empty): your direct
-            // messages with it fill in, merged by time; one in both is
-            // drawn once.
+            // messages with it fill in.
             let cloud = result
                 .map(|page| without_tool_echoes(page.entries.into_iter().rev().collect()))
                 .unwrap_or_default();
-            read_direct(app, endpoint, move |app, direct| {
-                let mut entries = cloud;
-                let failed = match direct {
-                    Ok(page) => {
-                        entries.extend(page.entries);
-                        None
-                    }
-                    Err(error) => Some(error),
-                };
-                entries.sort_by_key(|entry| entry.timestamp_ms);
-                let result = match failed {
-                    Some(error) if entries.is_empty() && !following => Err(error),
-                    _ => Ok(LocalTranscriptPage {
-                        entries,
-                        next_cursor: None,
-                        follow_cursor: None,
-                    }),
-                };
-                done(app, result)
-            });
+            held.borrow_mut().cloud = Some(cloud);
+            Both::finish(&held, app);
         },
     );
+    read_direct(app, endpoint, move |app, direct| {
+        both.borrow_mut().direct = Some(direct);
+        Both::finish(&both, app);
+    });
+}
+
+/// The two halves of a read of an agent elsewhere, answered once both are
+/// in.
+struct Both {
+    cloud: Option<Vec<LocalTranscriptEntry>>,
+    direct: Option<Read>,
+    done: Option<Box<dyn FnOnce(&App, Read)>>,
+    following: bool,
+}
+
+impl Both {
+    fn finish(both: &Rc<RefCell<Both>>, app: &App) {
+        let (entries, direct, done, following) = {
+            let mut both = both.borrow_mut();
+            if both.cloud.is_none() || both.direct.is_none() {
+                return;
+            }
+            let Some(done) = both.done.take() else {
+                return;
+            };
+            (
+                both.cloud.take().unwrap_or_default(),
+                both.direct.take(),
+                done,
+                both.following,
+            )
+        };
+        let mut entries = entries;
+        let failed = match direct {
+            Some(Ok(page)) => {
+                entries.extend(page.entries);
+                None
+            }
+            Some(Err(error)) => Some(error),
+            None => None,
+        };
+        entries.sort_by_key(|entry| entry.timestamp_ms);
+        let result = match failed {
+            Some(error) if entries.is_empty() && !following => Err(error),
+            _ => Ok(LocalTranscriptPage {
+                entries,
+                next_cursor: None,
+                follow_cursor: None,
+            }),
+        };
+        done(app, result);
+    }
 }
 
 /// The id prefix of a direct message's entry, telling it from a

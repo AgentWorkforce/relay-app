@@ -28,6 +28,10 @@ use std::time::Duration;
 /// How often the conversation shown is read for what was written since.
 const FOLLOW_EVERY: Duration = Duration::from_secs(3);
 
+/// An agent elsewhere is read every this many follow ticks: each read goes
+/// to Cloud and to your messages over the network.
+const ELSEWHERE_TICKS: u32 = 3;
+
 /// How far apart the same relay text can be recorded and still be one
 /// message: a tool call logged twice, or a direct message the transcript
 /// shows when the agent read it, which can be minutes later.
@@ -58,6 +62,13 @@ pub struct Thread {
     /// Relay messages already drawn from tool work, by direction and text,
     /// with when each was last seen.
     relay_seen: RefCell<HashMap<String, i64>>,
+    /// The harness an agent elsewhere's replies are drawn with (its logo),
+    /// when its computer reports one; its name marks them.
+    elsewhere_icon: RefCell<Option<String>>,
+    /// Follow ticks since the conversation opened.
+    ticks: Cell<u32>,
+    /// Whether the conversation is with an agent elsewhere.
+    elsewhere: Cell<bool>,
 }
 
 impl Thread {
@@ -99,6 +110,9 @@ impl Thread {
             relay_only: Cell::new(false),
             direct: Cell::new(false),
             relay_seen: RefCell::default(),
+            elsewhere_icon: RefCell::default(),
+            ticks: Cell::new(0),
+            elsewhere: Cell::new(false),
         }
     }
 
@@ -113,6 +127,12 @@ impl Thread {
         clear(&self.pending);
         self.ids.borrow_mut().clear();
         self.relay_seen.borrow_mut().clear();
+        self.elsewhere
+            .set(matches!(agent.place, ChatPlace::Elsewhere(_)));
+        *self.elsewhere_icon.borrow_mut() = match &agent.place {
+            ChatPlace::Elsewhere(_) => Some(agent.icon_source()).filter(|icon| !icon.is_empty()),
+            _ => None,
+        };
         self.group.borrow_mut().take();
         self.cursor.borrow_mut().take();
         self.following.set(false);
@@ -320,6 +340,8 @@ impl Thread {
     /// Draws `turn`: a message on its own, tool work in the run's Activity.
     fn draw(&self, turn: &Turn, source: &str) {
         let mut remaining = self.table_cells.get();
+        let icon = self.elsewhere_icon.borrow().clone();
+        let source = icon.as_deref().unwrap_or(source);
         let widget = entry_view(&turn.entry, source, &turn.author, None, &mut remaining);
         self.table_cells.set(remaining);
         super::images::expand_attachments(&widget);
@@ -468,6 +490,11 @@ impl App {
             .with_chat(|page| {
                 let key = page.selected.borrow().clone()?;
                 let cursor = page.thread.cursor.borrow().clone()?;
+                let tick = page.thread.ticks.get().wrapping_add(1);
+                page.thread.ticks.set(tick);
+                if page.thread.elsewhere.get() && tick % ELSEWHERE_TICKS != 0 {
+                    return None;
+                }
                 if page.thread.following.replace(true) {
                     return None;
                 }
