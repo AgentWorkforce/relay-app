@@ -684,7 +684,7 @@ impl App {
                     let error = session
                         .relay
                         .as_ref()
-                        .and_then(|s| state.relay_errors.get(&s.target.key()).cloned())
+                        .and_then(|s| state.relay_error_of(s))
                         .or_else(|| state.upload_errors.get(&key).cloned());
                     let can = session
                         .relay

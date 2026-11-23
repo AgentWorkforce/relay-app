@@ -74,6 +74,16 @@ impl State {
         blocked.then(|| not_running_message(session.target.kind))
     }
 
+    /// The relay error a session's row and detail pane show. The
+    /// not-running reason a press saved shows only while the session is
+    /// still not seen running (relay#2239).
+    pub fn relay_error_of(&self, session: &LocalSession) -> Option<String> {
+        let error = self.relay_errors.get(&session.target.key())?;
+        let stale = error == not_running_message(session.target.kind)
+            && self.not_running_reason(session, self.presence_of(session)).is_none();
+        (!stale).then(|| error.clone())
+    }
+
     /// `not_running_reason` for a row's local session, when it has one.
     pub fn relay_not_running(&self, session: Option<&LocalSession>) -> Option<&'static str> {
         session.and_then(|session| self.not_running_reason(session, self.presence_of(session)))

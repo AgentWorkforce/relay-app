@@ -837,6 +837,19 @@ mod tests {
         );
         let first = &state.local_sessions[0];
         assert!(!state.can_toggle(first, state.presence_of(first)));
+        // A press saves the reason; once the session is seen running it
+        // is no longer shown, while any other relay error still is.
+        let reason = reasons[0].unwrap().to_string();
+        state.relay_errors.insert("codex:a".into(), reason.clone());
+        state.relay_errors.insert("codex:c".into(), "Could not register".into());
+        assert_eq!(state.relay_error_of(&state.local_sessions[0]), Some(reason));
+        state.local_sessions[0].live = true;
+        assert_eq!(state.relay_error_of(&state.local_sessions[0]), None);
+        assert_eq!(
+            state.relay_error_of(&state.local_sessions[2]).as_deref(),
+            Some("Could not register")
+        );
+        state.local_sessions[0].live = false;
         // Without a workspace, connecting one is the next step instead.
         state.snapshot.as_mut().unwrap().workspace.state = WorkspaceState::Missing;
         let first = &state.local_sessions[0];

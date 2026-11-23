@@ -231,6 +231,19 @@ final class RelayModel {
         return Self.notRunningMessage(for: session.target.kind)
     }
 
+    /// The relay error a session's row and sidebar show. The not-running
+    /// reason a press saved shows only while the session is still not seen
+    /// running (relay#2239).
+    func relayError(for session: LocalSession) -> String? {
+        Self.shownError(errors[session.id], kind: session.target.kind,
+                        stillNotRunning: notRunningReason(session, presence: presence(of: session)) != nil)
+    }
+
+    static func shownError(_ error: String?, kind: SessionKind, stillNotRunning: Bool) -> String? {
+        guard let error else { return nil }
+        return error == notRunningMessage(for: kind) && !stillNotRunning ? nil : error
+    }
+
     static func notRunningMessage(for kind: SessionKind) -> String {
         kind == .codex
             ? "Agent Relay can't see this Codex chat running. Open it in Codex and try again."
