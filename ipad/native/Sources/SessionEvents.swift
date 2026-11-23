@@ -70,17 +70,6 @@ struct SessionEvent: Identifiable, Hashable, Codable, Sendable {
     /// How the chat draws the event, by `ChatEntryRules.role`: thinking
     /// is activity, a tool's call and its result are tool rows.
     var role: Role { entryRole.sessionRole }
-
-    /// Whether this is the agent's own activity (its tools, its thinking),
-    /// which says it is still working.
-    var isAgentActivity: Bool {
-        switch role {
-        case .tool: true
-        case .activity: actorRole.lowercased() == "assistant" || actorRole.isEmpty
-        case .agent: content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .person: false
-        }
-    }
 }
 
 /// One page of a session's events.
@@ -522,28 +511,5 @@ enum SessionEventPolling {
         guard let reference else { return unknownInterval }
         let age = now.timeIntervalSince(reference)
         return tiers.first { age < $0.window }?.interval
-    }
-}
-
-/// Whether the agent looks busy. The API has no in-progress flag, so this
-/// is read from the newest event: the agent's own tool call or activity
-/// under a minute old, with no reply of its own after it.
-enum SessionWorking {
-    static let window: TimeInterval = 60
-
-    struct State: Equatable {
-        /// The latest tool in the run, empty when none was named.
-        let tool: String
-        var label: String { tool.isEmpty ? "Working…" : "Working: \(tool)" }
-    }
-
-    static func state(events: [SessionEvent], now: Date) -> State? {
-        guard let newest = events.last, newest.isAgentActivity, let ts = newest.ts,
-              now.timeIntervalSince(ts) < window, now.timeIntervalSince(ts) > -window else { return nil }
-        for event in events.reversed() {
-            if !event.toolName.isEmpty { return State(tool: event.toolName) }
-            if !event.isAgentActivity { break }
-        }
-        return State(tool: "")
     }
 }

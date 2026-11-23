@@ -6,7 +6,7 @@ import Foundation
 /// so the client asks this before the Cloud events route.
 /// `-RelayUITestSessionEventsDelay` holds the first page for two seconds so
 /// the loading row can be seen; `-RelayUITestSessionWorking` makes the
-/// builder's newest event a tool call from a few seconds ago.
+/// builder's newest event a tool call from a few seconds ago, so its turn is open.
 enum SessionEventsFixture {
     static let sessionIDs: Set<String> = ["session-builder", "session-reviewer"]
 

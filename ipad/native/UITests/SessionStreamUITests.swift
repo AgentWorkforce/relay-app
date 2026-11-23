@@ -60,8 +60,17 @@ final class SessionStreamUITests: XCTestCase {
 
     func testToolCallsShowAsCompactRows() throws {
         let app = open("builder")
+        // A run of tool work is one collapsed Activity group; a line opens its row.
+        let group = app.buttons.matching(identifier: "Session activity group").firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 10))
         let tool = app.descendants(matching: .any).matching(identifier: "Session tool row").firstMatch
-        XCTAssertTrue(tool.waitForExistence(timeout: 10))
+        XCTAssertFalse(tool.exists)
+        group.tap()
+        let line = app.buttons.matching(identifier: "Session activity line").firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 5))
+        XCTAssertTrue(line.label.contains("make release"), line.label)
+        line.tap()
+        XCTAssertTrue(tool.waitForExistence(timeout: 5))
         XCTAssertTrue(tool.staticTexts["Bash"].exists)
         XCTAssertTrue(tool.staticTexts["completed"].exists)
         XCTAssertTrue(tool.staticTexts["App.swift, Build.swift"].exists)
@@ -91,7 +100,7 @@ final class SessionStreamUITests: XCTestCase {
         let app = open("builder", ["-RelayUITestSessionWorking"])
         let working = app.descendants(matching: .any).matching(identifier: "Agent working").firstMatch
         XCTAssertTrue(working.waitForExistence(timeout: 10))
-        XCTAssertTrue(working.label.contains("Working: Bash"))
+        XCTAssertTrue(working.label.contains("Working…"))
         attach(app, "working")
     }
 }

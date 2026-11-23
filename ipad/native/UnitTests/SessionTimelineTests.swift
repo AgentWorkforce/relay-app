@@ -187,6 +187,77 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertFalse(RelayMark.to("scout").isIncoming)
     }
 
+    func testToolWorkOfOneRunIsOneActivityGroup() {
+        let events = [event("e1", at: "2026-11-20T10:00:00Z", kind: "tool_use", content: "ls -la\nmore", tool: "Bash"),
+                      event("e2", at: "2026-11-20T10:00:01Z", kind: "tool_result", role: "tool_result", content: "a.swift"),
+                      event("e3", at: "2026-11-20T10:00:02Z", kind: "tool_use", content: "", tool: "Read"),
+                      // A relay send ends the run and is not part of it.
+                      event("e4", at: "2026-11-20T10:00:03Z", kind: "tool_use",
+                            content: "agent-relay-probe send --to scout --body 'Halfway.'", tool: "Bash"),
+                      event("e5", at: "2026-11-20T10:00:04Z", kind: "tool_use", content: "swift test", tool: "Bash"),
+                      // An activity note ends a run too.
+                      event("e6", at: "2026-11-20T10:00:05Z", kind: "future_kind", role: "", content: "Checkpoint saved"),
+                      event("e7", at: "2026-11-20T10:00:06Z", kind: "tool_use", content: "git diff", tool: "Bash"),
+                      event("e8", at: "2026-11-20T10:00:07Z", content: "Done.")]
+        let messages = [message("m1", at: "2026-11-20T10:00:04.5Z", text: "Any news?", sender: "pilot")]
+        let grouped = SessionTimeline.grouped(SessionTimeline.items(messages: messages, events: events))
+        XCTAssertEqual(ids(grouped), ["activity:codex|m1|tool_use|e1", "event:codex|m1|tool_use|e4",
+                                      "activity:codex|m1|tool_use|e5", "m1", "event:codex|m1|future_kind|e6",
+                                      "activity:codex|m1|tool_use|e7", "event:codex|m1|assistant|e8"])
+        guard case .activity(let first) = grouped[0] else { return XCTFail("expected a group") }
+        XCTAssertEqual(first.rows.count, 3)
+        XCTAssertEqual(ActivityGroup.line(for: first.rows[0]).title, "Bash")
+        XCTAssertEqual(ActivityGroup.line(for: first.rows[0]).target, "ls -la")
+        XCTAssertEqual(ActivityGroup.line(for: first.rows[1]).title, "Result")
+        XCTAssertEqual(ActivityGroup.line(for: first.rows[2]).target, "")
+        // A newer call joining the run keeps the group's id.
+        let longer = SessionTimeline.grouped(SessionTimeline.items(messages: [], events: Array(events.prefix(2))))
+        XCTAssertEqual(longer.first?.id, first.id)
+    }
+
+    func testTheTurnIsOpenUntilTheAgentReplies() {
+        func open(_ events: [SessionEvent], messages: [RelayMessage] = [], me: String = "") -> Bool {
+            SessionTurn.isOpen(SessionTimeline.items(messages: messages, events: events, me: me), events: events, me: me)
+        }
+        let prompt = event("e1", at: "2026-11-20T10:00:00Z", kind: "prompt", role: "user", content: "Fix the build")
+        let tool = event("e2", at: "2026-11-20T10:00:01Z", kind: "tool_use", content: "make", tool: "Bash")
+        let reply = event("e3", at: "2026-11-20T10:00:02Z", content: "Fixed.")
+        let thinking = event("e4", at: "2026-11-20T10:00:03Z", kind: "reasoning", content: "Should I also tag it?")
+        let note = event("e5", at: "2026-11-20T10:00:04Z", kind: "future_kind", role: "", content: "Checkpoint saved")
+        XCTAssertTrue(open([prompt]))
+        XCTAssertTrue(open([prompt, tool]))
+        XCTAssertFalse(open([prompt, tool, reply]))
+        // Hidden thinking after the reply still says it is working; a note says nothing.
+        XCTAssertTrue(open([prompt, tool, reply, thinking]))
+        XCTAssertFalse(open([prompt, tool, reply, note]))
+        XCTAssertFalse(open([]))
+        // A relay send closes the turn; a received relay message opens it.
+        let send = event("e6", at: "2026-11-20T10:00:05Z", kind: "tool_use",
+                         content: "agent-relay-probe send --to scout --body 'Fixed.'", tool: "Bash")
+        XCTAssertFalse(open([prompt, send]))
+        let inbox = event("e7", at: "2026-11-20T10:00:06Z", kind: "tool_result", role: "tool_result",
+                          content: "[via Agent Relay — from @scout · ref 1]\n\nAlso tag it.")
+        XCTAssertTrue(open([prompt, send, inbox]))
+        // Direct messages: one to the agent opens it, the agent's closes it.
+        let asked = message("m1", at: "2026-11-20T10:01:00Z", text: "Tag it too", sender: "pilot")
+        let answered = message("m2", at: "2026-11-20T10:02:00Z", text: "Tagged.", sender: "builder")
+        XCTAssertTrue(open([reply], messages: [asked], me: "pilot"))
+        XCTAssertFalse(open([reply], messages: [asked, answered], me: "pilot"))
+    }
+
+    func testWorkingIsBoundedByAgeAndPresence() {
+        let now = SessionEventPage.date("2026-11-20T10:00:00Z")!
+        XCTAssertTrue(SessionTurn.showsWorking(open: true, newestEventAt: now.addingTimeInterval(-9 * 60), offline: false, now: now))
+        XCTAssertFalse(SessionTurn.showsWorking(open: true, newestEventAt: now.addingTimeInterval(-SessionTurn.window), offline: false, now: now))
+        XCTAssertFalse(SessionTurn.showsWorking(open: false, newestEventAt: now, offline: false, now: now))
+        XCTAssertFalse(SessionTurn.showsWorking(open: true, newestEventAt: now, offline: true, now: now))
+        XCTAssertFalse(SessionTurn.showsWorking(open: true, newestEventAt: nil, offline: false, now: now))
+        XCTAssertTrue(SessionTurn.isOffline(status: "offline", lastSeen: nil, now: now))
+        XCTAssertTrue(SessionTurn.isOffline(status: "active", lastSeen: now.addingTimeInterval(-6 * 60), now: now))
+        XCTAssertFalse(SessionTurn.isOffline(status: "idle", lastSeen: now.addingTimeInterval(-60), now: now))
+        XCTAssertFalse(SessionTurn.isOffline(status: "", lastSeen: nil, now: now))
+    }
+
     func testPlaceholder() {
         // Loading until relay history is checked and the session settled.
         XCTAssertEqual(SessionTimeline.placeholder(hasRows: false, historyChecked: false, sessionApplies: false, sessionSettled: false), .loading)
