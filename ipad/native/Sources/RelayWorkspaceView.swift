@@ -151,6 +151,11 @@ struct RelayWorkspaceView: View {
     // reasonable time; one long modifier chain made the archive fail.
     var body: some View {
         observedWorkspace
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if RelayUITestFixture.enabled { RelayUITestReadPostsProbe() }
+        }
+        #endif
         .alert("Agent Relay", isPresented: Binding(get: { client.error != nil }, set: { if !$0 { client.error = nil } })) {
             Button("OK", role: .cancel) { client.error = nil }
         } message: { Text(client.error ?? "") }

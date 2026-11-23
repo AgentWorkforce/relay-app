@@ -4,7 +4,8 @@ import Foundation
 /// An offline chat with one synthetic question, enabled with
 /// `-RelayUITestConversations -RelayUITestQuestionCard`. A POST /dm to the
 /// asking agent is recorded and appears in that chat's history, as Relaycast
-/// would show it; nothing leaves the simulator.
+/// would show it; nothing leaves the simulator. Read receipts are recorded;
+/// nothing is unread in /inbox.
 enum QuestionCardFixture {
     private final class State: @unchecked Sendable {
         let lock = NSLock()
@@ -74,6 +75,11 @@ enum QuestionCardFixture {
             NSLog("Question card fixture: POST /dm #%d", state.sent.count)
             return ["id": "question-answer-\(state.sent.count)", "conversation_id": "dm_\(agent)"]
         }
+        if method == "POST", let id = RelayUITestReadPosts.messageID(readPath: path) {
+            RelayUITestReadPosts.shared.record(id)
+            return JSONObject()
+        }
+        if path == "/inbox" { return RelayUITestReadPosts.inbox([]) }
         let question: JSONObject = ["id": "question-1", "agent_name": agent, "agent_id": "a_\(agent)",
                                     "text": questionText, "created_at": stamp.format(askedAt)]
         let answers: [JSONObject] = state.sent.enumerated().map {

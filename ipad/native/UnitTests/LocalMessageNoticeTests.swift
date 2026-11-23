@@ -54,4 +54,68 @@ final class LocalMessageNoticeTests: XCTestCase {
                                          apnsToken: nil, initialized: true, fromMe: true))
     }
 
+    // MARK: Server read state
+
+    private func post(_ notices: inout LocalMessageNotices, _ messageID: String, _ serverSays: ConversationReadState.Notice,
+                      initialized: Bool = true, apnsToken: String? = nil) -> Bool {
+        notices.shouldPost(conversationID: "dm_1", messageID: messageID, isCurrentPeer: true, apnsToken: apnsToken,
+                           initialized: initialized, fromMe: false, serverSays: serverSays)
+    }
+
+    func testUnknownServerStateDecidesAsBefore() {
+        var notices = LocalMessageNotices()
+        XCTAssertFalse(post(&notices, "m1", .unknown, initialized: false))
+        XCTAssertTrue(post(&notices, "m2", .unknown))
+        XCTAssertFalse(post(&notices, "m2", .unknown))
+    }
+
+    func testUnreadPostsANewMessageOnce() {
+        var notices = LocalMessageNotices()
+        XCTAssertFalse(post(&notices, "m1", .unread, initialized: false), "First load stays quiet")
+        XCTAssertTrue(post(&notices, "m2", .unread))
+        XCTAssertFalse(post(&notices, "m2", .unread))
+    }
+
+    func testReadHoldsTheBannerBackUntilTheServerSaysUnread() {
+        var notices = LocalMessageNotices()
+        XCTAssertFalse(post(&notices, "m1", .read, initialized: false))
+        XCTAssertFalse(post(&notices, "m2", .read), "Held back")
+        XCTAssertFalse(post(&notices, "m2", .read))
+        XCTAssertTrue(post(&notices, "m2", .unread), "Shows once the server says unread")
+        XCTAssertFalse(post(&notices, "m2", .unread), "Only once")
+    }
+
+    func testAnInboxOutageDoesNotPostAHeldBackBanner() {
+        var notices = LocalMessageNotices()
+        XCTAssertFalse(post(&notices, "m1", .read, initialized: false))
+        XCTAssertFalse(post(&notices, "m2", .read))
+        XCTAssertFalse(post(&notices, "m2", .unknown), "An outage says nothing new")
+        XCTAssertTrue(post(&notices, "m2", .unread), "Still held back for the next answer")
+    }
+
+    func testAHeldBackBannerIsForgottenWhenANewerMessageArrives() {
+        var notices = LocalMessageNotices()
+        XCTAssertFalse(post(&notices, "m1", .read, initialized: false))
+        XCTAssertFalse(post(&notices, "m2", .read), "m2 held back")
+        // The person answers from another device: m3 is their own message.
+        XCTAssertFalse(notices.shouldPost(conversationID: "dm_1", messageID: "m3", isCurrentPeer: true, apnsToken: nil,
+                                          initialized: true, fromMe: true, serverSays: .read))
+        XCTAssertFalse(post(&notices, "m3", .unread), "m2's banner was forgotten")
+        XCTAssertTrue(post(&notices, "m4", .unread))
+    }
+
+    func testFirstLoadStaysQuietWhateverTheServerSays() {
+        for serverSays in [ConversationReadState.Notice.read, .unread, .unknown] {
+            var notices = LocalMessageNotices()
+            XCTAssertFalse(post(&notices, "m1", serverSays, initialized: false))
+            XCTAssertFalse(post(&notices, "m1", .unread), "An old message never posts later")
+        }
+    }
+
+    func testAHeldBackBannerDoesNotPostOncePushIsAvailable() {
+        var notices = LocalMessageNotices()
+        XCTAssertFalse(post(&notices, "m1", .read, initialized: false))
+        XCTAssertFalse(post(&notices, "m2", .read))
+        XCTAssertFalse(post(&notices, "m2", .unread, apnsToken: "apns"))
+    }
 }
