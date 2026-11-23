@@ -111,9 +111,70 @@ final class AgentListOrderTests: XCTestCase {
                                         "last_seen": seen])
         XCTAssertNil(AgentRowModel(agent: person, now: now).activity)
         XCTAssertEqual(AgentListOrder.entry(for: person, name: "Sam Lee", lastEventAt: recent, now: now).activity, .idle)
-        // Recency is the newer of the heartbeat and the loaded event.
+        // Recency is the newer of the reported activity time and the loaded
+        // event, never the heartbeat.
         let entry = AgentListOrder.entry(for: agent("active"), name: "worker", lastEventAt: recent, now: now)
-        XCTAssertEqual(entry.lastActivity, now.addingTimeInterval(-10))
+        XCTAssertEqual(entry.lastActivity, recent)
         XCTAssertEqual(entry.id, agent("active").id)
+        XCTAssertNil(AgentListOrder.entry(for: agent("active"), name: "worker", lastEventAt: nil, now: now).lastActivity)
+        let reported = RelayAgent(relay: ["name": "worker", "status": "active", "last_seen": seen,
+                                          "metadata": ["activity": ["turn": "idle", "updated_ms": 1_799_999_900_000]]])
+        XCTAssertEqual(AgentListOrder.entry(for: reported, name: "worker", lastEventAt: nil, now: now).lastActivity,
+                       Date(timeIntervalSince1970: 1_799_999_900))
+        XCTAssertEqual(AgentListOrder.entry(for: reported, name: "worker", lastEventAt: recent, now: now).lastActivity,
+                       recent)
+        XCTAssertEqual(AgentListOrder.entry(for: reported, name: "worker",
+                                            lastEventAt: now.addingTimeInterval(-3_600), now: now).lastActivity,
+                       Date(timeIntervalSince1970: 1_799_999_900))
+    }
+
+    private func rosterAgent(_ name: String, seenAt: Date, metadata: JSONObject = [:]) -> RelayAgent {
+        RelayAgent(relay: ["name": name, "status": "active", "address": "\(name)@test-mini-123",
+                           "last_seen": Date.ISO8601FormatStyle(includingFractionalSeconds: true).format(seenAt),
+                           "metadata": metadata])
+    }
+
+    private func listOrder(_ agents: [RelayAgent], at time: Date) -> [String] {
+        AgentListOrder.sorted(agents) { AgentListOrder.entry(for: $0, name: $0.name, lastEventAt: nil, now: time) }
+            .map(\.name)
+    }
+
+    func testHeartbeatsAcrossABucketBoundaryDoNotReorder() {
+        // `now` starts a bucket; the two heartbeats are 4 s apart across it.
+        let alpha = rosterAgent("alpha", seenAt: now.addingTimeInterval(-2))
+        let zeta = rosterAgent("zeta", seenAt: now.addingTimeInterval(2))
+        XCTAssertNotEqual(AgentListOrder.bucket(alpha.lastSeen!), AgentListOrder.bucket(zeta.lastSeen!))
+        XCTAssertEqual(listOrder([zeta, alpha], at: now.addingTimeInterval(10)), ["alpha", "zeta"])
+        XCTAssertEqual(listOrder([alpha, zeta], at: now.addingTimeInterval(10)), ["alpha", "zeta"])
+    }
+
+    func testAnAgentWithNoActivityTimeSortsAfterOneWithATime() {
+        let reported = rosterAgent("zeta", seenAt: now.addingTimeInterval(-60),
+                                   metadata: ["activity": ["turn": "idle", "updated_ms": 1_799_000_000_000]])
+        let silent = rosterAgent("alpha", seenAt: now)
+        XCTAssertEqual(listOrder([silent, reported], at: now), ["zeta", "alpha"])
+    }
+
+    func testActivityTimeDecodesWholePositiveMilliseconds() {
+        XCTAssertEqual(AgentListOrder.activityTime(NSNumber(value: 1_800_000_000_000)), now)
+        XCTAssertEqual(AgentListOrder.activityTime(NSNumber(value: 1_800_000_000_000.0)), now)
+        XCTAssertEqual(AgentListOrder.activityTime(NSNumber(value: 1)), Date(timeIntervalSince1970: 0.001))
+        XCTAssertNil(AgentListOrder.activityTime(nil))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: 0)))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: -5)))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: 1.5)))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: Double.nan)))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: Double.infinity)))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: 1e30)))
+        XCTAssertNil(AgentListOrder.activityTime(NSNumber(value: true)))
+        XCTAssertNil(AgentListOrder.activityTime("1800000000000"))
+        // Through the roster record, as JSON decodes it.
+        let json = Data(#"{"name":"worker","metadata":{"activity":{"updated_ms":1800000000000}}}"#.utf8)
+        let record = (try? JSONSerialization.jsonObject(with: json)) as? JSONObject ?? [:]
+        XCTAssertEqual(RelayAgent(relay: record).activityUpdatedAt, now)
+        XCTAssertNil(RelayAgent(relay: ["name": "worker", "metadata": ["activity": ["turn": "idle"]]]).activityUpdatedAt)
+        let boolean = Data(#"{"name":"worker","metadata":{"activity":{"updated_ms":true}}}"#.utf8)
+        let booleanRecord = (try? JSONSerialization.jsonObject(with: boolean)) as? JSONObject ?? [:]
+        XCTAssertNil(RelayAgent(relay: booleanRecord).activityUpdatedAt)
     }
 }
