@@ -248,6 +248,8 @@ mod column_imp {
     #[derive(Default)]
     pub struct Column {
         pub width: Cell<i32>,
+        /// Asks for the whole width, not just what its content needs.
+        pub fill: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -277,6 +279,7 @@ mod column_imp {
             let width = zoom::px(self.width.get());
             if orientation == gtk::Orientation::Horizontal {
                 let (minimum, natural, _, _) = child.measure(orientation, for_size);
+                let natural = if self.fill.get() { width } else { natural };
                 (minimum, natural.min(width).max(minimum), -1, -1)
             } else {
                 let for_width = if for_size < 0 {
@@ -314,6 +317,14 @@ glib::wrapper! {
 impl Column {
     pub fn set_max_width(&self, width: i32) {
         if self.imp().width.replace(width) != width {
+            self.queue_resize();
+        }
+    }
+
+    /// Makes the column as wide as it may be whatever its content needs, so
+    /// a box under a conversation lines up with the conversation's column.
+    pub fn set_fill(&self, fill: bool) {
+        if self.imp().fill.replace(fill) != fill {
             self.queue_resize();
         }
     }

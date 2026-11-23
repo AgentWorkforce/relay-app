@@ -31,8 +31,12 @@ impl Composer {
         let dock = vbox(6, &["chat-dock"]);
         widgets::pad(&dock, 8, Some(24), Some(14));
         let (column, holder) = widgets::column(760);
-        widgets::pad(&column, 0, Some(0), Some(0));
+        // The same side padding as the conversation's column, so the edges
+        // line up.
+        widgets::pad(&column, 0, Some(24), Some(0));
         holder.set_halign(gtk::Align::Center);
+        // As wide as the conversation's column above it.
+        holder.set_fill(true);
         super::super::zoom::size(&column, 560, -1);
         let chips = hbox(6, &["chat-attachments"]);
         chips.set_visible(false);
