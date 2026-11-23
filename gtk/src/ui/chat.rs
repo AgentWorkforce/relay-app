@@ -25,6 +25,7 @@ mod filters;
 mod images;
 mod open;
 mod send;
+mod sources;
 mod thread;
 
 use controls::Controls;
@@ -227,7 +228,13 @@ impl App {
     /// page lists them now.
     pub(super) fn chat_agents(&self) -> Vec<ChatAgent> {
         self.with_state(|state| {
-            let rows = merge_local_sessions(&state.sessions, &state.local_sessions);
+            // The same rows the sessions list shows, a search's included.
+            let local = state
+                .session_query
+                .local_sessions
+                .as_deref()
+                .unwrap_or(&state.local_sessions);
+            let rows = merge_local_sessions(&state.sessions, local);
             chat_agents(
                 &rows,
                 |session| {
@@ -264,11 +271,13 @@ impl App {
 
     /// Opens the Chat page, on `key` when given.
     pub fn show_chat_page(&self, key: Option<&str>) {
-        if self.page() != Page::Chat {
-            self.go(Page::Chat);
-        }
+        // The agent is chosen before the page shows, so its first drawing
+        // is of that agent.
         if let Some(key) = key {
             self.select_chat_agent(key);
+        }
+        if self.page() != Page::Chat {
+            self.go(Page::Chat);
         }
     }
 
@@ -296,7 +305,16 @@ impl App {
         if page.selected.borrow().is_none() {
             if let Some(first) = shown.first() {
                 let key = first.key();
-                glib::idle_add_local_once(self.on(move |app| app.select_chat_agent(&key)));
+                // Only if nothing was chosen meanwhile: a row opened from
+                // the sessions list selects its own agent.
+                glib::idle_add_local_once(self.on(move |app| {
+                    let open = app
+                        .with_chat(|page| page.selected.borrow().is_some())
+                        .unwrap_or(true);
+                    if !open {
+                        app.select_chat_agent(&key);
+                    }
+                }));
             }
         }
         let selected = page.selected.borrow().clone();
