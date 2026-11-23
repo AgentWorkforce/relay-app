@@ -12,18 +12,19 @@ use super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
     chat_agents, chat_elsewhere_agents, chat_filter_choices, merge_local_sessions, ChatAgent,
     ChatPlace, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE, CHAT_HIDE_LIST,
-    CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_RECEIVES, CHAT_RECEIVES_HELP, CHAT_SEARCH, CHAT_SEND,
-    CHAT_SHOW_LIST, CHAT_TITLE,
+    CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_SEARCH, CHAT_SEND, CHAT_SHOW_LIST, CHAT_TITLE,
 };
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 
+mod controls;
 mod filters;
 mod send;
 mod thread;
 
 use super::spawn_join::ChatInput;
+use controls::Controls;
 use filters::FilterBar;
 pub use thread::Thread;
 
@@ -46,9 +47,8 @@ pub struct ChatPage {
     pub header_meta: gtk::Label,
     pub header_summary: gtk::Label,
     pub header_presence: gtk::Label,
-    /// Whether the session shown receives messages: Receives messages.
-    pub receives: gtk::Switch,
-    syncing: Cell<bool>,
+    /// The session's name, Receives messages and Upload.
+    pub controls: Controls,
     pub thread: Thread,
     pub input: ChatInput,
     pub send: gtk::Button,
@@ -77,6 +77,7 @@ impl ChatPage {
         let split = gtk::Paned::new(gtk::Orientation::Horizontal);
         split.set_hexpand(true);
         split.set_wide_handle(true);
+        split.add_css_class("chat-split");
         split.set_start_child(Some(&side));
         split.set_resize_start_child(false);
         split.set_shrink_start_child(false);
@@ -124,15 +125,8 @@ impl ChatPage {
         header_summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
         words.append(&header_summary);
         header.append(&words);
-        let receiving = hbox(8, &[]);
-        receiving.set_valign(gtk::Align::Center);
-        receiving.append(&text(CHAT_RECEIVES, &["caption"]));
-        let receives = gtk::Switch::new();
-        receives.set_valign(gtk::Align::Center);
-        receives.set_tooltip_text(Some(CHAT_RECEIVES_HELP));
-        widgets::name(&receives, CHAT_RECEIVES);
-        receiving.append(&receives);
-        header.append(&receiving);
+        let controls = Controls::build();
+        header.append(&controls.root);
         view.append(&header);
         view.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let thread = Thread::build();
@@ -174,8 +168,7 @@ impl ChatPage {
             header_meta,
             header_summary,
             header_presence,
-            receives,
-            syncing: Cell::new(false),
+            controls,
             thread,
             input,
             send,
@@ -195,13 +188,7 @@ impl App {
         page.input.connect_activate(send);
         let send = self.on(App::send_chat_message);
         page.send.connect_clicked(move |_| send());
-        let weak = self.downgrade();
-        page.receives.connect_state_set(move |_, on| {
-            if let Some(app) = weak.upgrade() {
-                app.set_chat_receives(on);
-            }
-            glib::Propagation::Proceed
-        });
+        self.connect_chat_controls(&page.controls);
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
         self.follow_chat_thread();
@@ -388,12 +375,17 @@ impl App {
     fn render_chat_header(&self, page: &ChatPage, agent: &ChatAgent) {
         clear(&page.header_badge);
         page.header_badge.append(&agent_badge(agent, 32));
-        page.receives
-            .parent()
-            .inspect(|row| row.set_visible(agent.local().is_some()));
-        page.syncing.set(true);
-        page.receives.set_active(agent.address().is_some());
-        page.syncing.set(false);
+        let upload = agent.upload_key().map(|key| {
+            self.with_state(|state| {
+                state.requesting.contains(&key)
+                    || (!state.stopping.contains(&key)
+                        && agent
+                            .row()
+                            .and_then(|row| row.upload.as_ref())
+                            .is_some_and(|upload| upload.included))
+            })
+        });
+        page.controls.show(agent, upload);
         page.header_name.set_text(&agent.name());
         let mut meta = agent.meta();
         if let Some(address) = agent.address() {
@@ -463,25 +455,6 @@ impl App {
             page.toggle_list.set_tooltip_text(Some(label));
             widgets::name(&page.toggle_list, label);
         });
-    }
-
-    /// Puts the session shown on the relay or takes it off, as the
-    /// sessions table's Receives messages switch does.
-    fn set_chat_receives(&self, on: bool) {
-        let Some(session) = self
-            .with_chat(|page| {
-                if page.syncing.get() {
-                    return None;
-                }
-                let key = page.selected.borrow().clone()?;
-                let agent = self.chat_agent(&key)?;
-                agent.local().map(|(_, session)| session.clone())
-            })
-            .flatten()
-        else {
-            return;
-        };
-        self.toggle_relay(&session, on);
     }
 }
 

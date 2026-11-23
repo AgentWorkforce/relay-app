@@ -253,6 +253,9 @@ button.session-open:focus-visible { outline: 2px solid $accent; }
 /* The session composer: one chat-bubble shell (Cloud's --radius-bubble-lg) around the growing input and Send, with one focus ring. */
 /* Chat: the header's tabs, the agent list and the docked composer (Pear's chat, in the Cloud palette). */
 .chat-sidebar { background-color: $sidebar; }
+/* The list's divider: a hairline with a grab area wide enough to drag. */
+paned.chat-split > separator { min-width: 7px; background-color: transparent; background-image: linear-gradient(to right, transparent 3px, $border 3px, $border 4px, transparent 4px); }
+paned.chat-split > separator:hover { background-image: linear-gradient(to right, transparent 2px, $ring 2px, $ring 5px, transparent 5px); }
 label.chat-status { font-size: 10px; font-weight: 600; border-radius: 9px; padding: 0 7px; color: $secondary; background-color: alpha($secondary, 0.14); }
 label.chat-status.working, .presence-badge.working { color: $green; background-color: alpha($green, 0.16); }
 label.chat-status.offline { color: $tertiary; background-color: transparent; }

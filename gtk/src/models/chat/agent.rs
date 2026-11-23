@@ -25,6 +25,17 @@ impl ChatAgent {
             .and_then(|(_, session)| session.registration.as_ref())
     }
 
+    /// The name the core registered it with, which renaming takes.
+    pub fn registered_name(&self) -> Option<String> {
+        self.registration()
+            .map(|registration| registration.name.clone())
+    }
+
+    /// The uploader's key for its session, once history has it.
+    pub fn upload_key(&self) -> Option<String> {
+        self.row()?.upload.as_ref().map(session_key)
+    }
+
     pub fn key(&self) -> String {
         match &self.place {
             ChatPlace::Local { session, .. } => session.target.key(),

@@ -3,7 +3,7 @@
 //! filters over that list, and the words its conversation is drawn with.
 //! The Mac's `ChatModel` matches this word for word.
 
-use super::{source_name, LocalSessionRow, SpawnHandover};
+use super::{session_key, source_name, LocalSessionRow, SpawnHandover};
 use agent_relay_node::relay::contract::agents::{LocalSession, SessionHolder, SessionRegistration};
 use agent_relay_node::relay::contract::transcript::LocalTranscriptEntry;
 use agent_relay_node::relay::people::{Liveness, RosterAgent, RosterWhere};
@@ -189,6 +189,12 @@ pub const CHAT_WORKING: &str = "Working…";
 pub const CHAT_DELIVERED: &str = "Delivered: your message is in the session.";
 pub const CHAT_HIDE_LIST: &str = "Hide agent list";
 pub const CHAT_SHOW_LIST: &str = "Show agent list";
+pub const CHAT_NAME: &str = "Agent name";
+pub const CHAT_NAME_HELP: &str =
+    "The name other agents see on Agent Relay. Press Return to rename; your session title stays the same.";
+pub const CHAT_UPLOAD: &str = "Upload";
+pub const CHAT_UPLOAD_HELP: &str =
+    "Upload this session to Cloud. Turning it off asks before deleting the cloud copy.";
 pub const CHAT_RECEIVES: &str = "Receives messages";
 pub const CHAT_RECEIVES_HELP: &str =
     "Receive messages from other agents. This also uploads the session to Cloud.";
