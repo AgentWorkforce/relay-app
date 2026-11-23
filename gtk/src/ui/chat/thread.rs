@@ -293,6 +293,7 @@ fn cloud_session(app: &App, remote: &RosterAgent) -> Option<String> {
 fn read_cloud(
     app: &App,
     session_id: String,
+    endpoint: String,
     following: bool,
     done: impl FnOnce(&App, Result<LocalTranscriptPage, crate::bridge::CoreError>) + 'static,
 ) {
@@ -302,15 +303,18 @@ fn read_cloud(
             cursor: None,
             limit: Some(if following { 50 } else { 500 }),
         },
-        move |app, result| {
-            done(
+        move |app, result| match result {
+            // Nothing in Cloud yet (or Cloud cannot read it): your direct
+            // messages with it are the conversation.
+            Ok(page) if page.entries.is_empty() && !following => read_direct(app, endpoint, done),
+            result => done(
                 app,
                 result.map(|page| LocalTranscriptPage {
                     entries: page.entries.into_iter().rev().collect(),
                     next_cursor: None,
                     follow_cursor: None,
                 }),
-            )
+            ),
         },
     );
 }
@@ -348,26 +352,11 @@ fn read_page(
         ChatPlace::History(row) => (row, None),
         ChatPlace::Elsewhere(remote) => {
             // Its uploaded session, from Cloud, when the core can read it.
-            if let Some(session_id) = cloud_session(app, remote) {
-                return read_cloud(app, session_id, following, done);
-            }
             let endpoint = agent.address().unwrap_or_else(|| agent.name());
-            app.view_call::<method::MessagesHistory>(
-                HistoryParams {
-                    endpoint,
-                    before: None,
-                },
-                move |app, result| {
-                    done(
-                        app,
-                        result.map(|history| LocalTranscriptPage {
-                            entries: history.messages.iter().map(direct_entry).collect(),
-                            next_cursor: None,
-                            follow_cursor: None,
-                        }),
-                    )
-                },
-            );
+            if let Some(session_id) = cloud_session(app, remote) {
+                return read_cloud(app, session_id, endpoint, following, done);
+            }
+            read_direct(app, endpoint, done);
             return;
         }
     };
@@ -378,6 +367,30 @@ fn read_page(
         following,
     };
     app.transcript_page(SpawnHandover::transcript_agent(session), params, done);
+}
+
+/// Your direct messages with an agent elsewhere, as its conversation.
+fn read_direct(
+    app: &App,
+    endpoint: String,
+    done: impl FnOnce(&App, Result<LocalTranscriptPage, crate::bridge::CoreError>) + 'static,
+) {
+    app.view_call::<method::MessagesHistory>(
+        HistoryParams {
+            endpoint,
+            before: None,
+        },
+        move |app, result| {
+            done(
+                app,
+                result.map(|history| LocalTranscriptPage {
+                    entries: history.messages.iter().map(direct_entry).collect(),
+                    next_cursor: None,
+                    follow_cursor: None,
+                }),
+            )
+        },
+    );
 }
 
 /// The source a conversation's entries are drawn for: the session's, or
