@@ -45,6 +45,86 @@ final class MobileHandoffNoticeTests: XCTestCase {
         XCTAssertEqual(connecting?.detail, "")
     }
 
+    func testGenericUnconfirmedTextIsReplacedWithGuidance() {
+        let generic = MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed",
+                                                     "mobile_handoff_error": MobileHandoffNotice.unconfirmedDetail])
+        XCTAssertEqual(MobileHandoffNotice.unconfirmedDetail,
+                       "Claude's mobile connection could not be confirmed. Check the message status before sending again.")
+        XCTAssertEqual(generic?.detail, MobileHandoffNotice.unconfirmedDetail, "the published detail is kept as sent")
+        XCTAssertEqual(generic?.displayDetail, MobileHandoffNotice.unconfirmedGuidance)
+        XCTAssertEqual(generic?.displayHint, MobileHandoffNotice.unconfirmedHint)
+        for label in ["Delivered", "Queued", "Sent"] {
+            XCTAssertTrue(MobileHandoffNotice.unconfirmedGuidance.contains(label), label)
+        }
+        XCTAssertTrue(MobileHandoffNotice.unconfirmedHint.contains("/reload-plugins"))
+
+        let specific = "Restart or reload Claude to enable mobile control, then send the message again. This message was not submitted."
+        let other = MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed", "mobile_handoff_error": specific])
+        XCTAssertEqual(other?.displayDetail, specific)
+        XCTAssertNil(other?.displayHint)
+        let empty = MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed"])
+        XCTAssertEqual(empty?.displayDetail, "")
+        XCTAssertNil(empty?.displayHint)
+        let ready = MobileHandoffNotice(metadata: ["mobile_handoff_state": "ready"])
+        XCTAssertEqual(ready?.displayDetail, "")
+        XCTAssertNil(ready?.displayHint)
+    }
+
+    func testDismissalHidesOnlyTheSameFailureUntilItChangesOrDisappears() throws {
+        let failed = try XCTUnwrap(MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed",
+                                                                  "mobile_handoff_error": MobileHandoffNotice.unconfirmedDetail]))
+        let otherFailure = try XCTUnwrap(MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed",
+                                                                        "mobile_handoff_error": "Something else"]))
+        let ready = try XCTUnwrap(MobileHandoffNotice(metadata: ["mobile_handoff_state": "ready"]))
+        let reviewer = MobileHandoffDismissals.identity(name: "reviewer", sessionID: "s1")
+        let reregistered = MobileHandoffDismissals.identity(name: "reviewer", sessionID: "s2")
+        var dismissals = MobileHandoffDismissals()
+
+        dismissals.dismiss(ready, for: reviewer)
+        XCTAssertFalse(dismissals.hides(ready, for: reviewer), "only a failed notice can be dismissed")
+
+        dismissals.dismiss(failed, for: reviewer)
+        XCTAssertTrue(dismissals.hides(failed, for: reviewer))
+        XCTAssertFalse(dismissals.hides(otherFailure, for: reviewer), "a changed detail shows again")
+        XCTAssertFalse(dismissals.hides(failed, for: reregistered), "another session with the same name")
+        XCTAssertFalse(dismissals.hides(failed, for: MobileHandoffDismissals.identity(name: "builder", sessionID: "s1")))
+
+        // Refreshes that publish the same failure keep it hidden.
+        dismissals = dismissals.retaining(published: [reviewer: failed])
+        XCTAssertTrue(dismissals.hides(failed, for: reviewer))
+
+        // A different notice forgets the dismissal, so the old failure
+        // published again is shown again.
+        var changed = dismissals.retaining(published: [reviewer: ready])
+        XCTAssertFalse(changed.hides(failed, for: reviewer))
+        changed = dismissals.retaining(published: [reviewer: otherFailure])
+        XCTAssertFalse(changed.hides(failed, for: reviewer))
+
+        // So does the notice disappearing.
+        let cleared = dismissals.retaining(published: [:])
+        XCTAssertFalse(cleared.hides(failed, for: reviewer))
+        XCTAssertEqual(cleared, MobileHandoffDismissals())
+    }
+
+    func testSendingAgainShowsTheSameFailureAgain() throws {
+        let failed = try XCTUnwrap(MobileHandoffNotice(metadata: ["mobile_handoff_state": "failed",
+                                                                  "mobile_handoff_error": MobileHandoffNotice.unconfirmedDetail]))
+        let reviewer = MobileHandoffDismissals.identity(name: "reviewer", sessionID: "s1")
+        let builder = MobileHandoffDismissals.identity(name: "builder", sessionID: "s1")
+        var dismissals = MobileHandoffDismissals()
+        dismissals.dismiss(failed, for: reviewer)
+
+        // A send to another agent leaves this dismissal alone.
+        dismissals.forget(builder)
+        XCTAssertTrue(dismissals.hides(failed, for: reviewer))
+
+        // A send to this agent is a new attempt: the same failure shows again
+        // even though no refresh saw the state change in between.
+        dismissals.forget(reviewer)
+        XCTAssertFalse(dismissals.hides(failed, for: reviewer))
+        XCTAssertEqual(dismissals, MobileHandoffDismissals())
+    }
+
     func testOtherAgentsRequireExplicitDesktopNativeMetadata() {
         for provider in ["pi", "opencode", "codex"] {
             var metadata: JSONObject = ["source": "relay-desktop", "cli": provider]

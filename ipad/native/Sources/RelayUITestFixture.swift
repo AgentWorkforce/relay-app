@@ -5,7 +5,7 @@ import Foundation
 /// the `-RelayUITestConversations` launch argument. It lets the Messages list
 /// be exercised on a simulator that is not signed in. `-RelayUITestNewMessage`
 /// gives one conversation a newer incoming message, and `-RelayUITestReset`
-/// forgets the fixture account's hidden conversations.
+/// forgets the fixture account's hidden conversations and expands the sidebar.
 enum RelayUITestFixture {
     static let enabled = ProcessInfo.processInfo.arguments.contains("-RelayUITestConversations")
     private static let me = "ui-test-person"
@@ -18,6 +18,7 @@ enum RelayUITestFixture {
         UserDefaults.standard.set("cloud", forKey: "relay.messagingIdentitySource")
         if ProcessInfo.processInfo.arguments.contains("-RelayUITestReset") {
             UserDefaults.standard.removeObject(forKey: "relay.mobileUnread.ui-test-workspace.\(me).hidden")
+            UserDefaults.standard.removeObject(forKey: WorkspaceSidebarLayout.collapsedKey)
         }
     }
 

@@ -100,6 +100,7 @@ struct RelayWorkspaceView: View {
     @State private var attachmentUploadTask: Task<Void, Never>?
     @State private var attachmentUploadState = AttachmentUploadState()
     @State private var pinnedAgentIDs: Set<String> = []
+    @State private var sidebarCollapsed = WorkspaceSidebarLayout.storedCollapsed()
     @GestureState private var revealedTimeWidth: CGFloat = 0
     @State private var collapsedOverviewIDs: Set<String> = []
     @State private var commandDraft = ""
@@ -221,7 +222,10 @@ struct RelayWorkspaceView: View {
                 if let token = RelayPushState.shared.token { await client.registerPushToken(token) }
             }
         }
-        .onAppear { loadPinnedAgents() }
+        .onAppear {
+            loadPinnedAgents()
+            sidebarCollapsed = WorkspaceSidebarLayout.storedCollapsed()
+        }
         .onChange(of: page) { _, _ in
             discardStagedAttachments()
             loadPinnedAgents()
@@ -413,16 +417,22 @@ struct RelayWorkspaceView: View {
 
     private var workspace: some View {
         GeometryReader { geometry in
+            let layout = WorkspaceSidebarLayout(width: geometry.size.width, collapsed: sidebarCollapsed)
             Group {
-                if geometry.size.width < 700 {
+                if layout.isCompact {
                     phoneWorkspace
                 } else {
                     HStack(spacing: 0) {
-                        rail
-                        Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1)
-                        sidebar.frame(width: geometry.size.width < 850 ? 245 : 285)
-                        Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1)
-                        detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if layout.showsLeftSide {
+                            HStack(spacing: 0) {
+                                rail
+                                Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1)
+                                sidebar.frame(width: layout.sidebarWidth)
+                                Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1)
+                            }
+                            .transition(.move(edge: .leading))
+                        }
+                        detail(layout).frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
             }
@@ -452,6 +462,11 @@ struct RelayWorkspaceView: View {
     }
     private func loadPinnedAgents() {
         pinnedAgentIDs = Set(UserDefaults.standard.stringArray(forKey: pinStorageKey) ?? [])
+    }
+    private func toggleSidebar() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            sidebarCollapsed = WorkspaceSidebarLayout.toggleStored()
+        }
     }
     private func togglePinned(_ agent: RelayAgent) {
         if pinnedAgentIDs.contains(agent.id) { pinnedAgentIDs.remove(agent.id) }
@@ -957,10 +972,20 @@ struct RelayWorkspaceView: View {
         default: ""
         }
     }
-    private var detail: some View {
+    private func detail(_ layout: WorkspaceSidebarLayout) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                Text(page.rawValue).font(.system(size: 14, weight: .semibold)).padding(.leading, 20)
+                if layout.showsToggle {
+                    Button { toggleSidebar() } label: {
+                        Image(systemName: "sidebar.left").font(.system(size: 13))
+                            .frame(width: 38, height: 38)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).padding(.leading, 8)
+                    .accessibilityLabel("Toggle sidebar")
+                    .accessibilityIdentifier("Toggle sidebar")
+                }
+                Text(page.rawValue).font(.system(size: 14, weight: .semibold))
+                    .padding(.leading, layout.showsToggle ? 4 : 20)
                 Spacer(minLength: 0)
                 Button { Task { await client.refresh() } } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 13))
@@ -1104,12 +1129,25 @@ struct RelayWorkspaceView: View {
                 case .row: EmptyView()
                 }
             }.padding(.horizontal, 16).frame(height: 70)
-            if let notice = client.handoffNotice(for: agent) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(notice.title, systemImage: notice.state == .failed ? "exclamationmark.circle" : "arrow.triangle.2.circlepath")
-                        .font(.caption.weight(.medium))
-                        .accessibilityIdentifier("Mobile handoff status")
-                    if !notice.detail.isEmpty { Text(notice.detail).font(.caption) }
+            if let notice = client.visibleHandoffNotice(for: agent) {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(notice.title, systemImage: notice.state == .failed ? "exclamationmark.circle" : "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.medium))
+                            .accessibilityIdentifier("Mobile handoff status")
+                        if !notice.displayDetail.isEmpty { Text(notice.displayDetail).font(.caption) }
+                        if let hint = notice.displayHint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if notice.state == .failed {
+                        Button { client.dismissHandoffNotice(for: agent) } label: {
+                            Image(systemName: "xmark").font(.caption.weight(.semibold))
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Dismiss mobile handoff notice")
+                        .accessibilityIdentifier("Dismiss mobile handoff notice")
+                    }
                 }
                 .foregroundStyle(notice.state == .failed ? Color.orange : Color.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

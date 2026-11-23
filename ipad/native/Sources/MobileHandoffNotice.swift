@@ -16,6 +16,23 @@ struct MobileHandoffNotice: Equatable, Hashable, Sendable {
             : ""
     }
 
+    /// The core's generic text for a failed or in-doubt Claude submission.
+    /// It is replaced with app guidance; any other detail is shown as sent.
+    static let unconfirmedDetail = "Claude's mobile connection could not be confirmed. Check the message status before sending again."
+    static let unconfirmedGuidance = "Your last message may not have reached the session. Check the status under it and send it again only if it shows Queued or Sent, not Delivered."
+    static let unconfirmedHint = "If this keeps happening, keep the computer awake and the session running, and run /reload-plugins once in a session opened before mobile control was set up."
+
+    /// The text shown under the title. Nothing here sends a message again.
+    var displayDetail: String {
+        detail == Self.unconfirmedDetail ? Self.unconfirmedGuidance : detail
+    }
+    /// A second line shown only with the guidance for the generic text.
+    var displayHint: String? {
+        detail == Self.unconfirmedDetail ? Self.unconfirmedHint : nil
+    }
+
+    /// The core publishes this state only for Claude terminal sessions, so
+    /// the titles name Claude.
     var title: String {
         switch state {
         case .connecting: return "Connecting to Claude…"

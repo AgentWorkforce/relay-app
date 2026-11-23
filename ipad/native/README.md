@@ -1,6 +1,6 @@
 # Agent Relay Mobile
 
-The native SwiftUI app runs on iPhone and iPad. It signs in through Agent Relay Cloud and connects directly to Relaycast over HTTPS and WebSocket. Its two sections show the Relay roster and direct messages; workspace channels are not shown on iOS, where they were too noisy. The compact header keeps the Agent Relay logo on the left; iPad keeps it in the left rail. It can start an agent on any online machine that advertises the chosen agent type, then wait for its readiness receipt. It also shows the saved Cloud session overview and can request a new one. Agent badges use the CLI's artwork when its type is known, and the interface follows the device's light or dark appearance. It does not need a Mac bridge, local network access, or Tailscale. An internet connection is required.
+The native SwiftUI app runs on iPhone and iPad. It signs in through Agent Relay Cloud and connects directly to Relaycast over HTTPS and WebSocket. Its two sections show the Relay roster and direct messages; workspace channels are not shown on iOS, where they were too noisy. The compact header keeps the Agent Relay logo on the left; iPad keeps it in the left rail. On iPad, **Toggle sidebar** at the left of the detail header hides the rail and the list so the conversation fills the window, and the app remembers the choice. It can start an agent on any online machine that advertises the chosen agent type, then wait for its readiness receipt. It also shows the saved Cloud session overview and can request a new one. Agent badges use the CLI's artwork when its type is known, and the interface follows the device's light or dark appearance. It does not need a Mac bridge, local network access, or Tailscale. An internet connection is required.
 
 The app gets the signed-in person's messaging identity from Agent Relay Cloud,
 the same identity used by the dashboard and desktop app. DMs sent from any of
@@ -71,6 +71,9 @@ or denied by the verified machine owner for that single request only.
 
 Connecting or a queued message is not a delivery confirmation. A failed or
 uncertain connection asks you to check message status before trying again.
+Resend only if the message is not marked Delivered; the app never resends on
+its own. The failed notice can be dismissed; it comes back when the computer
+reports a different state or the notice clears and returns.
 The offline `MobileHandoffUITests` exercise these states without a production
 account; the Mobile CI workflow saves their screenshots with the test results.
 
