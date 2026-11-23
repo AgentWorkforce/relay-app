@@ -163,6 +163,14 @@ pub const CHAT_OPEN_FALLBACK: &str = "Open";
 pub const CHAT_AGENT: &str = "Agent";
 pub const CHAT_RELAY_MARK: &str = "⇄ Agent Relay";
 
+/// The marker over a relay message the agent sent: to whom, when known.
+pub fn chat_relay_sent_marker(recipient: Option<&str>) -> String {
+    match recipient.filter(|to| !to.is_empty()) {
+        Some(to) => format!("{CHAT_RELAY_MARK} · to @{to}"),
+        None => format!("{CHAT_RELAY_MARK} · sent"),
+    }
+}
+
 /// The marker over a message that came through the relay: who it is from
 /// when that is known.
 pub fn chat_relay_marker(sender: Option<&str>) -> String {
@@ -477,7 +485,9 @@ pub fn chat_turn_open(entry: &LocalTranscriptEntry) -> bool {
 
 mod agent;
 mod order;
+mod relay_lines;
 pub use order::{chat_sort_elsewhere, chat_sorts_before};
+pub use relay_lines::{chat_relay_incoming, chat_relay_outgoing, RelayIncoming, RelayOutgoing};
 
 #[cfg(test)]
 mod tests;

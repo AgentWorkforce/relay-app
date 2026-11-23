@@ -13,9 +13,9 @@ use super::super::app::App;
 use super::super::transcript::{entry_view, is_tool, tool_group_label};
 use super::super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
-    chat_relay_marker, chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent,
-    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING,
-    CHAT_WORKING,
+    chat_relay_incoming, chat_relay_marker, chat_relay_outgoing, chat_relay_sent_marker,
+    chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent, ChatPlace, SpawnHandover,
+    CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
 };
 use agent_relay_desktop_core::contract::cloud_transcript::CloudTranscriptParams;
 use agent_relay_desktop_core::contract::method as desktop_method;
@@ -57,6 +57,8 @@ pub struct Thread {
     relay_only: Cell<bool>,
     /// The conversation is direct messages: replies came through it too.
     direct: Cell<bool>,
+    /// Relay messages already drawn from tool work, by direction and text.
+    relay_seen: RefCell<HashSet<String>>,
 }
 
 impl Thread {
@@ -97,6 +99,7 @@ impl Thread {
             status: RefCell::default(),
             relay_only: Cell::new(false),
             direct: Cell::new(false),
+            relay_seen: RefCell::default(),
         }
     }
 
@@ -110,6 +113,7 @@ impl Thread {
         clear(&self.messages);
         clear(&self.pending);
         self.ids.borrow_mut().clear();
+        self.relay_seen.borrow_mut().clear();
         self.group.borrow_mut().take();
         self.cursor.borrow_mut().take();
         self.following.set(false);
@@ -202,6 +206,14 @@ impl Thread {
             return None;
         }
         let from_person = entry.role == "user" && entry.kind == "text";
+        if entry.id.starts_with(DIRECT) {
+            return self.direct_turn(entry, source, person);
+        }
+        if !from_person {
+            if let Some(turn) = self.relay_line(&entry, person) {
+                return turn;
+            }
+        }
         if !from_person {
             let relay = (self.direct.get() && entry.kind == "text")
                 .then(|| chat_relay_marker(Some(source)));
@@ -226,6 +238,64 @@ impl Thread {
             relay,
             from_person,
         })
+    }
+
+    /// A direct message with an agent elsewhere: yours read by it, or its
+    /// to you. Drawn once even when its transcript also shows it.
+    fn direct_turn(&self, entry: LocalTranscriptEntry, source: &str, person: &str) -> Option<Turn> {
+        let mine = entry.role == "user";
+        let key = format!("{}{}", if mine { "in:" } else { "out:" }, entry.text.trim());
+        if !self.relay_seen.borrow_mut().insert(key) {
+            return None;
+        }
+        Some(Turn {
+            relay: Some(chat_relay_marker(Some(if mine { person } else { source }))),
+            author: if mine {
+                person.to_string()
+            } else {
+                format!("@{source}")
+            },
+            from_person: mine,
+            entry,
+        })
+    }
+
+    /// A relay message inside tool work, drawn as a message: one the agent
+    /// read from its inbox, or one it sent with a command or tool. `None`
+    /// when `entry` carries none; `Some(None)` for one already drawn (a
+    /// tool call is often recorded twice).
+    fn relay_line(&self, entry: &LocalTranscriptEntry, person: &str) -> Option<Option<Turn>> {
+        let (seen, turn) = if let Some(incoming) = chat_relay_incoming(&entry.text) {
+            let author = incoming
+                .sender
+                .as_ref()
+                .map_or_else(|| person.to_string(), |sender| format!("@{sender}"));
+            (
+                format!("in:{}", incoming.body.trim()),
+                Turn {
+                    entry: message(entry, "user", incoming.body),
+                    author,
+                    relay: Some(chat_relay_marker(incoming.sender.as_deref())),
+                    from_person: false,
+                },
+            )
+        } else if let Some(outgoing) = (entry.kind != "tool_result")
+            .then(|| chat_relay_outgoing(&entry.text))
+            .flatten()
+        {
+            (
+                format!("out:{}", outgoing.body.trim()),
+                Turn {
+                    entry: message(entry, "assistant", outgoing.body),
+                    author: person.to_string(),
+                    relay: Some(chat_relay_sent_marker(outgoing.recipient.as_deref())),
+                    from_person: false,
+                },
+            )
+        } else {
+            return None;
+        };
+        Some(self.relay_seen.borrow_mut().insert(seen).then_some(turn))
     }
 
     /// Draws `turn`: a message on its own, tool work in the run's Activity.
@@ -260,6 +330,33 @@ impl Thread {
         disclosure.set_child(Some(&children));
         self.messages.append(&disclosure);
         (disclosure, children)
+    }
+}
+
+/// Cloud records a tool call twice, as the call and as assistant text with
+/// the same words: the text copy goes.
+fn without_tool_echoes(entries: Vec<LocalTranscriptEntry>) -> Vec<LocalTranscriptEntry> {
+    let calls: HashSet<String> = entries
+        .iter()
+        .filter(|entry| entry.kind == "tool_use")
+        .map(|entry| entry.text.clone())
+        .collect();
+    entries
+        .into_iter()
+        .filter(|entry| {
+            entry.kind != "text" || entry.role == "user" || !calls.contains(&entry.text)
+        })
+        .collect()
+}
+
+/// `entry` as a plain message from `role` reading `text`.
+fn message(entry: &LocalTranscriptEntry, role: &str, text: String) -> LocalTranscriptEntry {
+    LocalTranscriptEntry {
+        role: role.into(),
+        kind: "text".into(),
+        text,
+        image_path: None,
+        ..entry.clone()
     }
 }
 
@@ -308,27 +405,46 @@ fn read_cloud(
             cursor: None,
             limit: Some(if following { 50 } else { 500 }),
         },
-        move |app, result| match result {
-            // Nothing in Cloud yet (or Cloud cannot read it): your direct
-            // messages with it are the conversation.
-            Ok(page) if page.entries.is_empty() && !following => read_direct(app, endpoint, done),
-            result => done(
-                app,
-                result.map(|page| LocalTranscriptPage {
-                    entries: page.entries.into_iter().rev().collect(),
-                    next_cursor: None,
-                    follow_cursor: None,
-                }),
-            ),
+        move |app, result| {
+            // Cloud's copy can lag hours behind (or be empty): your direct
+            // messages with it fill in, merged by time; one in both is
+            // drawn once.
+            let cloud = result
+                .map(|page| without_tool_echoes(page.entries.into_iter().rev().collect()))
+                .unwrap_or_default();
+            read_direct(app, endpoint, move |app, direct| {
+                let mut entries = cloud;
+                let failed = match direct {
+                    Ok(page) => {
+                        entries.extend(page.entries);
+                        None
+                    }
+                    Err(error) => Some(error),
+                };
+                entries.sort_by_key(|entry| entry.timestamp_ms);
+                let result = match failed {
+                    Some(error) if entries.is_empty() && !following => Err(error),
+                    _ => Ok(LocalTranscriptPage {
+                        entries,
+                        next_cursor: None,
+                        follow_cursor: None,
+                    }),
+                };
+                done(app, result)
+            });
         },
     );
 }
+
+/// The id prefix of a direct message's entry, telling it from a
+/// transcript's.
+const DIRECT: &str = "dm:";
 
 /// A direct message as a conversation entry: yours as the person's turn,
 /// the agent's as its reply.
 fn direct_entry(message: &DirectMessage) -> LocalTranscriptEntry {
     LocalTranscriptEntry {
-        id: message.id.clone(),
+        id: format!("{DIRECT}{}", message.id),
         role: if message.mine { "user" } else { "assistant" }.into(),
         kind: "text".into(),
         text: message.text.clone(),
