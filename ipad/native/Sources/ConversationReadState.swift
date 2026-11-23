@@ -14,19 +14,30 @@ import Foundation
 /// unread set at once, and an inbox answer requested before that post
 /// finished cannot put it back: it was read from before the post.
 struct ConversationReadState {
-    enum Outcome: Equatable {
+    enum Outcome: Hashable {
         case success
-        /// The server refused the read (a 4xx other than 408 or 429, such as
-        /// 404 for an unknown message): it is not posted again.
+        /// The server refused the read (a 4xx other than 401, 403, 408 or
+        /// 429, such as 404 for an unknown message): it is not posted again.
         case refused
-        /// Anything else, a rate limit or timeout included: may be tried again.
+        /// The credential was refused (401 or 403), after the request layer
+        /// already refreshed it and sent the read again. Tried again on a
+        /// later load, at most `unauthorizedTries` times per message.
+        case unauthorized
+        /// Anything else, a rate limit or timeout included: may be tried
+        /// again, without limit.
         case failed
     }
 
-    /// What the server's refusal with `status` means for a read POST.
+    /// How many times one message's read is posted while the credential is
+    /// refused. The state is recreated on sign-in or a workspace change
+    /// (`sessionGeneration`), so the count starts over then.
+    static let unauthorizedTries = 3
+
+    /// What the server's refusal with `status` means for a read POST. A 401
+    /// or 403 is about the credential, not the message.
     static func outcome(forFailureStatus status: Int?) -> Outcome {
-        guard let status, (400..<500).contains(status), status != 408, status != 429 else { return .failed }
-        return .refused
+        guard let status, (400..<500).contains(status), ![408, 429].contains(status) else { return .failed }
+        return [401, 403].contains(status) ? .unauthorized : .refused
     }
 
     /// What the latest inbox read says about a conversation, for the app's
@@ -61,6 +72,8 @@ struct ConversationReadState {
     /// Message IDs the server accepted (or does not know): one POST each.
     private var posted: Set<String> = []
     private var inFlight: Set<String> = []
+    /// Credential refusals so far, by message ID.
+    private var unauthorized: [String: Int] = [:]
     private var marks: [String: Mark] = [:]
 
     // MARK: Inbox
@@ -84,18 +97,27 @@ struct ConversationReadState {
 
     /// Applies an inbox answer requested with `ticket`. A conversation this
     /// device is reading, or read after the request was sent, stays read.
-    mutating func apply(inbox unread: [String: String], ticket: Int) {
+    ///
+    /// Returns the conversations whose notifications this answer must not
+    /// clear: those it lists as unread, and those kept read only by this
+    /// device's own read. Such a read covers the message it posted, not one
+    /// that arrived since, which the answer may not reflect.
+    @discardableResult
+    mutating func apply(inbox unread: [String: String], ticket: Int) -> Set<String> {
         var next = Set(unread.keys)
+        var keptRead: Set<String> = []
         for (conversationID, mark) in marks {
             if let finished = mark.finishedAt, finished <= ticket {
                 marks.removeValue(forKey: conversationID)
             } else {
                 next.remove(conversationID)
+                keptRead.insert(conversationID)
             }
         }
         unreadConversationIDs = next
         hasAnswer = true
         answerIsCurrent = true
+        return Set(unread.keys).union(keptRead)
     }
 
     /// The latest inbox read failed or was not applied: the last known set
@@ -128,6 +150,12 @@ struct ConversationReadState {
             if ownsMark { marks[conversationID]?.finishedAt = counter }
         case .refused:
             posted.insert(messageID)
+            if ownsMark { marks.removeValue(forKey: conversationID) }
+        case .unauthorized:
+            // Retried like a failure until the cap, then given up like a refusal.
+            let tries = unauthorized[messageID, default: 0] + 1
+            unauthorized[messageID] = tries
+            if tries >= Self.unauthorizedTries { posted.insert(messageID) }
             if ownsMark { marks.removeValue(forKey: conversationID) }
         case .failed:
             if ownsMark { marks.removeValue(forKey: conversationID) }
@@ -198,11 +226,14 @@ struct ConversationReadState {
     /// failures, or the last allowed failing reload, deletes the cursor.
     static func cursorAfterCarryOver(seen: [String: String], plan: [(conversationID: String, messageID: String)],
                                      outcomes: [Outcome], failedReloads: Int) -> (seen: [String: String]?, failedReloads: Int) {
+        // A credential refusal counts as a failure here: it keeps the entry
+        // and counts toward the `carryOverAttempts` limit.
+        let failures: Set<Outcome> = [.failed, .unauthorized]
         var remaining = seen
-        for (index, step) in plan.enumerated() where index < outcomes.count && outcomes[index] != .failed {
+        for (index, step) in plan.enumerated() where index < outcomes.count && !failures.contains(outcomes[index]) {
             remaining.removeValue(forKey: step.conversationID)
         }
-        let failed = outcomes.count < plan.count || outcomes.contains(.failed)
+        let failed = outcomes.count < plan.count || outcomes.contains(where: failures.contains)
         guard failed, failedReloads + 1 < carryOverAttempts else { return (nil, 0) }
         return (remaining, failedReloads + 1)
     }
