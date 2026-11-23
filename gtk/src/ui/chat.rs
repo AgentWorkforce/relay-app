@@ -247,14 +247,16 @@ impl App {
     /// Every agent on this computer, then your agents elsewhere, as the
     /// page lists them now.
     pub(super) fn chat_agents(&self) -> Vec<ChatAgent> {
-        // Someone else's agent is listed when the search finds it, and
-        // while it is the one shown.
+        // Someone else's agent is listed when the search finds it, while
+        // it is the one shown, and whenever it sent you a message you have
+        // not opened.
         let (query, shown) = self
             .with_chat(|page| (page.filters.read().query, page.selected.borrow().clone()))
             .unwrap_or_default();
-        let others = move |agent: &ChatAgent| {
+        let others = |agent: &ChatAgent| {
             (!query.trim().is_empty() && agent.matches(&query))
                 || shown.as_deref() == Some(agent.key().as_str())
+                || self.chat_unread(&agent.relay_names()) > 0
         };
         self.with_state(|state| {
             // The same rows the sessions list shows, a search's included.
@@ -341,7 +343,7 @@ impl App {
     /// its own and that app is installed; whether it did.
     fn open_in_its_app(&self, row: &crate::models::LocalSessionRow) -> bool {
         crate::models::chat_app_link(row)
-            .is_some_and(|link| app_installed_for(&link) && self.inner.desktop.open_uri(&link))
+            .is_some_and(|link| app_installed_for(&link) && launch_raised(&link))
     }
 
     /// Draws the filters, the list and the header from what was last read.
@@ -500,6 +502,14 @@ fn agent_badge(agent: &ChatAgent, size: i32) -> gtk::Widget {
         Some(row) => super::session_avatar::row_badge(row, size),
         None => widgets::agent_badge(&agent.icon_source(), size),
     }
+}
+
+/// Opens `link` in its app with this display's launch context, which hands
+/// the app an activation token: on Wayland an app may raise its window only
+/// with one, and without it a click seems to do nothing.
+fn launch_raised(link: &str) -> bool {
+    let context = gtk::gdk::Display::default().map(|display| display.app_launch_context());
+    gtk::gio::AppInfo::launch_default_for_uri(link, context.as_ref()).is_ok()
 }
 
 /// Whether an installed app takes `link`'s scheme.

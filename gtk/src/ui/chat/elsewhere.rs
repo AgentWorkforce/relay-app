@@ -86,7 +86,8 @@ impl App {
         });
         let agents: Vec<ChatAgent> =
             chat_elsewhere_agents(&roster, &rows, super::super::now_ms(), |agent| {
-                !search.trim().is_empty() && matches_search(agent, &search)
+                (!search.trim().is_empty() && matches_search(agent, &search))
+                    || self.chat_unread(&agent.relay_names()) > 0
             })
             .into_iter()
             .filter(|agent| matches_search(agent, &search))
