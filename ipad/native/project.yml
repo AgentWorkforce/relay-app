@@ -34,7 +34,7 @@ targets:
       properties:
         CFBundleDisplayName: Agent Relay
         CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "59"
+        CFBundleVersion: "60"
         ITSAppUsesNonExemptEncryption: false
         NSCameraUsageDescription: Agent Relay uses the camera to share video during calls with your agents.
         NSMicrophoneUsageDescription: Agent Relay uses the microphone during voice calls with your agents. With GPT-Live voice, call audio is sent to OpenAI.
@@ -87,7 +87,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentworkforce.relayipad
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "1.1"
-        CURRENT_PROJECT_VERSION: "59"
+        CURRENT_PROJECT_VERSION: "60"
         CODE_SIGN_ENTITLEMENTS: Sources/AgentRelayiPad.entitlements
         # The Debug background-audio script edits the built Info.plist.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -102,7 +102,7 @@ targets:
         Release:
           APS_ENVIRONMENT: production
           RELAY_VOICE_CALL_ENABLED: "YES"
-          RELAY_SUMMARY_SEARCH_ENABLED: "NO"
+          RELAY_SUMMARY_SEARCH_ENABLED: "YES"
   AgentRelayUnitTests:
     type: bundle.unit-test
     platform: iOS

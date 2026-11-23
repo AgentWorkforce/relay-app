@@ -116,7 +116,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             archive
 
-      - name: Check the archive ships voice calls
+      - name: Check the archive ships voice calls and summary search
         run: |
           set -euo pipefail
           plist="$RUNNER_TEMP/AgentRelayMobile.xcarchive/Products/Applications/AgentRelayiPad.app/Info.plist"
@@ -128,6 +128,12 @@ jobs:
           fi
           if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$plist" | grep -q "^ *audio$"; then
             echo "::error::The archived app does not declare the audio background mode voice calls need"
+            exit 1
+          fi
+          summary_search="$(/usr/libexec/PlistBuddy -c "Print :RelaySummarySearchEnabled" "$plist")"
+          echo "RelaySummarySearchEnabled: $summary_search"
+          if [ "$summary_search" != "YES" ]; then
+            echo "::error::The archived app has RelaySummarySearchEnabled=$summary_search; Release builds must ship summary search"
             exit 1
           fi
 
