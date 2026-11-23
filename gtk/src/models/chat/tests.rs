@@ -280,3 +280,27 @@ fn an_agent_the_sessions_list_shows_is_not_listed_elsewhere_too() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].name(), "custsuccessgrok");
 }
+
+#[test]
+fn a_heartbeat_does_not_reorder_agents() {
+    let mut early = session("b-agent", None);
+    early.updated_at_ms = Some(NOW - 10_000);
+    let mut late = session("a-agent", None);
+    late.updated_at_ms = Some(NOW - 9_000);
+    let first = chat_agents(
+        &[row(early.clone()), row(late.clone())],
+        |_| None,
+        |_| None,
+        NOW,
+    );
+    // The other one heartbeats a few seconds later: the order holds.
+    early.updated_at_ms = Some(NOW - 1_000);
+    let second = chat_agents(&[row(early), row(late)], |_| None, |_| None, NOW);
+    let names =
+        |agents: &[ChatAgent]| -> Vec<String> { agents.iter().map(ChatAgent::name).collect() };
+    assert_eq!(names(&first), names(&second));
+    assert_eq!(
+        chat_order_bucket(Some(CHAT_ORDER_BUCKET_MS * 3 + 5)),
+        Some(3)
+    );
+}

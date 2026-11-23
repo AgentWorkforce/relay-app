@@ -347,14 +347,24 @@ pub fn chat_key(row: &LocalSessionRow) -> String {
     }
 }
 
-/// Working first, then idle, offline and ended, most recently active first
-/// within each.
+/// How coarsely recency orders agents: agents heartbeat every few seconds,
+/// and ordering by the exact time reshuffles the list on each refresh.
+pub const CHAT_ORDER_BUCKET_MS: i64 = 300_000;
+
+/// `ms` rounded down to its ordering bucket.
+pub fn chat_order_bucket(ms: Option<i64>) -> Option<i64> {
+    ms.map(|ms| ms.div_euclid(CHAT_ORDER_BUCKET_MS))
+}
+
+/// Working first, then idle, offline and ended; within each, the most
+/// recently active five-minute bucket first, then by name, so a heartbeat
+/// does not move a row.
 fn sort_agents(agents: &mut [ChatAgent]) {
     agents.sort_by(|a, b| {
         a.activity
             .rank()
             .cmp(&b.activity.rank())
-            .then(b.last_activity_ms.cmp(&a.last_activity_ms))
+            .then(chat_order_bucket(b.last_activity_ms).cmp(&chat_order_bucket(a.last_activity_ms)))
             .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
     });
 }

@@ -25,7 +25,9 @@ fn agent_key(agent: &ChatAgent, column: LocalSessionSortColumn) -> Option<Key> {
         LocalSessionSortColumn::Session => text(agent.name()),
         LocalSessionSortColumn::Project => text(agent.project()),
         LocalSessionSortColumn::Harness => text(agent.icon_source()),
-        LocalSessionSortColumn::Updated => agent.last_activity_ms.map(Key::Time),
+        // Bucketed: a heartbeat must not move the row.
+        LocalSessionSortColumn::Updated => chat_order_bucket(agent.last_activity_ms)
+            .map(|bucket| Key::Time(bucket * CHAT_ORDER_BUCKET_MS)),
         _ => None,
     }
 }
@@ -72,5 +74,6 @@ pub fn chat_sort_elsewhere(agents: &mut [ChatAgent], sort: LocalSessionSort) {
             agent_key(b, sort.column),
             sort.ascending,
         )
+        .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
     });
 }

@@ -62,7 +62,14 @@ impl App {
     /// elsewhere in their places in its sort.
     pub(in crate::ui) fn render_session_extras(&self) {
         self.render_transcript_controls();
-        glib::idle_add_local_once(self.on(App::render_elsewhere_rows));
+        // Before the next frame and before the list restores its scroll
+        // position, so the rows never paint without them or shift under
+        // the reader.
+        let place = self.on(App::render_elsewhere_rows);
+        glib::idle_add_local_full(glib::Priority::HIGH, move || {
+            place();
+            glib::ControlFlow::Break
+        });
     }
 
     fn render_elsewhere_rows(&self) {
