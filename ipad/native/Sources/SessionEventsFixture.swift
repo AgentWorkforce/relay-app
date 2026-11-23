@@ -4,11 +4,15 @@ import Foundation
 /// Synthetic session events for the UI-test fixture agents, used only with
 /// `-RelayUITestConversations` in Debug builds. Cloud calls bypass `api()`,
 /// so the client asks this before the Cloud events route.
-/// `-RelayUITestSessionEventsDelay` holds the first page for two seconds so
-/// the loading row can be seen; `-RelayUITestSessionWorking` makes the
+/// `-RelayUITestSessionEventsDelay` holds the first page until the test taps
+/// the release control (`RelayUITestReadPostsProbe`), so the loading row can
+/// be seen; `-RelayUITestSessionWorking` makes the
 /// builder's newest event a tool call from a few seconds ago, so its turn is open.
 enum SessionEventsFixture {
     static let sessionIDs: Set<String> = ["session-builder", "session-reviewer"]
+
+    /// How long a held page waits for the test before the hold runs out.
+    private static let holdLimit: TimeInterval = 30
 
     static func covers(_ sessionID: String) -> Bool {
         RelayUITestFixture.enabled && sessionIDs.contains(sessionID)
@@ -16,6 +20,27 @@ enum SessionEventsFixture {
 
     static var delaysFirstPage: Bool {
         RelayUITestFixture.enabled && ProcessInfo.processInfo.arguments.contains("-RelayUITestSessionEventsDelay")
+    }
+
+    /// Holds a first page until the test releases it: true once released,
+    /// false when the hold ran out first. Then the release control reads
+    /// "timed out" and the fetch fails, so the test fails instead of passing
+    /// on a timer.
+    static func holdFirstPage() async throws -> Bool {
+        let deadline = Date().addingTimeInterval(holdLimit)
+        while true {
+            switch SessionEventsGate.shared.current {
+            case .released: return true
+            case .timedOut: return false
+            case .held:
+                if Date() >= deadline { return SessionEventsGate.shared.expire() == .released }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    static func releaseFirstPage() {
+        SessionEventsGate.shared.release()
     }
 
     /// The page for `spec`, as the Cloud route answers it: newest first for
@@ -87,6 +112,46 @@ enum SessionEventsFixture {
         if let tool { row["toolName"] = tool }
         if let status { row["toolStatus"] = status }
         return row
+    }
+}
+
+/// Whether the held first page was released by the test or ran out. It moves
+/// from held once and never back; `state` mirrors it for the release control.
+final class SessionEventsGate: ObservableObject, @unchecked Sendable {
+    enum State: String {
+        case held
+        case released
+        case timedOut = "timed out"
+    }
+
+    static let shared = SessionEventsGate()
+    private let lock = NSLock()
+    private var locked = State.held
+    @Published private(set) var state = State.held
+
+    var current: State {
+        lock.lock()
+        defer { lock.unlock() }
+        return locked
+    }
+
+    func release() {
+        move(to: .released)
+    }
+
+    /// Ends the hold unless the test released it first; returns the state it ended in.
+    func expire() -> State {
+        move(to: .timedOut)
+    }
+
+    @discardableResult
+    private func move(to next: State) -> State {
+        lock.lock()
+        if locked == .held { locked = next }
+        let now = locked
+        lock.unlock()
+        DispatchQueue.main.async { self.state = now }
+        return now
     }
 }
 #endif
