@@ -409,7 +409,8 @@ secrets, the default profile (`agentrelay`), the release as before. Automatic
 candidates (`workflow_run`) and `desktop-v*` tags carry no inputs and are
 always the default profile's. The `changelog` job and the promote's changelog
 steps run for the default profile only: a profile's versions are allocated
-against its own releases repository.
+against its own releases repository (a `github:` feed) or its feed's listing
+(a `cloud` feed).
 
 Each such job starts with the `site-profile` composite action
 (`.github/actions/site-profile`), after the checkout: it validates the
@@ -488,13 +489,23 @@ Unset, the promote prints a notice and skips the bundle. The action exports
 and masks it.
 
 The `site-profile` action refuses any other combination. A profile with an
-unset `RELEASE_FEED` builds and publishes as before. The version, publish and
-promote jobs refuse a `cloud` feed: publishing to one is not available yet.
+unset `RELEASE_FEED` builds and publishes as before. For a `cloud` feed the
+version job lists the feed to allocate the version, and a publishing Desktop
+Release run and Desktop Promote publish to it, as the paragraph above
+describes.
 
 A prepare-only run (and an automatic preparation) neither mints a releases
-token nor checks publishing access: it needs `RELEASES_REPOSITORY` to name an
-existing public repository, because the version job lists its releases with the
-workflow's own `GITHUB_TOKEN` to allocate the version, and nothing more. The
-releases App pair and `RELEASES_TOKEN` are needed by Desktop Promote, which
-checks publishing access before it publishes, and by a publishing Desktop
-Release run.
+token nor checks publishing access. For a `github:` feed it needs
+`RELEASES_REPOSITORY` to name an existing public repository, because the
+version job lists its releases with the workflow's own `GITHUB_TOKEN` to
+allocate the version, and nothing more. The releases App pair and
+`RELEASES_TOKEN` are needed by Desktop Promote, which checks publishing access
+before it publishes, and by a publishing Desktop Release run. For a `cloud`
+feed it needs the `cloud` secrets in the table above,
+`DESKTOP_FEED_PUBLISHER_TOKEN` included, because every job's `site-profile`
+check refuses a `cloud` profile without it. The version job lists the feed
+with that token; a site that answers with HTTP 404 `not_found` counts as an
+empty feed, with a warning, and any other failure fails the run. Given a
+`version`, the run does not list the feed and its candidate is marked
+unlisted: Desktop Promote lists the feed before it publishes and refuses a
+version the feed already holds.
