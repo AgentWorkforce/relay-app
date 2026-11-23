@@ -33,21 +33,29 @@ concurrency:
 jobs:
   simulator:
     name: iPhone handoff and unit tests
+    # xcode-27 is a GitHub-hosted image label, not a self-hosted one. The image
+    # carries Xcode 27; DEVELOPER_DIR below chooses the exact Xcode.
     runs-on: xcode-27
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
-    # The Xcode 27 image builds and boots simulators more slowly than the
-    # macOS 26 one did: a passing run took 41 minutes there.
-    timeout-minutes: 60
+    # On the Xcode 27 image a passing run of this job took 53 minutes (the
+    # build alone about 13, against 4 to 6 on the macOS 26 image).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Show the selected Xcode
+      - name: Require Xcode 27 and the iOS 27 SDK
         run: |
+          if [ ! -d "$DEVELOPER_DIR" ]; then echo "::error::$DEVELOPER_DIR is not on this runner image"; exit 1; fi
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iphoneos SDK $sdk_version"
+          if [ "${sdk_version%%.*}" -lt 27 ]; then
+            echo "::error::iOS 27 SDK or newer is required; found $sdk_version"
+            exit 1
+          fi
 
       - name: Validate extra UI test classes
         id: extra
@@ -84,6 +92,13 @@ jobs:
           import json, os, subprocess
           inventory = json.loads(subprocess.check_output(
               ["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          # The selected Xcode's simulator SDK caps the runtime: a newer
+          # runtime than the SDK cannot be used to build for.
+          sdk_text = subprocess.check_output(
+              ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], text=True).strip()
+          sdk = tuple(int(part) for part in sdk_text.split(".")[:2] if part.isdigit())
+          if len(sdk) != 2:
+              raise SystemExit("Cannot read the iphonesimulator SDK version: " + repr(sdk_text))
           # Newest iOS runtime first; the runtime key ends like iOS-27-2.
           runtimes = []
           for runtime, devices in inventory["devices"].items():
@@ -91,9 +106,14 @@ jobs:
                   continue
               version = tuple(int(part) for part in
                               runtime.rsplit(".iOS-", 1)[1].split("-") if part.isdigit())
+              if version[:2] > sdk:
+                  continue
               runtimes.append((version, devices))
           runtimes.sort(key=lambda entry: entry[0], reverse=True)
-          # Skip the Duo: the tests are written for a regular iPhone.
+          # The pick is fixed (iPhone 17 first) so runs are comparable. Duo
+          # models are skipped because the UI tests are written for a regular
+          # iPhone; a runtime that has only Duo models is skipped on purpose
+          # and the next older runtime is used.
           def rank(device):
               name = device["name"]
               if name == "iPhone 17":
@@ -110,7 +130,7 @@ jobs:
                   phone = min(phones, key=rank)
                   break
           else:
-              raise SystemExit("No available iPhone simulator installed")
+              raise SystemExit("No available iPhone simulator at or below the iphonesimulator SDK version " + sdk_text + " is installed")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("udid=" + phone["udid"] + "\n")
           print("Testing on " + phone["name"] + " (iOS " + ".".join(map(str, version)) + ")")
@@ -200,6 +220,13 @@ jobs:
           import json, os, subprocess
           inventory = json.loads(subprocess.check_output(
               ["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          # The selected Xcode's simulator SDK caps the runtime: a newer
+          # runtime than the SDK cannot be used to build for.
+          sdk_text = subprocess.check_output(
+              ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], text=True).strip()
+          sdk = tuple(int(part) for part in sdk_text.split(".")[:2] if part.isdigit())
+          if len(sdk) != 2:
+              raise SystemExit("Cannot read the iphonesimulator SDK version: " + repr(sdk_text))
           # Newest iOS runtime first; the runtime key ends like iOS-27-2.
           runtimes = []
           for runtime, devices in inventory["devices"].items():
@@ -207,6 +234,8 @@ jobs:
                   continue
               version = tuple(int(part) for part in
                               runtime.rsplit(".iOS-", 1)[1].split("-") if part.isdigit())
+              if version[:2] > sdk:
+                  continue
               runtimes.append((version, devices))
           runtimes.sort(key=lambda entry: entry[0], reverse=True)
           for version, devices in runtimes:
@@ -215,7 +244,7 @@ jobs:
               if ipads:
                   break
           else:
-              raise SystemExit("No available iPad simulator installed")
+              raise SystemExit("No available iPad simulator at or below the iphonesimulator SDK version " + sdk_text + " is installed")
           # Fewer screen pixels make a lighter simulator. Each preferred
           # model is at least 744 points wide in portrait, the orientation
           # the test runs in, so it gets the iPad layout (700 or more).
