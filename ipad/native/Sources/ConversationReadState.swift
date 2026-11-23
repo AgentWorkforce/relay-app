@@ -16,11 +16,30 @@ import Foundation
 struct ConversationReadState {
     enum Outcome: Equatable {
         case success
-        /// The server does not know the message (404): never retried.
-        case notFound
-        /// Anything else: the next history load may try again.
+        /// The server refused the read (a 4xx other than 408 or 429, such as
+        /// 404 for an unknown message): it is not posted again.
+        case refused
+        /// Anything else, a rate limit or timeout included: may be tried again.
         case failed
     }
+
+    /// What the server's refusal with `status` means for a read POST.
+    static func outcome(forFailureStatus status: Int?) -> Outcome {
+        guard let status, (400..<500).contains(status), status != 408, status != 429 else { return .failed }
+        return .refused
+    }
+
+    /// What the latest inbox read says about a conversation, for the app's
+    /// own banner (see `LocalMessageNotices`).
+    enum Notice: Equatable {
+        case unread
+        case read
+        /// The latest inbox read failed or was not applied.
+        case unknown
+    }
+
+    /// A delivered notification, as the sweep sees it.
+    typealias Delivered = (identifier: String, userInfo: [AnyHashable: Any], date: Date)
 
     /// A read this device posted for a conversation: in flight while
     /// `finishedAt` is nil, else the counter value when it succeeded.
@@ -107,7 +126,7 @@ struct ConversationReadState {
             posted.insert(messageID)
             counter += 1
             if ownsMark { marks[conversationID]?.finishedAt = counter }
-        case .notFound:
+        case .refused:
             posted.insert(messageID)
             if ownsMark { marks.removeValue(forKey: conversationID) }
         case .failed:
@@ -148,23 +167,62 @@ struct ConversationReadState {
         }
     }
 
-    /// The old cursor may be forgotten once every carried-over read reached
-    /// the server (or the server does not know the message). An empty plan
-    /// is complete.
-    static func carryOverComplete(_ outcomes: [Outcome]) -> Bool {
-        outcomes.allSatisfy { $0 != .failed }
+    /// What a reload does with an inbox answer.
+    enum InboxStep {
+        /// Apply the answer; `forgetCursor` deletes the old cursor's keys first.
+        case apply(forgetCursor: Bool)
+        /// Keep the last known set: a carry-over is running elsewhere.
+        case keepLast
+        /// Hold this answer back, post these reads, then read the inbox
+        /// once more and apply that answer as it is.
+        case carryOver([(conversationID: String, messageID: String)])
+    }
+
+    /// `afterCarryOver` is the one re-read that follows a carry-over: it
+    /// applies its answer as it is, so a failure is retried by a later
+    /// reload, never in a loop.
+    static func inboxStep(unread: [String: String], oldCursor: [String: String]?,
+                          carryOverRunning: Bool, afterCarryOver: Bool) -> InboxStep {
+        if carryOverRunning { return .keepLast }
+        guard !afterCarryOver, let oldCursor else { return .apply(forgetCursor: false) }
+        let plan = carryOverPlan(unread: unread.keys, seen: oldCursor)
+        return plan.isEmpty ? .apply(forgetCursor: true) : .carryOver(plan)
+    }
+
+    /// Reloads whose carry-over may fail before the old cursor is given up.
+    static let carryOverAttempts = 5
+
+    /// The old cursor to keep after a carry-over (nil: delete its keys) and
+    /// the count of reloads whose carry-over failed so far. An entry is
+    /// dropped once the server took or refused its read. A plan without
+    /// failures, or the last allowed failing reload, deletes the cursor.
+    static func cursorAfterCarryOver(seen: [String: String], plan: [(conversationID: String, messageID: String)],
+                                     outcomes: [Outcome], failedReloads: Int) -> (seen: [String: String]?, failedReloads: Int) {
+        var remaining = seen
+        for (index, step) in plan.enumerated() where index < outcomes.count && outcomes[index] != .failed {
+            remaining.removeValue(forKey: step.conversationID)
+        }
+        let failed = outcomes.count < plan.count || outcomes.contains(.failed)
+        guard failed, failedReloads + 1 < carryOverAttempts else { return (nil, 0) }
+        return (remaining, failedReloads + 1)
     }
 
     // MARK: Notifications
 
     /// Delivered notifications for direct conversations that are now read,
-    /// local and remote alike. Channel and thread notifications stay.
-    static func deliveredNotificationsToRemove(_ delivered: [(identifier: String, userInfo: [AnyHashable: Any])],
+    /// local and remote alike, delivered before `cutoff` (when the inbox
+    /// read or read POST that decided it started): one that arrived later
+    /// may be for a newer message. Channel and thread notifications stay.
+    static func deliveredNotificationsToRemove(_ delivered: [Delivered], before cutoff: Date,
                                                directConversationIDs: Set<String>,
                                                unread: Set<String>) -> [String] {
         delivered.compactMap { item in
             let info = item.userInfo
-            guard ["channel_name", "channel_id", "thread_id", "parent_id"].allSatisfy({ info[$0] == nil }),
+            // The app itself reads only conversation_id, message_id and
+            // channel_name from a push; thread_id and parent_id are a guess
+            // at how a thread reply would be marked, skipped to be safe.
+            guard item.date < cutoff,
+                  ["channel_name", "channel_id", "thread_id", "parent_id"].allSatisfy({ info[$0] == nil }),
                   let conversationID = info["conversation_id"] as? String,
                   directConversationIDs.contains(conversationID),
                   !unread.contains(conversationID) else { return nil }
@@ -172,11 +230,11 @@ struct ConversationReadState {
         }
     }
 
-    /// The app's own banner is held back only for a conversation the latest
-    /// inbox read says has nothing unread. Before the first answer, or when
-    /// the latest read failed or was not applied, it is not held back.
-    func allowsLocalNotice(conversationID: String) -> Bool {
-        !answerIsCurrent || unreadConversationIDs.contains(conversationID)
+    /// What the latest inbox read says about a conversation: unknown before
+    /// the first answer, or when the latest read failed or was not applied.
+    func notice(conversationID: String) -> Notice {
+        guard answerIsCurrent else { return .unknown }
+        return unreadConversationIDs.contains(conversationID) ? .unread : .read
     }
 
     private static func text(_ value: Any?) -> String {

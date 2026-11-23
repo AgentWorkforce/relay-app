@@ -70,8 +70,8 @@ final class ConversationReadStateTests: XCTestCase {
 
     func testAFailedInboxKeepsThePreviousSet() {
         var state = answered(["dm_a": "m1"])
-        // A failed read never calls apply; its ticket is simply dropped.
         _ = state.inboxRequested()
+        state.inboxUnanswered()
         XCTAssertEqual(state.unreadConversationIDs, ["dm_a"])
     }
 
@@ -132,7 +132,7 @@ final class ConversationReadStateTests: XCTestCase {
     func testAnUnknownMessageIsNotPostedAgain() {
         var state = ConversationReadState()
         XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"))
-        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .notFound)
+        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .refused)
         XCTAssertFalse(state.beginRead(conversationID: "dm_a", messageID: "m1"))
     }
 
@@ -175,7 +175,7 @@ final class ConversationReadStateTests: XCTestCase {
     func testAnUnknownMessageLetsTheNextAnswerReMark() {
         var state = answered(["dm_a": "m1"])
         XCTAssertTrue(state.beginRead(conversationID: "dm_a", messageID: "m1"))
-        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .notFound)
+        state.finishRead(conversationID: "dm_a", messageID: "m1", outcome: .refused)
         state.apply(inbox: ["dm_a": "m1"], ticket: state.inboxRequested())
         XCTAssertEqual(state.unreadConversationIDs, ["dm_a"])
     }
@@ -206,47 +206,118 @@ final class ConversationReadStateTests: XCTestCase {
         XCTAssertTrue(ConversationReadState.carryOverPlan(unread: ["dm_a"], seen: [:]).isEmpty)
     }
 
-    func testOldCursorIsForgottenOnlyAfterEveryPostReachedTheServer() {
-        XCTAssertTrue(ConversationReadState.carryOverComplete([]))
-        XCTAssertTrue(ConversationReadState.carryOverComplete([.success, .notFound, .success]))
-        XCTAssertFalse(ConversationReadState.carryOverComplete([.success, .failed]))
-        XCTAssertFalse(ConversationReadState.carryOverComplete([.failed]))
+    func testRefusedMeansAnyClientErrorButATimeoutOrRateLimit() {
+        for status in [400, 403, 404, 410, 422, 499] {
+            XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: status), .refused, "\(status)")
+        }
+        for status in [nil, 408, 429, 500, 503, 302] as [Int?] {
+            XCTAssertEqual(ConversationReadState.outcome(forFailureStatus: status), .failed, "\(String(describing: status))")
+        }
+    }
+
+    private func step(_ unread: [String: String], cursor: [String: String]?, running: Bool = false,
+                      after: Bool = false) -> String {
+        switch ConversationReadState.inboxStep(unread: unread, oldCursor: cursor, carryOverRunning: running, afterCarryOver: after) {
+        case .apply(let forget): return forget ? "apply+forget" : "apply"
+        case .keepLast: return "keepLast"
+        case .carryOver(let plan): return "carryOver " + plan.map { "\($0.conversationID)=\($0.messageID)" }.joined(separator: ",")
+        }
+    }
+
+    func testInboxStep() {
+        let unread = ["dm_a": "m_a2", "dm_b": "m_b1"]
+        XCTAssertEqual(step(unread, cursor: nil), "apply", "A fresh install applies the answer")
+        XCTAssertEqual(step(unread, cursor: [:]), "apply+forget", "Nothing to carry over: forget the cursor")
+        XCTAssertEqual(step(unread, cursor: ["dm_x": "m_x"]), "apply+forget")
+        XCTAssertEqual(step(unread, cursor: ["dm_b": "m_b1", "dm_a": "m_a1"]), "carryOver dm_a=m_a1,dm_b=m_b1")
+        XCTAssertEqual(step(unread, cursor: ["dm_a": "m_a1"], running: true), "keepLast", "Another carry-over is running")
+        XCTAssertEqual(step(unread, cursor: nil, running: true), "keepLast")
+        XCTAssertEqual(step(unread, cursor: ["dm_a": "m_a1"], after: true), "apply", "The re-read applies as is")
+    }
+
+    func testCarryOverDropsEntriesTheServerTookOrRefused() {
+        let seen = ["dm_a": "m_a", "dm_b": "m_b", "dm_c": "m_c", "dm_x": "m_x"]
+        let plan = [(conversationID: "dm_a", messageID: "m_a"), (conversationID: "dm_b", messageID: "m_b"),
+                    (conversationID: "dm_c", messageID: "m_c")]
+        let next = ConversationReadState.cursorAfterCarryOver(seen: seen, plan: plan, outcomes: [.success, .refused, .failed],
+                                                              failedReloads: 0)
+        XCTAssertEqual(next.seen, ["dm_c": "m_c", "dm_x": "m_x"])
+        XCTAssertEqual(next.failedReloads, 1)
+    }
+
+    func testCarryOverWithoutFailuresDeletesTheCursor() {
+        let plan = [(conversationID: "dm_a", messageID: "m_a"), (conversationID: "dm_b", messageID: "m_b")]
+        let next = ConversationReadState.cursorAfterCarryOver(seen: ["dm_a": "m_a", "dm_b": "m_b"], plan: plan,
+                                                              outcomes: [.success, .refused], failedReloads: 3)
+        XCTAssertNil(next.seen)
+        XCTAssertEqual(next.failedReloads, 0)
+    }
+
+    func testCarryOverGivesUpAfterFiveFailingReloads() {
+        let plan = [(conversationID: "dm_a", messageID: "m_a")]
+        var failed = 0
+        for reload in 1...4 {
+            // A rate limit is no verdict on the message: it counts as a failure.
+            let next = ConversationReadState.cursorAfterCarryOver(
+                seen: ["dm_a": "m_a"], plan: plan,
+                outcomes: [ConversationReadState.outcome(forFailureStatus: 429)], failedReloads: failed)
+            XCTAssertEqual(next.seen, ["dm_a": "m_a"], "Reload \(reload) keeps the cursor")
+            XCTAssertEqual(next.failedReloads, reload)
+            failed = next.failedReloads
+        }
+        let last = ConversationReadState.cursorAfterCarryOver(seen: ["dm_a": "m_a"], plan: plan, outcomes: [.failed],
+                                                              failedReloads: failed)
+        XCTAssertNil(last.seen, "The fifth failing reload gives up")
+        XCTAssertEqual(last.failedReloads, 0)
+    }
+
+    func testAnUnfinishedCarryOverCountsAsFailed() {
+        let plan = [(conversationID: "dm_a", messageID: "m_a"), (conversationID: "dm_b", messageID: "m_b")]
+        let next = ConversationReadState.cursorAfterCarryOver(seen: ["dm_a": "m_a", "dm_b": "m_b"], plan: plan,
+                                                              outcomes: [.success], failedReloads: 0)
+        XCTAssertEqual(next.seen, ["dm_b": "m_b"])
+        XCTAssertEqual(next.failedReloads, 1)
     }
 
     // MARK: Notifications
 
     func testDeliveredNotificationsOfReadDirectConversationsAreRemoved() {
-        let delivered: [(identifier: String, userInfo: [AnyHashable: Any])] = [
-            ("read", ["conversation_id": "dm_a"]),
-            ("unread", ["conversation_id": "dm_b"]),
-            ("unknown", ["conversation_id": "dm_z"]),
-            ("channel", ["conversation_id": "dm_a", "channel_name": "launch"]),
-            ("channel-id", ["conversation_id": "dm_a", "channel_id": "ch_1"]),
-            ("thread", ["conversation_id": "dm_a", "thread_id": "m_root"]),
-            ("reply", ["conversation_id": "dm_a", "parent_id": "m_root"]),
-            ("other", ["kind": "something"]),
+        let cutoff = Date(timeIntervalSince1970: 1_000)
+        let earlier = cutoff.addingTimeInterval(-60)
+        let delivered: [ConversationReadState.Delivered] = [
+            ("read", ["conversation_id": "dm_a"], earlier),
+            ("unread", ["conversation_id": "dm_b"], earlier),
+            ("unknown", ["conversation_id": "dm_z"], earlier),
+            ("channel", ["conversation_id": "dm_a", "channel_name": "launch"], earlier),
+            ("channel-id", ["conversation_id": "dm_a", "channel_id": "ch_1"], earlier),
+            ("thread", ["conversation_id": "dm_a", "thread_id": "m_root"], earlier),
+            ("reply", ["conversation_id": "dm_a", "parent_id": "m_root"], earlier),
+            ("other", ["kind": "something"], earlier),
+            ("at-cutoff", ["conversation_id": "dm_a"], cutoff),
+            ("later", ["conversation_id": "dm_a"], cutoff.addingTimeInterval(1)),
         ]
         let removed = ConversationReadState.deliveredNotificationsToRemove(
-            delivered, directConversationIDs: ["dm_a", "dm_b"], unread: ["dm_b"])
-        XCTAssertEqual(removed, ["read"])
+            delivered, before: cutoff, directConversationIDs: ["dm_a", "dm_b"], unread: ["dm_b"])
+        XCTAssertEqual(removed, ["read"], "Only what arrived before the deciding read started")
     }
 
-    func testLocalNoticeHeldBackOnlyForAConversationTheServerSaysIsRead() {
-        XCTAssertTrue(ConversationReadState().allowsLocalNotice(conversationID: "dm_a"), "No answer yet: as before")
+    func testNoticeFollowsTheLatestInboxRead() {
+        XCTAssertEqual(ConversationReadState().notice(conversationID: "dm_a"), .unknown, "No answer yet")
         let state = answered(["dm_a": "m1"])
-        XCTAssertTrue(state.allowsLocalNotice(conversationID: "dm_a"))
-        XCTAssertFalse(state.allowsLocalNotice(conversationID: "dm_b"))
+        XCTAssertEqual(state.notice(conversationID: "dm_a"), .unread)
+        XCTAssertEqual(state.notice(conversationID: "dm_b"), .read)
     }
 
-    func testAFailedInboxKeepsTheSetButDoesNotHoldBackTheLocalNotice() {
+    func testAFailedInboxKeepsTheSetButSaysNothingForTheNotice() {
         var state = answered(["dm_a": "m1"])
-        XCTAssertFalse(state.allowsLocalNotice(conversationID: "dm_b"))
+        XCTAssertEqual(state.notice(conversationID: "dm_b"), .read)
         _ = state.inboxRequested()
         state.inboxUnanswered()
         XCTAssertEqual(state.unreadConversationIDs, ["dm_a"])
         XCTAssertTrue(state.hasAnswer)
-        XCTAssertTrue(state.allowsLocalNotice(conversationID: "dm_b"), "The inbox said nothing this time")
+        XCTAssertEqual(state.notice(conversationID: "dm_b"), .unknown, "The inbox said nothing this time")
+        XCTAssertEqual(state.notice(conversationID: "dm_a"), .unknown)
         state.apply(inbox: ["dm_a": "m1"], ticket: state.inboxRequested())
-        XCTAssertFalse(state.allowsLocalNotice(conversationID: "dm_b"), "A new answer holds it back again")
+        XCTAssertEqual(state.notice(conversationID: "dm_b"), .read, "A new answer holds it back again")
     }
 }

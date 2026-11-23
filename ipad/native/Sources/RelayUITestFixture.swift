@@ -8,6 +8,8 @@ import SwiftUI
 /// gives one conversation a newer incoming message, unread in /inbox until
 /// the app posts its read receipt, and `-RelayUITestReset` forgets the
 /// fixture account's hidden conversations and old device-local unread cursor.
+/// `-RelayUITestOldSeenCursor` then saves such a cursor, as an older build
+/// did, that had already seen the reviewer's newer message.
 enum RelayUITestFixture {
     static let enabled = ProcessInfo.processInfo.arguments.contains("-RelayUITestConversations")
     private static let me = "ui-test-person"
@@ -20,13 +22,22 @@ enum RelayUITestFixture {
         UserDefaults.standard.set("UI Test", forKey: "relay.workspaceName")
         UserDefaults.standard.set("cloud", forKey: "relay.messagingIdentitySource")
         if ProcessInfo.processInfo.arguments.contains("-RelayUITestReset") {
-            for suffix in ["hidden", "seen", "baseline"] {
+            for suffix in ["hidden", "seen", "baseline", "carryOverFailures"] {
                 UserDefaults.standard.removeObject(forKey: "relay.mobileUnread.ui-test-workspace.\(me).\(suffix)")
             }
         }
+        if ProcessInfo.processInfo.arguments.contains("-RelayUITestOldSeenCursor") {
+            UserDefaults.standard.set(["dm_reviewer": "m_reviewer_2"], forKey: "relay.mobileUnread.ui-test-workspace.\(me).seen")
+            UserDefaults.standard.set(true, forKey: "relay.mobileUnread.ui-test-workspace.\(me).baseline")
+        }
     }
 
+    /// Answers every Relaycast request in unit tests that drive RelayClient,
+    /// so they need no account, token or network.
+    static var unitTestResponder: ((_ path: String, _ method: String, _ body: JSONObject?) -> Any?)?
+
     static func response(_ path: String, method: String = "GET", body: JSONObject? = nil) -> Any? {
+        if let unitTestResponder { return unitTestResponder(path, method, body) }
         guard enabled else { return nil }
         if let handoff = MobileHandoffFixture.response(path, method: method, body: body) { return handoff }
         if let fork = SessionForkFixture.response(path, method: method, body: body) { return fork }

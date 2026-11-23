@@ -450,6 +450,7 @@ private enum SecureStore {
     private var readStateSession = 0
     private var carryingOverSeen = false
     var isAppActive: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
+    var notificationCenter = RelayNotificationCenter.system
     private var conversationsInitialized = false
     private var registeredPushToken: String?
     private var selectedConversation: String?
@@ -1318,6 +1319,7 @@ private enum SecureStore {
         let generation = conversationRefreshGeneration
         let session = sessionGeneration
         let ticket = readState.inboxRequested()
+        let inboxStarted = Date()
         async let inboxData: Any? = try? api("/inbox", agent: true)
         async let threadData: Any? = try? api("/dm/conversations", agent: true)
         let inbox = await inboxData as? JSONObject
@@ -1325,18 +1327,21 @@ private enum SecureStore {
         // A transient poll failure should not interrupt an open conversation.
         guard generation == conversationRefreshGeneration, session == sessionGeneration,
               paired, !signingOut else { return }
-        var answer = inbox.map { ConversationReadState.unread(inInbox: $0, mine: messagingHandle) }
+        let defaults = UserDefaults.standard
+        let cursorKeys = [unreadSeenKey, unreadBaselineKey, unreadStoragePrefix + ".carryOverFailures"]
+        let oldCursor = ConversationReadState.oldSeenCursor(defaults.dictionary(forKey: cursorKeys[0]),
+                                                            hasBaseline: defaults.object(forKey: cursorKeys[1]) != nil)
+        var answer: [String: String]?
         var carryOver: [(conversationID: String, messageID: String)] = []
-        let cursorKeys = [unreadSeenKey, unreadBaselineKey]
-        if answer != nil, carryingOverSeen {
-            answer = nil
-        } else if let unread = answer, !afterCarryOver,
-                  let seen = ConversationReadState.oldSeenCursor(
-                    UserDefaults.standard.dictionary(forKey: cursorKeys[0]),
-                    hasBaseline: UserDefaults.standard.object(forKey: cursorKeys[1]) != nil) {
-            carryOver = ConversationReadState.carryOverPlan(unread: unread.keys, seen: seen)
-            // Until the server knows what this device had seen, keep the last answer.
-            if carryOver.isEmpty { cursorKeys.forEach(UserDefaults.standard.removeObject(forKey:)) } else { answer = nil }
+        if let unread = inbox.map({ ConversationReadState.unread(inInbox: $0, mine: messagingHandle) }) {
+            switch ConversationReadState.inboxStep(unread: unread, oldCursor: oldCursor,
+                                                   carryOverRunning: carryingOverSeen, afterCarryOver: afterCarryOver) {
+            case .apply(let forgetCursor):
+                answer = unread
+                if forgetCursor { cursorKeys.forEach(defaults.removeObject(forKey:)) }
+            case .keepLast: break
+            case .carryOver(let plan): carryOver = plan
+            }
         }
         if let answer { readState.apply(inbox: answer, ticket: ticket) } else { readState.inboxUnanswered() }
         if let threads {
@@ -1346,7 +1351,7 @@ private enum SecureStore {
         } else if answer != nil, conversationsInitialized {
             updateConversations(latestConversationThreads, metadata: conversationAgentMetadata)
         }
-        if answer != nil { removeReadNotifications() }
+        if answer != nil { await removeReadNotifications(deliveredBefore: inboxStarted) }
         if !carryOver.isEmpty {
             carryingOverSeen = true
             var outcomes: [ConversationReadState.Outcome] = []
@@ -1355,8 +1360,13 @@ private enum SecureStore {
                 guard session == sessionGeneration else { return }
             }
             carryingOverSeen = false
-            if ConversationReadState.carryOverComplete(outcomes) {
-                cursorKeys.forEach(UserDefaults.standard.removeObject(forKey:))
+            let next = ConversationReadState.cursorAfterCarryOver(seen: oldCursor ?? [:], plan: carryOver, outcomes: outcomes,
+                                                                  failedReloads: defaults.integer(forKey: cursorKeys[2]))
+            if let seen = next.seen {
+                defaults.set(seen, forKey: cursorKeys[0])
+                defaults.set(next.failedReloads, forKey: cursorKeys[2])
+            } else {
+                cursorKeys.forEach(defaults.removeObject(forKey:))
             }
             await reloadConversations(fromRefresh: nil, afterCarryOver: true)
             return
@@ -1544,8 +1554,8 @@ private enum SecureStore {
                                               isCurrentPeer: isCurrentPeer,
                                               apnsToken: RelayPushState.shared.token,
                                               initialized: conversationsInitialized,
-                                              fromMe: string(last["agent_id"]) == myID),
-               readState.allowsLocalNotice(conversationID: conversationID) {
+                                              fromMe: string(last["agent_id"]) == myID,
+                                              serverSays: readState.notice(conversationID: conversationID)) {
                 let content = UNMutableNotificationContent()
                 // A person shows by name, as in the app; agents by their name.
                 let person = metadata[name]
@@ -1554,7 +1564,7 @@ private enum SecureStore {
                 content.body = "New message in Agent Relay"
                 content.sound = .default
                 content.userInfo = ["conversation_id": conversationID]
-                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: messageID,
+                notificationCenter.post(UNNotificationRequest(identifier: messageID,
                     content: content, trigger: nil))
             }
             var enriched = thread
@@ -1613,10 +1623,11 @@ private enum SecureStore {
               readState.beginRead(conversationID: conversationID, messageID: messageID) else { return }
         unreadConversationIDs.remove("conversation:\(agent.name)")
         let session = sessionGeneration
+        let postStarted = Date()
         let outcome = await postRead(messageID)
         guard session == sessionGeneration else { return }
         readState.finishRead(conversationID: conversationID, messageID: messageID, outcome: outcome)
-        if outcome == .success { removeReadNotifications() }
+        if outcome == .success { await removeReadNotifications(deliveredBefore: postStarted) }
     }
     private func postRead(_ messageID: String) async -> ConversationReadState.Outcome {
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
@@ -1624,24 +1635,20 @@ private enum SecureStore {
         do {
             _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
             return .success
-        } catch let failure as RelayAPIError where failure.status == 404 {
-            return .notFound
+        } catch let failure as RelayAPIError {
+            return ConversationReadState.outcome(forFailureStatus: failure.status)
         } catch {
             return .failed
         }
     }
-    /// Clears delivered notifications of direct conversations that are read.
-    private func removeReadNotifications() {
+    /// Clears delivered notifications of direct conversations that are read,
+    /// delivered before the read that decided it started.
+    private func removeReadNotifications(deliveredBefore cutoff: Date) async {
         let direct = Set(conversationIDs.values)
         let unread = readState.unreadConversationIDs
-        Task {
-            let center = UNUserNotificationCenter.current()
-            let delivered = await center.deliveredNotifications()
-                .map { (identifier: $0.request.identifier, userInfo: $0.request.content.userInfo) }
-            let read = ConversationReadState.deliveredNotificationsToRemove(
-                delivered, directConversationIDs: direct, unread: unread)
-            if !read.isEmpty { center.removeDeliveredNotifications(withIdentifiers: read) }
-        }
+        let read = ConversationReadState.deliveredNotificationsToRemove(
+            await notificationCenter.delivered(), before: cutoff, directConversationIDs: direct, unread: unread)
+        if !read.isEmpty { notificationCenter.remove(read) }
     }
     /// Hides a conversation from the Messages list on this device only.
     func hideConversation(_ agent: RelayAgent) {
