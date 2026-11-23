@@ -56,16 +56,13 @@ struct ActivityGroup: Identifiable, Equatable {
     /// Oldest first; never empty.
     let rows: [SessionEventRow]
 
-    /// Named after the run's first row, so the group keeps its id while
-    /// newer tool work joins the run.
-    var id: String { "activity:\(rows[0].event.id)" }
-
-    /// The ids the group answers to besides its own, one per later row
-    /// (`activity:<row's event id>`): the id it had before older tool work
-    /// joined the run at its start. The view marks each with a hidden
-    /// anchor, so scrolling back to the row that was first before an older
-    /// page loaded still finds it.
-    var anchorIDs: [String] { rows.dropFirst().map { "activity:\($0.event.id)" } }
+    /// Named after the run's newest row, so older tool work joining the run
+    /// from an older page never changes it: the chat's scroll back to the
+    /// row that was first before the page (`timeline.first?.id`) still
+    /// finds the group, as one of the lazy stack's own rows. Newer tool work
+    /// joining the newest run changes it, which only makes a new view of
+    /// that group; its open state is kept by row (`ActivityExpansion`).
+    var id: String { "activity:\(rows[rows.count - 1].event.id)" }
 
     /// One line of the group: the tool's name and what it worked on (the
     /// first line of its content, else the files it touched).
@@ -80,8 +77,8 @@ struct ActivityGroup: Identifiable, Equatable {
 }
 
 /// Which Activity groups are open, and which of their lines, kept by the
-/// rows' ids rather than the group's: a group whose id changes when older
-/// tool work joins its run, or that gains newer rows, stays as it was.
+/// rows' ids rather than the group's: a group whose id changes when newer
+/// tool work joins its run, or that gains older rows, stays as it was.
 struct ActivityExpansion: Equatable {
     private(set) var expandedRows: Set<String> = []
     private(set) var openedRows: Set<String> = []
@@ -101,8 +98,10 @@ struct ActivityExpansion: Equatable {
 
     func isOpened(_ row: SessionEventRow) -> Bool { openedRows.contains(row.id) }
 
-    mutating func toggleOpened(_ row: SessionEventRow) {
-        if openedRows.remove(row.id) == nil { openedRows.insert(row.id) }
+    /// Sets, rather than flips, so applying one change to several copies
+    /// leaves them all the same.
+    mutating func setOpened(_ row: SessionEventRow, _ opened: Bool) {
+        if opened { openedRows.insert(row.id) } else { openedRows.remove(row.id) }
     }
 }
 
@@ -162,7 +161,9 @@ enum SessionTimeline {
     /// `pendingCopyWindow` of it.
     ///
     /// Frames and sends are also shown once by `relayKey` (direction, the
-    /// other side and text) within `relayRepeatWindow`, counting the relay
+    /// other side as a bare handle, which matches any when one side does
+    /// not name it, and text) within `relayRepeatWindow`, or at any distance
+    /// when either has no time, counting the relay
     /// messages the chat holds: one to the agent (sent by `me`) is "in" from
     /// its sender, one from the agent "out" to `me`. So a send recorded
     /// twice shows once, while the same text from someone else, to someone
@@ -240,35 +241,57 @@ enum SessionTimeline {
     /// desktop's window).
     static let relayRepeatWindow: TimeInterval = 10 * 60
 
-    /// What tells one relay message from another in the chat: its
-    /// direction, the other side (the sender of one to the agent, the
-    /// recipient of one from it, without a leading "@") and its text with
-    /// whitespace runs made one space (the desktop's `relay_seen`).
-    static func relayKey(incoming: Bool, counterpart: String?, _ text: String) -> String {
-        let other = (counterpart ?? "").drop(while: { $0 == "@" })
-        return "\(incoming ? "in" : "out"):\(other):\(normalized(text))"
+    /// What tells one relay message from another in the chat (the
+    /// desktop's `relay_seen`).
+    struct RelayKey: Equatable {
+        let incoming: Bool
+        /// The other side as a bare handle: the sender of a message to the
+        /// agent, the recipient of one from it. Empty when not known.
+        let counterpart: String
+        /// The text with whitespace runs made one space.
+        let text: String
+
+        /// The same direction and text, and the same other side, or one of
+        /// them not known.
+        func matches(_ other: RelayKey) -> Bool {
+            incoming == other.incoming && text == other.text
+                && (counterpart.isEmpty || other.counterpart.isEmpty || counterpart == other.counterpart)
+        }
     }
 
-    /// The `relayKey`s shown so far and when.
-    struct RelaySeen {
-        private var times: [String: [Date?]] = [:]
+    /// The key of a relay message: its direction, the other side reduced
+    /// to a bare handle (no leading "@", nothing from an "@host" on, so
+    /// `--address pilot@harbor` and `--to @pilot` are both "pilot"; a
+    /// channel keeps its "#") and its text.
+    static func relayKey(incoming: Bool, counterpart: String?, _ text: String) -> RelayKey {
+        let handle = (counterpart ?? "").drop(while: { $0 == "@" }).prefix(while: { $0 != "@" })
+        return RelayKey(incoming: incoming, counterpart: String(handle), text: normalized(text))
+    }
 
-        /// Whether `key` was shown within `relayRepeatWindow` of `date`. A
-        /// record without a time is never taken for a repeat: the window
-        /// cannot be told.
-        func isRepeat(_ key: String, at date: Date?) -> Bool {
-            guard let date else { return false }
-            return times[key, default: []].contains { seen in
-                seen.map { abs(date.timeIntervalSince($0)) <= relayRepeatWindow } ?? false
+    /// The `RelayKey`s shown so far and when.
+    struct RelaySeen {
+        /// By direction and text, so a lookup reads only that text's records.
+        private var shown: [String: [(key: RelayKey, date: Date?)]] = [:]
+
+        private static func bucket(_ key: RelayKey) -> String { (key.incoming ? "in:" : "out:") + key.text }
+
+        /// Whether a key matching `key` was shown within `relayRepeatWindow`
+        /// of `date`. When either has no time, the window cannot be told
+        /// and the key alone decides.
+        func isRepeat(_ key: RelayKey, at date: Date?) -> Bool {
+            shown[Self.bucket(key), default: []].contains { seen in
+                guard seen.key.matches(key) else { return false }
+                guard let date, let seenDate = seen.date else { return true }
+                return abs(date.timeIntervalSince(seenDate)) <= relayRepeatWindow
             }
         }
 
-        mutating func record(_ key: String, at date: Date?) {
-            times[key, default: []].append(date)
+        mutating func record(_ key: RelayKey, at date: Date?) {
+            shown[Self.bucket(key), default: []].append((key, date))
         }
 
         /// Records `key` unless it is a repeat; false for a repeat.
-        mutating func show(_ key: String, at date: Date?) -> Bool {
+        mutating func show(_ key: RelayKey, at date: Date?) -> Bool {
             guard !isRepeat(key, at: date) else { return false }
             record(key, at: date)
             return true

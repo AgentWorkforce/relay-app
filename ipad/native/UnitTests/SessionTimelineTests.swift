@@ -178,15 +178,52 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(SessionTimeline.relayRepeatWindow, 10 * 60)
     }
 
-    func testARepeatNeedsBothTimesWithinTheWindow() {
+    func testARepeatIsWithinTheWindowOrUntimed() {
+        func key(_ to: String?) -> SessionTimeline.RelayKey { SessionTimeline.relayKey(incoming: false, counterpart: to, "Hi") }
         var seen = SessionTimeline.RelaySeen()
         let at = SessionEventPage.date("2026-11-20T10:00:00Z")!
-        seen.record("out:scout:Hi", at: at)
-        XCTAssertTrue(seen.isRepeat("out:scout:Hi", at: at.addingTimeInterval(SessionTimeline.relayRepeatWindow)))
-        XCTAssertFalse(seen.isRepeat("out:scout:Hi", at: at.addingTimeInterval(SessionTimeline.relayRepeatWindow + 1)))
-        XCTAssertFalse(seen.isRepeat("out:scout:Hi", at: nil))
-        XCTAssertFalse(seen.isRepeat("out:crew:Hi", at: at))
-        XCTAssertEqual(SessionTimeline.relayKey(incoming: true, counterpart: "@pilot", " Ship \n it "), "in:pilot:Ship it")
+        seen.record(key("scout"), at: at)
+        XCTAssertTrue(seen.isRepeat(key("scout"), at: at.addingTimeInterval(SessionTimeline.relayRepeatWindow)))
+        XCTAssertFalse(seen.isRepeat(key("scout"), at: at.addingTimeInterval(SessionTimeline.relayRepeatWindow + 1)))
+        // With no time on either side the key alone decides.
+        XCTAssertTrue(seen.isRepeat(key("scout"), at: nil))
+        var untimed = SessionTimeline.RelaySeen()
+        untimed.record(key("scout"), at: nil)
+        XCTAssertTrue(untimed.isRepeat(key("scout"), at: at.addingTimeInterval(86_400)))
+        XCTAssertFalse(seen.isRepeat(key("#crew"), at: at))
+        XCTAssertFalse(seen.isRepeat(SessionTimeline.relayKey(incoming: true, counterpart: "scout", "Hi"), at: at))
+        // An unnamed side matches any; a named one only itself.
+        XCTAssertTrue(seen.isRepeat(key(nil), at: at))
+        var unnamed = SessionTimeline.RelaySeen()
+        unnamed.record(key(""), at: at)
+        XCTAssertTrue(unnamed.isRepeat(key("pilot"), at: at))
+        // The other side is a bare handle.
+        XCTAssertEqual(SessionTimeline.relayKey(incoming: true, counterpart: "@pilot", " Ship \n it "),
+                       SessionTimeline.RelayKey(incoming: true, counterpart: "pilot", text: "Ship it"))
+        XCTAssertEqual(key("pilot@harbor").counterpart, "pilot")
+        XCTAssertEqual(key("@pilot@harbor").counterpart, "pilot")
+        XCTAssertEqual(key("#crew").counterpart, "#crew")
+    }
+
+    func testAHeldReplyHidesItsSendByAddressOrUnnamedSide() {
+        let reply = message("m_9", at: "2026-11-20T10:00:05Z", text: "Done.", sender: "builder")
+        func shown(_ content: String, me: String, tool: String = "Bash", at time: String? = "2026-11-20T10:00:04Z",
+                   held: RelayMessage? = nil) -> [String] {
+            let send = event("e1", at: time, kind: "tool_use", content: content, tool: tool)
+            return ids(SessionTimeline.items(messages: [held ?? reply], events: [send], me: me))
+        }
+        // A send by address names the same handle as this device's.
+        XCTAssertEqual(shown("agent-relay-probe send --address pilot@harbor --body 'Done.'", me: "pilot"), ["m_9"])
+        // With no handle for this device, a send to someone still matches the held reply.
+        XCTAssertEqual(shown("agent-relay-probe send --to @pilot --body 'Done.'", me: ""), ["m_9"])
+        // A relay tool call that names no recipient matches it too.
+        XCTAssertEqual(shown(#"send_relay_message {"text": "Done."}"#, me: "pilot", tool: "send_relay_message"), ["m_9"])
+        // With no time on the held reply, or on the send, the key alone decides.
+        let untimedReply = message("m_9", at: nil, text: "Done.", sender: "builder")
+        XCTAssertEqual(shown("agent-relay-probe send --to @pilot --body 'Done.'", me: "pilot", held: untimedReply), ["m_9"])
+        XCTAssertEqual(shown("agent-relay-probe send --to @pilot --body 'Done.'", me: "pilot", at: nil), ["m_9"])
+        // A send to someone else by address is still shown.
+        XCTAssertEqual(shown("agent-relay-probe send --address scout@harbor --body 'Done.'", me: "pilot").count, 2)
     }
 
     func testARelayedPromptIsOnlyTakenForACopyByItsIDOrPendingBubble() {
@@ -269,7 +306,7 @@ final class SessionTimelineTests: XCTestCase {
                       event("e8", at: "2026-11-20T10:00:07Z", content: "Done.")]
         let messages = [message("m1", at: "2026-11-20T10:00:04.5Z", text: "Any news?", sender: "pilot")]
         let grouped = SessionTimeline.grouped(SessionTimeline.items(messages: messages, events: events))
-        XCTAssertEqual(ids(grouped), ["activity:codex|m1|tool_use|e1", "event:codex|m1|tool_use|e4",
+        XCTAssertEqual(ids(grouped), ["activity:codex|m1|tool_use|e3", "event:codex|m1|tool_use|e4",
                                       "activity:codex|m1|tool_use|e5", "m1", "event:codex|m1|future_kind|e6",
                                       "activity:codex|m1|tool_use|e7", "event:codex|m1|assistant|e8"])
         guard case .activity(let first) = grouped[0] else { return XCTFail("expected a group") }
@@ -278,8 +315,8 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(ActivityGroup.line(for: first.rows[0]).target, "ls -la")
         XCTAssertEqual(ActivityGroup.line(for: first.rows[1]).title, "Result")
         XCTAssertEqual(ActivityGroup.line(for: first.rows[2]).target, "")
-        // A newer call joining the run keeps the group's id.
-        let longer = SessionTimeline.grouped(SessionTimeline.items(messages: [], events: Array(events.prefix(2))))
+        // An older call joining the run keeps the group's id.
+        let longer = SessionTimeline.grouped(SessionTimeline.items(messages: [], events: Array(events[1...2])))
         XCTAssertEqual(longer.first?.id, first.id)
     }
 
@@ -296,16 +333,17 @@ final class SessionTimelineTests: XCTestCase {
         }
         guard let before = group(calls), let afterOlder = group([older] + calls),
               let afterNewer = group(calls + [newer]) else { return XCTFail("expected groups") }
-        XCTAssertEqual(before.anchorIDs, ["activity:codex|m1|tool_result|e2"])
-        // An older page moves the group's id; its old id stays an anchor, so
-        // the scroll back to the first row before the page finds it.
-        XCTAssertNotEqual(afterOlder.id, before.id)
-        XCTAssertTrue(afterOlder.anchorIDs.contains(before.id))
+        // An older page never moves the group's id, so the scroll back to
+        // the row that was first before the page finds it.
+        XCTAssertEqual(before.id, "activity:codex|m1|tool_result|e2")
+        XCTAssertEqual(afterOlder.id, before.id)
+        // A newer row joining the newest run moves it: a new view of the group.
+        XCTAssertNotEqual(afterNewer.id, before.id)
         // Opened before either joined, the group stays open after both; so does an opened line.
         var expansion = ActivityExpansion()
         XCTAssertFalse(expansion.isExpanded(before))
         expansion.setExpanded(true, before)
-        expansion.toggleOpened(before.rows[1])
+        expansion.setOpened(before.rows[1], true)
         XCTAssertTrue(expansion.isExpanded(afterOlder))
         XCTAssertTrue(expansion.isExpanded(afterNewer))
         XCTAssertTrue(expansion.isOpened(afterOlder.rows[2]))
@@ -313,8 +351,32 @@ final class SessionTimelineTests: XCTestCase {
         expansion.setExpanded(false, afterOlder)
         XCTAssertFalse(expansion.isExpanded(before))
         XCTAssertFalse(expansion.isExpanded(afterNewer))
-        expansion.toggleOpened(before.rows[1])
+        expansion.setOpened(before.rows[1], false)
         XCTAssertFalse(expansion.isOpened(afterOlder.rows[2]))
+    }
+
+    func testOpeningALineIsTheSameOnEveryCopy() {
+        let row = SessionEventRow(event: event("e1", at: "2026-11-20T10:00:00Z", kind: "tool_use", content: "ls", tool: "Bash"),
+                                  text: "ls")
+        // Two live views of one group (two scenes) and the kept copy: one
+        // view opens the line, then the other, from what each shows.
+        var kept = ActivityExpansion(), first = ActivityExpansion(), second = ActivityExpansion()
+        let open = !first.isOpened(row)
+        first.setOpened(row, open)
+        kept.setOpened(row, open)
+        // The second view was made before and still shows it closed: it
+        // asks for open, and setting it again changes nothing.
+        let alsoOpen = !second.isOpened(row)
+        second.setOpened(row, alsoOpen)
+        kept.setOpened(row, alsoOpen)
+        XCTAssertTrue(kept.isOpened(row))
+        XCTAssertTrue(second.isOpened(row))
+        // Closing is the same on every copy, however often it is applied.
+        kept.setOpened(row, false)
+        kept.setOpened(row, false)
+        first.setOpened(row, false)
+        XCTAssertFalse(kept.isOpened(row))
+        XCTAssertEqual(kept, first)
     }
 
     func testTheTurnIsOpenUntilTheAgentReplies() {

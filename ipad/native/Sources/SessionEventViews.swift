@@ -188,10 +188,8 @@ struct SessionWorkingRow: View {
 /// each call and result by its tool and target; a line opens that row.
 ///
 /// What is open is kept by row (`ActivityExpansion`) beyond the view's
-/// life: when older tool work joins the run, the group's id changes and
-/// SwiftUI makes a new view, which starts from what was open. Hidden
-/// anchors carry the group's `anchorIDs`, so a scroll to the id it had
-/// before still lands on it.
+/// life: when newer tool work joins the run, the group's id changes and
+/// SwiftUI makes a new view, which starts from what was open.
 struct SessionActivityGroupView: View {
     let group: ActivityGroup
     let agentName: String
@@ -238,7 +236,8 @@ struct SessionActivityGroupView: View {
                 ForEach(group.rows) { row in
                     let line = ActivityGroup.line(for: row)
                     Button {
-                        update { $0.toggleOpened(row) }
+                        let open = !expansion.isOpened(row)
+                        update { $0.setOpened(row, open) }
                     } label: {
                         HStack(spacing: 6) {
                             Text(line.title).font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -260,15 +259,6 @@ struct SessionActivityGroupView: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.tertiarySystemGroupedBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-        .background(alignment: .top) {
-            // Takes no space and is not read out; only a scroll finds it.
-            ZStack {
-                ForEach(group.anchorIDs, id: \.self) { anchor in
-                    Color.clear.frame(height: 0).id(MobileChatScrollTarget.message(anchor))
-                }
-            }
-            .accessibilityHidden(true)
-        }
     }
 }
 
