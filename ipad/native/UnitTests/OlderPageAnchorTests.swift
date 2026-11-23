@@ -2,10 +2,11 @@ import XCTest
 @testable import AgentRelayiPad
 
 final class OlderPageAnchorTests: XCTestCase {
-    private func event(_ id: String, at time: String?, kind: String = "assistant", content: String = "x",
-                       tool: String = "") -> SessionEvent {
+    private func event(_ id: String, at time: String?, kind: String = "assistant", type: String = "",
+                       content: String = "x", tool: String = "") -> SessionEvent {
         SessionEvent(key: .init(source: "codex", machineID: "m1", kind: kind, eventID: id),
-                     ts: time.flatMap(SessionEventPage.date), kind: kind, actorRole: "assistant", content: content, toolName: tool)
+                     ts: time.flatMap(SessionEventPage.date), kind: kind, type: type, actorRole: "assistant",
+                     content: content, toolName: tool)
     }
 
     private func message(_ id: String, at time: String) -> RelayMessage {
@@ -61,5 +62,27 @@ final class OlderPageAnchorTests: XCTestCase {
         XCTAssertEqual(anchor.step(sessionID: "s1", oldestID: "codex|m1|assistant|o1", items: timeline(older)), .drop)
         // No events, no anchor.
         XCTAssertNil(OlderPageAnchor(sessionID: "s1", oldest: nil))
+    }
+
+    func testAReplyAtTheSameTimeAsAHiddenOldestEventIsKept() throws {
+        // The store's oldest event is thinking, which the chat does not
+        // show; the first reply has the same time and sorts after it by key.
+        let thinking = event("k1", at: "2026-11-20T10:00:00Z", type: "thinking", content: "Weighing the wick")
+        let reply = event("k2", at: "2026-11-20T10:00:00Z", content: "Picking up the lantern checks.")
+        let anchor = try XCTUnwrap(OlderPageAnchor(sessionID: "s1", oldest: thinking))
+        let older = [event("o1", at: "2026-11-20T09:00:00Z", content: "Older note")]
+        XCTAssertEqual(anchor.step(sessionID: "s1", oldestID: "codex|m1|assistant|o1", items: timeline(older + [thinking, reply])),
+                       .scroll("event:codex|m1|assistant|k2"))
+    }
+
+    func testEventsWithoutATimeArePlacedByTheStoresOrder() throws {
+        // Untimed events sort first, by key: the older page's "a0" before
+        // the hidden oldest "u1", and the reply "u2" after it.
+        let thinking = event("u1", at: nil, type: "thinking", content: "Weighing the wick")
+        let reply = event("u2", at: nil, content: "Picking up the lantern checks.")
+        let anchor = try XCTUnwrap(OlderPageAnchor(sessionID: "s1", oldest: thinking))
+        let older = [event("a0", at: nil, content: "Older note")]
+        XCTAssertEqual(anchor.step(sessionID: "s1", oldestID: "codex|m1|assistant|a0", items: timeline(older + [thinking, reply])),
+                       .scroll("event:codex|m1|assistant|u2"))
     }
 }

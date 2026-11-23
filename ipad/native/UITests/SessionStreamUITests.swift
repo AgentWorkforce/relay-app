@@ -105,13 +105,13 @@ final class SessionStreamUITests: XCTestCase {
     }
 
     /// Opens the builder with an older page behind its first one, lets the
-    /// page load (on its own once its row is on screen, or by a tap), and
-    /// returns once it has: the "Load earlier activity" row is gone.
+    /// page load on its own (its row is on screen in this short chat), and
+    /// returns once it has: the "Load earlier activity" row is gone. No
+    /// tap: the row can go between a check and the tap.
     private func loadOlderPage(_ argument: String, firstRow: (XCUIApplication) -> XCUIElement) -> XCUIApplication {
         let app = open("builder", [argument])
         XCTAssertTrue(firstRow(app).waitForExistence(timeout: 10))
         let older = app.buttons["Load earlier activity"]
-        if older.exists, older.isHittable { older.tap() }
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: older)
         XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "the older page never loaded")
         return app

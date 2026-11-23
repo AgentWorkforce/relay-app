@@ -12,15 +12,14 @@ import Foundation
 struct OlderPageAnchor: Equatable {
     let sessionID: String
     /// The oldest event when the load started.
-    let oldestID: String
-    let oldestAt: Date?
+    let oldest: SessionEvent
+    var oldestID: String { oldest.id }
 
     /// Nil when the store holds no events: there is no row to keep.
     init?(sessionID: String, oldest: SessionEvent?) {
         guard let oldest else { return nil }
         self.sessionID = sessionID
-        oldestID = oldest.id
-        oldestAt = oldest.ts
+        self.oldest = oldest
     }
 
     enum Step: Equatable {
@@ -42,8 +41,10 @@ struct OlderPageAnchor: Equatable {
     }
 
     /// Whether the chat showed `item` before the page: a relay message (a
-    /// page brings only events), an event no older than the old oldest
-    /// one, or a group holding one.
+    /// page brings only events), an event the store does not order before
+    /// the old oldest one (its own rule: time, then key, so an event at the
+    /// same time or with no time is placed as the store placed it), or a
+    /// group holding one.
     private func existedBefore(_ item: ChatTimelineItem) -> Bool {
         switch item {
         case .message: true
@@ -53,8 +54,6 @@ struct OlderPageAnchor: Equatable {
     }
 
     private func existedBefore(_ event: SessionEvent) -> Bool {
-        if event.id == oldestID { return true }
-        guard let ts = event.ts, let oldestAt else { return false }
-        return ts > oldestAt
+        !SessionEventStore.ordered(event, oldest)
     }
 }
