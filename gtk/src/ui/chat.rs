@@ -12,13 +12,13 @@ use super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
     chat_agents, chat_elsewhere_agents, chat_filter_choices, merge_local_sessions, ChatAgent,
     ChatPlace, CHAT_DETAILS, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE,
-    CHAT_HIDE_LIST, CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_SEARCH, CHAT_SEND, CHAT_SHOW_LIST,
-    CHAT_TITLE,
+    CHAT_HIDE_LIST, CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_SEARCH, CHAT_SHOW_LIST, CHAT_TITLE,
 };
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 
+mod composer;
 mod controls;
 mod elsewhere;
 mod filters;
@@ -27,7 +27,6 @@ mod open;
 mod send;
 mod thread;
 
-use super::spawn_join::ChatInput;
 use controls::Controls;
 use filters::FilterBar;
 pub use thread::Thread;
@@ -58,14 +57,15 @@ pub struct ChatPage {
     /// The session's name, Receives messages and Upload.
     pub controls: Controls,
     pub thread: Thread,
-    pub input: ChatInput,
-    pub send: gtk::Button,
-    pub note: gtk::Label,
+    /// The message box: attachments, input, Send and the note under them.
+    pub composer: composer::Composer,
     /// The agent shown (`Target::key`).
     pub selected: RefCell<Option<String>>,
     /// What the list last drew, so a redraw with nothing new keeps it.
     drawn: RefCell<Vec<String>>,
     pub sending: Cell<bool>,
+    /// The last send dropped its files (see `send.rs`).
+    pub unsent_files: Cell<bool>,
     /// Your agents elsewhere as drawn at the head of the sessions list.
     elsewhere_rows: RefCell<Vec<gtk::ListBoxRow>>,
     elsewhere_drawn: RefCell<Vec<String>>,
@@ -167,26 +167,8 @@ impl ChatPage {
         let thread = Thread::build();
         conversation.append(&thread.scroll);
 
-        let dock = vbox(6, &["chat-dock"]);
-        widgets::pad(&dock, 8, Some(24), Some(14));
-        let (column, holder) = widgets::column(760);
-        widgets::pad(&column, 0, Some(0), Some(0));
-        holder.set_halign(gtk::Align::Center);
-        super::zoom::size(&column, 560, -1);
-        let line = hbox(8, &["chat-composer"]);
-        let input = ChatInput::build();
-        line.append(&input.root);
-        input.focus_within(&line);
-        let send = gtk::Button::with_label(CHAT_SEND);
-        widgets::action_cursor(&send);
-        send.add_css_class("primary");
-        send.set_valign(gtk::Align::End);
-        line.append(&send);
-        column.append(&line);
-        let note = text("", &["caption"]).wrapped();
-        column.append(&note);
-        dock.append(&holder);
-        conversation.append(&dock);
+        let composer = composer::Composer::build();
+        conversation.append(&composer.dock);
         stack.add_named(&view, Some(THREAD));
         split.set_end_child(Some(&stack));
         split.set_shrink_end_child(false);
@@ -207,12 +189,11 @@ impl ChatPage {
             header_presence,
             controls,
             thread,
-            input,
-            send,
-            note,
+            composer,
             selected: RefCell::default(),
             drawn: RefCell::default(),
             sending: Cell::new(false),
+            unsent_files: Cell::new(false),
             elsewhere_rows: RefCell::default(),
             elsewhere_drawn: RefCell::default(),
         }
@@ -223,10 +204,11 @@ impl App {
     /// Connects the page's own controls; built once with the shell.
     pub(super) fn connect_chat_page(&self, page: &ChatPage) {
         page.filters.connect_changed(self.on(App::render_chat));
+        self.connect_chat_composer(&page.composer);
         let send = self.on(App::send_chat_message);
-        page.input.connect_activate(send);
+        page.composer.input.connect_activate(send);
         let send = self.on(App::send_chat_message);
-        page.send.connect_clicked(move |_| send());
+        page.composer.send.connect_clicked(move |_| send());
         self.connect_chat_controls(&page.controls);
         let home = self.on(|app| app.open_section(super::state::Section::Mine));
         page.back.connect_clicked(move |_| home());
@@ -451,12 +433,15 @@ impl App {
             page.header_presence.remove_css_class(class);
         }
         page.header_presence.add_css_class(agent.activity.class());
-        page.input.set_placeholder_text(Some(&agent.placeholder()));
-        widgets::name(&page.input.view, &agent.placeholder());
-        page.send
+        page.composer
+            .input
+            .set_placeholder_text(Some(&agent.placeholder()));
+        widgets::name(&page.composer.input.view, &agent.placeholder());
+        page.composer
+            .send
             .set_sensitive(agent.can_send() && !page.sending.get());
         if !page.sending.get() && page.thread.status().is_none() {
-            page.note.set_text(&agent.composer_note());
+            page.composer.note.set_text(&agent.composer_note());
         }
     }
 
@@ -468,15 +453,15 @@ impl App {
         let page = &shell.pages.chat;
         let changed = page.selected.replace(Some(key.to_string())).as_deref() != Some(key);
         if changed {
-            page.input.set_text("");
+            page.composer.input.set_text("");
             page.thread.set_status(None);
             if let Some(agent) = self.chat_agent(key) {
-                page.note.set_text(&agent.composer_note());
+                page.composer.note.set_text(&agent.composer_note());
             }
             self.load_chat_thread(key);
         }
         self.render_chat();
-        page.input.view.grab_focus();
+        page.composer.input.view.grab_focus();
     }
 
     /// Reads the sessions, the roster and the conversation shown again.

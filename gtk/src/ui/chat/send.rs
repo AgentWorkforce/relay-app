@@ -5,7 +5,9 @@
 
 use super::super::app::App;
 use crate::bridge::CoreError;
-use crate::models::{delivery_note, recipient_params, CHAT_JOINING, CHAT_SENDING};
+use crate::models::{
+    delivery_note, recipient_params, CHAT_FILES_NEED_CORE, CHAT_JOINING, CHAT_SENDING,
+};
 use agent_relay_node::relay::contract::agents::RegisterParams;
 use agent_relay_node::relay::contract::directory::{SendParams, SentMessage};
 use agent_relay_node::relay::contract::method;
@@ -19,7 +21,7 @@ impl App {
         let Some((key, body)) = self
             .with_chat(|page| {
                 let key = page.selected.borrow().clone()?;
-                let body = page.input.text().trim().to_string();
+                let body = page.composer.input.text().trim().to_string();
                 (!body.is_empty() && !page.sending.get()).then_some((key, body))
             })
             .flatten()
@@ -29,14 +31,20 @@ impl App {
         let Some(agent) = self.chat_agent(&key) else {
             return;
         };
+        // The bridge's messages.send takes text only until the core's
+        // attachment change lands; the files are taken and named as unsent.
+        let unsent = self
+            .with_chat(|page| !page.composer.take().is_empty())
+            .unwrap_or(false);
         self.with_chat(|page| {
+            page.unsent_files.set(unsent);
             page.sending.set(true);
-            page.send.set_sensitive(false);
-            page.input.set_text("");
+            page.composer.send.set_sensitive(false);
+            page.composer.input.set_text("");
             page.thread.add_pending(&body);
             page.thread.set_status(None);
-            clear_error(&page.note);
-            page.note.set_text(if agent.address().is_some() {
+            clear_error(&page.composer.note);
+            page.composer.note.set_text(if agent.address().is_some() {
                 CHAT_SENDING
             } else {
                 CHAT_JOINING
@@ -94,12 +102,20 @@ impl App {
             move |app, result: Result<SentMessage, CoreError>| match result {
                 Ok(sent) => {
                     let (note, _) = delivery_note(sent.recipient.message, Some(&sent.recipient));
+                    let note = if app
+                        .with_chat(|page| page.unsent_files.replace(false))
+                        .unwrap_or(false)
+                    {
+                        CHAT_FILES_NEED_CORE
+                    } else {
+                        note
+                    };
                     app.with_chat(|page| {
                         page.sending.set(false);
-                        page.send.set_sensitive(true);
+                        page.composer.send.set_sensitive(true);
                         if page.selected.borrow().as_deref() == Some(key.as_str()) {
                             page.thread.set_status(Some(note.to_string()));
-                            page.note.set_text(note);
+                            page.composer.note.set_text(note);
                         }
                     });
                     app.render_chat();
@@ -112,18 +128,18 @@ impl App {
     fn chat_send_failed(&self, key: &str, body: &str, error: &CoreError) {
         self.with_chat(|page| {
             page.sending.set(false);
-            page.send.set_sensitive(true);
+            page.composer.send.set_sensitive(true);
             if page.selected.borrow().as_deref() != Some(key) {
                 return;
             }
             page.thread.clear_pending();
             page.thread.stop_working();
-            if page.input.text().trim().is_empty() {
-                page.input.set_text(body);
+            if page.composer.input.text().trim().is_empty() {
+                page.composer.input.set_text(body);
             }
             page.thread.set_status(Some(error.message.clone()));
-            page.note.set_text(&error.message);
-            page.note.add_css_class("error");
+            page.composer.note.set_text(&error.message);
+            page.composer.note.add_css_class("error");
         });
     }
 }

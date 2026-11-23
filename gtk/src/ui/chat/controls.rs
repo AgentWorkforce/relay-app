@@ -210,7 +210,7 @@ impl App {
                 app.with_chat(|page| {
                     page.controls.name.set_text("");
                     if let Some(note) = &note {
-                        page.note.set_text(note);
+                        page.composer.note.set_text(note);
                     }
                 });
                 app.refresh_agents();

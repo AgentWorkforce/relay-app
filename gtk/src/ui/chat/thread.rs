@@ -525,7 +525,7 @@ impl App {
                 *thread.cursor.borrow_mut() = Some(next);
                 if thread.append(page.entries, &source, &person) {
                     thread.set_status(Some(CHAT_DELIVERED.to_string()));
-                    chat.note.set_text(CHAT_DELIVERED);
+                    chat.composer.note.set_text(CHAT_DELIVERED);
                 }
             });
         });

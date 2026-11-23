@@ -190,6 +190,25 @@ pub const CHAT_LOADING: &str = "Loading conversation…";
 pub const CHAT_SENDING: &str = "Sending…";
 pub const CHAT_JOINING: &str = "Putting this session on the relay…";
 pub const CHAT_SEND: &str = "Send";
+pub const CHAT_ATTACH: &str = "Attach files";
+pub const CHAT_ATTACH_TITLE: &str = "Attach files to the message";
+pub const CHAT_REMOVE_ATTACHMENT: &str = "Remove attachment";
+pub const CHAT_FILES_NEED_CORE: &str =
+    "Sent without its files: attaching them needs the updated background service.";
+
+/// A chip's label for an attached file: its name and size, as in Pear.
+pub fn chat_attachment_label(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    match std::fs::metadata(path).map(|meta| meta.len()) {
+        Ok(bytes) if bytes >= 1_048_576 => format!("{name} · {:.1} MB", bytes as f64 / 1_048_576.0),
+        Ok(bytes) if bytes >= 1024 => format!("{name} · {:.1} KB", bytes as f64 / 1024.0),
+        Ok(bytes) => format!("{name} · {bytes} B"),
+        Err(_) => name,
+    }
+}
 pub const CHAT_WORKING: &str = "Working…";
 pub const CHAT_DELIVERED: &str = "Delivered: your message is in the session.";
 pub const CHAT_HIDE_LIST: &str = "Hide agent list";
