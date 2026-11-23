@@ -1013,6 +1013,7 @@ impl App {
             }
             Page::Chat => {
                 self.refresh_local();
+                self.refresh_roster();
                 if let Some(key) = self.with_chat(|page| page.selected.borrow().clone()).flatten() {
                     self.load_chat_thread(&key);
                 }

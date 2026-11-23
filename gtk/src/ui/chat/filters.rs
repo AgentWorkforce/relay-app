@@ -2,8 +2,7 @@
 //! harness and project. Each change redraws the list.
 
 use super::super::widgets::{self, hbox, vbox};
-use super::{filters_from, status_labels, ANY};
-use crate::models::ChatFilters;
+use crate::models::{ChatFilters, ChatStatusFilter, CHAT_ANY_HARNESS, CHAT_ANY_PROJECT};
 use gtk::prelude::*;
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
@@ -113,3 +112,31 @@ impl FilterBar {
         )
     }
 }
+
+/// The status filter's labels, in `ChatStatusFilter::ALL`'s order.
+fn status_labels() -> Vec<&'static str> {
+    ChatStatusFilter::ALL
+        .iter()
+        .map(|status| status.label())
+        .collect()
+}
+
+/// The filters as their controls stand.
+fn filters_from(
+    status: u32,
+    harness: Option<String>,
+    project: Option<String>,
+    query: String,
+) -> ChatFilters {
+    ChatFilters {
+        status: ChatStatusFilter::ALL
+            .get(status as usize)
+            .copied()
+            .unwrap_or(ChatStatusFilter::Running),
+        harness,
+        project,
+        query,
+    }
+}
+
+const ANY: [&str; 2] = [CHAT_ANY_HARNESS, CHAT_ANY_PROJECT];

@@ -36,8 +36,10 @@ fn row(session: LocalSession) -> LocalSessionRow {
 
 fn agent(session: LocalSession, activity: ChatActivity) -> ChatAgent {
     ChatAgent {
-        row: row(session.clone()),
-        session,
+        place: ChatPlace::Local {
+            row: row(session.clone()),
+            session,
+        },
         activity,
         summary: String::new(),
         last_activity_ms: None,
@@ -96,7 +98,11 @@ fn working_agents_come_first_then_the_most_recent() {
     );
     let keys: Vec<&str> = agents
         .iter()
-        .map(|agent| agent.session.target.id.as_str())
+        .map(|agent| {
+            agent
+                .local()
+                .map_or("", |(_, session)| session.target.id.as_str())
+        })
         .collect();
     assert_eq!(keys, ["busy", "idle-recent", "idle-old", "ended"]);
     assert_eq!(agents[0].glance(), "summary of busy");
@@ -154,13 +160,21 @@ fn names_notes_and_glance() {
     assert_eq!(ended.composer_note(), CHAT_ENDED);
     assert!(!ended.can_send());
     let mut asking = offline.clone();
-    asking.session.delivery_wait = Some("Waiting for Claude's question to be answered.".into());
+    if let ChatPlace::Local { session, .. } = &mut asking.place {
+        session.delivery_wait = Some("Waiting for Claude's question to be answered.".into());
+    }
     assert_eq!(
         asking.composer_note(),
         "Waiting for Claude's question to be answered."
     );
     assert_eq!(ChatActivity::Working.label(), "Working");
     assert_eq!(ChatStatusFilter::ALL.len(), 4);
+    assert_eq!(chat_all_sessions(0), "All sessions on this computer ›");
+    assert_eq!(chat_all_sessions(1), "1 session on this computer ›");
+    assert_eq!(
+        chat_all_sessions(1328),
+        "All 1328 sessions on this computer ›"
+    );
 }
 
 #[test]
@@ -196,4 +210,47 @@ fn the_agent_works_until_its_own_reply() {
     assert!(chat_turn_open(&entry("user", "text")));
     assert!(chat_turn_open(&entry("assistant", "tool_use")));
     assert!(!chat_turn_open(&entry("assistant", "text")));
+}
+
+#[test]
+fn your_agents_elsewhere_are_listed_from_the_roster() {
+    let roster: Vec<RosterAgent> = serde_json::from_value(serde_json::json!([
+        {"name": "layered-infra-ops", "address": "layered-infra-ops@ip-10", "kind": "agent",
+         "where": "other_desktop", "status": "active", "liveness": "live", "last_seen_ms": 5,
+         "description": "infra-ops lead", "host": "ip-10-98-0-4", "owner_hash": null,
+         "session_id": null, "is_self": true, "provider": "claude",
+         "activity": {"doing": "Rotating credentials", "repo": "infra"}},
+        {"name": "here", "address": "here@desk", "kind": "agent", "where": "this_computer",
+         "status": "active", "liveness": "live", "last_seen_ms": 5, "description": "",
+         "host": null, "owner_hash": null, "session_id": null, "is_self": true},
+        {"name": "teammate", "address": "t@x", "kind": "agent", "where": "cloud",
+         "status": "active", "liveness": "idle", "last_seen_ms": 5, "description": "",
+         "host": null, "owner_hash": null, "session_id": null, "is_self": false}
+    ]))
+    .unwrap();
+    let agents = chat_elsewhere_agents(&roster);
+    assert_eq!(agents.len(), 1);
+    let ops = &agents[0];
+    assert_eq!(ops.name(), "layered-infra-ops");
+    assert_eq!(ops.key(), "elsewhere:layered-infra-ops@ip-10");
+    assert_eq!(ops.activity, ChatActivity::Working);
+    assert_eq!(ops.glance(), "Rotating credentials");
+    assert!(ops.meta().ends_with("infra · ip-10-98-0-4"));
+    assert_eq!(ops.composer_note(), CHAT_ELSEWHERE_NOTE);
+    assert!(ops.can_send() && ops.local().is_none());
+    assert_eq!(ops.placeholder(), "Message @layered-infra-ops");
+}
+
+#[test]
+fn relay_messages_are_marked() {
+    assert_eq!(
+        chat_relay_marker(Some("khaliq")),
+        "⇄ Agent Relay · from @khaliq"
+    );
+    assert_eq!(chat_relay_marker(None), "⇄ Agent Relay");
+    let own = agent(session("a", Some("a")), ChatActivity::Idle);
+    assert!(!own.relay_only());
+    let mut background = session("b", None);
+    background.holder = Some(agent_relay_node::relay::contract::agents::SessionHolder::Background);
+    assert!(agent(background, ChatActivity::Idle).relay_only());
 }

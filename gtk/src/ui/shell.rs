@@ -23,8 +23,6 @@ mod upgrade_notice;
 pub struct Shell {
     pub root: gtk::Box,
     pub sessions_button: gtk::Button,
-    /// The header's Sessions and Chat tabs.
-    pub nav: [(Page, gtk::Button); 2],
     pub header: gtk::Box,
     pub header_search: gtk::Box,
     pub settings_back: gtk::Button,
@@ -69,31 +67,13 @@ impl Shell {
         let home = app.on(|app| app.open_section(Section::Mine));
         sessions_button.connect_clicked(move |_| home());
         header.append(&sessions_button);
-        let nav_box = hbox(2, &["header-nav"]);
-        nav_box.set_valign(gtk::Align::Center);
-        let nav = [Page::Sessions, Page::Chat].map(|page| {
-            let tab = gtk::Button::with_label(page.title());
-            tab.add_css_class("flat");
-            tab.add_css_class("header-tab");
-            widgets::action_cursor(&tab);
-            widgets::name(&tab, page.title());
-            let open = app.on(move |app| {
-                if page == Page::Sessions {
-                    app.open_section(Section::Mine);
-                } else {
-                    app.show_chat_page(None);
-                }
-            });
-            tab.connect_clicked(move |_| open());
-            nav_box.append(&tab);
-            (page, tab)
-        });
-        header.append(&nav_box);
         let header_search = hbox(0, &[]);
         header_search.set_hexpand(true);
         header_search.set_valign(gtk::Align::Center);
         header.append(&header_search);
         let settings_back = super::session_open::back_to_sessions_button();
+        settings_back.set_label(crate::models::CHAT_BACK);
+        settings_back.set_tooltip_text(Some(crate::models::CHAT_BACK_HELP));
         let back_home = app.on(|app| app.open_section(Section::Mine));
         settings_back.connect_clicked(move |_| back_home());
         header.insert_child_after(&settings_back, Some(&sessions_button));
@@ -170,7 +150,6 @@ impl Shell {
         Rc::new(Shell {
             root,
             sessions_button,
-            nav,
             header,
             header_search,
             settings_back,
@@ -219,6 +198,7 @@ fn status_bar(app: &App) -> (gtk::Box, Dot, gtk::Label) {
     let on_relay = app.on(|app| {
         app.set_session_search("is:active is:on-relay");
         app.open_section(Section::Mine);
+        app.go(Page::Sessions);
     });
     relay_count_button.connect_clicked(move |_| on_relay());
     bar.append(&relay_count_button);
@@ -322,13 +302,8 @@ impl App {
             return;
         };
         let page = self.page();
-        for (tab_page, tab) in &shell.nav {
-            if *tab_page == page {
-                tab.add_css_class("selected");
-            } else {
-                tab.remove_css_class("selected");
-            }
-        }
+        // Chat is the home page; the session search belongs to the table.
+        shell.header_search.set_visible(page != Page::Chat);
         let own_title = matches!(page, Page::Sessions | Page::Chat);
         shell.topbar.set_visible(!own_title);
         shell.topbar_separator.set_visible(!own_title);

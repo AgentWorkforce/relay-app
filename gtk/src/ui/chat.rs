@@ -10,8 +10,8 @@ use super::app::App;
 use super::state::Page;
 use super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
-    chat_agents, chat_filter_choices, merge_local_sessions, ChatAgent, ChatFilters,
-    ChatStatusFilter, CHAT_ANY_HARNESS, CHAT_ANY_PROJECT, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE,
+    chat_agents, chat_all_sessions, chat_elsewhere_agents, chat_filter_choices,
+    merge_local_sessions, ChatAgent, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE,
     CHAT_HIDE_LIST, CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_OPEN_SESSION, CHAT_SEARCH, CHAT_SEND,
     CHAT_SHOW_LIST, CHAT_TITLE,
 };
@@ -37,9 +37,9 @@ const SUMMARIES_AHEAD: usize = 24;
 pub struct ChatPage {
     pub root: gtk::Box,
     side: gtk::Box,
-    side_separator: gtk::Separator,
     filters: FilterBar,
     list: gtk::Box,
+    all_sessions: gtk::Button,
     stack: gtk::Stack,
     pub toggle_list: gtk::Button,
     pub header_badge: gtk::Box,
@@ -64,7 +64,7 @@ impl ChatPage {
         let root = hbox(0, &["chat-page"]);
         let side = vbox(8, &["sidebar", "chat-sidebar"]);
         widgets::pad(&side, 14, Some(10), None);
-        super::zoom::size(&side, 320, -1);
+        super::zoom::size(&side, 260, -1);
         // Its rows' names expand within it; the list itself stays narrow.
         side.set_hexpand(false);
         side.append(&text(CHAT_TITLE, &["page-title"]));
@@ -72,9 +72,22 @@ impl ChatPage {
         side.append(&filters.root);
         let list = vbox(2, &[]);
         side.append(&widgets::scrolled(&list));
-        root.append(&side);
-        let side_separator = gtk::Separator::new(gtk::Orientation::Vertical);
-        root.append(&side_separator);
+        // The table of every session, where uploads and sharing are managed.
+        let all_sessions = gtk::Button::with_label(&chat_all_sessions(0));
+        all_sessions.add_css_class("flat");
+        all_sessions.add_css_class("chat-all-sessions");
+        all_sessions.set_halign(gtk::Align::Start);
+        widgets::action_cursor(&all_sessions);
+        side.append(&all_sessions);
+        // Drag the divider to widen or narrow the list.
+        let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+        split.set_hexpand(true);
+        split.set_wide_handle(true);
+        split.set_start_child(Some(&side));
+        split.set_resize_start_child(false);
+        split.set_shrink_start_child(false);
+        split.set_position(super::zoom::px(340));
+        root.append(&split);
 
         let stack = gtk::Stack::new();
         stack.set_transition_type(gtk::StackTransitionType::None);
@@ -148,14 +161,15 @@ impl ChatPage {
         dock.append(&holder);
         view.append(&dock);
         stack.add_named(&view, Some(THREAD));
-        root.append(&stack);
+        split.set_end_child(Some(&stack));
+        split.set_shrink_end_child(false);
 
         ChatPage {
             root,
             side,
-            side_separator,
             filters,
             list,
+            all_sessions,
             stack,
             toggle_list,
             header_badge,
@@ -185,6 +199,8 @@ impl App {
         page.send.connect_clicked(move |_| send());
         let open = self.on(App::open_chat_session);
         page.open_session.connect_clicked(move |_| open());
+        let table = self.on(|app| app.go(Page::Sessions));
+        page.all_sessions.connect_clicked(move |_| table());
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
         self.follow_chat_thread();
@@ -194,7 +210,8 @@ impl App {
         self.shell().map(|shell| read(&shell.pages.chat))
     }
 
-    /// Every agent on this computer as the page lists it now.
+    /// Every agent on this computer, then your agents elsewhere, as the
+    /// page lists them now.
     pub(super) fn chat_agents(&self) -> Vec<ChatAgent> {
         self.with_state(|state| {
             let rows = merge_local_sessions(&state.sessions, &state.local_sessions);
@@ -220,6 +237,9 @@ impl App {
                 },
                 chrono::Utc::now().timestamp_millis(),
             )
+            .into_iter()
+            .chain(chat_elsewhere_agents(&state.roster))
+            .collect()
         })
     }
 
@@ -246,6 +266,8 @@ impl App {
         };
         let page = &shell.pages.chat;
         let agents = self.chat_agents();
+        // The table loads its rows in pages; the link does not count them.
+        page.all_sessions.set_label(&chat_all_sessions(0));
         let (harnesses, projects) = chat_filter_choices(&agents);
         page.filters.offer(&harnesses, &projects);
         let filters = page.filters.read();
@@ -287,14 +309,23 @@ impl App {
                 widgets::pad(&empty, 8, None, None);
                 page.list.append(&empty);
             }
+            let mut elsewhere = false;
             for agent in &shown {
+                if agent.local().is_none() && !elsewhere {
+                    elsewhere = true;
+                    let heading = widgets::section_title(CHAT_ELSEWHERE_SECTION);
+                    heading.set_margin_top(super::zoom::px(12));
+                    page.list.append(&heading);
+                }
                 let chosen = selected.as_deref() == Some(agent.key().as_str());
                 page.list.append(&self.chat_row(agent, chosen));
             }
             *page.drawn.borrow_mut() = drawn;
         }
         for agent in shown.iter().take(SUMMARIES_AHEAD) {
-            self.load_session_title_overview(&agent.row);
+            if let Some((row, _)) = agent.local() {
+                self.load_session_title_overview(row);
+            }
         }
         match selected.and_then(|key| agents.iter().find(|agent| agent.key() == key).cloned()) {
             Some(agent) => {
@@ -318,7 +349,7 @@ impl App {
         widgets::action_cursor(&row);
         let line = hbox(10, &[]);
         widgets::pad(&line, 8, Some(2), None);
-        let badge = super::session_avatar::row_badge(&agent.row, 34);
+        let badge = agent_badge(agent, 34);
         badge.set_valign(gtk::Align::Start);
         line.append(&badge);
         let words = vbox(2, &[]);
@@ -357,8 +388,8 @@ impl App {
 
     fn render_chat_header(&self, page: &ChatPage, agent: &ChatAgent) {
         clear(&page.header_badge);
-        page.header_badge
-            .append(&super::session_avatar::row_badge(&agent.row, 32));
+        page.header_badge.append(&agent_badge(agent, 32));
+        page.open_session.set_visible(agent.local().is_some());
         page.header_name.set_text(&agent.name());
         let mut meta = agent.meta();
         if let Some(address) = agent.address() {
@@ -408,7 +439,6 @@ impl App {
         self.with_chat(|page| {
             let shown = !page.side.is_visible();
             page.side.set_visible(shown);
-            page.side_separator.set_visible(shown);
             let label = if shown {
                 CHAT_HIDE_LIST
             } else {
@@ -427,35 +457,19 @@ impl App {
         let Some(agent) = key.and_then(|key| self.chat_agent(&key)) else {
             return;
         };
+        let Some((row, _)) = agent.local() else {
+            return;
+        };
+        let row = row.clone();
         self.go(Page::Sessions);
-        self.open_local_session(agent.row);
+        self.open_local_session(row);
     }
 }
 
-/// The status filter's labels, in `ChatStatusFilter::ALL`'s order.
-fn status_labels() -> Vec<&'static str> {
-    ChatStatusFilter::ALL
-        .iter()
-        .map(|status| status.label())
-        .collect()
-}
-
-/// The filters as their controls stand.
-fn filters_from(
-    status: u32,
-    harness: Option<String>,
-    project: Option<String>,
-    query: String,
-) -> ChatFilters {
-    ChatFilters {
-        status: ChatStatusFilter::ALL
-            .get(status as usize)
-            .copied()
-            .unwrap_or(ChatStatusFilter::Running),
-        harness,
-        project,
-        query,
+/// The agent's mark: its session's avatar here, else its harness's.
+fn agent_badge(agent: &ChatAgent, size: i32) -> gtk::Widget {
+    match agent.local() {
+        Some((row, _)) => super::session_avatar::row_badge(row, size),
+        None => widgets::agent_badge(&agent.icon_source(), size),
     }
 }
-
-const ANY: [&str; 2] = [CHAT_ANY_HARNESS, CHAT_ANY_PROJECT];

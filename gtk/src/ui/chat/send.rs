@@ -5,10 +5,11 @@
 
 use super::super::app::App;
 use crate::bridge::CoreError;
-use crate::models::{delivery_note, recipient_params, ChatAgent, CHAT_JOINING, CHAT_SENDING};
+use crate::models::{delivery_note, recipient_params, CHAT_JOINING, CHAT_SENDING};
 use agent_relay_node::relay::contract::agents::RegisterParams;
 use agent_relay_node::relay::contract::directory::{SendParams, SentMessage};
 use agent_relay_node::relay::contract::method;
+use agent_relay_node::relay::store::Target;
 use gtk::prelude::*;
 use gtk4 as gtk;
 
@@ -43,18 +44,23 @@ impl App {
         });
         match agent.address() {
             Some(address) => self.deliver_chat(&key, address, body),
-            None => self.join_then_send(agent, body),
+            None => match agent.local() {
+                Some((_, session)) => {
+                    let target = session.target.clone();
+                    self.join_then_send(agent.key(), target, body)
+                }
+                None => {}
+            },
         }
     }
 
-    fn join_then_send(&self, agent: ChatAgent, body: String) {
-        let key = agent.key();
+    fn join_then_send(&self, key: String, target: Target, body: String) {
         self.update_state(|state| {
             state.wanted.insert(key.clone(), true);
         });
         self.view_call::<method::AgentsRegister>(
             RegisterParams {
-                target: agent.session.target.clone(),
+                target,
                 name: None,
                 description: None,
             },

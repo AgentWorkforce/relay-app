@@ -2,19 +2,27 @@
 //! page by page, then followed every few seconds. Turns are drawn as in
 //! the session reader (user bubbles, assistant Markdown, one Activity
 //! disclosure per run of tool work); a relay message's framing is dropped
-//! so a turn reads as it was typed. What was just sent waits at the end as
-//! a bubble marked Sending… until the session's own turn for it appears.
+//! so a turn reads as it was typed, and every message that came through the
+//! relay carries a marker naming who sent it. A headless agent's turns all
+//! arrive over the relay's stdio input, so each is marked; an agent on
+//! another computer has its direct messages as its conversation, all marked.
+//! What was just sent waits at the end as a bubble marked Sending… until
+//! the session's own turn for it appears.
 
 use super::super::app::App;
 use super::super::transcript::{entry_view, is_tool, tool_group_label};
 use super::super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
-    chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent, SpawnHandover,
-    CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
+    chat_relay_marker, chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent,
+    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING,
+    CHAT_WORKING,
 };
+use agent_relay_node::relay::contract::directory::HistoryParams;
+use agent_relay_node::relay::contract::method;
 use agent_relay_node::relay::contract::transcript::{
     LocalTranscriptCursor, LocalTranscriptEntry, LocalTranscriptPage, LocalTranscriptParams,
 };
+use agent_relay_node::relay::messaging::DirectMessage;
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
@@ -42,6 +50,10 @@ pub struct Thread {
     following: Cell<bool>,
     table_cells: Cell<usize>,
     status: RefCell<Option<String>>,
+    /// Every turn the person sends reaches this agent through the relay.
+    relay_only: Cell<bool>,
+    /// The conversation is direct messages: replies came through it too.
+    direct: Cell<bool>,
 }
 
 impl Thread {
@@ -80,10 +92,15 @@ impl Thread {
             following: Cell::new(false),
             table_cells: Cell::new(4000),
             status: RefCell::default(),
+            relay_only: Cell::new(false),
+            direct: Cell::new(false),
         }
     }
 
-    fn reset(&self) -> u64 {
+    fn reset(&self, agent: &ChatAgent) -> u64 {
+        self.relay_only.set(agent.relay_only());
+        self.direct
+            .set(matches!(agent.place, ChatPlace::Elsewhere(_)));
         clear(&self.messages);
         clear(&self.pending);
         self.ids.borrow_mut().clear();
@@ -155,16 +172,22 @@ impl Thread {
                 continue;
             }
             let mut author = person.to_string();
+            let mut relay = None;
             if entry.role == "user" && entry.kind == "text" {
                 let (sender, body) = chat_user_text(&entry.text);
                 if body.trim().is_empty() {
                     continue;
+                }
+                if sender.is_some() || self.relay_only.get() {
+                    relay = Some(chat_relay_marker(sender.as_deref()));
                 }
                 if let Some(sender) = sender {
                     author = format!("@{sender}");
                 }
                 entry.text = body;
                 user_turn = true;
+            } else if self.direct.get() && entry.kind == "text" {
+                relay = Some(chat_relay_marker(Some(source)));
             }
             last = Some(chat_turn_open(&entry));
             let mut remaining = self.table_cells.get();
@@ -172,7 +195,10 @@ impl Thread {
             self.table_cells.set(remaining);
             if !is_tool(&entry) {
                 self.group.borrow_mut().take();
-                self.messages.append(&widget);
+                match relay {
+                    Some(marker) => self.messages.append(&relay_turn(&widget, &marker)),
+                    None => self.messages.append(&widget),
+                }
                 continue;
             }
             let mut group = self.group.borrow_mut();
@@ -204,8 +230,38 @@ impl Thread {
     }
 }
 
+/// A message that came through the relay: its marker over it, and an
+/// accent along its side.
+fn relay_turn(widget: &gtk::Widget, marker: &str) -> gtk::Box {
+    let turn = vbox(4, &["relay-turn"]);
+    let mark = text(marker, &["relay-marker"]).ellipsized();
+    mark.set_halign(gtk::Align::Start);
+    turn.append(&mark);
+    turn.append(widget);
+    turn
+}
+
+/// A direct message as a conversation entry: yours as the person's turn,
+/// the agent's as its reply.
+fn direct_entry(message: &DirectMessage) -> LocalTranscriptEntry {
+    LocalTranscriptEntry {
+        id: message.id.clone(),
+        role: if message.mine { "user" } else { "assistant" }.into(),
+        kind: "text".into(),
+        text: message.text.clone(),
+        image_path: None,
+        timestamp_ms: message
+            .created_at
+            .as_deref()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map_or(0, |at| at.timestamp_millis()),
+        truncated: false,
+    }
+}
+
 /// Where a read of `agent`'s conversation comes from: a headless spawned
-/// agent's own output, else the session's transcript.
+/// agent's own output, the session's transcript, or, for an agent
+/// elsewhere, your direct messages with it.
 fn read_page(
     app: &App,
     agent: &ChatAgent,
@@ -213,17 +269,45 @@ fn read_page(
     following: bool,
     done: impl FnOnce(&App, Result<LocalTranscriptPage, crate::bridge::CoreError>) + 'static,
 ) {
+    let (row, session) = match &agent.place {
+        ChatPlace::Local { row, session } => (row, session),
+        ChatPlace::Elsewhere(_) => {
+            let endpoint = agent.address().unwrap_or_else(|| agent.name());
+            app.view_call::<method::MessagesHistory>(
+                HistoryParams {
+                    endpoint,
+                    before: None,
+                },
+                move |app, result| {
+                    done(
+                        app,
+                        result.map(|history| LocalTranscriptPage {
+                            entries: history.messages.iter().map(direct_entry).collect(),
+                            next_cursor: None,
+                            follow_cursor: None,
+                        }),
+                    )
+                },
+            );
+            return;
+        }
+    };
     let params = LocalTranscriptParams {
-        source: agent.row.source().into(),
-        session_id: agent.row.session_id(),
+        source: row.source().into(),
+        session_id: row.session_id(),
         cursor,
         following,
     };
-    app.transcript_page(
-        SpawnHandover::transcript_agent(Some(&agent.session)),
-        params,
-        done,
-    );
+    app.transcript_page(SpawnHandover::transcript_agent(Some(session)), params, done);
+}
+
+/// The source a conversation's entries are drawn for: the session's, or
+/// for an agent elsewhere its name, which its replies are marked with.
+fn entry_source(agent: &ChatAgent) -> String {
+    match &agent.place {
+        ChatPlace::Local { row, .. } => row.source().to_string(),
+        ChatPlace::Elsewhere(remote) => remote.name.clone(),
+    }
 }
 
 impl App {
@@ -237,7 +321,7 @@ impl App {
         let Some(agent) = self.chat_agent(key) else {
             return;
         };
-        let Some(generation) = self.with_chat(|page| page.thread.reset()) else {
+        let Some(generation) = self.with_chat(|page| page.thread.reset(&agent)) else {
             return;
         };
         self.read_chat_pages(agent, None, generation, 0);
@@ -273,10 +357,8 @@ impl App {
                 .clone()
                 .filter(|next| Some(next) != requested.as_ref());
             let follow = SpawnHandover::follow_cursor(requested.as_ref(), &page);
-            app.with_chat(|chat| {
-                chat.thread
-                    .append(page.entries, agent.row.source(), &person)
-            });
+            let source = entry_source(&agent);
+            app.with_chat(|chat| chat.thread.append(page.entries, &source, &person));
             match next {
                 Some(next) if pages + 1 < MAX_PAGES => {
                     app.read_chat_pages(agent, Some(next), generation, pages + 1)
@@ -326,7 +408,7 @@ impl App {
             return;
         };
         let requested = cursor.clone();
-        let source = agent.row.source().to_string();
+        let source = entry_source(&agent);
         read_page(self, &agent, cursor, true, move |app, result| {
             let person = app.person_name();
             app.with_chat(|chat| {
