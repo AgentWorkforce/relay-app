@@ -16,6 +16,7 @@ enum MobileHandoffFixture {
     }
 
     static func trace(_ stage: String) {
+        QuestionCardFixture.note(stage)
         guard scenario != nil else { return }
         NSLog("Mobile handoff send: %@", stage)
     }
