@@ -5,7 +5,9 @@ import SwiftUI
 // never the whole workspace view.
 
 /// One session event: a prompt or reply as a bubble, a tool call or other
-/// activity as a compact row. Long content is cut with "Show more".
+/// activity as a compact row. A relay message in the session is a bubble
+/// under its "⇄ Agent Relay" marker: one to the agent on the person's side,
+/// one it sent on its own. Long content is cut with "Show more".
 struct SessionEventBubble: View {
     let row: SessionEventRow
     let agentName: String
@@ -15,17 +17,28 @@ struct SessionEventBubble: View {
     var body: some View {
         let preview = SessionTimeline.preview(row.text)
         let shown = expanded ? row.text : preview.text
-        switch row.event.role {
-        case .person, .agent:
-            message(shown: shown, preview: preview)
-        case .tool, .activity:
-            compact(shown: shown, preview: preview)
+        if let mark = row.mark {
+            VStack(alignment: mark.isIncoming ? .trailing : .leading, spacing: 4) {
+                Text(mark.label)
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(accent).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: mark.isIncoming ? .trailing : .leading)
+                    .accessibilityIdentifier("Relay marker")
+                message(shown: shown, preview: preview, person: mark.isIncoming)
+            }
+        } else {
+            switch row.event.role {
+            case .person, .agent:
+                message(shown: shown, preview: preview, person: row.event.role == .person)
+            case .tool, .activity:
+                compact(shown: shown, preview: preview)
+            }
         }
     }
 
-    private func message(shown: String, preview: (text: String, isCut: Bool)) -> some View {
-        let person = row.event.role == .person
-        return HStack(alignment: .bottom) {
+    /// A bubble: the person's side (a prompt, or a relay message to the
+    /// agent) or the agent's.
+    private func message(shown: String, preview: (text: String, isCut: Bool), person: Bool) -> some View {
+        HStack(alignment: .bottom) {
             if person { Spacer(minLength: 45) }
             VStack(alignment: .leading, spacing: 5) {
                 Text(ChatLinks.render(shown)).font(.system(size: 14))

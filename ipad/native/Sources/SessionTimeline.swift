@@ -8,6 +8,29 @@ enum RelayMark: Equatable {
     case from(String?)
     /// A message the agent sent, to the recipient its send names.
     case to(String?)
+
+    /// The line over a marked row: "⇄ Agent Relay · from @sender",
+    /// "⇄ Agent Relay · to @recipient" (a channel keeps its "#"),
+    /// "⇄ Agent Relay · sent" with no recipient, and "⇄ Agent Relay" for a
+    /// received message whose sender is not shown.
+    var label: String {
+        let mark = "⇄ Agent Relay"
+        switch self {
+        case .from(let sender):
+            guard let sender, !sender.isEmpty else { return mark }
+            return "\(mark) · from @\(sender)"
+        case .to(let recipient):
+            guard let recipient, !recipient.isEmpty else { return "\(mark) · sent" }
+            return "\(mark) · to \(recipient.hasPrefix("#") ? "" : "@")\(recipient)"
+        }
+    }
+
+    /// A received message is drawn as one to the agent, on the person's
+    /// side; a sent one as the agent's.
+    var isIncoming: Bool {
+        if case .from = self { return true }
+        return false
+    }
 }
 
 /// A session event as the chat shows it: harness preamble and the relay

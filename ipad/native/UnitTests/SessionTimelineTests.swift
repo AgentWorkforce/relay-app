@@ -176,6 +176,17 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertNil(rows(SessionTimeline.items(messages: [], events: [quote])).first?.mark)
     }
 
+    func testRelayMarkLabels() {
+        XCTAssertEqual(RelayMark.from("pilot").label, "⇄ Agent Relay · from @pilot")
+        XCTAssertEqual(RelayMark.from(nil).label, "⇄ Agent Relay")
+        XCTAssertEqual(RelayMark.from("").label, "⇄ Agent Relay")
+        XCTAssertEqual(RelayMark.to("scout").label, "⇄ Agent Relay · to @scout")
+        XCTAssertEqual(RelayMark.to("#crew").label, "⇄ Agent Relay · to #crew")
+        XCTAssertEqual(RelayMark.to(nil).label, "⇄ Agent Relay · sent")
+        XCTAssertTrue(RelayMark.from(nil).isIncoming)
+        XCTAssertFalse(RelayMark.to("scout").isIncoming)
+    }
+
     func testPlaceholder() {
         // Loading until relay history is checked and the session settled.
         XCTAssertEqual(SessionTimeline.placeholder(hasRows: false, historyChecked: false, sessionApplies: false, sessionSettled: false), .loading)
