@@ -147,7 +147,7 @@ async fn a_release_survives_a_restart_and_is_still_never_injected() {
     let (dir, api, advisories, sink, t, now) = accepted().await;
     held_for(&advisories, &t, Attempt::Accepted, ACCEPTED_OWNED_FOR);
     observe_once(&advisories, &sink, Observation::Fenced, now).await;
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     restarted.poll(std::slice::from_ref(&t), now).await;
     let next = Sink::default();
     *next.outcome.lock().unwrap() = Some(InjectOutcome::Delivered);
@@ -181,7 +181,7 @@ async fn nothing_is_released_while_the_journal_is_blocked() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(FILE), b"broken").unwrap();
     let api = Arc::new(Api::default());
-    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     advisories.set_enabled(true).unwrap();
     let t = target(A);
     let now = Instant::now();
@@ -296,7 +296,7 @@ async fn an_io_fault_that_clears_unblocks_on_the_next_pass_with_its_receipts() {
         // Running as a user that ignores file modes (root): nothing to test.
         return;
     }
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     restarted.set_enabled(true).unwrap();
     restarted.poll(std::slice::from_ref(&t), now).await;
     let next = Sink::default();
@@ -327,7 +327,7 @@ async fn damaged_and_newer_files_keep_blocking_untouched_until_moved_aside() {
         let path = dir.path().join(FILE);
         std::fs::write(&path, body).unwrap();
         let api = Arc::new(Api::default());
-        let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+        let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
         advisories.set_enabled(true).unwrap();
         advisories.set_notifications_enabled(true).unwrap();
         let t = target(A);
@@ -376,7 +376,7 @@ async fn while_blocked_the_turn_end_keeps_back_urgent_notes_only_where_a_notice_
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(FILE), b"broken").unwrap();
     let api = Arc::new(Api::default());
-    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     advisories.set_enabled(true).unwrap();
     let (a, b) = (target(A), target(B));
     let now = Instant::now();

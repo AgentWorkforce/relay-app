@@ -18,6 +18,23 @@ const HOUR: u64 = 60 * 60;
 const HUMAN_HOURLY_CAP: usize = 3;
 /// A note whose injection asked to be retried waits this long (seconds).
 const URGENT_RETRY_AFTER: u64 = 5 * 60;
+/// An app's report that it can show a system notification counts this long;
+/// the apps report at least once a minute while connected.
+pub(super) const DISPLAY_REPORT_LIVE: Duration = Duration::from_secs(150);
+
+pub(super) const IDLE_STATUS: &str = "Waiting for validated priority-one advisories.";
+pub(super) const LEGACY_STATUS: &str = "Your workspace does not provide urgent alerts yet.";
+pub(super) const PLATFORM_STATUS: &str = "System notifications unavailable on this platform.";
+pub(super) const NO_USER_STATUS: &str =
+    "System notifications need a signed-in person; this account has no user identity.";
+pub(super) const DENIED_STATUS: &str =
+    "System notifications are not allowed for Agent Relay in your system settings.";
+const READ_ACCESS_STATUS: &str = "Read access unavailable";
+
+/// Whether this build's platform can request a system notification at all.
+pub(super) fn platform_notifies() -> bool {
+    cfg!(any(target_os = "macos", target_os = "linux", windows))
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 enum Attempt {
@@ -120,7 +137,7 @@ impl Delivery for Local {
         })
     }
     fn notifications_available(&self) -> bool {
-        cfg!(any(target_os = "macos", target_os = "linux", windows))
+        platform_notifies()
     }
     fn notify(&self, title: &str, body: &str) {
         self.0.hub.notify(title, body, None);
@@ -221,6 +238,62 @@ impl Advisories {
         journal.fault.clone().unwrap_or_else(|| journal.status.into())
     }
 
+    /// The status line while notes and notifications are on and no receipt
+    /// fault stands. Standing conditions come first, at read time too: read
+    /// access, the platform, a person to notify, the OS permission; then
+    /// the last pass's status, then a legacy-only listing.
+    pub(super) fn notification_status(&self) -> String {
+        let (status, fault) = {
+            let journal = self.urgent.lock().unwrap_or_else(|p| p.into_inner());
+            (journal.status, journal.fault.clone())
+        };
+        if let Some(fault) = fault {
+            return fault;
+        }
+        if status.starts_with(READ_ACCESS_STATUS) {
+            return status.into();
+        }
+        if !platform_notifies() {
+            return PLATFORM_STATUS.into();
+        }
+        let principal = self.tokens.principal();
+        if principal.as_ref().is_some_and(|p| p.user_id.is_none()) {
+            return NO_USER_STATUS.into();
+        }
+        if self.display_permission() == Some(NotificationPermission::Denied) {
+            return DENIED_STATUS.into();
+        }
+        if status != "idle" {
+            return status.into();
+        }
+        let state = self.state();
+        if principal.is_some()
+            && state.principal == principal
+            && state.listing_contract == Some(ListingContract::Legacy)
+        {
+            return LEGACY_STATUS.into();
+        }
+        IDLE_STATUS.into()
+    }
+
+    /// An app's report of what the OS allows its notifications, now.
+    pub fn report_display(&self, permission: NotificationPermission) {
+        self.report_display_at(permission, Instant::now());
+    }
+
+    pub(super) fn report_display_at(&self, permission: NotificationPermission, at: Instant) {
+        *self.display.lock().unwrap_or_else(|p| p.into_inner()) = Some((permission, at));
+    }
+
+    /// The last report while it is live; `None` when no app reported in
+    /// the last [`DISPLAY_REPORT_LIVE`].
+    fn display_permission(&self) -> Option<NotificationPermission> {
+        let display = *self.display.lock().unwrap_or_else(|p| p.into_inner());
+        display
+            .filter(|(_, at)| at.elapsed() <= DISPLAY_REPORT_LIVE)
+            .map(|(permission, _)| permission)
+    }
+
     pub(super) async fn deliver_urgent(&self, delivery: &dyn Delivery, now: Instant) {
         let _one = self.urgent_run.lock().await;
         if !self.enabled() {
@@ -243,7 +316,7 @@ impl Advisories {
         // A new pass: last pass's one-off status (sent, hourly cap, a save
         // that failed then, a journal set aside) no longer applies. Read
         // access is the poll's to clear.
-        self.reset_urgent_status_if(|status| !status.starts_with("Read access unavailable"));
+        self.reset_urgent_status_if(|status| !status.starts_with(READ_ACCESS_STATUS));
         self.deliver_human(delivery, principal.clone(), &urgent, epoch)
             .await;
         for (target, advisory) in &candidates {
@@ -327,9 +400,12 @@ impl Advisories {
         if !self.enabled() || self.tokens.principal().as_ref() != Some(&principal) {
             return;
         }
-        if !delivery.notifications_available() || principal.user_id.is_none() {
-            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status =
-                "System notifications unavailable on this platform.";
+        if !delivery.notifications_available() {
+            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status = PLATFORM_STATUS;
+            return;
+        }
+        if principal.user_id.is_none() {
+            self.urgent.lock().unwrap_or_else(|p| p.into_inner()).status = NO_USER_STATUS;
             return;
         }
         let scope = receipts::Scope::from(&principal);
@@ -372,6 +448,21 @@ impl Advisories {
                     journal.status="System notifications are withheld until alert quality is validated.";
                 }
                 return;
+            }
+            // Requested only when an app can show it: nothing is reserved,
+            // and the rows stay unseen for a later pass.
+            match self.display_permission() {
+                None => {
+                    debug(format_args!(
+                        "no app reported it can show a system notification; none requested"
+                    ));
+                    return;
+                }
+                Some(NotificationPermission::Denied) => {
+                    journal.status = DENIED_STATUS;
+                    return;
+                }
+                Some(NotificationPermission::Allowed | NotificationPermission::Unknown) => {}
             }
             if journal
                 .saved

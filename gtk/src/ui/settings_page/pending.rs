@@ -18,6 +18,30 @@ pub(in crate::ui) fn pending_toggle_row(
     pending: bool,
     on: impl Fn(bool) + 'static,
 ) -> gtk::Box {
+    pending_toggle_row_with(
+        title,
+        detail,
+        icon_name,
+        active,
+        sensitive,
+        pending,
+        &[],
+        on,
+    )
+}
+
+/// [`pending_toggle_row`], with `extra` lines under its detail.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::ui) fn pending_toggle_row_with(
+    title: &str,
+    detail: &str,
+    icon_name: &str,
+    active: bool,
+    sensitive: bool,
+    pending: bool,
+    extra: &[gtk::Widget],
+    on: impl Fn(bool) + 'static,
+) -> gtk::Box {
     let switch = gtk::Switch::new();
     crate::ui::widgets::action_cursor(&switch);
     switch.set_active(active);
@@ -29,7 +53,7 @@ pub(in crate::ui) fn pending_toggle_row(
         detail,
         icon_name,
         Some(&switch_accessory(&switch, pending)),
-        &[],
+        extra,
     )
     .0
 }

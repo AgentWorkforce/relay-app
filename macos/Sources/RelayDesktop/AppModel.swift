@@ -1369,6 +1369,8 @@ final class AppModel {
     private func connected(refreshAccount: Bool) async {
         await loadSettings()
         guard !Task.isCancelled else { return }
+        await reportNotificationDisplay()
+        guard !Task.isCancelled else { return }
         if !migratedSettings {
             await migrateSettings()
         }
@@ -1527,10 +1529,26 @@ final class AppModel {
         content.body = notification.body
         if let link = notification.link { content.userInfo = ["link": link] }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
-            UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            if granted { UNUserNotificationCenter.current().add(request) }
+            // The answer may have just changed: tell the core at once.
+            Task { @MainActor in await self?.reportNotificationDisplay() }
         }
+    }
+
+    /// Tells the core whether macOS lets Agent Relay show notifications,
+    /// read from the person's saved choice: reading never prompts. The core
+    /// requests no urgent notification without a report from the last
+    /// 150 s, so this runs on connect, every 60 s and after the answer.
+    private func reportNotificationDisplay() async {
+        guard notificationsAvailable else { return }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        let permission = NotificationPermission(authorization: settings.authorizationStatus)
+        let revision = connectionRevision
+        guard let state = try? await client.coordinationAdvisoriesNotificationsDisplay(
+            CoordinationNotificationsDisplayParams(permission: permission)
+        ), revision == connectionRevision, !isCoordinationAdvisoriesPending, !isCoordinationNotificationsPending else { return }
+        applyCoordinationState(state)
     }
 
     // MARK: Polling
@@ -1542,6 +1560,7 @@ final class AppModel {
             try? await Task.sleep(nanoseconds: Self.uploaderSafetyNet)
             guard core != nil else { continue }
             await refreshVisibleState()
+            await reportNotificationDisplay()
         }
     }
 

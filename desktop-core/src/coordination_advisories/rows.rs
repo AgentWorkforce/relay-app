@@ -114,14 +114,28 @@ impl Advisory {
 /// [`CONTRACT_V3`] lists instance rows; [`CONTRACT`] or no contract is
 /// legacy, as today: its rows reach the turn end and none is urgent.
 pub fn parse(body: &Value) -> Option<Vec<Advisory>> {
+    parse_listing(body).map(|(advisories, _)| advisories)
+}
+
+/// Which contract a listing was made under: [`CONTRACT_V3`] lists instance
+/// rows, the only ones that can be urgent; anything else is legacy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListingContract {
+    Legacy,
+    V3,
+}
+
+/// [`parse`], and the contract the listing was made under.
+pub fn parse_listing(body: &Value) -> Option<(Vec<Advisory>, ListingContract)> {
     let listed: Listed = serde_json::from_value(body.clone()).ok()?;
-    let versioned = match listed.contract.as_deref() {
-        Some(CONTRACT_V3) => true,
-        Some(CONTRACT) | None => false,
+    let contract = match listed.contract.as_deref() {
+        Some(CONTRACT_V3) => ListingContract::V3,
+        Some(CONTRACT) | None => ListingContract::Legacy,
         Some(_) => return None,
     };
+    let versioned = contract == ListingContract::V3;
     let mut seen = HashSet::new();
-    Some(
+    Some((
         listed
             .advisories
             .iter()
@@ -129,7 +143,8 @@ pub fn parse(body: &Value) -> Option<Vec<Advisory>> {
             .filter_map(|row| advisory(row, versioned))
             .filter(|advisory| seen.insert(advisory.id.clone()))
             .collect(),
-    )
+        contract,
+    ))
 }
 
 /// One advisory's line in the note.

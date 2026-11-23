@@ -54,7 +54,8 @@ pub trait TokenSource: Send + Sync + 'static {
 /// What one listing gave.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Listing {
-    Advisories(Vec<Advisory>),
+    /// The rows, and the contract they were listed under.
+    Advisories(Vec<Advisory>, ListingContract),
     /// 401: the token was refused.
     Unauthorized,
     /// 404, 501 or 403: the route is not there, switched off, or not for
@@ -208,8 +209,8 @@ impl AdvisoryApi for HttpApi {
             )
             .await
             {
-                Ok(answer) if answer.status == 200 => match parse(&answer.body) {
-                    Some(advisories) => Listing::Advisories(advisories),
+                Ok(answer) if answer.status == 200 => match parse_listing(&answer.body) {
+                    Some((advisories, contract)) => Listing::Advisories(advisories, contract),
                     None => {
                         debug(format_args!("the listing was not one of a known contract"));
                         Listing::Failed
