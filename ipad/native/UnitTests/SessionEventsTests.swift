@@ -137,28 +137,97 @@ final class SessionEventsTests: XCTestCase {
         range.map { event("e\($0)", at: TimeInterval($0)) }
     }
 
-    func testTheLiveStoreKeepsTheNewestEventsAndPagesOlderAgain() throws {
+    /// A session's events e0, e1, … as the Cloud route pages them newest
+    /// first, 100 a page; "before:N" is the cursor of events older than eN.
+    private struct PagedSession {
+        var count: Int
+        func page(_ spec: SessionEventsRequest.Spec, events: (Range<Int>) -> [SessionEvent]) -> SessionEventPage {
+            let top = spec.cursor.flatMap { Int($0.dropFirst("before:".count)) } ?? count
+            let bottom = max(top - 100, 0)
+            return SessionEventPage(sessionID: "s1", events: events(bottom..<top).reversed(),
+                                    nextCursor: bottom > 0 ? "before:\(bottom)" : nil)
+        }
+    }
+
+    func testTheLiveStoreKeepsTheNewestEvents() throws {
+        var session = PagedSession(count: 100)
         var store = SessionEventStore(sessionID: "s1")
         XCTAssertEqual(store.cap, SessionEventStore.liveLimit)
-        store.apply(page(events(0..<100), next: "c1"), for: SessionEventsRequest.newest)
-        // Polls of a busy session: each newest page overlaps the last.
-        var newest = 100
-        while newest < SessionEventStore.liveLimit + 50 {
-            store.apply(page(events((newest - 10)..<(newest + 100)), next: "c-poll"), for: SessionEventsRequest.newest)
-            newest += 100
+        store.apply(session.page(SessionEventsRequest.newest, events: events), for: SessionEventsRequest.newest)
+        // Polls of a busy session, 40 new events each.
+        while session.count < SessionEventStore.liveLimit + 200 {
+            session.count += 40
+            store.apply(session.page(SessionEventsRequest.newest, events: events), for: SessionEventsRequest.newest)
         }
         XCTAssertEqual(store.events.count, SessionEventStore.liveLimit)
-        XCTAssertEqual(store.events.last?.key.eventID, "e\(newest - 1)", "the newest stay")
-        XCTAssertEqual(store.events.first?.key.eventID, "e\(newest - SessionEventStore.liveLimit)")
-        // The cursor pointed after the dropped events: older history pages
-        // again from the newest page.
-        XCTAssertNil(store.olderCursor)
+        XCTAssertEqual(store.events.last?.key.eventID, "e\(session.count - 1)", "the newest stay")
+        XCTAssertEqual(store.events.first?.key.eventID, "e\(session.count - SessionEventStore.liveLimit)")
+        XCTAssertEqual(store.snapshot.events.count, SessionEventStore.liveLimit)
         XCTAssertFalse(store.reachedStart)
         XCTAssertTrue(store.hasOlder)
+    }
+
+    func testOlderPagingAfterALiveTrimReachesBelowTheHeldEvents() throws {
+        var session = PagedSession(count: 100)
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(session.page(SessionEventsRequest.newest, events: events), for: SessionEventsRequest.newest)
+        while session.count < SessionEventStore.liveLimit + 200 {
+            session.count += 40
+            store.apply(session.page(SessionEventsRequest.newest, events: events), for: SessionEventsRequest.newest)
+        }
+        let heldOldest = session.count - SessionEventStore.liveLimit
+        XCTAssertEqual(store.events.first?.key.eventID, "e\(heldOldest)")
+        XCTAssertTrue(store.rewalking)
+        // The person scrolls up. Older paging resumes from a page just above
+        // the oldest held event, not from the newest page.
+        var request = try XCTUnwrap(store.olderRequest)
+        XCTAssertNotNil(request.cursor, "not sent back to the newest page")
+        var reads = 0
+        while store.events.first?.key.eventID == "e\(heldOldest)" {
+            store.apply(session.page(request, events: events), for: request)
+            reads += 1
+            // A poll arrives in between, with a new event: it trims nothing
+            // and leaves paging where it was.
+            let cursor = store.olderRequest?.cursor
+            session.count += 1
+            store.apply(session.page(SessionEventsRequest.newest, events: events), for: SessionEventsRequest.newest)
+            XCTAssertEqual(store.olderRequest?.cursor, cursor, "a poll does not move paging")
+            XCTAssertNotNil(store.olderRequest?.cursor, "a poll does not send paging back to the newest page")
+            XCTAssertFalse(store.olderAutoLoadStopped, "automatic loading stays on while re-walking held events")
+            request = try XCTUnwrap(store.olderRequest)
+            XCTAssertLessThan(reads, 3, "no long walk through held events")
+            if reads >= 3 { break }
+        }
+        // Events below the held ones merged in, and nothing they loaded went.
+        let firstIndex = try XCTUnwrap(store.events.first.flatMap { Int($0.key.eventID.dropFirst()) })
+        XCTAssertLessThan(firstIndex, heldOldest)
+        XCTAssertEqual(reads, 1, "the first older page already reaches below")
+        XCTAssertFalse(store.rewalking)
+        XCTAssertGreaterThan(store.events.count, SessionEventStore.liveLimit)
+        XCTAssertEqual(store.cap, SessionEventStore.pagedBackLimit)
+        // Paging goes on down to the start.
+        while let next = store.olderRequest {
+            store.apply(session.page(next, events: events), for: next)
+        }
+        XCTAssertTrue(store.reachedStart)
+        XCTAssertEqual(store.events.first?.key.eventID, "e0")
+        XCTAssertEqual(store.events.count, session.count)
+    }
+
+    func testARestoredTrimmedSnapshotRewalksWithoutStopping() throws {
+        let session = PagedSession(count: 1_500)
+        let held = SessionEventSnapshot(sessionID: "s1", events: events(500..<1_500), olderCursor: nil, reachedStart: false)
+        var store = SessionEventStore(snapshot: held)
+        XCTAssertTrue(store.rewalking)
         XCTAssertEqual(store.olderRequest, SessionEventsRequest.newest)
-        store.apply(page(events((newest - 100)..<newest), next: "c-again"), for: SessionEventsRequest.newest)
-        XCTAssertEqual(store.olderRequest?.cursor, "c-again")
-        XCTAssertEqual(store.snapshot.events.count, SessionEventStore.liveLimit)
+        // The walk down from the newest page re-reads held events first.
+        while let request = store.olderRequest, store.events.first?.key.eventID == "e500" {
+            store.apply(session.page(request, events: events), for: request)
+            XCTAssertFalse(store.olderAutoLoadStopped)
+        }
+        XCTAssertEqual(store.events.first?.key.eventID, "e400")
+        XCTAssertFalse(store.rewalking)
+        // From then on, a page that adds nothing stops automatic loading as before.
     }
 
     func testAPollNeverTrimsTheHistoryAPersonLoaded() throws {
