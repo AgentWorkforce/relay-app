@@ -167,6 +167,7 @@ pub const CHAT_RELAY_MARK: &str = "⇄ Agent Relay";
 /// The marker over a relay message the agent sent: to whom, when known.
 pub fn chat_relay_sent_marker(recipient: Option<&str>) -> String {
     match recipient.filter(|to| !to.is_empty()) {
+        Some(channel) if channel.starts_with('#') => format!("{CHAT_RELAY_MARK} · to {channel}"),
         Some(to) => format!("{CHAT_RELAY_MARK} · to @{to}"),
         None => format!("{CHAT_RELAY_MARK} · sent"),
     }

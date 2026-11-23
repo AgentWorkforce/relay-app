@@ -22,11 +22,16 @@ use agent_relay_node::relay::contract::transcript::{LocalTranscriptCursor, Local
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// How often the conversation shown is read for what was written since.
 const FOLLOW_EVERY: Duration = Duration::from_secs(3);
+
+/// How far apart the same relay text can be recorded and still be one
+/// message: a tool call logged twice, or a direct message the transcript
+/// shows when the agent read it, which can be minutes later.
+const SAME_MESSAGE_MS: i64 = 600_000;
 /// The most pages one opening reads before showing the latest.
 const MAX_PAGES: usize = 200;
 
@@ -50,8 +55,9 @@ pub struct Thread {
     relay_only: Cell<bool>,
     /// The conversation is direct messages: replies came through it too.
     direct: Cell<bool>,
-    /// Relay messages already drawn from tool work, by direction and text.
-    relay_seen: RefCell<HashSet<String>>,
+    /// Relay messages already drawn from tool work, by direction and text,
+    /// with when each was last seen.
+    relay_seen: RefCell<HashMap<String, i64>>,
 }
 
 impl Thread {
@@ -238,7 +244,7 @@ impl Thread {
     fn direct_turn(&self, entry: LocalTranscriptEntry, source: &str, person: &str) -> Option<Turn> {
         let mine = entry.role == "user";
         let key = format!("{}{}", if mine { "in:" } else { "out:" }, entry.text.trim());
-        if !self.relay_seen.borrow_mut().insert(key) {
+        if !self.first_sighting(key, entry.timestamp_ms) {
             return None;
         }
         Some(Turn {
@@ -258,7 +264,12 @@ impl Thread {
     /// when `entry` carries none; `Some(None)` for one already drawn (a
     /// tool call is often recorded twice).
     fn relay_line(&self, entry: &LocalTranscriptEntry, person: &str) -> Option<Option<Turn>> {
-        let (seen, turn) = if let Some(incoming) = chat_relay_incoming(&entry.text) {
+        // Only a tool's output can be a message the agent received; its own
+        // text quoting a frame is just text.
+        let incoming = (entry.kind == "tool_result")
+            .then(|| chat_relay_incoming(&entry.text))
+            .flatten();
+        let (seen, turn) = if let Some(incoming) = incoming {
             let author = incoming
                 .sender
                 .as_ref()
@@ -288,7 +299,22 @@ impl Thread {
         } else {
             return None;
         };
-        Some(self.relay_seen.borrow_mut().insert(seen).then_some(turn))
+        Some(
+            self.first_sighting(seen, entry.timestamp_ms)
+                .then_some(turn),
+        )
+    }
+
+    /// Whether the relay message `key` (direction and text) at `at` is new:
+    /// the same text again within [`SAME_MESSAGE_MS`] is the same message
+    /// recorded twice; later, it is another message.
+    fn first_sighting(&self, key: String, at: i64) -> bool {
+        let mut seen = self.relay_seen.borrow_mut();
+        let repeat = seen
+            .get(&key)
+            .is_some_and(|before| (at - before).abs() <= SAME_MESSAGE_MS);
+        seen.insert(key, at);
+        !repeat
     }
 
     /// Draws `turn`: a message on its own, tool work in the run's Activity.
