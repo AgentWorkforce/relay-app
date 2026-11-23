@@ -301,6 +301,9 @@ struct RelayAPIError: LocalizedError {
     let message: String
     var status: Int? = nil
     var code: String = ""
+    /// The server's `error.reason`: what tells apart answers that share a
+    /// code (every session events 501 has `unsupported_by_backend`).
+    var reason: String = ""
     var retryAfterSeconds: Int? = nil
     /// A paid GPT-Live session the voice broker created but couldn't confirm
     /// closed; the call reports usage for it until the close is confirmed.
@@ -312,6 +315,16 @@ struct RelayAPIError: LocalizedError {
     /// failure from it (SpawnFailure).
     var summary: String? = nil
     var errorDescription: String? { UserFacingError.apiMessage(self) }
+}
+
+/// The identifiers in an error body. Cloud routes report `{error, code}`;
+/// Relaycast nests the code in `error`; the reason is `error.reason`.
+enum RelayErrorBody {
+    static func identifiers(in json: JSONObject) -> (code: String, reason: String) {
+        let problem = object(json["error"])
+        let code = string(problem["code"]).isEmpty ? string(json["code"]) : string(problem["code"])
+        return (code, string(problem["reason"]))
+    }
 }
 
 private enum SecureStore {
@@ -430,6 +443,9 @@ private enum SecureStore {
         let task: Task<Void, Never>
     }
     private var sessionEventReads: [String: SessionEventRead] = [:]
+    /// When each session's newest page was last asked for, so a burst of
+    /// chat messages reads at most once per `SessionEventPolling.minimumSpacing`.
+    private var sessionEventLastRead: [String: Date] = [:]
     private var sessionEventsGeneration = 0
     /// Where session events persist between launches: the on-disk cache,
     /// or nothing in UI tests.
@@ -572,8 +588,7 @@ private enum SecureStore {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? JSONObject ?? [:]
             guard !(200..<300).contains(http.statusCode) else { return json }
             let problem = object(json["error"])
-            // Cloud routes report `{error, code}`; Relaycast nests the code in `error`.
-            let code = string(problem["code"]).isEmpty ? string(json["code"]) : string(problem["code"])
+            let (code, reason) = RelayErrorBody.identifiers(in: json)
             let headerDelay = http.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(Int.init).map { max($0, 0) }
             let retryDelay = headerDelay ?? min(2 << attempt, 10)
@@ -588,7 +603,7 @@ private enum SecureStore {
                 ? "Agent Relay is busy. Try again in a moment."
                 : (serverDetail.isEmpty ? "Agent Relay returned HTTP \(http.statusCode)" : serverDetail)
             let voiceSession = string(json["sessionId"])
-            throw RelayAPIError(message: detail, status: http.statusCode, code: code,
+            throw RelayAPIError(message: detail, status: http.statusCode, code: code, reason: reason,
                                 retryAfterSeconds: headerDelay,
                                 voiceSessionID: voiceSession.isEmpty ? nil : voiceSession,
                                 fromServer: code != "database_overloaded")
@@ -1886,15 +1901,28 @@ private enum SecureStore {
         return store.loaded || store.failures > 0
     }
 
-    /// How long the open chat waits before reading the newest page again.
-    func sessionEventPollDelay(for agent: RelayAgent, now: Date = Date()) -> TimeInterval {
+    /// How long the open chat waits before reading the newest page again,
+    /// or nil for no timer. `chatActivityAt`: the chat's newest message,
+    /// sent or received.
+    func sessionEventPollDelay(for agent: RelayAgent, chatActivityAt: Date? = nil, now: Date = Date()) -> TimeInterval? {
         let store = sessionEvents[agent.sessionID]
-        return SessionEventPolling.interval(newestEventAt: store?.newest?.ts, now: now, failures: store?.failures ?? 0)
+        return SessionEventPolling.interval(newestEventAt: store?.newest?.ts, chatActivityAt: chatActivityAt, now: now,
+                                            failures: store?.failures ?? 0, unavailable: store?.unavailable ?? false,
+                                            unknownNotImplemented: store?.unknownNotImplemented ?? 0)
+    }
+
+    /// How long to wait before the next newest-page read of `agent`'s
+    /// session keeps reads `SessionEventPolling.minimumSpacing` apart; 0 when
+    /// it can read now.
+    func sessionEventReadWait(for agent: RelayAgent, now: Date = Date()) -> TimeInterval {
+        guard let last = sessionEventLastRead[agent.sessionID] else { return 0 }
+        return max(0, SessionEventPolling.minimumSpacing - now.timeIntervalSince(last))
     }
 
     /// Reads the session's newest page and merges it. One read runs per
     /// session; a call while one runs waits for it instead of starting
-    /// another. A failure keeps what is shown.
+    /// another. A failure keeps what is shown. Nothing once the server said
+    /// the session is unavailable.
     func refreshSessionEvents(for agent: RelayAgent) async {
         await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: false) { _ in
             SessionEventsRequest.newest
@@ -1902,7 +1930,8 @@ private enum SecureStore {
     }
 
     /// Reads the next older page, or the newest page again after the server
-    /// dropped the cursor. Nothing once the start was reached.
+    /// dropped the cursor. Nothing once the start was reached or the
+    /// session is unavailable.
     func loadOlderSessionEvents(for agent: RelayAgent) async {
         await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: true) { store in
             store.olderRequest
@@ -1917,6 +1946,8 @@ private enum SecureStore {
             await running.task.value
             if Task.isCancelled { return }
         }
+        // The server's answer was final: no read until the store is dropped.
+        if sessionEvents[id]?.unavailable == true { return }
         let generation = sessionEventsGeneration
         let workspaceID = cloudWorkspaceID
         let cacheWorkspace = workspaceID ?? ""
@@ -1936,7 +1967,8 @@ private enum SecureStore {
                         ?? SessionEventStore(sessionID: id)
                 }
             }
-            guard let store = self.sessionEvents[id], let spec = request(store) else { return }
+            guard let store = self.sessionEvents[id], !store.unavailable, let spec = request(store) else { return }
+            if !older { self.sessionEventLastRead[id] = Date() }
             do {
                 let page = try await self.fetchSessionEventPage(id, workspaceID: workspaceID, spec: spec)
                 guard self.sessionEventsGeneration == generation else { return }
@@ -1948,7 +1980,8 @@ private enum SecureStore {
             } catch {
                 guard self.sessionEventsGeneration == generation else { return }
                 let failure = error as? RelayAPIError
-                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "", older: older)
+                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "",
+                                               reason: failure?.reason ?? "", older: older)
                 if SessionEventsRequest.accessRevoked(status: failure?.status) {
                     // This account may no longer read it: off the screen and the disk.
                     self.sessionEvents[id]?.forgetEvents()
@@ -1997,6 +2030,7 @@ private enum SecureStore {
         sessionEventsGeneration += 1
         sessionEventReads.values.forEach { $0.task.cancel() }
         sessionEventReads = [:]
+        sessionEventLastRead = [:]
         sessionEvents = [:]
         sessionEventSnapshots.removeAll()
     }
