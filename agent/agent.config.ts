@@ -34,7 +34,10 @@ export default defineLayeredAgent({
   // lane-scripts.sha is their content hash (lane-scripts.ts), so a change
   // to them is a hot change the deploy sees and runs setup-lane.sh for.
   // delegations.json is the delegated-approval allowlist delegation-decide.py
-  // reads; test/delegation.test.ts pins its grants.
+  // reads. It is not tracked: Agent Deploy writes it from the agent-deploy
+  // environment's LAYERED_AGENT_DELEGATIONS secret (delegations-from-env.ts,
+  // tested in test/delegations-from-env.test.ts) before the kit reads agent/;
+  // unset, the list is empty.
   laneFiles: ["lead-prompt.md", "setup-lane.sh", "load-secrets-lane.sh", "share-lead-session.sh", "lane-scripts.sha", "delegations.json"],
   // Local CI lanes: cargo + GTK 4 under xvfb, shellcheck.
   aptPackages: ["pkg-config", "libgtk-4-dev", "libssl-dev", "libdbus-1-dev", "xvfb", "shellcheck"],

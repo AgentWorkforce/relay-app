@@ -272,16 +272,41 @@ final class RelayUITestReadPosts: ObservableObject, @unchecked Sendable {
 }
 
 /// An invisible element listing the recorded read receipts for UI tests.
+/// With `-RelayUITestSessionEventsDelay` it also shows the control that
+/// releases the held session events, mid-height on the leading edge, clear
+/// of the bars and the composer.
 struct RelayUITestReadPostsProbe: View {
     @ObservedObject private var posts = RelayUITestReadPosts.shared
+    @ObservedObject private var gate = SessionEventsGate.shared
 
     var body: some View {
-        Color.clear
-            .frame(width: 1, height: 1)
-            .allowsHitTesting(false)
-            .accessibilityElement()
-            .accessibilityLabel(posts.ids.isEmpty ? "none" : posts.ids.joined(separator: ","))
-            .accessibilityIdentifier("ui-test-read-posts")
+        ZStack(alignment: .topLeading) {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+                .accessibilityElement()
+                .accessibilityLabel(posts.ids.isEmpty ? "none" : posts.ids.joined(separator: ","))
+                .accessibilityIdentifier("ui-test-read-posts")
+            if SessionEventsFixture.delaysFirstPage {
+                releaseSessionEvents
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// Reads "held", "released" or "timed out".
+    private var releaseSessionEvents: some View {
+        Button {
+            SessionEventsFixture.releaseFirstPage()
+        } label: {
+            Color.orange.opacity(0.35)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Release session events")
+        .accessibilityValue(gate.state.rawValue)
+        .accessibilityIdentifier("ui-test-release-session-events")
     }
 }
 
