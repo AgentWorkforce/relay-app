@@ -868,7 +868,7 @@ mod tests {
             true,
             serde_json::Value::Null
         )]));
-        assert_eq!(state.page, Page::Sessions);
+        assert_eq!(state.page, Page::Chat);
         state.page = Page::Settings(Pane::About);
         state.hiding_sessions.insert("codex:a".into());
         state
@@ -893,7 +893,7 @@ mod tests {
         state.title_overview_reads.insert("codex:a".into(), 123);
         state.loading_title_overviews.insert("codex:a".into());
         state.forget_account_view();
-        assert_eq!(state.page, Page::Sessions);
+        assert_eq!(state.page, Page::Chat);
         assert!(state.hiding_sessions.is_empty());
         assert!(state.session_query.hidden_confirmed.is_empty());
         assert!(!state.session_query.hidden_retry_scheduled);

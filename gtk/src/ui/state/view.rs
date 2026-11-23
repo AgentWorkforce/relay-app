@@ -216,7 +216,7 @@ impl State {
         self.renew_requested = false;
         self.workspace_connect_error = None;
         // Rebuilding the signed-in shell lands where a fresh launch does.
-        self.page = Page::Sessions;
+        self.page = Section::Mine.home();
         self.page_error = None;
     }
 }
