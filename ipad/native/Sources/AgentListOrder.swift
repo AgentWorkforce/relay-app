@@ -1,11 +1,22 @@
 import Foundation
 
+/// The turn the desktop an agent runs on publishes in its roster record
+/// (`metadata.activity.turn`). `working` also covers a turn blocked on a
+/// permission. An unknown value is no turn at all.
+enum AgentTurn: String, Equatable, Sendable {
+    case working, idle
+
+    init?(reported: String) {
+        self.init(rawValue: reported.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+}
+
 /// What an agent is doing now, as the list's badge shows it. The desktop
 /// Chat page also has Ended; iOS has no signal that a session ended, so it
 /// is left out.
 enum ChatActivity: Equatable, Sendable {
-    /// Waiting or blocked on its turn, or a loaded session wrote within the
-    /// last two minutes.
+    /// On a turn, or, with no turn reported, a loaded session wrote within
+    /// the last two minutes.
     case working
     /// Reachable and ready for a message.
     case idle
@@ -52,20 +63,20 @@ enum AgentListOrder {
         var id = ""
     }
 
-    /// The activity from what iOS has: the record's `status`, whether the
-    /// agent is reachable (`RelayAgent.isReachable`), and the newest event
-    /// of its session when that session is already loaded. iOS has no turn
-    /// state from a core and no roster `activity.turn`; a `waiting` or
-    /// `blocked` status stands for the turn the desktop core reports as
-    /// waiting, which the desktop also counts as working.
-    static func activity(status: String, reachable: Bool, lastEventAt: Date?, now: Date) -> ChatActivity {
+    /// The activity from what iOS has: whether the agent is reachable
+    /// (`RelayAgent.isReachable`), the turn its roster record reports, and,
+    /// only when it reports none, the newest event of its session when that
+    /// session is already loaded. A presence status such as `waiting` is
+    /// not a turn.
+    static func activity(turn: AgentTurn?, reachable: Bool, lastEventAt: Date?, now: Date) -> ChatActivity {
         guard reachable else { return .offline }
-        switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "waiting", "blocked": return .working
-        default: break
+        switch turn {
+        case .working: return .working
+        case .idle: return .idle
+        case nil:
+            if let lastEventAt, now.timeIntervalSince(lastEventAt) <= workingWindow { return .working }
+            return .idle
         }
-        if let lastEventAt, now.timeIntervalSince(lastEventAt) <= workingWindow { return .working }
-        return .idle
     }
 
     /// `date`'s five-minute bucket: `floor(ms / 300000)`.

@@ -48,8 +48,8 @@ final class AgentRowUITests: XCTestCase {
     }
 
     func testWorkingAgentLeadsThenTheRestByName() {
-        // The roster lists builder, sam-lee, then reviewer; builder waits on
-        // its turn, the others are only online.
+        // The roster lists builder, sam-lee, then reviewer; builder reports
+        // a working turn and what it is doing, the others are only online.
         let app = launch(["-RelayUITestMixedPresence"])
         let builder = app.buttons["builder, Claude Code, test-mini, Working"].firstMatch
         let reviewer = app.buttons["reviewer, Codex, Test Mini, Idle"].firstMatch
@@ -57,6 +57,8 @@ final class AgentRowUITests: XCTestCase {
         XCTAssertTrue(builder.waitForExistence(timeout: 10))
         XCTAssertTrue(reviewer.exists)
         XCTAssertTrue(person.exists)
+        // With no brief loaded, what builder says it is doing is its summary.
+        XCTAssertTrue(app.staticTexts["Running the fixture checks"].firstMatch.exists)
         let badge = { (label: String) in
             app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier == 'Agent row activity' AND label == %@", label)).firstMatch

@@ -12,11 +12,11 @@ extension RelayClient {
     /// each group by activity, recency bucket and name. An agent's activity
     /// is its row's badge (`AgentRowModel.activity`), so the order and the
     /// badge always agree; a person, who has no badge, is ranked by the
-    /// same rule from their status alone.
+    /// same rule without session events.
     func listOrdered(_ agents: [RelayAgent], pinned: Set<String>, now: Date = Date()) -> [RelayAgent] {
         AgentListOrder.sorted(agents, pinned: { pinned.contains($0.id) }) { agent in
             let activity = rowModel(for: agent, now: now).activity
-                ?? AgentListOrder.activity(status: agent.status, reachable: agent.isReachable(at: now),
+                ?? AgentListOrder.activity(turn: agent.activityTurn, reachable: agent.isReachable(at: now),
                                            lastEventAt: nil, now: now)
             return AgentListOrder.Entry(
                 name: displayName(for: agent),

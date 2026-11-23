@@ -92,9 +92,12 @@ struct AgentRowModel: Equatable {
                 if isShort { recordedShort = text } else { recordedLong = text }
             }
             titles = [brief.title, agent.sessionTitle, agent.objective, loaded.goal]
-            lines = [recordedShort, brief.line, recordedLong, agent.sessionTitle, agent.objective, loaded.goal]
+            // What the agent says it is doing comes after any brief, never as the title.
+            lines = [recordedShort, brief.line, recordedLong, agent.activityDoing,
+                     agent.sessionTitle, agent.objective, loaded.goal]
         } else if isAgent {
             titles = [agent.objective]
+            lines = [agent.activityDoing]
         } else if agent.source == .channel {
             lines = [agent.objective]
         }
@@ -112,7 +115,7 @@ struct AgentRowModel: Equatable {
         status = agent.source == .channel ? nil
             : Self.status(agent.status, reachable: agent.isReachable(at: now))
         activity = isAgent
-            ? AgentListOrder.activity(status: agent.status, reachable: agent.isReachable(at: now),
+            ? AgentListOrder.activity(turn: agent.activityTurn, reachable: agent.isReachable(at: now),
                                       lastEventAt: loaded.lastEventAt, now: now)
             : nil
         // The overview's title is matched even where the row does not show

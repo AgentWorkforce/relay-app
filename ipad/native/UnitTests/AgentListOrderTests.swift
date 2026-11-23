@@ -63,24 +63,28 @@ final class AgentListOrderTests: XCTestCase {
         XCTAssertEqual(order([]), [])
     }
 
-    func testActivityFromStatusThenLoadedSessionEvents() {
-        func activity(_ status: String, reachable: Bool = true, eventSecondsAgo: TimeInterval? = nil) -> ChatActivity {
-            AgentListOrder.activity(status: status, reachable: reachable,
+    func testActivityFromTurnThenLoadedSessionEvents() {
+        func activity(_ turn: AgentTurn?, reachable: Bool = true, eventSecondsAgo: TimeInterval? = nil) -> ChatActivity {
+            AgentListOrder.activity(turn: turn, reachable: reachable,
                                     lastEventAt: eventSecondsAgo.map { now.addingTimeInterval(-$0) }, now: now)
         }
-        // Not reachable is offline, whatever it reports or wrote.
-        XCTAssertEqual(activity("waiting", reachable: false, eventSecondsAgo: 1), .offline)
-        XCTAssertEqual(activity("", reachable: false), .offline)
-        // Waiting or blocked on its turn counts as working.
-        XCTAssertEqual(activity("waiting"), .working)
-        XCTAssertEqual(activity(" Blocked "), .working)
-        // A loaded session that wrote within two minutes is working.
-        XCTAssertEqual(activity("active", eventSecondsAgo: 120), .working)
-        XCTAssertEqual(activity("idle", eventSecondsAgo: 5), .working)
-        XCTAssertEqual(activity("active", eventSecondsAgo: 121), .idle)
-        // Reachable with no loaded events is idle.
-        XCTAssertEqual(activity("active"), .idle)
-        XCTAssertEqual(activity("online"), .idle)
+        // Not reachable is offline, whatever turn it reports or wrote.
+        XCTAssertEqual(activity(.working, reachable: false, eventSecondsAgo: 1), .offline)
+        XCTAssertEqual(activity(nil, reachable: false), .offline)
+        // A reported turn decides.
+        XCTAssertEqual(activity(.working), .working)
+        XCTAssertEqual(activity(.working, eventSecondsAgo: 3_600), .working)
+        // An idle turn beats a recent event.
+        XCTAssertEqual(activity(.idle, eventSecondsAgo: 1), .idle)
+        // With no turn, a loaded session that wrote within two minutes is working.
+        XCTAssertEqual(activity(nil, eventSecondsAgo: 120), .working)
+        XCTAssertEqual(activity(nil, eventSecondsAgo: 121), .idle)
+        XCTAssertEqual(activity(nil), .idle)
+        // The reported value: case and spaces do not matter; an unknown one is no turn.
+        XCTAssertEqual(AgentTurn(reported: " Working "), .working)
+        XCTAssertEqual(AgentTurn(reported: "idle"), .idle)
+        XCTAssertNil(AgentTurn(reported: "waiting"))
+        XCTAssertNil(AgentTurn(reported: ""))
         XCTAssertEqual(ChatActivity.working.label, "Working")
         XCTAssertEqual(ChatActivity.idle.label, "Idle")
         XCTAssertEqual(ChatActivity.offline.label, "Offline")
