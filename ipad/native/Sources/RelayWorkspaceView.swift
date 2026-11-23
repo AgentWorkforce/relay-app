@@ -99,6 +99,10 @@ struct RelayWorkspaceView: View {
     @FocusState private var phoneSearchFocused: Bool
     @FocusState private var commandFocused: Bool
     @State private var outgoing = OutgoingMessages()
+    /// When Relaycast accepted an answer to a question, by "<chat id>|<ref>".
+    /// Kept after the answer's bubble leaves, so a card whose answer history
+    /// has not shown yet never offers a second send.
+    @State private var acceptedQuestionAnswers: [String: Date] = [:]
     @State private var uploadedAttachments: [RelayAttachment] = []
     @State private var showFileImporter = false
     @State private var attachmentUploadTask: Task<Void, Never>?
@@ -246,6 +250,7 @@ struct RelayWorkspaceView: View {
             discardStagedAttachments()
             showFileImporter = false
             outgoing.removeAll()
+            acceptedQuestionAnswers = [:]
             messageDraft = ""
             selected = nil
             phonePath = []
@@ -298,7 +303,13 @@ struct RelayWorkspaceView: View {
         // message. This view always observes the client, so that does not
         // wait for the chat view, pushed or not, to be built again.
         .onChange(of: client.messages.map(\.id)) { _, _ in
+            #if DEBUG
+            QuestionCardFixture.note("onChange(messages) selected=\(selected?.id ?? "nil") before=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))] history=[\(historyRows.map(\.id).joined(separator: ", "))]")
+            #endif
             if let selected { outgoing.reconcile(agentID: selected.id, with: historyRows) }
+            #if DEBUG
+            QuestionCardFixture.note("onChange(messages) after=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))]")
+            #endif
         }
         .onChange(of: client.channels) { _, channels in
             reconcileSelection(in: channels, source: .channel)
@@ -1330,6 +1341,10 @@ struct RelayWorkspaceView: View {
             historyChecked: client.historyCheckedConversation == agent.id || client.historyLoaded(for: agent),
             sessionApplies: sessionApplies, sessionSettled: client.sessionEventsSettled(for: agent))
         let lastMineID = client.messages.last(where: \.mine)?.id
+        // A question card reads the messages after its own, so it takes its
+        // message's place among the messages, not among the timeline's rows.
+        let messagePositions = Dictionary(client.messages.enumerated().map { ($0.element.id, $0.offset) },
+                                          uniquingKeysWith: { first, _ in first })
         let lastEventID = store?.newest?.id
         // The chat's newest message, sent or received: it sets the poll's
         // pace with the newest event.
@@ -1402,7 +1417,12 @@ struct RelayWorkspaceView: View {
                                 }
                                 switch item {
                                 case .message(let message):
-                                    messageRow(message, in: agent, showsDelivery: message.mine && message.id == lastMineID)
+                                    if let position = messagePositions[message.id],
+                                       let question = questionCard(message, at: position, in: agent) {
+                                        question
+                                    } else {
+                                        messageRow(message, in: agent, showsDelivery: message.mine && message.id == lastMineID)
+                                    }
                                 case .event(let row):
                                     messageTimeRow(at: row.event.ts) {
                                         SessionEventBubble(row: row, agentName: agent.name, accent: accent)
@@ -1442,6 +1462,15 @@ struct RelayWorkspaceView: View {
                                     }
                                 }.id(MobileChatScrollTarget.pending(pending.id))
                             }
+                            #if DEBUG
+                            if QuestionCardFixture.enabled {
+                                // The composer's state for the UI test's kept tree; fixture launches only.
+                                Text(QuestionCardFixture.report(outgoing: outgoing.all, historyIDs: historyRows.map(\.id),
+                                                                selected: selected?.id))
+                                    .font(.system(size: 6)).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("Question fixture report")
+                            }
+                            #endif
                             if let store { SessionWorkingRow(events: store.events) }
                             Color.clear.frame(height: 1)
                                 .id(MobileChatScrollTarget.message("chat-bottom"))
@@ -1725,6 +1754,38 @@ struct RelayWorkspaceView: View {
             }
         }
     }
+    /// The card for an agent's question in its DM, or nil to keep the bubble.
+    private func questionCard(_ message: RelayMessage, at index: Int, in agent: RelayAgent) -> AnyView? {
+        guard agent.source != .channel,
+              let question = RelayQuestionParser.parse(message.text, sender: message.sender,
+                                                       mine: message.mine, chatAgent: agent.name) else { return nil }
+        let messages = client.messages.map {
+            RelayQuestionState.Message(text: $0.text, mine: $0.mine, sender: $0.sender, createdAt: $0.createdAt)
+        }
+        let pending = outgoing.messages(for: agent.id).map {
+            RelayQuestionState.PendingAnswer(text: $0.text, failed: $0.state == .failed, accepted: $0.state == .sent)
+        }
+        let acceptedAt = acceptedQuestionAnswers["\(agent.id)|\(question.ref.lowercased())"]
+        let sentAt = message.createdAt
+        return AnyView(HStack {
+            QuestionCardView(question: question, expiresAt: question.expiresAt(sentAt: sentAt), state: { now in
+                RelayQuestionState.state(for: question, at: index, in: messages, chatAgent: agent.name,
+                                         pending: pending, acceptedAt: acceptedAt, sentAt: sentAt, now: now)
+            }, accent: accent) { line in
+                sendQuestionAnswer(line, to: agent)
+            }
+            Spacer(minLength: 24)
+        }.id(MobileChatScrollTarget.message(message.id)))
+    }
+    /// A card's answer goes the way a typed message does: a pending bubble,
+    /// one POST, a visible failure and a tap to retry. Only to `agent`, the
+    /// agent whose question it is, as the person.
+    private func sendQuestionAnswer(_ line: String, to agent: RelayAgent) {
+        guard selected?.id == agent.id else { return }
+        let message = outgoing.begin(agentID: agent.id, text: line, attachments: [],
+                                     history: client.historyLoaded(for: agent) ? historyRows : nil)
+        post(message, to: agent)
+    }
     private func sendDraft(to agent: RelayAgent) {
         let draft = messageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedAttachments
@@ -1759,7 +1820,16 @@ struct RelayWorkspaceView: View {
             MobileHandoffFixture.trace("composer received send result: \(outcome)")
             #endif
             outgoing.finish(message.id, attempt: attempt, outcome: outcome)
+            if case .accepted = outcome, let ref = RelayQuestionState.answeredRef(message.text) {
+                acceptedQuestionAnswers["\(agent.id)|\(ref)"] = Date()
+            }
+            #if DEBUG
+            QuestionCardFixture.note("post finished outcome=\(outcome) selected=\(selected?.id ?? "nil") agent=\(agent.id) history=[\(historyRows.map(\.id).joined(separator: ", "))]")
+            #endif
             if selected?.id == agent.id { outgoing.reconcile(agentID: agent.id, with: historyRows) }
+            #if DEBUG
+            QuestionCardFixture.note("post reconciled after=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))]")
+            #endif
             #if DEBUG
             MobileHandoffFixture.trace("composer reconciled pending: \(outgoing.all.filter { $0.id == message.id }.count); history: \(client.messages.count)")
             #endif
