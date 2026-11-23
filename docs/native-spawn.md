@@ -1198,10 +1198,10 @@ verified spawn requester answer the permission and approval requests of the
 Codex and Claude sessions it spawned, as the machine owner can. It sits under
 **Native input from the spawning agent** in Settings → Messages → Spawned
 agents on macOS, Linux and Windows, is shown only while that setting is on,
-and counts only while it is on. It is on in Agent Relay Dev (an app data
-directory ending `.dev`) and off in the release build until the person turns
-it on; it is person-only to turn on (`settings_registry::PERSON_TURNS_ON`),
-so an agent's `PATCH /settings` can only turn it off.
+and counts only while it is on. It is on by default in every build, release
+included, unless the machine owner turns it off; it is person-only to turn on
+(`settings_registry::PERSON_TURNS_ON`), so an agent's `PATCH /settings` can only
+turn it off.
 
 While it is on, each request's approval DM (the same fixed summary, never the
 command, path or form it is about) goes to the verified owner and to the

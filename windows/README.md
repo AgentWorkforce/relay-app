@@ -858,8 +858,8 @@ is shared across macOS, Linux and Windows; see [native spawn](../docs/native-spa
 below it while native input from the spawning agent is on, also lets that
 requester answer its sessions' permission and approval prompts by 1:1 direct
 message; the first answer, the owner's or the requester's, counts, and each
-is logged with who answered. On in Agent Relay Dev, off in the release build
-until the person turns it on; agents can only turn it off. See [approvals
+is logged with who answered. On by default in every build unless the machine
+owner turns it off; agents can only turn it off. See [approvals
 from the spawning agent](../docs/native-spawn.md#approvals-from-the-spawning-agent).
 
 Live personal sessions refresh their native title and agent @name after ten new
