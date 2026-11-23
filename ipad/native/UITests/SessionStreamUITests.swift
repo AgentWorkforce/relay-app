@@ -103,4 +103,44 @@ final class SessionStreamUITests: XCTestCase {
         XCTAssertTrue(working.label.contains("Working…"))
         attach(app, "working")
     }
+
+    /// Opens the builder with an older page behind its first one, lets the
+    /// page load (on its own once its row is on screen, or by a tap), and
+    /// returns once it has: the "Load earlier activity" row is gone.
+    private func loadOlderPage(_ argument: String, firstRow: (XCUIApplication) -> XCUIElement) -> XCUIApplication {
+        let app = open("builder", [argument])
+        XCTAssertTrue(firstRow(app).waitForExistence(timeout: 10))
+        let older = app.buttons["Load earlier activity"]
+        if older.exists, older.isHittable { older.tap() }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: older)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "the older page never loaded")
+        return app
+    }
+
+    /// The row the reader was looking at is on screen, not pushed below it
+    /// by the rows that loaded above.
+    private func assertOnScreen(_ element: XCUIElement, in app: XCUIApplication) {
+        let thread = app.scrollViews["Conversation thread"].firstMatch
+        XCTAssertTrue(element.isHittable, "\(element.frame) is not on screen")
+        XCTAssertTrue(thread.frame.intersects(element.frame), "\(element.frame) is outside \(thread.frame)")
+    }
+
+    func testOlderToolWorkJoiningTheTopGroupKeepsItInView() throws {
+        // The older page's tool work joins the top group (three steps become
+        // five) and more than a screen of notes lands above it.
+        let app = loadOlderPage("-RelayUITestSessionOlderTools") {
+            $0.buttons.matching(identifier: "Session activity group").firstMatch
+        }
+        let joined = app.buttons.matching(NSPredicate(format: "identifier == 'Session activity group' AND label CONTAINS '5 steps'")).firstMatch
+        XCTAssertTrue(joined.waitForExistence(timeout: 10))
+        assertOnScreen(joined, in: app)
+        attach(app, "older-tools-joined")
+    }
+
+    func testOlderNotesKeepTheFirstReplyInView() throws {
+        // More than a screen of notes lands above a plain reply.
+        let app = loadOlderPage("-RelayUITestSessionOlderNotes") { $0.staticTexts["Picking up the lantern checks."] }
+        assertOnScreen(app.staticTexts["Picking up the lantern checks."], in: app)
+        attach(app, "older-notes")
+    }
 }
