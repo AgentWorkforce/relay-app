@@ -11,8 +11,8 @@ use super::state::Page;
 use super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use crate::models::{
     chat_agents, chat_elsewhere_agents, chat_filter_choices, merge_local_sessions, ChatAgent,
-    ChatPlace, CHAT_DETAILS, CHAT_ELSEWHERE_SECTION, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE,
-    CHAT_HIDE_LIST, CHAT_NO_AGENTS, CHAT_NO_MATCH, CHAT_SEARCH, CHAT_SHOW_LIST, CHAT_TITLE,
+    CHAT_DETAILS, CHAT_EMPTY_DETAIL, CHAT_EMPTY_TITLE, CHAT_HIDE_LIST, CHAT_SEARCH, CHAT_SHOW_LIST,
+    CHAT_TITLE,
 };
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
@@ -24,6 +24,7 @@ mod elsewhere;
 mod filters;
 mod images;
 mod inbox;
+mod list;
 pub(in crate::ui) use inbox::with_unread;
 mod open;
 mod send;
@@ -48,8 +49,10 @@ pub struct ChatPage {
     list: gtk::Box,
     stack: gtk::Stack,
     pub toggle_list: gtk::Button,
-    /// Back to the sessions list, which every conversation opens from.
+    /// Back to the sessions list, which every conversation opens from: at
+    /// the head of the list, and in the header while the list is hidden.
     pub back: gtk::Button,
+    back_header: gtk::Button,
     /// Opens the agent in its own app, where it has one.
     pub open: gtk::Button,
     pub header_badge: gtk::Box,
@@ -84,6 +87,10 @@ impl ChatPage {
         super::zoom::size(&side, 260, -1);
         // Its rows' names expand within it; the list itself stays narrow.
         side.set_hexpand(false);
+        // Back to the sessions list, at the head of the list as in Claude's
+        // and Codex's apps, above the page's title.
+        let back = super::session_open::back_to_sessions_button();
+        side.append(&back);
         side.append(&text(CHAT_TITLE, &["page-title"]));
         let filters = FilterBar::build(CHAT_SEARCH);
         side.append(&filters.root);
@@ -120,8 +127,10 @@ impl ChatPage {
         let toggle_list =
             widgets::icon_button("sidebar-show-symbolic", CHAT_HIDE_LIST, &["flat"], || {});
         toggle_list.set_valign(gtk::Align::Center);
-        let back = super::session_open::back_to_sessions_button();
-        header.append(&back);
+        // The header's own back button shows only while the list is hidden.
+        let back_header = super::session_open::back_to_sessions_button();
+        back_header.set_visible(false);
+        header.append(&back_header);
         header.append(&toggle_list);
         let header_badge = hbox(0, &[]);
         header_badge.set_valign(gtk::Align::Center);
@@ -186,6 +195,7 @@ impl ChatPage {
             stack,
             toggle_list,
             back,
+            back_header,
             open,
             header_badge,
             header_name,
@@ -218,10 +228,14 @@ impl App {
         self.connect_chat_controls(&page.controls);
         let home = self.on(|app| app.open_section(super::state::Section::Mine));
         page.back.connect_clicked(move |_| home());
+        let home = self.on(|app| app.open_section(super::state::Section::Mine));
+        page.back_header.connect_clicked(move |_| home());
         let native = self.on(App::open_chat_agent_natively);
         page.open.connect_clicked(move |_| native());
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
+        let earlier = self.on(App::show_earlier_chat);
+        page.thread.earlier.connect_clicked(move |_| earlier());
         self.follow_chat_thread();
         self.follow_chat_inbox();
     }
@@ -340,10 +354,13 @@ impl App {
         let (harnesses, projects) = chat_filter_choices(&agents);
         page.filters.offer(&harnesses, &projects);
         let filters = page.filters.read();
-        let shown: Vec<&ChatAgent> = agents
+        let mut shown: Vec<&ChatAgent> = agents
             .iter()
             .filter(|agent| filters.admits(agent))
             .collect();
+        // Agents with unread messages first, newest activity among them
+        // first as before; the rest keep their order.
+        shown.sort_by_key(|agent| self.chat_unread(&agent.relay_names()) == 0);
         if page.selected.borrow().is_none() {
             self.pick_first_chat_agent(shown.first().map(|agent| agent.key()));
         }
@@ -363,28 +380,7 @@ impl App {
             })
             .collect();
         if *page.drawn.borrow() != drawn {
-            clear(&page.list);
-            if shown.is_empty() {
-                let note = if agents.is_empty() {
-                    CHAT_NO_AGENTS
-                } else {
-                    CHAT_NO_MATCH
-                };
-                let empty = text(note, &["caption"]).wrapped();
-                widgets::pad(&empty, 8, None, None);
-                page.list.append(&empty);
-            }
-            let mut elsewhere = false;
-            for agent in &shown {
-                if matches!(agent.place, ChatPlace::Elsewhere(_)) && !elsewhere {
-                    elsewhere = true;
-                    let heading = widgets::section_title(CHAT_ELSEWHERE_SECTION);
-                    heading.set_margin_top(super::zoom::px(12));
-                    page.list.append(&heading);
-                }
-                let chosen = selected.as_deref() == Some(agent.key().as_str());
-                page.list.append(&self.chat_row(agent, chosen));
-            }
+            self.draw_chat_list(page, &shown, agents.is_empty(), selected.as_deref());
             *page.drawn.borrow_mut() = drawn;
         }
         for agent in shown.iter().take(SUMMARIES_AHEAD) {
@@ -399,65 +395,6 @@ impl App {
             }
             None => page.stack.set_visible_child_name(EMPTY),
         }
-    }
-
-    fn chat_row(&self, agent: &ChatAgent, selected: bool) -> gtk::Button {
-        let row = gtk::Button::new();
-        widgets::add_classes(
-            &row,
-            &[
-                "sidebar-row",
-                "chat-row",
-                if selected { "selected" } else { "" },
-            ],
-        );
-        widgets::action_cursor(&row);
-        let line = hbox(10, &[]);
-        widgets::pad(&line, 8, Some(2), None);
-        let badge = agent_badge(agent, 34);
-        badge.set_valign(gtk::Align::Start);
-        line.append(&badge);
-        let words = vbox(2, &[]);
-        words.set_hexpand(true);
-        let top = hbox(6, &[]);
-        let name = text(&agent.name(), &["row-title"]).ellipsized();
-        name.set_hexpand(true);
-        name.set_width_chars(1);
-        top.append(&name);
-        let status = text(
-            agent.activity.label(),
-            &["chat-status", agent.activity.class()],
-        );
-        top.append(&status);
-        let unread = self.chat_unread(&agent.relay_names());
-        if unread > 0 {
-            top.append(&inbox::unread_count(unread));
-        }
-        words.append(&top);
-        let glance = agent.glance();
-        if !glance.is_empty() {
-            let summary = text(&glance, &["chat-glance"]).wrapped();
-            summary.set_lines(2);
-            summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            summary.set_width_chars(1);
-            words.append(&summary);
-        }
-        let meta = text(&agent.meta(), &["caption"]).ellipsized();
-        meta.set_width_chars(1);
-        words.append(&meta);
-        line.append(&words);
-        row.set_child(Some(&line));
-        row.set_tooltip_text(Some(&agent.title()));
-        widgets::name(&row, &agent.name());
-        let key = agent.key();
-        let open = self.on(move |app| {
-            let row = app.chat_agent(&key).and_then(|agent| agent.row().cloned());
-            if !row.is_some_and(|row| app.open_in_its_app(&row)) {
-                app.select_chat_agent(&key);
-            }
-        });
-        row.connect_clicked(move |_| open());
-        row
     }
 
     fn render_chat_header(&self, page: &ChatPage, agent: &ChatAgent) {
@@ -545,6 +482,7 @@ impl App {
         self.with_chat(|page| {
             let shown = !page.side.is_visible();
             page.side.set_visible(shown);
+            page.back_header.set_visible(!shown);
             let label = if shown {
                 CHAT_HIDE_LIST
             } else {

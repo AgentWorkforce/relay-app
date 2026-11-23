@@ -196,6 +196,12 @@ pub const CHAT_LINK: &str = "agent-relay-chat:";
 pub const CHAT_NOT_YOURS: &str = "Not yours";
 pub const CHAT_CLOUD: &str = "Cloud";
 pub const CHAT_ELSEWHERE_SECTION: &str = "Agents elsewhere";
+/// Above a long conversation's newest messages.
+pub const CHAT_EARLIER: &str = "Show earlier messages";
+/// The head of the Chat list: agents with messages you have not opened.
+pub const CHAT_UNREAD_SECTION: &str = "New messages";
+/// The rest of the list, under the agents with new messages.
+pub const CHAT_ALL_SECTION: &str = "All agents";
 pub const CHAT_ELSEWHERE_NOTE: &str =
     "Sent as a direct message through Agent Relay. Its replies to you show here.";
 pub const CHAT_SUBTITLE: &str = "Every agent on this computer.";

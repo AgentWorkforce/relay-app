@@ -16,8 +16,8 @@ use super::sources::{entry_source, read_page, DIRECT};
 use crate::models::{
     chat_pasted_images, chat_relay_incoming, chat_relay_marker, chat_relay_outgoing,
     chat_relay_sent_marker, chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent,
-    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING,
-    CHAT_WORKING,
+    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_EARLIER, CHAT_LOADING, CHAT_NO_MESSAGES,
+    CHAT_SENDING, CHAT_WORKING,
 };
 use agent_relay_node::relay::contract::transcript::{LocalTranscriptCursor, LocalTranscriptEntry};
 use gtk::{glib, prelude::*};
@@ -26,6 +26,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+mod earlier;
 mod reading;
 
 /// How often the conversation shown is read for what was written since.
@@ -37,6 +38,10 @@ const KEPT_ENTRIES: usize = 3000;
 
 /// How far apart two records of the same turn can be.
 const SAME_TURN_MS: i64 = 10_000;
+
+/// How far the core's record of a turn can trail the transcript's line for
+/// it, both drawn as one.
+const RECORD_LAG_MS: i64 = 600_000;
 
 /// An agent elsewhere is read every this many follow ticks: each read goes
 /// to Cloud and to your messages over the network.
@@ -50,6 +55,12 @@ const SAME_MESSAGE_MS: i64 = 600_000;
 const MAX_PAGES: usize = 200;
 
 pub struct Thread {
+    /// Shows the entries before those drawn (`earlier.rs`).
+    pub earlier: gtk::Button,
+    /// The pages read so far when a conversation opens, drawn at the end.
+    loading: RefCell<Vec<LocalTranscriptEntry>>,
+    /// How many of the entries read are drawn, newest last.
+    showing: Cell<usize>,
     pub scroll: gtk::ScrolledWindow,
     messages: gtk::Box,
     pending: gtk::Box,
@@ -82,7 +93,7 @@ pub struct Thread {
     /// opened again while it is read afresh.
     remembered: RefCell<HashMap<String, Vec<LocalTranscriptEntry>>>,
     /// Text messages drawn, by role and text, with when each was written.
-    drawn_texts: RefCell<HashMap<String, i64>>,
+    drawn_texts: RefCell<HashMap<String, (i64, bool)>>,
     /// Follow ticks since the conversation opened.
     ticks: Cell<u32>,
     /// Whether the conversation is with an agent elsewhere.
@@ -93,6 +104,8 @@ impl Thread {
     pub fn build() -> Thread {
         let (column, holder) = widgets::column(760);
         super::super::zoom::spacing(&column, 20);
+        let earlier = earlier::button();
+        column.append(&earlier);
         let messages = vbox(20, &[]);
         column.append(&messages);
         let pending = vbox(12, &[]);
@@ -114,6 +127,9 @@ impl Thread {
         scroll.set_hexpand(true);
         Thread {
             scroll,
+            earlier,
+            loading: RefCell::default(),
+            showing: Cell::new(0),
             messages,
             pending,
             placeholder,
@@ -150,6 +166,9 @@ impl Thread {
         self.ids.borrow_mut().clear();
         self.relay_seen.borrow_mut().clear();
         self.drawn_texts.borrow_mut().clear();
+        self.loading.borrow_mut().clear();
+        self.showing.set(0);
+        self.earlier.set_visible(false);
         self.remember(agent.key());
         self.elsewhere
             .set(matches!(agent.place, ChatPlace::Elsewhere(_)));
@@ -389,11 +408,19 @@ impl Thread {
     /// different ids, seconds apart.
     fn copied(&self, entry: &LocalTranscriptEntry) -> bool {
         let key = format!("{}|{}", entry.role, entry.text.trim());
+        // The core's own record (an id with a content hash) can lag the
+        // transcript's line by most of a turn.
+        let record = entry.id.contains(":sha256:");
         let mut drawn = self.drawn_texts.borrow_mut();
-        let copy = drawn
-            .get(&key)
-            .is_some_and(|at| (entry.timestamp_ms - at).abs() <= SAME_TURN_MS);
-        drawn.insert(key, entry.timestamp_ms);
+        let copy = drawn.get(&key).is_some_and(|(at, was_record)| {
+            let window = if record != *was_record {
+                RECORD_LAG_MS
+            } else {
+                SAME_TURN_MS
+            };
+            (entry.timestamp_ms - at).abs() <= window
+        });
+        drawn.insert(key, (entry.timestamp_ms, record));
         copy
     }
 

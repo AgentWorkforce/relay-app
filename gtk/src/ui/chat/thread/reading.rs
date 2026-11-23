@@ -5,7 +5,7 @@
 use super::*;
 
 impl App {
-    fn person_name(&self) -> String {
+    pub(super) fn person_name(&self) -> String {
         self.with_state(|state| state.account().person.and_then(|person| person.name))
             .unwrap_or_else(|| "You".into())
     }
@@ -24,7 +24,9 @@ impl App {
         let source = entry_source(&agent);
         self.with_chat(|page| {
             if let Some(entries) = page.thread.recall(key) {
-                page.thread.append(entries, &source, &person);
+                // Only the newest, as when it opened; the rest is kept.
+                page.thread.take_page(entries);
+                page.thread.finish_loading(&source, &person);
                 page.thread.scroll_to_latest();
             }
         });
@@ -69,13 +71,14 @@ impl App {
                 .filter(|next| Some(next) != requested.as_ref());
             let follow = SpawnHandover::follow_cursor(requested.as_ref(), &page);
             let source = entry_source(&agent);
-            app.with_chat(|chat| chat.thread.append(page.entries, &source, &person));
+            app.with_chat(|chat| chat.thread.take_page(page.entries));
             match next {
                 Some(next) if pages + 1 < MAX_PAGES => {
                     app.read_chat_pages(agent, Some(next), generation, pages + 1)
                 }
                 next => {
                     app.with_chat(|chat| {
+                        chat.thread.finish_loading(&source, &person);
                         *chat.thread.cursor.borrow_mut() = Some(next.or(follow));
                         chat.thread.scroll_to_latest();
                     });
