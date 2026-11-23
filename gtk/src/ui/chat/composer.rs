@@ -37,23 +37,29 @@ impl Composer {
         let chips = hbox(6, &["chat-attachments"]);
         chips.set_visible(false);
         column.append(&chips);
-        let line = hbox(8, &["chat-composer"]);
-        let attach =
-            widgets::icon_button("mail-attachment-symbolic", CHAT_ATTACH, &["flat"], || {});
-        attach.set_valign(gtk::Align::End);
-        line.append(&attach);
+        // As in Claude's and Codex's apps: the text across the box, and under
+        // it a toolbar with the paperclip at the start and Send at the end.
+        let shell = vbox(4, &["chat-composer", "chat-composer-stacked"]);
         let input = ChatInput::build();
         // About three lines to start, growing to about ten.
-        input.grow(72, 240);
+        input.grow(56, 220);
         input.view.add_css_class("chat-message-input");
-        line.append(&input.root);
-        input.focus_within(&line);
+        input.set_placeholder_class("chat-message-placeholder");
+        shell.append(&input.root);
+        let toolbar = hbox(8, &[]);
+        let attach =
+            widgets::icon_button("mail-attachment-symbolic", CHAT_ATTACH, &["flat"], || {});
+        attach.set_valign(gtk::Align::Center);
+        toolbar.append(&attach);
+        toolbar.append(&widgets::spacer());
         let send = gtk::Button::with_label(CHAT_SEND);
         widgets::action_cursor(&send);
         send.add_css_class("primary");
-        send.set_valign(gtk::Align::End);
-        line.append(&send);
-        column.append(&line);
+        send.set_valign(gtk::Align::Center);
+        toolbar.append(&send);
+        shell.append(&toolbar);
+        input.focus_within(&shell);
+        column.append(&shell);
         let note = text("", &["caption"]).wrapped();
         column.append(&note);
         dock.append(&holder);

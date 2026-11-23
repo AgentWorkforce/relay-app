@@ -57,7 +57,12 @@ impl ChatInput {
             .set_max_content_height(super::super::zoom::px(max));
         self.scroll.set_valign(gtk::Align::Fill);
         self.placeholder.set_valign(gtk::Align::Start);
-        self.placeholder.set_margin_top(super::super::zoom::px(5));
+    }
+
+    /// Styles the placeholder like the text it stands for, so it sits where
+    /// the first typed line will.
+    pub fn set_placeholder_class(&self, class: &str) {
+        self.placeholder.add_css_class(class);
     }
 
     pub fn text(&self) -> glib::GString {
