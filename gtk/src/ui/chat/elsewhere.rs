@@ -23,6 +23,27 @@ fn matches_search(agent: &ChatAgent, search: &str) -> bool {
         .all(|word| agent.matches(word))
 }
 
+/// Alternates the rows' background down the whole list, agents elsewhere
+/// and sessions alike, starting again under each group's header as the
+/// sessions list does.
+fn restripe(list: &gtk::ListBox) {
+    let mut index = 0;
+    let mut child = list.first_child();
+    while let Some(row) = child {
+        if row.has_css_class("session-group-holder") {
+            index = 0;
+        } else if row.has_css_class("session-row") {
+            if index % 2 == 0 {
+                row.add_css_class("striped");
+            } else {
+                row.remove_css_class("striped");
+            }
+            index += 1;
+        }
+        child = row.next_sibling();
+    }
+}
+
 /// What a drawn row shows, to redraw only on a change.
 fn drawn(agent: &ChatAgent) -> String {
     format!(
@@ -79,6 +100,7 @@ impl App {
         list.keys
             .borrow_mut()
             .splice(0..0, std::iter::repeat_n(String::new(), rows.len()));
+        restripe(&list.list);
         list.drawing.set(false);
         *chat.elsewhere_drawn.borrow_mut() = signature;
     }
