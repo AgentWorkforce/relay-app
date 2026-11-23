@@ -7,6 +7,9 @@
 use agent_relay_node::relay::contract::directory::MessageInbox;
 use std::collections::HashMap;
 
+/// The peer Relaycast reports for a conversation whose other side left.
+const GONE: &str = "unknown";
+
 /// The longest a notification's text runs before it is cut.
 const NOTICE_CHARACTERS: usize = 180;
 
@@ -40,7 +43,14 @@ impl ChatInbox {
     pub fn update(&mut self, inbox: &MessageInbox) -> Vec<ChatNotice> {
         let mut notices = Vec::new();
         let mut unread = HashMap::new();
-        for conversation in inbox.unread.iter().filter(|c| c.unread_count > 0) {
+        // Relaycast names the peer `unknown` once it left the conversation
+        // (a released agent): nothing new comes from it, and no agent here
+        // goes by that name.
+        let live = inbox
+            .unread
+            .iter()
+            .filter(|c| c.unread_count > 0 && c.peer != GONE);
+        for conversation in live {
             let last = conversation.last_message.as_ref();
             let newest_id = last.map(|message| message.id.clone());
             if let Some(message) = last {
@@ -142,6 +152,17 @@ mod tests {
         chat.update(&inbox(serde_json::json!([])));
         assert!(chat.unread_for(&["ops".into()]).is_none());
         assert_eq!(chat.total(), 0);
+        // A conversation with a released agent is neither counted nor
+        // announced.
+        chat.update(&inbox(serde_json::json!([conversation(
+            "c2", "unknown", 4, "m9"
+        )])));
+        assert_eq!(chat.total(), 0);
+        assert!(chat
+            .update(&inbox(serde_json::json!([conversation(
+                "c2", "unknown", 5, "m10"
+            )])))
+            .is_empty());
     }
 
     #[test]
