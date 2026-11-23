@@ -250,6 +250,15 @@ struct OutgoingMessages {
         all = kept
     }
 
+    /// The bubbles `reconcile` would leave, without changing these. The chat
+    /// shows this, so a bubble whose row history already shows is never drawn
+    /// next to it, even when the stored state is cleaned a frame later.
+    func reconciled(agentID: String, with history: [OutgoingHistoryRow], now: Date = Date()) -> OutgoingMessages {
+        var copy = self
+        copy.reconcile(agentID: agentID, with: history, now: now)
+        return copy
+    }
+
     /// The message id in Relaycast's answer to a send: `message.id` for a DM,
     /// `id` for a channel post.
     static func messageID(fromSendResponse response: Any) -> String? {

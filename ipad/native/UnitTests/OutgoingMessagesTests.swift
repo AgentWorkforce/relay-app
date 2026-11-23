@@ -283,4 +283,39 @@ final class OutgoingMessagesTests: XCTestCase {
         XCTAssertNil(OutgoingMessages.messageID(fromSendResponse: acknowledgement))
         XCTAssertNil(OutgoingMessages.messageID(fromSendResponse: [Any]()))
     }
+
+    // MARK: What the chat shows
+
+    func testReconciledMatchesReconcileAndLeavesTheReceiverUnchanged() {
+        var outgoing = OutgoingMessages()
+        let accepted = outgoing.begin(agentID: "reviewer", text: "answer 2", attachments: [], history: [], now: start)
+        outgoing.finish(accepted.id, attempt: 1, outcome: .accepted(messageID: "m_answer"), now: start)
+        let sending = outgoing.begin(agentID: "reviewer", text: "Still going", attachments: [], history: [], now: start)
+        let other = outgoing.begin(agentID: "builder", text: "Elsewhere", attachments: [], history: [], now: start)
+        let before = outgoing.all
+        let history = [row("m1", "Earlier", mine: false, at: -60), row("m_answer", "answer 2")]
+        let now = start.addingTimeInterval(10)
+
+        let shown = outgoing.reconciled(agentID: "reviewer", with: history, now: now)
+        var mutated = outgoing
+        mutated.reconcile(agentID: "reviewer", with: history, now: now)
+
+        XCTAssertEqual(shown.all, mutated.all)
+        XCTAssertEqual(shown.all.map(\.id), [sending.id, other.id],
+                       "the accepted bubble history shows leaves; one still sending stays")
+        XCTAssertEqual(outgoing.all, before, "the receiver is unchanged")
+        XCTAssertEqual(outgoing.messages(for: "reviewer").map(\.id), [accepted.id, sending.id])
+    }
+
+    func testReconciledKeepsABubbleHistoryDoesNotShowYet() {
+        var outgoing = OutgoingMessages()
+        let sending = outgoing.begin(agentID: "reviewer", text: "answer 2", attachments: [], history: [], now: start)
+        let history = [row("m1", "Earlier", mine: false, at: -60)]
+        var mutated = outgoing
+        mutated.reconcile(agentID: "reviewer", with: history, now: start)
+        let shown = outgoing.reconciled(agentID: "reviewer", with: history, now: start)
+        XCTAssertEqual(shown.all, mutated.all)
+        XCTAssertEqual(shown.all.map(\.id), [sending.id])
+        XCTAssertEqual(shown.all.map(\.state), [.sending])
+    }
 }
