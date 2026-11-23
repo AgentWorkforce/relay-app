@@ -1944,6 +1944,7 @@ async fn the_bridge_lists_every_account_method_and_the_sign_in_topic() {
         "coordination_advisories.status",
         "coordination_advisories.set",
         "coordination_advisories.notifications.set",
+        "coordination_advisories.notifications.display",
     ] {
         assert!(methods.contains(&method), "{method}");
     }
@@ -2040,6 +2041,24 @@ async fn urgent_notification_preference_is_separate_durable_and_reports_failed_s
         state["notification_status"],
         "Waiting for validated priority-one advisories."
     );
+    // An app's report of the OS permission, through the account plugin.
+    let state = client
+        .ok(
+            "coordination_advisories.notifications.display",
+            json!({"permission":"denied"}),
+        )
+        .await;
+    assert_eq!(
+        state["notification_status"],
+        "System notifications are not allowed for Agent Relay in your system settings."
+    );
+    let (kind, _) = client
+        .error(
+            "coordination_advisories.notifications.display",
+            json!({"permission":"maybe"}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
     drop(client);
     let harness = harness.restart().await;
     let mut client = harness.client().await;

@@ -7,7 +7,7 @@ mod pending;
 mod provider_preferences;
 pub(crate) mod sharing;
 mod software_updates;
-pub(super) use pending::{pending_toggle_row, switch_accessory};
+pub(super) use pending::{pending_toggle_row, switch_accessory, toggle_switch};
 
 use super::app::App;
 use super::appearance_preview::mini_window;

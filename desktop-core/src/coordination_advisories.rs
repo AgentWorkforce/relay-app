@@ -35,6 +35,7 @@
 //! The setting (`coordination_advisories`, [`SETTING`]) is off by default and
 //! kept in this build's data folder. The apps read and change it with
 //! `coordination_advisories.status` and `coordination_advisories.set`.
+use crate::contract::coordination::NotificationPermission;
 use agent_relay_node::relay::cloud_session::{segment, CloudAccess, CloudError};
 use agent_relay_node::relay::daemon::{Core, TurnEndAdvisories, TurnEndAdvisory};
 use agent_relay_node::relay::store::{SessionKind, Target};
@@ -231,6 +232,8 @@ struct State {
     cursor: usize,
     /// Whom the cache belongs to.
     principal: Option<Principal>,
+    /// The contract of this account's most recent listing; in memory only.
+    listing_contract: Option<ListingContract>,
 }
 
 impl State {
@@ -241,6 +244,7 @@ impl State {
         self.paused_until = None;
         self.rate_until = None;
         self.principal = None;
+        self.listing_contract = None;
     }
 
     /// Makes this the cache of `principal` (`None`: signed out), forgetting
@@ -292,6 +296,10 @@ pub struct Advisories {
     receipt_save: Mutex<()>,
     urgent: Mutex<urgent::Journal>,
     urgent_run: tokio::sync::Mutex<()>,
+    /// What an app last reported of the OS's notification permission, and
+    /// when; in memory only. A system notification is requested only while
+    /// a report is live ([`urgent::DISPLAY_REPORT_LIVE`]) and not denied.
+    display: Mutex<Option<(NotificationPermission, Instant)>>,
 }
 
 impl Advisories {
@@ -314,6 +322,7 @@ impl Advisories {
             receipt_save: Mutex::new(()),
             urgent: Mutex::new(urgent::Journal::load(app_data_dir)),
             urgent_run: tokio::sync::Mutex::new(()),
+            display: Mutex::new(None),
         })
     }
 
@@ -335,12 +344,7 @@ impl Advisories {
         } else if !self.notifications_enabled() {
             "Urgent system notifications are off.".into()
         } else {
-            let status = self.urgent_status();
-            if status == "idle" {
-                "Waiting for validated priority-one advisories.".into()
-            } else {
-                status
-            }
+            self.notification_status()
         };
         crate::contract::coordination::CoordinationAdvisoriesState {
             enabled: self.enabled(),

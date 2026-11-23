@@ -18,12 +18,7 @@ pub(in crate::ui) fn pending_toggle_row(
     pending: bool,
     on: impl Fn(bool) + 'static,
 ) -> gtk::Box {
-    let switch = gtk::Switch::new();
-    crate::ui::widgets::action_cursor(&switch);
-    switch.set_active(active);
-    switch.set_sensitive(sensitive);
-    widgets::name(&switch, title);
-    switch.connect_active_notify(move |switch| on(switch.is_active()));
+    let switch = toggle_switch(title, active, sensitive, on);
     settings_row(
         title,
         detail,
@@ -32,6 +27,23 @@ pub(in crate::ui) fn pending_toggle_row(
         &[],
     )
     .0
+}
+
+/// The switch of a [`pending_toggle_row`], named `title`; put it in a row
+/// with [`switch_accessory`].
+pub(in crate::ui) fn toggle_switch(
+    title: &str,
+    active: bool,
+    sensitive: bool,
+    on: impl Fn(bool) + 'static,
+) -> gtk::Switch {
+    let switch = gtk::Switch::new();
+    crate::ui::widgets::action_cursor(&switch);
+    switch.set_active(active);
+    switch.set_sensitive(sensitive);
+    widgets::name(&switch, title);
+    switch.connect_active_notify(move |switch| on(switch.is_active()));
+    switch
 }
 
 /// A switch with, while `pending`, the spinner of its change under way.
