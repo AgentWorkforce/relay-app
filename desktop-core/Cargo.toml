@@ -34,7 +34,7 @@ service-callers-dev-attest = []
 # session) and 62a803a: #2226 (remote approvals for spawned Codex agents), over
 # 7965519: #2233 (question escalation coverage for Codex, Devin and Copilot).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "df348af380b2a558747387ce01e159bcda4cf275", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "bfce36c66c92fe6bedaa5f5a655fc63e6cfb348c", default-features = false }
 # relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
