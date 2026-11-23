@@ -89,4 +89,31 @@ final class AgentListOrderTests: XCTestCase {
         XCTAssertEqual(ChatActivity.idle.label, "Idle")
         XCTAssertEqual(ChatActivity.offline.label, "Offline")
     }
+
+    func testEntryAgreesWithTheRowBadgeWithoutBuildingARow() {
+        let seen = Date.ISO8601FormatStyle(includingFractionalSeconds: true).format(now.addingTimeInterval(-10))
+        func agent(_ status: String, turn: String = "") -> RelayAgent {
+            RelayAgent(relay: ["name": "worker", "status": status, "address": "worker@test-mini-123", "last_seen": seen,
+                               "metadata": ["session_id": "session-1", "activity": ["turn": turn]]])
+        }
+        let recent = now.addingTimeInterval(-30)
+        let cases: [(RelayAgent, Date?)] = [
+            (agent("active", turn: "working"), nil), (agent("active", turn: "idle"), recent),
+            (agent("active"), recent), (agent("active"), nil), (agent("waiting"), nil), (agent("offline"), recent),
+        ]
+        for (agent, lastEventAt) in cases {
+            let entry = AgentListOrder.entry(for: agent, name: "worker", lastEventAt: lastEventAt, now: now)
+            let badge = AgentRowModel(agent: agent, loaded: .init(lastEventAt: lastEventAt), now: now).activity
+            XCTAssertEqual(entry.activity, badge)
+        }
+        // A person has no badge and is ranked from presence alone.
+        let person = RelayAgent(relay: ["name": "sam-lee", "type": "human", "persona": "Sam Lee", "status": "active",
+                                        "last_seen": seen])
+        XCTAssertNil(AgentRowModel(agent: person, now: now).activity)
+        XCTAssertEqual(AgentListOrder.entry(for: person, name: "Sam Lee", lastEventAt: recent, now: now).activity, .idle)
+        // Recency is the newer of the heartbeat and the loaded event.
+        let entry = AgentListOrder.entry(for: agent("active"), name: "worker", lastEventAt: recent, now: now)
+        XCTAssertEqual(entry.lastActivity, now.addingTimeInterval(-10))
+        XCTAssertEqual(entry.id, agent("active").id)
+    }
 }

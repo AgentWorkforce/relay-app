@@ -252,6 +252,11 @@ final class AgentRowModelTests: XCTestCase {
         XCTAssertEqual(row(agent(), .init(lastEventAt: now.addingTimeInterval(-121))).activity, .idle)
         XCTAssertEqual(row(agent(metadata: turn("working"))).accessibilityLabel, "builder, Test Mini, Working")
         XCTAssertEqual(row(agent(status: "offline")).accessibilityLabel, "builder, Test Mini, Offline")
+        // Waiting on a person is not a turn, but VoiceOver still says it,
+        // as the orange circle shows it.
+        XCTAssertEqual(row(agent(status: "waiting")).accessibilityLabel, "builder, Test Mini, Idle, Waiting")
+        XCTAssertEqual(row(agent(status: "blocked", metadata: turn("working"))).accessibilityLabel,
+                       "builder, Test Mini, Working, Waiting")
 
         let person = RelayAgent(relay: ["name": "sam-lee", "type": "human", "persona": "Sam Lee", "status": "active",
                                         "last_seen": seen()])

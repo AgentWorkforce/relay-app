@@ -51,7 +51,7 @@ final class AgentRowUITests: XCTestCase {
         // The roster lists builder, sam-lee, then reviewer; builder reports
         // a working turn and what it is doing, the others are only online.
         let app = launch(["-RelayUITestMixedPresence"])
-        let builder = app.buttons["builder, Claude Code, test-mini, Working"].firstMatch
+        let builder = app.buttons["builder, Claude Code, test-mini, Working, Waiting"].firstMatch
         let reviewer = app.buttons["reviewer, Codex, Test Mini, Idle"].firstMatch
         let person = app.buttons["Sam Lee, Online"].firstMatch
         XCTAssertTrue(builder.waitForExistence(timeout: 10))

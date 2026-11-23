@@ -114,10 +114,7 @@ struct AgentRowModel: Equatable {
         self.machine = isAgent && !machine.isEmpty ? machine : nil
         status = agent.source == .channel ? nil
             : Self.status(agent.status, reachable: agent.isReachable(at: now))
-        activity = isAgent
-            ? AgentListOrder.activity(turn: agent.activityTurn, reachable: agent.isReachable(at: now),
-                                      lastEventAt: loaded.lastEventAt, now: now)
-            : nil
+        activity = Self.activity(for: agent, lastEventAt: loaded.lastEventAt, now: now)
         // The overview's title is matched even where the row does not show
         // it: an incomplete brief, a person or a channel.
         extraSearchText = [agent.name, agent.address, agent.machine, agent.subtitle, agent.objective,
@@ -137,7 +134,13 @@ struct AgentRowModel: Equatable {
         if let title { parts.append(title) }
         if let cliLabel { parts.append(cliLabel) }
         if let machine { parts.append(machine) }
-        if let activity { parts.append(activity.label) } else if let status { parts.append(status.label) }
+        if let activity {
+            parts.append(activity.label)
+            // The orange circle's meaning: the badge does not say it.
+            if status == .waiting { parts.append(Status.waiting.label) }
+        } else if let status {
+            parts.append(status.label)
+        }
         if unread { parts.append("Unread messages") }
         return parts.joined(separator: ", ")
     }
@@ -152,6 +155,14 @@ struct AgentRowModel: Equatable {
     func matches(_ query: String) -> Bool {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return query.isEmpty || searchText.localizedCaseInsensitiveContains(query)
+    }
+
+    /// An agent's badge (`AgentListOrder.activity`); nil for a person or a
+    /// channel. The list's order reads the same value without building a row.
+    static func activity(for agent: RelayAgent, lastEventAt: Date?, now: Date) -> ChatActivity? {
+        guard !agent.isHuman, agent.source != .channel else { return nil }
+        return AgentListOrder.activity(turn: agent.activityTurn, reachable: agent.isReachable(at: now),
+                                       lastEventAt: lastEventAt, now: now)
     }
 
     static func status(_ raw: String, reachable: Bool) -> Status {
