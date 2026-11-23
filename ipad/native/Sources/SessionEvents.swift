@@ -67,19 +67,9 @@ struct SessionEvent: Identifiable, Hashable, Codable, Sendable {
         self.subagentID = subagentID
     }
 
-    private static let toolKinds: Set<String> = ["tool_use", "tool_call", "tool_result", "tool"]
-    private static let personKinds: Set<String> = ["prompt", "user", "user_message"]
-    private static let agentKinds: Set<String> = ["assistant", "assistant_message", "agent_message", "response"]
-
-    var role: Role {
-        let kind = kind.lowercased(), actor = actorRole.lowercased()
-        if !toolName.isEmpty || Self.toolKinds.contains(kind) || actor == "tool_result" || actor == "tool" { return .tool }
-        if actor == "user" || Self.personKinds.contains(kind) { return .person }
-        // The agent thinking out loud is activity, not a reply.
-        if kind.contains("reason") || kind.contains("think") { return .activity }
-        if actor == "assistant" || Self.agentKinds.contains(kind) { return .agent }
-        return .activity
-    }
+    /// How the chat draws the event, by `ChatEntryRules.role`: thinking
+    /// is activity, a tool's call and its result are tool rows.
+    var role: Role { entryRole.sessionRole }
 
     /// Whether this is the agent's own activity (its tools, its thinking),
     /// which says it is still working.
