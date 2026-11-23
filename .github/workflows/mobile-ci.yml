@@ -141,6 +141,7 @@ jobs:
         run: |
           only_testing=(-only-testing:AgentRelayUITests/MobileHandoffUITests)
           only_testing+=(-only-testing:AgentRelayUITests/AgentRowUITests)
+          only_testing+=(-only-testing:AgentRelayUITests/SessionStreamUITests)
           IFS=',' read -r -a extra_classes <<< "${EXTRA_UI_CLASSES:-}"
           for class in "${extra_classes[@]}"; do
             only_testing+=("-only-testing:AgentRelayUITests/$class")

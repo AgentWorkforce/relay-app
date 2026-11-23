@@ -124,7 +124,7 @@ let preambleTags: Set<Substring> = [
 /// `text` after the closed `preambleTags` blocks that lead it, each through
 /// its closing tag, and after an Agent Relay envelope, repeated. An unclosed
 /// block is left as it is. The core's `conductor::without_preamble`.
-func withoutPreamble(_ text: String) -> String {
+public func withoutPreamble(_ text: String) -> String {
     var rest = Substring(text).drop(while: { $0.isWhitespace })
     while true {
         if let after = withoutRelayEnvelope(rest) {
