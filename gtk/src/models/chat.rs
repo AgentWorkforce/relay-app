@@ -418,7 +418,11 @@ fn elsewhere_activity(agent: &RosterAgent) -> ChatActivity {
 /// Your agents on other computers and in Cloud, from the workspace roster:
 /// agents you own that are not registered from this computer and that no
 /// row of the sessions list (`rows`) already shows.
-pub fn chat_elsewhere_agents(roster: &[RosterAgent], rows: &[LocalSessionRow]) -> Vec<ChatAgent> {
+pub fn chat_elsewhere_agents(
+    roster: &[RosterAgent],
+    rows: &[LocalSessionRow],
+    now_ms: i64,
+) -> Vec<ChatAgent> {
     let mut agents: Vec<ChatAgent> = roster
         .iter()
         .filter(|agent| !listed(agent, rows))
@@ -436,11 +440,13 @@ pub fn chat_elsewhere_agents(roster: &[RosterAgent], rows: &[LocalSessionRow]) -
                 .unwrap_or_default(),
             activity: elsewhere_activity(agent),
             // When its turn or what it is doing last changed, not when it
-            // was last seen: a heartbeat must not reorder the list.
+            // was last seen: a heartbeat must not reorder the list. Its
+            // computer stamps that time, so a fast clock is held to now.
             last_activity_ms: agent
                 .activity
                 .as_ref()
-                .and_then(|activity| activity.updated_ms),
+                .and_then(|activity| activity.updated_ms)
+                .map(|at| at.min(now_ms)),
             place: ChatPlace::Elsewhere(agent.clone()),
         })
         .collect();

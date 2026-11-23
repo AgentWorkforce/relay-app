@@ -222,7 +222,7 @@ fn your_agents_elsewhere_are_listed_from_the_roster() {
          "host": null, "owner_hash": null, "session_id": null, "is_self": false}
     ]))
     .unwrap();
-    let agents = chat_elsewhere_agents(&roster, &[]);
+    let agents = chat_elsewhere_agents(&roster, &[], i64::MAX);
     assert_eq!(agents.len(), 1);
     let ops = &agents[0];
     assert_eq!(ops.name(), "layered-infra-ops");
@@ -272,11 +272,11 @@ fn an_agent_the_sessions_list_shows_is_not_listed_elsewhere_too() {
     .unwrap();
     let mut titled = session("a", None);
     titled.title = "custsuccessgrok".into();
-    assert!(chat_elsewhere_agents(&roster, &[row(titled)]).len() == 1);
+    assert!(chat_elsewhere_agents(&roster, &[row(titled)], i64::MAX).len() == 1);
     let uploaded = session("s-9", None);
-    assert!(chat_elsewhere_agents(&roster, &[row(uploaded)]).len() == 1);
+    assert!(chat_elsewhere_agents(&roster, &[row(uploaded)], i64::MAX).len() == 1);
     let named = session("b", Some("other"));
-    let left = chat_elsewhere_agents(&roster, &[row(named)]);
+    let left = chat_elsewhere_agents(&roster, &[row(named)], i64::MAX);
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].name(), "custsuccessgrok");
 }
@@ -319,7 +319,7 @@ fn an_agent_elsewhere_works_only_while_its_turn_runs() {
          "owner_hash": null, "session_id": null, "is_self": true, "activity": {"turn": "working"}}
     ]))
     .unwrap();
-    let agents = chat_elsewhere_agents(&roster, &[]);
+    let agents = chat_elsewhere_agents(&roster, &[], i64::MAX);
     let by = |name: &str| {
         agents
             .iter()
@@ -349,7 +349,7 @@ fn a_heartbeat_does_not_reorder_agents_elsewhere() {
         .unwrap()
     };
     let names = |roster: Vec<RosterAgent>| -> Vec<String> {
-        chat_elsewhere_agents(&roster, &[])
+        chat_elsewhere_agents(&roster, &[], i64::MAX)
             .iter()
             .map(ChatAgent::name)
             .collect()
@@ -357,4 +357,17 @@ fn a_heartbeat_does_not_reorder_agents_elsewhere() {
     let boundary = CHAT_ORDER_BUCKET_MS * 4;
     assert_eq!(names(roster(boundary - 2, boundary + 2)), ["alpha", "beta"]);
     assert_eq!(names(roster(boundary + 2, boundary - 2)), ["alpha", "beta"]);
+}
+
+#[test]
+fn a_fast_clock_elsewhere_is_held_to_now() {
+    let roster: Vec<RosterAgent> = serde_json::from_value(serde_json::json!([
+        {"name": "ahead", "address": "ahead@desk.example.test", "kind": "agent", "where": "other_desktop",
+         "status": "active", "liveness": "live", "last_seen_ms": 5, "description": "", "host": null,
+         "owner_hash": null, "session_id": null, "is_self": true,
+         "activity": {"turn": "idle", "updated_ms": 9_000_000}}
+    ]))
+    .unwrap();
+    let agents = chat_elsewhere_agents(&roster, &[], 1_000);
+    assert_eq!(agents[0].last_activity_ms, Some(1_000));
 }

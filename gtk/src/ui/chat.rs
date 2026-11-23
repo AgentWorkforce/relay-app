@@ -235,6 +235,7 @@ impl App {
                 .as_deref()
                 .unwrap_or(&state.local_sessions);
             let rows = merge_local_sessions(&state.sessions, local);
+            let now_ms = chrono::Utc::now().timestamp_millis();
             chat_agents(
                 &rows,
                 |session| {
@@ -255,10 +256,10 @@ impl App {
                         }
                     })
                 },
-                chrono::Utc::now().timestamp_millis(),
+                now_ms,
             )
             .into_iter()
-            .chain(chat_elsewhere_agents(&state.roster, &rows))
+            .chain(chat_elsewhere_agents(&state.roster, &rows, now_ms))
             .collect()
         })
     }
