@@ -110,6 +110,72 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(row.text, "Fix the build")
     }
 
+    private func rows(_ items: [ChatTimelineItem]) -> [SessionEventRow] {
+        items.compactMap { if case .event(let row) = $0 { row } else { nil } }
+    }
+
+    func testThinkingIsNotShown() {
+        let events = [event("e1", at: "2026-11-20T10:00:00Z", kind: "reasoning", content: "Weighing two fixes"),
+                      SessionEvent(key: .init(source: "codex", machineID: "m1", kind: "x", eventID: "e2"),
+                                   ts: SessionEventPage.date("2026-11-20T10:00:01Z"), kind: "x", type: "thinking",
+                                   actorRole: "assistant", content: "Still weighing"),
+                      event("e3", at: "2026-11-20T10:00:02Z", content: "Going with the smaller fix.")]
+        let items = SessionTimeline.items(messages: [], events: events)
+        XCTAssertEqual(ids(items), ["event:codex|m1|assistant|e3"])
+        // Blank content shows the tool's name, or the event is left out.
+        let blank = [event("t1", at: "2026-11-20T10:00:03Z", kind: "tool_use", content: " ", tool: "Read"),
+                     event("t2", at: "2026-11-20T10:00:04Z", kind: "future_kind", role: "", content: "\n")]
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [], events: blank)).map(\.text), ["Read"])
+    }
+
+    func testAnOutgoingSendIsShownOnceAndMarked() {
+        let send = "agent-relay-probe send --socket s --to @scout --body 'Release notes are ready.'"
+        let events = [event("e1", at: "2026-11-20T10:00:00Z", kind: "tool_use", content: send, tool: "Bash"),
+                      // Cloud's text copy of the call, and the call recorded again.
+                      event("e2", at: "2026-11-20T10:00:01Z", content: send),
+                      event("e3", at: "2026-11-20T10:00:02Z", kind: "tool_call", content: send, tool: "Bash"),
+                      // Its output is not a send.
+                      event("e4", at: "2026-11-20T10:00:03Z", kind: "tool_result", role: "tool_result", content: send)]
+        let shown = rows(SessionTimeline.items(messages: [], events: events))
+        XCTAssertEqual(shown.map(\.id), ["event:codex|m1|tool_use|e1", "event:codex|m1|tool_result|e4"])
+        XCTAssertEqual(shown[0].text, "Release notes are ready.")
+        XCTAssertEqual(shown[0].mark, .to("scout"))
+        XCTAssertNil(shown[1].mark)
+        // A relay tool call with no recipient is still a send.
+        let post = event("e5", at: "2026-11-20T10:00:04Z", kind: "tool_use",
+                         content: #"send_relay_message {"text": "Done."}"#, tool: "send_relay_message")
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [], events: [post])).first?.mark, .to(nil))
+        // The agent's relay message the chat already holds stays; the session's copy goes.
+        let reply = message("m_9", at: "2026-11-20T10:00:05Z", text: "Release notes are ready.", sender: "builder")
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [reply], events: Array(events.prefix(1)), me: "pilot")), ["m_9"])
+        // Direct messages alone come through unchanged.
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [reply], events: [], me: "pilot")), ["m_9"])
+    }
+
+    func testAnIncomingFrameInToolOutputIsMarked() {
+        let inbox = "1 unread\n[via Agent Relay — from @mapper (mapper@harbor) to @builder · ref 1a]\n[reply: x]\n\nThe map is updated.\n[end of Agent Relay message · ref 1a]"
+        let read = event("e1", at: "2026-11-20T10:00:00Z", kind: "tool_result", role: "tool_result", content: inbox, tool: "Bash")
+        let again = event("e2", at: "2026-11-20T10:00:01Z", kind: "tool_result", role: "tool_result", content: inbox, tool: "Bash")
+        let shown = rows(SessionTimeline.items(messages: [], events: [read, again]))
+        XCTAssertEqual(shown.map(\.id), ["event:codex|m1|tool_result|e1"])
+        XCTAssertEqual(shown[0].text, "The map is updated.")
+        // Only session text names mapper: the mark names no one.
+        XCTAssertEqual(shown[0].mark, .from(nil))
+        // Once the chat holds a relay message from mapper, the mark names them.
+        let known = message("m_1", at: "2026-11-19T09:00:00Z", text: "Starting the map.", sender: "mapper")
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [known], events: [read])).first?.mark, .from("mapper"))
+        // A relay message the chat holds is not shown again from the session.
+        let mine = message("m_2", at: "2026-11-20T09:59:00Z", text: "The map is updated.", sender: "pilot")
+        XCTAssertEqual(ids(SessionTimeline.items(messages: [mine], events: [read], me: "pilot")), ["m_2"])
+        // A relayed prompt is a received message too.
+        let prompt = event("e3", at: "2026-11-20T10:00:02Z", kind: "prompt", role: "user",
+                           content: envelope(from: "mapper", id: "m_5", "Check the legend"))
+        XCTAssertEqual(rows(SessionTimeline.items(messages: [], events: [prompt])).first?.mark, .from(nil))
+        // The agent quoting a frame inside a sentence is its own text.
+        let quote = event("e4", at: "2026-11-20T10:00:03Z", content: "Lines start with [via Agent Relay — from @x · ref 1]")
+        XCTAssertNil(rows(SessionTimeline.items(messages: [], events: [quote])).first?.mark)
+    }
+
     func testPlaceholder() {
         // Loading until relay history is checked and the session settled.
         XCTAssertEqual(SessionTimeline.placeholder(hasRows: false, historyChecked: false, sessionApplies: false, sessionSettled: false), .loading)
