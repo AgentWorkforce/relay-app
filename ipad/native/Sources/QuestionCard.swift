@@ -285,6 +285,14 @@ enum RelayQuestionFollowUp: Equatable {
     case stillOpen(reason: String)
     case notOpen
 
+    /// Whether it opens the card to another answer.
+    var reopens: Bool {
+        switch self {
+        case .notDelivered, .stillOpen: true
+        default: false
+        }
+    }
+
     /// The ref and what it says, or nil.
     static func parse(_ text: String) -> (ref: String, followUp: RelayQuestionFollowUp)? {
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -354,6 +362,21 @@ enum RelayQuestionState: Equatable {
         let mine: Bool
         let sender: String
         var createdAt: Date? = nil
+        /// The Relaycast id; empty when the row has none.
+        var id: String = ""
+    }
+
+    /// An answer this device's composer sent and Relaycast accepted, kept
+    /// after its bubble left, so the card says sent until history shows it.
+    struct AcceptedAnswer: Equatable {
+        /// When the person first tapped send (the bubble's first attempt),
+        /// not when a POST, or a replay of it, returned.
+        var sentAt: Date
+        /// The message id Relaycast returned, when it returned one.
+        var messageID: String?
+        /// History rows already shown when the send began; nil when the
+        /// conversation's history had not loaded yet.
+        var earlierRowIDs: Set<String>?
     }
 
     /// A composer send not yet in history.
@@ -372,24 +395,20 @@ enum RelayQuestionState: Equatable {
     /// 1. the messages after it: the person's own answer line, then the
     ///    agent's follow-ups for the same ref; a later message wins and an
     ///    unknown follow-up changes nothing;
-    /// 2. an answer this device had accepted (`acceptedAt`, kept after its
-    ///    bubble left): sent until history shows that answer row; from then
-    ///    on the messages' order decides, so a "not delivered" reply to it
-    ///    reopens the card;
+    /// 2. an answer this device had accepted (`accepted`, kept after its
+    ///    bubble left): sent until history shows that answer row
+    ///    (`historyShows`); from then on the messages' order decides, so a
+    ///    "not delivered" reply to it reopens the card;
     /// 3. the composer's pending sends;
     /// 4. the clock, with `clockSkew` of margin, since only the device can
     ///    time the question out (the core tells the inbox nothing).
     static func state(for question: RelayQuestion, at index: Int, in messages: [Message],
-                      chatAgent: String, pending: [PendingAnswer] = [], acceptedAt: Date? = nil,
+                      chatAgent: String, pending: [PendingAnswer] = [], accepted: AcceptedAnswer? = nil,
                       sentAt: Date?, now: Date) -> RelayQuestionState {
         var state = RelayQuestionState.open
-        var latestOwnAnswerAt: Date?
         for message in messages.dropFirst(index + 1) {
             if message.mine {
-                if isAnswer(message.text, to: question.ref) {
-                    state = .sent
-                    if let at = message.createdAt { latestOwnAnswerAt = max(latestOwnAnswerAt ?? at, at) }
-                }
+                if isAnswer(message.text, to: question.ref) { state = .sent }
                 continue
             }
             guard message.sender == chatAgent,
@@ -406,12 +425,11 @@ enum RelayQuestionState: Equatable {
             case .notOpen: state = .notOpen
             }
         }
-        // An accepted answer counts even when history never shows it. Once a
-        // row of mine for this ref dates from it (within the clock margin),
-        // history has caught up and the loop above already decided.
-        if state.answerable, let acceptedAt {
-            let caughtUp = latestOwnAnswerAt.map { $0 >= acceptedAt.addingTimeInterval(-clockSkew) } ?? false
-            if !caughtUp { state = .sent }
+        // An accepted answer counts even when history never shows it. Once
+        // history shows its row, the loop above already decided.
+        if state.answerable, let accepted,
+           !historyShows(accepted, for: question, at: index, in: messages, chatAgent: chatAgent) {
+            state = .sent
         }
         let answers = pending.filter { isAnswer($0.text, to: question.ref) }
         if state.answerable, let last = answers.last {
@@ -422,6 +440,39 @@ enum RelayQuestionState: Equatable {
             state = .expired
         }
         return state
+    }
+
+    /// Whether history after the question shows the row of `accepted`, one
+    /// of my answer lines for its ref: the row with the id Relaycast
+    /// returned; else a row that was not there when the send began; else,
+    /// when history had not loaded at the send, a row dated from the first
+    /// tap on (within `clockSkew`) that comes after the follow-up which
+    /// reopened the card. An earlier answer, the one the agent's reply
+    /// reopened the card for, is never this answer.
+    static func historyShows(_ accepted: AcceptedAnswer, for question: RelayQuestion, at index: Int,
+                             in messages: [Message], chatAgent: String) -> Bool {
+        let after = Array(messages.enumerated().dropFirst(index + 1))
+        let answers = after.filter { $0.element.mine && isAnswer($0.element.text, to: question.ref) }
+        if let id = accepted.messageID, !id.isEmpty {
+            return answers.contains { $0.element.id == id }
+        }
+        if let earlier = accepted.earlierRowIDs {
+            return answers.contains { !$0.element.id.isEmpty && !earlier.contains($0.element.id) }
+        }
+        // The follow-up the person answered: the last reopening one dated
+        // before the first tap. A follow-up with no date is taken as before.
+        let reopenedAt = after.last { item in
+            let message = item.element
+            guard !message.mine, message.sender == chatAgent,
+                  let (ref, followUp) = RelayQuestionFollowUp.parse(message.text),
+                  ref.lowercased() == question.ref.lowercased(),
+                  followUp.reopens else { return false }
+            return message.createdAt.map { $0 < accepted.sentAt } ?? true
+        }?.offset ?? index
+        return answers.contains { item in
+            item.offset > reopenedAt
+                && (item.element.createdAt.map { $0 >= accepted.sentAt.addingTimeInterval(-clockSkew) } ?? false)
+        }
     }
 
     static func isAnswer(_ text: String, to ref: String) -> Bool {
