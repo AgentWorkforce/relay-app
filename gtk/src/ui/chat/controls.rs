@@ -51,12 +51,13 @@ fn switch_row(label: &str, help: &str) -> (gtk::Box, gtk::Switch) {
 
 impl Controls {
     pub fn build() -> Controls {
-        let root = vbox(12, &["chat-details"]);
-        super::super::zoom::size(&root, 264, -1);
-        widgets::pad(&root, 16, Some(16), None);
+        let root = vbox(14, &["chat-details"]);
+        // A fixed column: a child that expands (the Open session button)
+        // must not widen it.
+        super::super::zoom::size(&root, 280, -1);
+        root.set_hexpand(false);
         let open = super::open::open_button();
         open.set_halign(gtk::Align::Fill);
-        open.set_hexpand(true);
         let view_web = gtk::Button::with_label(CHAT_VIEW_WEB);
         view_web.add_css_class("session-action");
         view_web.set_tooltip_text(Some(CHAT_VIEW_WEB_HELP));

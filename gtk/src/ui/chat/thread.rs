@@ -14,9 +14,10 @@ use super::super::transcript::{entry_view, is_tool, tool_group_label};
 use super::super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use super::sources::{entry_source, read_page, DIRECT};
 use crate::models::{
-    chat_relay_incoming, chat_relay_marker, chat_relay_outgoing, chat_relay_sent_marker,
-    chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent, ChatPlace, SpawnHandover,
-    CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
+    chat_pasted_images, chat_relay_incoming, chat_relay_marker, chat_relay_outgoing,
+    chat_relay_sent_marker, chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent,
+    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING,
+    CHAT_WORKING,
 };
 use agent_relay_node::relay::contract::transcript::{LocalTranscriptCursor, LocalTranscriptEntry};
 use gtk::{glib, prelude::*};
@@ -27,6 +28,9 @@ use std::time::Duration;
 
 /// How often the conversation shown is read for what was written since.
 const FOLLOW_EVERY: Duration = Duration::from_secs(3);
+
+/// How far apart two records of the same turn can be.
+const SAME_TURN_MS: i64 = 10_000;
 
 /// An agent elsewhere is read every this many follow ticks: each read goes
 /// to Cloud and to your messages over the network.
@@ -65,6 +69,8 @@ pub struct Thread {
     /// The harness an agent elsewhere's replies are drawn with (its logo),
     /// when its computer reports one; its name marks them.
     elsewhere_icon: RefCell<Option<String>>,
+    /// Text messages drawn, by role and text, with when each was written.
+    drawn_texts: RefCell<HashMap<String, i64>>,
     /// Follow ticks since the conversation opened.
     ticks: Cell<u32>,
     /// Whether the conversation is with an agent elsewhere.
@@ -111,6 +117,7 @@ impl Thread {
             direct: Cell::new(false),
             relay_seen: RefCell::default(),
             elsewhere_icon: RefCell::default(),
+            drawn_texts: RefCell::default(),
             ticks: Cell::new(0),
             elsewhere: Cell::new(false),
         }
@@ -127,6 +134,7 @@ impl Thread {
         clear(&self.pending);
         self.ids.borrow_mut().clear();
         self.relay_seen.borrow_mut().clear();
+        self.drawn_texts.borrow_mut().clear();
         self.elsewhere
             .set(matches!(agent.place, ChatPlace::Elsewhere(_)));
         *self.elsewhere_icon.borrow_mut() = match &agent.place {
@@ -224,6 +232,9 @@ impl Thread {
         if !transcript_entry_visible(&entry) || !self.ids.borrow_mut().insert(entry.id.clone()) {
             return None;
         }
+        if entry.kind == "text" && self.copied(&entry) {
+            return None;
+        }
         let from_person = entry.role == "user" && entry.kind == "text";
         if entry.id.starts_with(DIRECT) {
             return self.direct_turn(entry, source, person);
@@ -237,6 +248,7 @@ impl Thread {
             let relay = (self.direct.get() && entry.kind == "text")
                 .then(|| chat_relay_marker(Some(source)));
             return Some(Turn {
+                images: Vec::new(),
                 entry,
                 author: person.to_string(),
                 relay,
@@ -244,7 +256,8 @@ impl Thread {
             });
         }
         let (sender, body) = chat_user_text(&entry.text);
-        if body.trim().is_empty() {
+        let (body, images) = chat_pasted_images(&body);
+        if body.trim().is_empty() && images.is_empty() {
             return None;
         }
         let relay = (sender.is_some() || self.relay_only.get())
@@ -252,6 +265,7 @@ impl Thread {
         let author = sender.map_or_else(|| person.to_string(), |sender| format!("@{sender}"));
         entry.text = body;
         Some(Turn {
+            images,
             entry,
             author,
             relay,
@@ -268,6 +282,7 @@ impl Thread {
             return None;
         }
         Some(Turn {
+            images: Vec::new(),
             relay: Some(chat_relay_marker(Some(if mine { person } else { source }))),
             author: if mine {
                 person.to_string()
@@ -297,6 +312,7 @@ impl Thread {
             (
                 format!("in:{}", incoming.body.trim()),
                 Turn {
+                    images: Vec::new(),
                     entry: message(entry, "user", incoming.body),
                     author,
                     relay: Some(chat_relay_marker(incoming.sender.as_deref())),
@@ -310,6 +326,7 @@ impl Thread {
             (
                 format!("out:{}", outgoing.body.trim()),
                 Turn {
+                    images: Vec::new(),
                     entry: message(entry, "assistant", outgoing.body),
                     author: person.to_string(),
                     relay: Some(chat_relay_sent_marker(outgoing.recipient.as_deref())),
@@ -323,6 +340,19 @@ impl Thread {
             self.first_sighting(seen, entry.timestamp_ms)
                 .then_some(turn),
         )
+    }
+
+    /// Whether `entry` is a copy of a message already drawn: the session's
+    /// transcript and the core's own record of the same turn arrive under
+    /// different ids, seconds apart.
+    fn copied(&self, entry: &LocalTranscriptEntry) -> bool {
+        let key = format!("{}|{}", entry.role, entry.text.trim());
+        let mut drawn = self.drawn_texts.borrow_mut();
+        let copy = drawn
+            .get(&key)
+            .is_some_and(|at| (entry.timestamp_ms - at).abs() <= SAME_TURN_MS);
+        drawn.insert(key, entry.timestamp_ms);
+        copy
     }
 
     /// Whether the relay message `key` (direction and text) at `at` is new:
@@ -350,6 +380,14 @@ impl Thread {
             match &turn.relay {
                 Some(marker) => self.messages.append(&relay_turn(&widget, marker)),
                 None => self.messages.append(&widget),
+            }
+            // A pasted screenshot shows under the message it was sent in.
+            for path in &turn.images {
+                if std::path::Path::new(path).is_file() {
+                    let image = super::images::inline_image(path);
+                    image.set_halign(gtk::Align::End);
+                    self.messages.append(&image);
+                }
             }
             return;
         }
@@ -389,6 +427,8 @@ fn message(entry: &LocalTranscriptEntry, role: &str, text: String) -> LocalTrans
 /// when it came through the relay.
 struct Turn {
     entry: LocalTranscriptEntry,
+    /// Images pasted into the person's message, drawn under it.
+    images: Vec<String>,
     author: String,
     relay: Option<String>,
     /// The person's own turn (theirs or one sent to the agent).

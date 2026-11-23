@@ -269,7 +269,7 @@ label.chat-message-placeholder { font-size: 15px; margin-top: 6px; }
 .chat-composer.chat-composer-stacked { border-radius: 16px; padding: 8px 8px 6px 14px; }
 .chat-attachment { background-color: $panel_alt; border: 1px solid $border; border-radius: 6px; padding: 2px 4px 2px 8px; }
 picture.chat-inline-image { border-radius: 8px; border: 1px solid $border; }
-.chat-details { background-color: $panel; }
+.chat-details { background-color: $panel; padding: 18px 20px; }
 .relay-turn { border-left: 3px solid $accent; padding-left: 10px; }
 label.relay-marker { font-size: 11px; font-weight: 600; color: $accent; }
 .chat-working { padding: 4px 2px; }

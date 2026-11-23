@@ -513,8 +513,10 @@ pub fn chat_turn_open(entry: &LocalTranscriptEntry) -> bool {
 
 mod agent;
 mod order;
+mod pasted;
 mod relay_lines;
 pub use order::{chat_sort_elsewhere, chat_sorts_before};
+pub use pasted::chat_pasted_images;
 pub use relay_lines::{chat_relay_incoming, chat_relay_outgoing, RelayIncoming, RelayOutgoing};
 
 #[cfg(test)]
