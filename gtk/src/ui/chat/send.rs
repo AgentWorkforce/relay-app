@@ -6,7 +6,8 @@
 use super::super::app::App;
 use crate::bridge::CoreError;
 use crate::models::{
-    delivery_note, recipient_params, CHAT_FILES_NEED_CORE, CHAT_JOINING, CHAT_SENDING,
+    chat_attachment_lines, delivery_note, recipient_params, CHAT_FILES_NEED_CORE, CHAT_JOINING,
+    CHAT_SENDING,
 };
 use agent_relay_node::relay::contract::agents::RegisterParams;
 use agent_relay_node::relay::contract::directory::{SendParams, SentMessage};
@@ -18,11 +19,13 @@ use gtk4 as gtk;
 impl App {
     /// Sends what is typed to the agent shown.
     pub(super) fn send_chat_message(&self) {
-        let Some((key, body)) = self
+        let Some((key, typed, attached)) = self
             .with_chat(|page| {
                 let key = page.selected.borrow().clone()?;
-                let body = page.composer.input.text().trim().to_string();
-                (!body.is_empty() && !page.sending.get()).then_some((key, body))
+                let typed = page.composer.input.text().trim().to_string();
+                let attached = !page.composer.files.borrow().is_empty();
+                ((!typed.is_empty() || attached) && !page.sending.get())
+                    .then_some((key, typed, attached))
             })
             .flatten()
         else {
@@ -31,11 +34,23 @@ impl App {
         let Some(agent) = self.chat_agent(&key) else {
             return;
         };
-        // The bridge's messages.send takes text only until the core's
-        // attachment change lands; the files are taken and named as unsent.
-        let unsent = self
-            .with_chat(|page| !page.composer.take().is_empty())
-            .unwrap_or(false);
+        let files = self
+            .with_chat(|page| page.composer.take())
+            .unwrap_or_default();
+        // An agent on this computer opens the files where they are, so they
+        // go as lines in the message. One elsewhere needs the core to carry
+        // them (relay#2242): until then they are named as unsent.
+        let here = agent.local().is_some();
+        let unsent = attached && !here;
+        let body = match (here && !files.is_empty(), typed.is_empty()) {
+            (true, true) => chat_attachment_lines(&files),
+            (true, false) => format!("{typed}\n\n{}", chat_attachment_lines(&files)),
+            (false, _) if typed.is_empty() => {
+                self.with_chat(|page| page.composer.note.set_text(CHAT_FILES_NEED_CORE));
+                return;
+            }
+            (false, _) => typed,
+        };
         self.with_chat(|page| {
             page.unsent_files.set(unsent);
             page.sending.set(true);

@@ -68,9 +68,44 @@ fn without_marks(text: &str) -> String {
     out
 }
 
+/// The lines that carry `files` in a message to an agent on this computer,
+/// which can open them where they are: an image as Claude Code records a
+/// pasted one (`[Image: source: <path>]`, drawn inline here), anything else
+/// as `[File: <path>]`.
+pub fn chat_attachment_lines(files: &[std::path::PathBuf]) -> String {
+    files
+        .iter()
+        .map(|path| {
+            let image = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "gif" | "webp"
+                )
+            });
+            let kind = if image { "Image: source" } else { "File" };
+            format!("[{kind}: {}]", path.display())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachments_go_as_lines_an_agent_here_can_open() {
+        let lines = chat_attachment_lines(&["/tmp/a/shot.PNG".into(), "/tmp/a/notes.txt".into()]);
+        assert_eq!(
+            lines,
+            "[Image: source: /tmp/a/shot.PNG]\n[File: /tmp/a/notes.txt]"
+        );
+        // The image line is drawn as the image here.
+        assert_eq!(
+            chat_pasted_images(&lines).1,
+            vec!["/tmp/a/shot.PNG".to_string()]
+        );
+    }
 
     #[test]
     fn a_pasted_image_is_its_path() {

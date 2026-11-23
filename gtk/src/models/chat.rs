@@ -571,7 +571,7 @@ mod relay_lines;
 pub use agent::chat_row_names;
 pub use inbox::{ChatInbox, ChatNotice, Unread};
 pub use order::{chat_sort_elsewhere, chat_sorts_before};
-pub use pasted::chat_pasted_images;
+pub use pasted::{chat_attachment_lines, chat_pasted_images};
 pub use relay_lines::{chat_relay_incoming, chat_relay_outgoing, RelayIncoming, RelayOutgoing};
 
 #[cfg(test)]
