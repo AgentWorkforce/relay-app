@@ -630,6 +630,8 @@ and auto-activation waits.
 | `capy.threads.get` | `{"thread_id"}` | The same thread and relay-binding status as `capy.threads.spawn` | 2a |
 | `messages.conversations` | — | `{"identity","conversations":[{"id","peer":{"name","agent_id"},"last_message","unread_count"}]}` | 2a |
 | `messages.history` | `{"endpoint","before"?}` | `{"identity","messages":[{"id","sender","sender_id","sender_address","text","created_at","thread_id","mine"}]}` in reading order (replies beneath their parent); exact-address history fails closed without immutable proof | 2a |
+| `messages.inbox` | — | `{"identity","unread":[{"conversation_id","peer","unread_count","last_message":{"id","text","created_at"}?}],"unread_channels":[{"channel","unread_count"}]}`: Relaycast's own read state, shared by every device you read on; a delivery acknowledgement also counts as a read | 2a |
+| `messages.mark_read` | `{"message_id"}` | `{}`: that message and everything before it in its conversation are read on every device; a message in none of your conversations is `not_found` | 2a |
 | `messages.send` | `{"to"\|"address","text","reply_to"?}` | `{"message_id","conversation_id","to","recipient":{…roster.get's answer for this message}}`, read just after the send; no agent at the name or address is `not_found` | 2a |
 | `sessions.overview.get` | `{"session_id"}` | Cloud's saved session analysis, including request status and any generated brief | 2a |
 | `sessions.overview.request` | `{"session_id"}` | Cloud's accepted summary request; the app reads status with `sessions.overview.get` | 2a |
