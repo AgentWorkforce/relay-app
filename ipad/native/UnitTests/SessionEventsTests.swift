@@ -260,6 +260,283 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, now: now, failures: 50), 120)
     }
 
+    func testPollingTierBoundaries() {
+        let now = base
+        func at(_ age: TimeInterval) -> TimeInterval? {
+            SessionEventPolling.interval(newestEventAt: now.addingTimeInterval(-age), now: now, failures: 0)
+        }
+        XCTAssertEqual(at(0), 5)
+        XCTAssertEqual(at(2 * 60 - 1), 5)
+        XCTAssertEqual(at(2 * 60), 15)
+        XCTAssertEqual(at(60 * 60 - 1), 15)
+        XCTAssertEqual(at(60 * 60), 60)
+        XCTAssertEqual(at(24 * 60 * 60 - 1), 60)
+        XCTAssertEqual(at(24 * 60 * 60), 300)
+        XCTAssertEqual(at(7 * 24 * 60 * 60 - 1), 300)
+        XCTAssertNil(at(7 * 24 * 60 * 60), "a week old: no timer")
+        XCTAssertNil(at(30 * 24 * 60 * 60))
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, chatActivityAt: nil, now: now, failures: 0), 15,
+                       "no reference")
+    }
+
+    func testChatActivityNewerThanTheNewestEventLiftsTheTier() {
+        let now = base
+        let old = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: old, chatActivityAt: now.addingTimeInterval(-10),
+                                                    now: now, failures: 0), 5)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: nil, chatActivityAt: now.addingTimeInterval(-2 * 24 * 60 * 60),
+                                                    now: now, failures: 0), 300, "chat activity alone is a reference")
+        // An older message does not slow a recent session.
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: now.addingTimeInterval(-10), chatActivityAt: old,
+                                                    now: now, failures: 0), 5)
+    }
+
+    func testBackoffDoublesCapsAndNeverGoesBelowTheBase() {
+        let now = base
+        let fresh = now.addingTimeInterval(-10)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 1), 10)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 2), 20)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 4), 80)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 5), 120)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: fresh, now: now, failures: 500), 120)
+        let days = now.addingTimeInterval(-2 * 24 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: days, now: now, failures: 0), 300)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: days, now: now, failures: 3), 300,
+                       "a 5 minute base stays 5 minutes")
+        let hours = now.addingTimeInterval(-2 * 60 * 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 0), 60)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 1), 120)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: hours, now: now, failures: 9), 120)
+    }
+
+    func testAFailedReadOfAWeekOldSessionIsRetriedEveryFiveMinutes() {
+        let now = base
+        let week = now.addingTimeInterval(-7 * 24 * 60 * 60)
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 0), "no timer")
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 1), 300)
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 5), 300)
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: week, now: now, failures: 1, unavailable: true))
+        let almostWeek = now.addingTimeInterval(-(7 * 24 * 60 * 60 - 1))
+        XCTAssertEqual(SessionEventPolling.interval(newestEventAt: almostWeek, now: now, failures: 1), 300)
+    }
+
+    func testAnUnavailableSessionHasNoTimer() {
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: base, chatActivityAt: base, now: base, failures: 1,
+                                                  unavailable: true))
+        XCTAssertNil(SessionEventPolling.interval(newestEventAt: nil, now: base, failures: 0, unavailable: true))
+    }
+
+    // MARK: 501
+
+    func testA501IsFinalForTheSession() throws {
+        for code in ["events_canonical_too_large", "events_canonical_source_ambiguous", "history_floor"] {
+            var store = SessionEventStore(sessionID: "s1")
+            store.apply(page([event("5", at: 50), event("6", at: 60)], next: "c1"), for: SessionEventsRequest.newest)
+            store.failed(status: 501, code: code)
+            XCTAssertTrue(store.unavailable, code)
+            XCTAssertEqual(store.events.map(\.key.eventID), ["5", "6"], "what was loaded is kept: \(code)")
+            XCTAssertTrue(store.loaded, code)
+            XCTAssertNil(store.olderRequest, code)
+            XCTAssertFalse(store.hasOlder, code)
+            XCTAssertNil(SessionEventPolling.interval(newestEventAt: base.addingTimeInterval(60), now: base.addingTimeInterval(61),
+                                                      failures: store.failures, unavailable: store.unavailable), code)
+            XCTAssertTrue(SessionEventsRequest.unavailable(status: 501, code: code), code)
+            XCTAssertFalse(SessionEventsRequest.cursorLost(status: 501, code: code), code)
+            // Not part of what is cached on disk.
+            XCTAssertEqual(store.snapshot.events.count, 2, code)
+            XCTAssertFalse(SessionEventStore(snapshot: store.snapshot).unavailable, code)
+        }
+        // Before anything loaded, too; a 501 with no code is final only at
+        // the third in a row.
+        var empty = SessionEventStore(sessionID: "s1")
+        empty.failed(status: 501, code: "")
+        empty.failed(status: 501, code: "")
+        XCTAssertFalse(empty.unavailable)
+        empty.failed(status: 501, code: "")
+        XCTAssertTrue(empty.unavailable)
+        XCTAssertFalse(empty.loaded)
+        XCTAssertNil(empty.olderRequest)
+    }
+
+    private func loadedStore(at seconds: TimeInterval = 0) -> SessionEventStore {
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(page([event("5", at: seconds)], next: "c1"), for: SessionEventsRequest.newest)
+        return store
+    }
+
+    private func delay(_ store: SessionEventStore, age: TimeInterval) -> TimeInterval? {
+        SessionEventPolling.interval(newestEventAt: store.newest?.ts, now: (store.newest?.ts ?? base).addingTimeInterval(age),
+                                     failures: store.failures, unavailable: store.unavailable,
+                                     unknownNotImplemented: store.unknownNotImplemented)
+    }
+
+    func testATransient501IsRetriedLikeA500() {
+        for reason in ["session_partial", "history_floor_unknown_session"] {
+            XCTAssertEqual(SessionEventsRequest.notImplemented(code: "unsupported_by_backend", reason: reason), .transient)
+            for older in [false, true] {
+                var store = loadedStore()
+                for count in 1...10 {
+                    store.failed(status: 501, code: "unsupported_by_backend", reason: reason, older: older)
+                    XCTAssertFalse(store.unavailable, "\(reason) \(count)")
+                    XCTAssertEqual(store.unknownNotImplemented, 0)
+                    XCTAssertEqual(store.olderRequest?.cursor, "c1", "the cursor stays: \(reason)")
+                    let expected = min(5 * pow(2, Double(count)), 120)
+                    XCTAssertEqual(delay(store, age: 10), expected, "5 s tier backoff: \(reason) \(count)")
+                    XCTAssertEqual(delay(store, age: 2 * 60 * 60), 120, "never below the 60 s tier: \(reason)")
+                    XCTAssertEqual(delay(store, age: 2 * 24 * 60 * 60), 300, "never below the 5 minute tier: \(reason)")
+                    XCTAssertEqual(delay(store, age: 8 * 24 * 60 * 60), 300, "no-timer tier retry: \(reason)")
+                }
+                XCTAssertEqual(store.failures, 10)
+                XCTAssertEqual(store.olderAutoLoadStopped, older)
+            }
+        }
+    }
+
+    func testAFinal501ReasonIsFinalAtOnce() {
+        let answers = [("unsupported_by_backend", "history_floor"), ("unsupported_by_backend", "events_canonical_too_large"),
+                       ("unsupported_by_backend", "events_canonical_source_ambiguous"), ("events_canonical_too_large", "")]
+        for (code, reason) in answers {
+            XCTAssertEqual(SessionEventsRequest.notImplemented(code: code, reason: reason), .permanent, "\(code) \(reason)")
+            var store = SessionEventStore(sessionID: "s1")
+            store.apply(page([event("5", at: 50), event("6", at: 60)], next: "c1"), for: SessionEventsRequest.newest)
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertTrue(store.unavailable, "\(code) \(reason)")
+            XCTAssertNil(delay(store, age: 1), "\(code) \(reason)")
+            XCTAssertEqual(store.events.map(\.key.eventID), ["5", "6"], "what was loaded is kept: \(code) \(reason)")
+            XCTAssertNil(store.olderRequest, "\(code) \(reason)")
+            XCTAssertFalse(store.hasOlder, "\(code) \(reason)")
+        }
+    }
+
+    func testALostCursor501RestartsPaging() throws {
+        let answers = [("unsupported_by_backend", "canonical_cursor_scope"), ("canonical_cursor_scope", ""),
+                       ("unsupported_by_backend", "foreign_cursor")]
+        for (code, reason) in answers {
+            XCTAssertEqual(SessionEventsRequest.notImplemented(code: code, reason: reason), .cursorLost, "\(code) \(reason)")
+            var store = loadedStore(at: 50)
+            store.apply(page([event("4", at: 40)], next: "c2"), for: try XCTUnwrap(store.olderRequest))
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertFalse(store.unavailable, "\(code) \(reason)")
+            XCTAssertEqual(store.olderRequest, SessionEventsRequest.newest, "restart from the newest page: \(code) \(reason)")
+            XCTAssertEqual(store.events.count, 2)
+            XCTAssertNotNil(delay(store, age: 1))
+        }
+    }
+
+    private let unknownAnswers = [("", ""), ("unsupported_by_backend", ""), ("unsupported_by_backend", "route")]
+
+    func testAnUnknown501IsFinalAtTheThirdInARow() {
+        // Age of the reference → the wait after an unknown 501.
+        let tiers: [(age: TimeInterval, wait: TimeInterval)] = [
+            (10, 120), (10 * 60, 120), (2 * 60 * 60, 120), (2 * 24 * 60 * 60, 300), (8 * 24 * 60 * 60, 300),
+        ]
+        for (code, reason) in unknownAnswers {
+            XCTAssertEqual(SessionEventsRequest.notImplemented(code: code, reason: reason), .unknown, "\(code) \(reason)")
+            XCTAssertFalse(SessionEventsRequest.unavailable(status: 501, code: code, reason: reason))
+            var store = loadedStore()
+            for count in 1...2 {
+                store.failed(status: 501, code: code, reason: reason)
+                XCTAssertFalse(store.unavailable, "\(code) \(reason) \(count)")
+                XCTAssertEqual(store.unknownNotImplemented, count)
+                XCTAssertEqual(store.olderRequest?.cursor, "c1")
+                for tier in tiers {
+                    XCTAssertEqual(delay(store, age: tier.age), tier.wait, "\(code) \(reason) \(count) age \(tier.age)")
+                }
+            }
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertTrue(store.unavailable, "\(code) \(reason)")
+            XCTAssertNil(delay(store, age: 10))
+            XCTAssertNil(store.olderRequest)
+            XCTAssertEqual(store.events.count, 1, "what was loaded is kept")
+        }
+    }
+
+    func testASuccessfulReadResetsTheUnknown501Count() {
+        for (code, reason) in unknownAnswers {
+            var store = loadedStore()
+            store.failed(status: 501, code: code, reason: reason)
+            store.failed(status: 501, code: code, reason: reason)
+            store.apply(page([event("6", at: 5)], next: nil), for: SessionEventsRequest.newest)
+            XCTAssertEqual(store.unknownNotImplemented, 0)
+            store.failed(status: 501, code: code, reason: reason)
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertFalse(store.unavailable, "\(code) \(reason)")
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertTrue(store.unavailable, "\(code) \(reason)")
+        }
+    }
+
+    func testAnotherFailureResetsTheUnknown501Count() {
+        for (code, reason) in unknownAnswers {
+            var store = loadedStore()
+            store.failed(status: 501, code: code, reason: reason)
+            store.failed(status: 501, code: code, reason: reason)
+            store.failed(status: 500, code: "")
+            XCTAssertEqual(store.unknownNotImplemented, 0)
+            XCTAssertEqual(delay(store, age: 10), 40, "the 500 backoff, three failures in a row")
+            store.failed(status: 501, code: code, reason: reason)
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertFalse(store.unavailable, "\(code) \(reason)")
+            store.failed(status: 501, code: "unsupported_by_backend", reason: "session_partial")
+            store.failed(status: 501, code: code, reason: reason)
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertFalse(store.unavailable, "a transient 501 resets it too: \(code) \(reason)")
+            store.failed(status: 501, code: code, reason: reason)
+            XCTAssertTrue(store.unavailable, "\(code) \(reason)")
+        }
+    }
+
+    func testErrorBodyIdentifiers() throws {
+        func identifiers(_ body: String) throws -> (code: String, reason: String) {
+            let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(body.utf8)) as? JSONObject)
+            return RelayErrorBody.identifiers(in: json)
+        }
+        let server = try identifiers(#"{"error":{"code":"unsupported_by_backend","message":"synthetic","reason":"session_partial"},"correlationId":"c-1"}"#)
+        XCTAssertEqual(server.code, "unsupported_by_backend")
+        XCTAssertEqual(server.reason, "session_partial")
+        let plain = try identifiers(#"{"error":"Failed to load session events"}"#)
+        XCTAssertEqual(plain.code, "")
+        XCTAssertEqual(plain.reason, "")
+        let nested = try identifiers(#"{"error":{"code":"cursor_expired","message":"x"}}"#)
+        XCTAssertEqual(nested.code, "cursor_expired")
+        XCTAssertEqual(nested.reason, "")
+        let topLevel = try identifiers(#"{"error":"x","code":"history_customer_hosted"}"#)
+        XCTAssertEqual(topLevel.code, "history_customer_hosted")
+        XCTAssertEqual(topLevel.reason, "")
+    }
+
+    func testA501CanonicalCursorScopeRestartsPaging() throws {
+        var store = SessionEventStore(sessionID: "s1")
+        store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+        store.apply(page([event("4", at: 40)], next: "c2"), for: try XCTUnwrap(store.olderRequest))
+        store.failed(status: 501, code: "canonical_cursor_scope")
+        XCTAssertFalse(store.unavailable)
+        XCTAssertTrue(SessionEventsRequest.cursorLost(status: 501, code: "canonical_cursor_scope"))
+        XCTAssertFalse(SessionEventsRequest.unavailable(status: 501, code: "canonical_cursor_scope"))
+        XCTAssertEqual(store.olderRequest, SessionEventsRequest.newest, "restart from the newest page")
+        XCTAssertEqual(store.events.count, 2)
+        XCTAssertNotNil(SessionEventPolling.interval(newestEventAt: base, now: base, failures: store.failures,
+                                                     unavailable: store.unavailable))
+    }
+
+    func testServerAndTransportFailuresAreNotFinal() {
+        for status in [500, 503, nil] as [Int?] {
+            var store = SessionEventStore(sessionID: "s1")
+            store.apply(page([event("5", at: 50)], next: "c1"), for: SessionEventsRequest.newest)
+            store.failed(status: status, code: "")
+            store.failed(status: status, code: "")
+            XCTAssertFalse(store.unavailable, "\(String(describing: status))")
+            XCTAssertFalse(SessionEventsRequest.unavailable(status: status, code: ""))
+            XCTAssertEqual(store.olderRequest?.cursor, "c1")
+            let now = base.addingTimeInterval(60)
+            XCTAssertEqual(SessionEventPolling.interval(newestEventAt: store.newest?.ts, now: now, failures: store.failures,
+                                                        unavailable: store.unavailable), 20, "retried with backoff")
+        }
+        for status in [401, 403, 404, 409, 410] {
+            XCTAssertFalse(SessionEventsRequest.unavailable(status: status, code: ""))
+        }
+    }
+
     // MARK: Working
 
     func testWorkingWhileTheNewestEventIsARecentToolCall() {
@@ -285,5 +562,82 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(SessionWorking.state(events: events, now: base.addingTimeInterval(5))?.label, "Working…")
         XCTAssertNil(SessionWorking.state(events: [event("1", at: 0, kind: "prompt", role: "user")], now: base.addingTimeInterval(5)))
         XCTAssertNil(SessionWorking.state(events: [], now: base))
+    }
+}
+
+/// A final store, through the client, with a stand-in for Cloud.
+@MainActor
+final class SessionEventUnavailableClientTests: XCTestCase {
+    private let agent = RelayAgent(relay: ["name": "builder", "status": "active",
+                                           "metadata": ["session_id": "s1", "source": "relay-desktop"]])
+
+    private func page() -> SessionEventPage {
+        SessionEventPage(sessionID: "s1", events: [
+            SessionEvent(key: .init(source: "fixture", machineID: "m", kind: "assistant", eventID: "e1"),
+                         ts: Date(timeIntervalSince1970: 1_790_000_000), kind: "assistant",
+                         actorRole: "assistant", content: "synthetic")
+        ], nextCursor: "c1")
+    }
+
+    func testAFinalStoreMakesNoRequestAndKeepsTheCache() async {
+        // An unknown 501 (no code) is final at the third in a row.
+        for (code, failing) in [("events_canonical_too_large", 1), ("", 3)] {
+            let spy = SpySessionEventSnapshots()
+            var calls = 0
+            let client = RelayClient(sessionEventSnapshots: spy, sessionEventFetch: { _, _ in
+                calls += 1
+                if calls == 1 { return self.page() }
+                throw RelayAPIError(message: "not available", status: 501, code: code)
+            })
+            await client.refreshSessionEvents(for: agent)
+            for _ in 1...failing {
+                XCTAssertNotEqual(client.sessionEvents["s1"]?.unavailable, true, code)
+                await client.refreshSessionEvents(for: agent)
+            }
+            XCTAssertEqual(calls, 1 + failing, code)
+            XCTAssertEqual(client.sessionEvents["s1"]?.unavailable, true, code)
+            await client.refreshSessionEvents(for: agent)
+            await client.loadOlderSessionEvents(for: agent)
+            XCTAssertEqual(calls, 1 + failing, "no read of a final session: \(code)")
+            XCTAssertEqual(client.sessionEvents["s1"]?.events.count, 1, "what is shown stays: \(code)")
+            XCTAssertTrue(spy.removed.isEmpty, "the cached copy stays: \(code)")
+            XCTAssertEqual(spy.removeAllCount, 0, code)
+            XCTAssertTrue(client.sessionEventsSettled(for: agent), code)
+            XCTAssertNil(client.sessionEventPollDelay(for: agent, chatActivityAt: Date()), code)
+            // Dropping the store (a new identity) ends it.
+            client.advanceSessionGeneration()
+            XCTAssertNil(client.sessionEvents["s1"])
+        }
+    }
+
+    func testTheClientCarriesTheReasonToTheStore() async {
+        var calls = 0
+        let client = RelayClient(sessionEventSnapshots: SpySessionEventSnapshots(), sessionEventFetch: { _, _ in
+            calls += 1
+            if calls == 1 { return self.page() }
+            throw RelayAPIError(message: "not yet", status: 501, code: "unsupported_by_backend", reason: "session_partial")
+        })
+        await client.refreshSessionEvents(for: agent)
+        for _ in 1...4 { await client.refreshSessionEvents(for: agent) }
+        XCTAssertEqual(calls, 5, "a transient 501 is read again")
+        XCTAssertEqual(client.sessionEvents["s1"]?.unavailable, false)
+        XCTAssertEqual(client.sessionEvents["s1"]?.failures, 4)
+        XCTAssertNotNil(client.sessionEventPollDelay(for: agent, chatActivityAt: Date()))
+    }
+
+    func testReadsOfOneSessionStayApart() async {
+        var calls = 0
+        let client = RelayClient(sessionEventSnapshots: SpySessionEventSnapshots(), sessionEventFetch: { _, _ in
+            calls += 1
+            return self.page()
+        })
+        XCTAssertEqual(client.sessionEventReadWait(for: agent), 0, "the first read goes at once")
+        let start = Date()
+        await client.refreshSessionEvents(for: agent)
+        XCTAssertEqual(calls, 1)
+        let wait = client.sessionEventReadWait(for: agent, now: start.addingTimeInterval(1))
+        XCTAssertGreaterThan(wait, 3)
+        XCTAssertLessThanOrEqual(wait, SessionEventPolling.minimumSpacing)
+        XCTAssertEqual(client.sessionEventReadWait(for: agent, now: Date().addingTimeInterval(SessionEventPolling.minimumSpacing)), 0)
     }
 }
