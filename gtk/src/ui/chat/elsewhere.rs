@@ -94,7 +94,16 @@ impl App {
         let sort = list.sort.get();
         let mut agents = agents;
         chat_sort_elsewhere(&mut agents, sort);
-        let mut signature: Vec<String> = agents.iter().map(drawn).collect();
+        let mut signature: Vec<String> = agents
+            .iter()
+            .map(|agent| {
+                format!(
+                    "{}|{}",
+                    drawn(agent),
+                    self.chat_unread(&agent.relay_names())
+                )
+            })
+            .collect();
         signature.push(format!("{:?}|{}", sort, list.grouping.get()));
         let mut drawn_rows = chat.elsewhere_rows.borrow_mut();
         // A rebuilt list dropped the rows and their keys with it.
@@ -202,6 +211,7 @@ impl App {
     /// One column's cell for an agent elsewhere; a column only this
     /// computer knows reads "—".
     fn elsewhere_cell(&self, agent: &ChatAgent, column: SessionColumn) -> gtk::Widget {
+        let unread = self.chat_unread(&agent.relay_names());
         let caption = |value: &str| -> gtk::Widget {
             let label = text(if value.is_empty() { "—" } else { value }, &["caption"]).ellipsized();
             label.set_halign(gtk::Align::Start);
@@ -212,7 +222,8 @@ impl App {
             SessionColumn::Session => {
                 let words = vbox(3, &[]);
                 words.set_valign(gtk::Align::Center);
-                words.append(&text(&agent.name(), &["row-title"]).ellipsized());
+                let name = text(&agent.name(), &["row-title"]).ellipsized();
+                words.append(&super::inbox::with_unread(&name, unread));
                 let line = hbox(8, &[]);
                 line.append(&text(&chat_elsewhere_tag(agent), &["elsewhere-tag"]));
                 let glance = text(&agent.glance(), &["caption", "secondary"]).ellipsized();

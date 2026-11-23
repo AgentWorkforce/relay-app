@@ -24,6 +24,7 @@ mod elsewhere;
 mod filters;
 mod images;
 mod inbox;
+pub(in crate::ui) use inbox::with_unread;
 mod open;
 mod send;
 mod sources;
@@ -430,9 +431,7 @@ impl App {
         top.append(&status);
         let unread = self.chat_unread(&agent.relay_names());
         if unread > 0 {
-            let count = text(&unread.min(99).to_string(), &["chat-unread"]);
-            count.set_tooltip_text(Some(&crate::models::chat_unread_label(unread)));
-            top.append(&count);
+            top.append(&inbox::unread_count(unread));
         }
         words.append(&top);
         let glance = agent.glance();

@@ -46,6 +46,7 @@ impl App {
             let notices = app
                 .with_chat(|page| page.inbox.borrow_mut().update(&listing))
                 .unwrap_or_default();
+            let arrived = !notices.is_empty();
             let reading = app.shown_peer_unread();
             for notice in notices {
                 // The conversation you are reading needs no notification.
@@ -65,6 +66,11 @@ impl App {
                 app.mark_chat_read(&names);
             }
             app.render_chat();
+            // The sessions list shows the counts too: redrawn when a message
+            // arrived.
+            if arrived && app.page() == super::super::state::Page::Sessions {
+                app.render_sessions();
+            }
         });
     }
 
@@ -83,7 +89,7 @@ impl App {
     }
 
     /// How many messages from the agent going by `names` are unread.
-    pub(super) fn chat_unread(&self, names: &[String]) -> u64 {
+    pub(in crate::ui) fn chat_unread(&self, names: &[String]) -> u64 {
         self.with_chat(|page| page.inbox.borrow().unread_for(names).map(|u| u.count))
             .flatten()
             .unwrap_or(0)
@@ -135,4 +141,25 @@ impl App {
         self.show_chat_page(key.as_deref());
         true
     }
+}
+
+/// `title` with the unread count beside it, when there is one.
+pub(in crate::ui) fn with_unread(title: &gtk::Label, unread: u64) -> gtk::Widget {
+    if unread == 0 {
+        return title.clone().upcast();
+    }
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    title.set_hexpand(false);
+    line.append(title);
+    line.append(&unread_count(unread));
+    line.upcast()
+}
+
+/// An unread count, as on a Chat row.
+pub(super) fn unread_count(unread: u64) -> gtk::Label {
+    let count = gtk::Label::new(Some(&unread.min(99).to_string()));
+    count.add_css_class("chat-unread");
+    count.set_valign(gtk::Align::Center);
+    count.set_tooltip_text(Some(&crate::models::chat_unread_label(unread)));
+    count
 }

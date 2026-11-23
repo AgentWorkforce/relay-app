@@ -23,11 +23,13 @@ use std::time::Duration;
 
 mod column_resize;
 mod empty;
+mod glyphs;
 mod message_controls;
 mod paging;
 mod policy;
 mod query;
 mod titles;
+use glyphs::{stage_glyph, state_color};
 
 /// The page's parts that are redrawn in place.
 pub struct SessionsPage {
@@ -354,36 +356,9 @@ struct DrawnRow {
     requesting: bool,
     stopping: bool,
     read_only: bool,
+    unread: u64,
     /// The theme's text color: the marks and glyphs are drawn in the theme.
     theme: &'static str,
-}
-
-/// The palette color a row's status reads in, as the Mac's.
-fn state_color(state: SessionUploadState) -> &'static str {
-    match state {
-        SessionUploadState::Uploaded => "secondary",
-        SessionUploadState::Uploading
-        | SessionUploadState::Preparing
-        | SessionUploadState::Waiting
-        | SessionUploadState::Queued => "accent",
-        SessionUploadState::Paused
-        | SessionUploadState::Blocked
-        | SessionUploadState::Stopped
-        | SessionUploadState::Unknown => "orange",
-        SessionUploadState::Discovering
-        | SessionUploadState::Local
-        | SessionUploadState::Checking => "secondary",
-    }
-}
-
-fn stage_glyph(state: StageState) -> (&'static str, &'static str) {
-    match state {
-        StageState::Waiting => ("content-loading-symbolic", "secondary"),
-        StageState::Active => ("view-refresh-symbolic", "accent"),
-        StageState::Complete => ("emblem-ok-symbolic", "ok"),
-        StageState::Paused => ("media-playback-pause-symbolic", "warn"),
-        StageState::Blocked => ("dialog-warning-symbolic", "warn"),
-    }
 }
 
 fn sessions_noun(count: usize) -> String {
@@ -693,6 +668,7 @@ impl App {
                     (presence, error, can, state.relay_not_running(session.relay.as_ref()))
                 });
                 DrawnRow {
+                    unread: self.chat_unread(&crate::models::chat_row_names(session)),
                     activity: activity.activity(session),
                     state: session
                         .upload
@@ -1030,7 +1006,7 @@ impl App {
         let words = vbox(3, &[]);
         words.set_hexpand(true);
         let title_label = text(&title, &["row-title"]).ellipsized();
-        words.append(&title_label);
+        words.append(&super::chat::with_unread(&title_label, drawn.unread));
         let metadata = session.execution_details();
         let subtitle = text(&metadata, &["caption", "secondary"]).ellipsized();
         subtitle.set_tooltip_text(Some(&metadata));

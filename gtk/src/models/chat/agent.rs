@@ -100,13 +100,16 @@ impl ChatAgent {
     /// its address without the machine.
     pub fn relay_names(&self) -> Vec<String> {
         let mut names = vec![self.name()];
-        if let Some(registration) = self.registration() {
-            names.push(registration.name.clone());
-            names.extend(registration.alias.clone());
-        }
-        if let Some(address) = self.address() {
-            names.extend(address.split('@').next().map(str::to_string));
-            names.push(address);
+        match &self.place {
+            ChatPlace::Local { row, .. } | ChatPlace::History(row) => {
+                names.extend(chat_row_names(row));
+            }
+            ChatPlace::Elsewhere(agent) => {
+                if let Some(address) = &agent.address {
+                    names.extend(address.split('@').next().map(str::to_string));
+                    names.push(address.clone());
+                }
+            }
         }
         names.retain(|name| !name.is_empty());
         names.dedup();
@@ -217,4 +220,18 @@ impl ChatAgent {
                 .iter()
                 .any(|field| field.to_lowercase().contains(&query))
     }
+}
+
+/// The names the session of `row` goes by on the relay once registered:
+/// its name and alias, and its address with and without the machine.
+pub fn chat_row_names(row: &LocalSessionRow) -> Vec<String> {
+    let Some(registration) = row.relay.as_ref().and_then(|s| s.registration.as_ref()) else {
+        return Vec::new();
+    };
+    let mut names = vec![registration.name.clone()];
+    names.extend(registration.alias.clone());
+    names.extend(registration.address.split('@').next().map(str::to_string));
+    names.push(registration.address.clone());
+    names.retain(|name| !name.is_empty());
+    names
 }
