@@ -157,21 +157,23 @@ struct OlderSessionRow: View {
     }
 }
 
-/// "Working: <tool>" at the end of the chat while the agent looks busy. It
-/// only exists while the newest event is recent, and then re-reads the rule
-/// every five seconds so it clears by age.
+/// "Working…" at the end of the chat while the agent's turn is open
+/// (`SessionTurn`). It only exists while the newest event is recent, and
+/// then re-reads the rule every 30 seconds so it clears by age.
 struct SessionWorkingRow: View {
-    let events: [SessionEvent]
+    let open: Bool
+    let newestEventAt: Date?
+    let offline: Bool
     /// A fixed start, so a re-render does not restart the schedule.
     private static let start = Date(timeIntervalSinceReferenceDate: 0)
 
     var body: some View {
-        if let newest = events.last?.ts, Date().timeIntervalSince(newest) < SessionWorking.window {
-            TimelineView(.periodic(from: Self.start, by: 5)) { context in
-                if let state = SessionWorking.state(events: events, now: context.date) {
+        if SessionTurn.showsWorking(open: open, newestEventAt: newestEventAt, offline: offline, now: Date()) {
+            TimelineView(.periodic(from: Self.start, by: 30)) { context in
+                if SessionTurn.showsWorking(open: open, newestEventAt: newestEventAt, offline: offline, now: context.date) {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(state.label).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("Working…").font(.system(size: 12)).foregroundStyle(.secondary)
                         Spacer()
                     }
                     .accessibilityElement(children: .combine)
@@ -179,6 +181,61 @@ struct SessionWorkingRow: View {
                 }
             }
         }
+    }
+}
+
+/// One run of tool work as a collapsed "Activity" group. Open, it lists
+/// each call and result by its tool and target; a line opens that row.
+struct SessionActivityGroupView: View {
+    let group: ActivityGroup
+    let agentName: String
+    let accent: Color
+    @State private var expanded = false
+    @State private var opened: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                expanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text("Activity").font(.system(size: 12, weight: .semibold))
+                    Text(group.rows.count == 1 ? "1 step" : "\(group.rows.count) steps")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("Session activity group")
+            if expanded {
+                ForEach(group.rows) { row in
+                    let line = ActivityGroup.line(for: row)
+                    Button {
+                        if opened.contains(row.id) { opened.remove(row.id) } else { opened.insert(row.id) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(line.title).font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            Text(line.target).font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("Session activity line")
+                    if opened.contains(row.id) {
+                        SessionEventBubble(row: row, agentName: agentName, accent: accent)
+                    }
+                }
+                .padding(.leading, 16)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.tertiarySystemGroupedBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

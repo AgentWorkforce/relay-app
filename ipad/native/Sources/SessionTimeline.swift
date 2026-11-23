@@ -47,10 +47,34 @@ struct SessionEventRow: Identifiable, Equatable {
     var id: String { "event:\(event.id)" }
 }
 
-/// One row of an agent's chat: a relay message or a session event.
+/// One run of the agent's tool work: its tool calls and their results,
+/// shown together as one "Activity" group.
+struct ActivityGroup: Identifiable, Equatable {
+    /// Oldest first; never empty.
+    let rows: [SessionEventRow]
+
+    /// Named after the run's first row, so the group keeps its id (and its
+    /// expanded state) while newer tool work joins the run.
+    var id: String { "activity:\(rows[0].event.id)" }
+
+    /// One line of the group: the tool's name and what it worked on (the
+    /// first line of its content, else the files it touched).
+    static func line(for row: SessionEventRow) -> (title: String, target: String) {
+        let event = row.event
+        let title = !event.toolName.isEmpty ? event.toolName : event.entryRole == .toolResult ? "Result" : "Tool"
+        let first = event.content.split(whereSeparator: \.isNewline)
+            .lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+        let target = first.isEmpty ? SessionTimeline.filesSummary(event.filesTouched) : first
+        return (title, target.count > 120 ? String(target.prefix(120)) + "…" : target)
+    }
+}
+
+/// One row of an agent's chat: a relay message, a session event, or a run
+/// of tool work.
 enum ChatTimelineItem: Identifiable {
     case message(RelayMessage)
     case event(SessionEventRow)
+    case activity(ActivityGroup)
 
     /// A relay message keeps its own id, so delivery, pending reconciliation
     /// and scrolling see the same ids as before session events were shown.
@@ -58,6 +82,7 @@ enum ChatTimelineItem: Identifiable {
         switch self {
         case .message(let message): message.id
         case .event(let row): row.id
+        case .activity(let group): group.id
         }
     }
 
@@ -65,6 +90,7 @@ enum ChatTimelineItem: Identifiable {
         switch self {
         case .message(let message): message.createdAt
         case .event(let row): row.event.ts
+        case .activity(let group): group.rows[0].event.ts
         }
     }
 }
@@ -134,6 +160,29 @@ enum SessionTimeline {
                 result.append(.message(messages[m])); m += 1
             }
         }
+        return result
+    }
+
+    /// `items` with each run of tool rows (calls and their results, not a
+    /// relay message carried by one) folded into one `ActivityGroup`. Any
+    /// other row ends the run: a message, a reply, a relay message, an
+    /// activity note.
+    static func grouped(_ items: [ChatTimelineItem]) -> [ChatTimelineItem] {
+        var result: [ChatTimelineItem] = []
+        var run: [SessionEventRow] = []
+        func close() {
+            if !run.isEmpty { result.append(.activity(ActivityGroup(rows: run))) }
+            run = []
+        }
+        for item in items {
+            if case .event(let row) = item, row.mark == nil, row.event.role == .tool {
+                run.append(row)
+                continue
+            }
+            close()
+            result.append(item)
+        }
+        close()
         return result
     }
 
@@ -257,5 +306,67 @@ enum SessionTimeline {
         guard !files.isEmpty else { return "" }
         let names = files.prefix(3).map { ($0 as NSString).lastPathComponent }
         return files.count > 3 ? names.joined(separator: ", ") + " +\(files.count - 3)" : names.joined(separator: ", ")
+    }
+}
+
+/// Whether the agent is on its turn: the chat shows "Working…" at its end
+/// while it is. The API has no in-progress flag, so this is read from what
+/// the chat shows (the desktop's `chat_turn_open`).
+enum SessionTurn {
+    /// Past this age of the newest event the session is taken for idle or
+    /// dead, and "Working…" is not shown.
+    static let window: TimeInterval = 10 * 60
+    /// The relay core's presence window: an agent not seen for longer is offline.
+    static let presenceWindow: TimeInterval = 5 * 60
+
+    /// Whether the agent's last row is not its own written reply. A message
+    /// to the agent, a received relay message, a prompt and tool work leave
+    /// the turn open; a reply, a relay message the agent sent and a relay
+    /// message from it close it. Activity notes say nothing either way.
+    /// Thinking, which the chat does not show, after the last row leaves it open.
+    static func isOpen(_ items: [ChatTimelineItem], events: [SessionEvent], me: String = "") -> Bool {
+        for item in items.reversed() {
+            let open: Bool
+            switch item {
+            case .message(let message):
+                open = SessionTimeline.isToAgent(message, me: me)
+            case .activity:
+                open = true
+            case .event(let row):
+                if let mark = row.mark {
+                    open = mark.isIncoming
+                } else {
+                    switch row.event.role {
+                    case .person, .tool: open = true
+                    case .agent: open = false
+                    case .activity: continue
+                    }
+                }
+            }
+            if !open, let date = item.date,
+               events.contains(where: { $0.isThinking && ($0.ts ?? .distantPast) > date }) {
+                return true
+            }
+            return open
+        }
+        return events.contains(where: \.isThinking)
+    }
+
+    /// Whether to show "Working…": the turn is open, the newest event is
+    /// under `window` old, and the agent is not offline. With no events (the
+    /// session is not available) it never shows.
+    static func showsWorking(open: Bool, newestEventAt newest: Date?, offline: Bool, now: Date) -> Bool {
+        guard open, !offline, let newest else { return false }
+        let age = now.timeIntervalSince(newest)
+        return age < window && age > -window
+    }
+
+    /// Whether the roster says the agent is gone: its status is offline, or
+    /// it was last seen longer ago than the presence window. An unknown
+    /// status is not offline.
+    static func isOffline(status: String, lastSeen: Date?, now: Date) -> Bool {
+        if status.lowercased() == "offline" { return true }
+        if let lastSeen, now.timeIntervalSince(lastSeen) > presenceWindow { return true }
+        return false
     }
 }

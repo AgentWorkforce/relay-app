@@ -49,7 +49,6 @@ final class ChatEntryRulesTests: XCTestCase {
                                    type: "thinking", actorRole: "assistant", content: "Considering the options")
         XCTAssertEqual(thought.role, .activity)
         XCTAssertTrue(thought.isThinking)
-        XCTAssertTrue(thought.isAgentActivity)
         XCTAssertEqual(ChatEntryRules.Role.toolResult.sessionRole, .tool)
     }
 
