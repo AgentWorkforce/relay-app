@@ -29,12 +29,13 @@ service-callers-dev-attest = []
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 35a003a: #2243 (spawned agents credited to the node owner on the roster)
-# on top of ad5219c: #2241 (wait for Muse's turn before relaying into a Paseo
-# session) and 62a803a: #2226 (remote approvals for spawned Codex agents), over
-# 7965519: #2233 (question escalation coverage for Codex, Devin and Copilot).
+# main f8b0ff9: #2256 (an exact-address history read trusts the conversation
+# that proved it, not walking its proof every call) on top of f508832: #2254
+# (fewer serial Relaycast round trips per history read) and bfce36c: #2244
+# (messages.inbox and messages.mark_read; a history read marks only its own
+# conversation read).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "df348af380b2a558747387ce01e159bcda4cf275", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "f8b0ff90075363db06cd29de2cf69c517e2a9bba", default-features = false }
 # relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
