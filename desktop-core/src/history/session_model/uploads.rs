@@ -60,6 +60,9 @@ pub struct StatusView {
     /// The sharing mode the organization suggests while the person has not
     /// chosen one; shown only, never applied.
     pub suggested_sharing: Option<SharingMode>,
+    /// The Cloud workspace the install uploads to, for links to its
+    /// uploaded sessions.
+    pub upload_workspace: Option<String>,
 }
 
 impl StatusView {
@@ -153,6 +156,7 @@ impl StatusView {
             uploads_operator_run: uploads_operator_run_in(&status.enforced_settings),
             can_delete_from_cloud: delete_allowed_in(&status.enforced_settings),
             suggested_sharing: status.suggested_sharing_mode,
+            upload_workspace: status.workspace_id.clone(),
         }
     }
 }
@@ -985,6 +989,12 @@ pub(super) mod tests {
             cloud_session_url("https://agentrelay.com", "s", None, Some("w")).as_deref(),
             Some("https://agentrelay.com/cloud/dashboard/sessions/s?workspace=w")
         );
+    }
+
+    #[test]
+    fn the_install_upload_workspace_is_carried_into_the_view() {
+        assert_eq!(view(json!({"workspace_id": "w"})).upload_workspace.as_deref(), Some("w"));
+        assert!(view(json!({})).upload_workspace.is_none());
     }
 
     #[test]

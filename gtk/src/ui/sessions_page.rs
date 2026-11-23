@@ -5,11 +5,12 @@ use super::app::App;
 use super::desktop::Confirmation;
 use super::rows::{menu, on_press, within_control, MenuItems};
 use super::session_controls::SessionControls;
+use super::session_links;
 use super::widgets::{
     self, agent_badge, button, clear, grouped, hbox, icon, text, vbox, Callback, LabelStyle,
 };
 use crate::models::{
-    capture_is_active, cloud_session_url, exact_ms, local_session_week, merge_local_sessions,
+    capture_is_active, exact_ms, local_session_week, merge_local_sessions,
     relative_ms, session_key, source_name, upload_stages, LocalSessionQuery, LocalSessionRow,
     LocalSessionSearchCache, LocalSessionSort, Presence, SessionActivityIndex, SessionColumn,
     SessionColumnLayout, SessionUploadState, StageState, UploadSummary,
@@ -1780,14 +1781,7 @@ impl App {
 
     /// An uploaded session's page in Agent Relay Cloud.
     pub fn open_cloud(&self, session: &UploadSession) {
-        let (site, workspace) = self.with_state(|state| {
-            let account = state.account();
-            (account.site_url.unwrap_or_default(), account.workspace_id)
-        });
-        let source = Some(session.source.as_str());
-        if let Some(url) =
-            cloud_session_url(&site, &session.session_id, source, workspace.as_deref())
-        {
+        if let Some(url) = self.with_state(|state| session_links::cloud_page(state, session)) {
             self.inner.desktop.open_uri(&url);
         }
     }

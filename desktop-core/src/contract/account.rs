@@ -143,6 +143,10 @@ pub struct UploaderStatus {
     /// read since sign-in. Nothing applies it; the person chooses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_sharing_mode: Option<SharingMode>,
+    /// The Cloud workspace the attached install uploads to, which its
+    /// uploaded sessions are in. Absent without an install or a workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 /// Health of the Claude Code cloud-session source, credential-free.

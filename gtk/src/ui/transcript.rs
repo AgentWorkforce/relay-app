@@ -1,11 +1,12 @@
 //! Local conversations; asynchronous reads never change upload selection.
 use super::{
     app::App,
+    session_links,
     widgets::{self, clear, hbox, text, vbox, LabelStyle},
 };
 use crate::models::{
     merge_local_sessions, session_header_identity, source_name, transcript_entry_context,
-    uploaded_session_url, AgentName, LocalSessionRow, SessionUploadState, SpawnHandover,
+    AgentName, LocalSessionRow, SessionUploadState, SpawnHandover,
     TranscriptScrollState,
 };
 use agent_relay_node::relay::contract::{
@@ -451,16 +452,12 @@ impl App {
             return;
         };
         let url = self.with_state(|state| {
-            let account = state.account();
-            let site = account.site_url.unwrap_or_default();
             merge_local_sessions(&state.sessions, &state.local_sessions)
                 .into_iter()
                 .find(|row| row.key() == original.key())
                 .unwrap_or(original)
                 .upload
-                .and_then(|upload| {
-                    uploaded_session_url(&site, &upload, account.workspace_id.as_deref())
-                })
+                .and_then(|upload| session_links::uploaded_page(state, &upload))
         });
         if let Some(url) = url {
             self.inner.desktop.open_uri(&url);
@@ -489,11 +486,10 @@ impl App {
                     .upload
                     .as_ref()
                     .is_some_and(|upload| upload.included || requesting);
-            let site = state.account().site_url.unwrap_or_default();
             page.view_web.set_visible(
                 row.upload
                     .as_ref()
-                    .and_then(|upload| uploaded_session_url(&site, upload, None))
+                    .and_then(|upload| session_links::uploaded_page(state, upload))
                     .is_some(),
             );
             // Turning an uploading session off deletes it from Cloud; when

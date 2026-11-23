@@ -33,7 +33,7 @@ rust_roots = ["src"]
 "src/ui/session_controls.rs" = 655
 "src/ui/sessions_page.rs" = 1771
 "src/ui/settings_page.rs" = 953
-"src/ui/transcript.rs" = 653
+"src/ui/transcript.rs" = 652
 "src/ui/widgets.rs" = 770
 "src/updates.rs" = 676
 

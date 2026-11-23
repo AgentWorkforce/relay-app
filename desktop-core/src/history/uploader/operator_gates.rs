@@ -49,7 +49,7 @@ impl Uploader {
     }
 
     /// The attached install's workspace.
-    pub(super) fn workspace_id(&self) -> Option<String> {
+    pub(crate) fn workspace_id(&self) -> Option<String> {
         self.target().and_then(|target| target.workspace_id)
     }
 

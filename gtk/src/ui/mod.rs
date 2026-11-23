@@ -58,6 +58,7 @@ mod saved_session_views;
 pub mod session_avatar;
 mod session_columns;
 mod session_controls;
+mod session_links;
 mod session_open;
 mod session_titles;
 pub mod sessions_page;
