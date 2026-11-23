@@ -25,8 +25,9 @@ enum SessionEventsFixture {
         let all = events(for: sessionID)
         let ordered = spec.order == .desc ? Array(all.reversed()) : all
         let older = spec.cursor == "fixture-older"
+        let olderCount = olderPage.map(\.count) ?? 2
         let page = sessionID == "session-builder"
-            ? (older ? Array(ordered.suffix(2)) : Array(ordered.dropLast(2)))
+            ? (older ? Array(ordered.suffix(olderCount)) : Array(ordered.dropLast(olderCount)))
             : ordered
         let body: [String: Any] = ["sessionId": sessionID, "events": page,
                                    "nextCursor": sessionID == "session-builder" && !older ? "fixture-older" : NSNull()]
@@ -37,6 +38,21 @@ enum SessionEventsFixture {
         if sessionID == "session-reviewer" {
             return [event("r1", at: "2026-10-08T11:58:00.000Z", kind: "assistant", role: "assistant",
                           content: "Reading the diff before I leave comments.")]
+        }
+        if let olderPage {
+            // The plain-row variant opens its first page with a reply.
+            let opener = olderNotesOnly ? [event("w0", at: "2026-10-08T11:39:55.000Z", kind: "assistant", role: "assistant",
+                                                 content: "Picking up the lantern checks.")] : []
+            return olderPage + opener + [
+                event("w1", at: "2026-10-08T11:40:00.000Z", kind: "tool_use", role: "assistant",
+                      content: "swift test --filter Lantern", tool: "Bash"),
+                event("w2", at: "2026-10-08T11:40:10.000Z", kind: "tool_result", role: "tool_result",
+                      content: "Lantern tests passed", tool: "Bash"),
+                event("w3", at: "2026-10-08T11:40:20.000Z", kind: "tool_use", role: "assistant",
+                      content: "git status --short", tool: "Bash"),
+                event("w4", at: "2026-10-08T11:41:00.000Z", kind: "assistant", role: "assistant",
+                      content: "The lantern checks are green."),
+            ]
         }
         var rows: [[String: Any]] = [
             event("b0", at: "2026-10-08T11:50:00.000Z", kind: "prompt", role: "user",
@@ -72,6 +88,39 @@ enum SessionEventsFixture {
         }
         return rows
     }
+
+    /// `-RelayUITestSessionOlderTools`: the builder's first page opens with
+    /// a run of tool work (three steps), and its older page is tall notes
+    /// followed by tool work that joins that run, so loading it grows the
+    /// top Activity group at its start and puts more than a screen of rows
+    /// above it. `-RelayUITestSessionOlderNotes`: the first page opens with
+    /// a plain reply instead, and the older page is the notes alone.
+    private static var olderTools: Bool {
+        ProcessInfo.processInfo.arguments.contains("-RelayUITestSessionOlderTools")
+    }
+
+    private static var olderNotesOnly: Bool {
+        ProcessInfo.processInfo.arguments.contains("-RelayUITestSessionOlderNotes")
+    }
+
+    /// The older page of those fixtures, oldest first; nil without them.
+    private static var olderPage: [[String: Any]]? {
+        if olderNotesOnly { return olderNotes }
+        if olderTools { return olderNotes + olderToolRun }
+        return nil
+    }
+
+    private static let olderNotes: [[String: Any]] = (1...6).map { index in
+        event("n\(index)", at: "2026-10-08T11:3\(index):00.000Z", kind: "assistant", role: "assistant",
+              content: (1...10).map { "Lantern survey note \(index), line \($0): the wick holds." }.joined(separator: "\n"))
+    }
+
+    private static let olderToolRun: [[String: Any]] = [
+        event("o1", at: "2026-10-08T11:39:40.000Z", kind: "tool_use", role: "assistant",
+              content: "swift build --product Lantern", tool: "Bash"),
+        event("o2", at: "2026-10-08T11:39:50.000Z", kind: "tool_result", role: "tool_result",
+              content: "Build complete", tool: "Bash"),
+    ]
 
     /// When the working fixture's running tool call started: a few seconds
     /// before launch, the same on every read, as a stored event is. Stamped
