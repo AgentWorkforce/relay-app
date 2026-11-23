@@ -104,7 +104,7 @@ fn update_sort_indicator(
 
 /// Overlays do not contribute their content's natural width. Long titles and
 /// controls therefore cannot force a resized column wider than its header.
-fn session_column_frame(child: &impl IsA<gtk::Widget>, width: i32) -> gtk::Overlay {
+pub(in crate::ui) fn session_column_frame(child: &impl IsA<gtk::Widget>, width: i32) -> gtk::Overlay {
     let frame = gtk::Overlay::new();
     frame.set_child(Some(&gtk::DrawingArea::new()));
     frame.set_size_request(width, -1);

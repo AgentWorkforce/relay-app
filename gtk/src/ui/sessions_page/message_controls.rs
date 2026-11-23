@@ -87,7 +87,7 @@ pub(super) fn set_cursor(button: &gtk::Button, presence: Presence) {
 }
 
 impl App {
-    pub(super) fn live_session_columns(&self) -> SessionColumnLayout {
+    pub(in crate::ui) fn live_session_columns(&self) -> SessionColumnLayout {
         self.shell()
             .and_then(|shell| {
                 shell

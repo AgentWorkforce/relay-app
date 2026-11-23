@@ -6,8 +6,11 @@
 //! one opens Chat with it.
 
 use super::super::app::App;
-use super::super::widgets::{self, hbox, text, LabelStyle};
-use crate::models::{chat_elsewhere_agents, chat_elsewhere_tag, ChatAgent};
+use super::super::widgets::{self, hbox, text, vbox, LabelStyle};
+use crate::models::{
+    chat_elsewhere_agents, chat_elsewhere_tag, relative_ms, ChatActivity, ChatAgent, Presence,
+    SessionColumn,
+};
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
 
@@ -80,37 +83,98 @@ impl App {
         *chat.elsewhere_drawn.borrow_mut() = signature;
     }
 
+    /// A row laid out as a session's: the same height, selection lane,
+    /// avatar and column cells at the columns' widths. Where a session
+    /// shows this computer's details, it shows where the agent runs.
     fn elsewhere_row(&self, agent: &ChatAgent) -> gtk::ListBoxRow {
-        let holder = gtk::ListBoxRow::new();
-        holder.add_css_class("elsewhere-row");
-        holder.set_selectable(false);
-        holder.set_activatable(false);
-        let open = gtk::Button::new();
-        open.add_css_class("flat");
-        open.add_css_class("session-open");
-        widgets::action_cursor(&open);
-        let line = hbox(10, &[]);
-        widgets::pad(&line, 6, Some(12), None);
-        line.append(&widgets::agent_badge(&agent.icon_source(), 24));
-        line.append(&text(&agent.name(), &["row-title"]).ellipsized());
-        let tag = text(&chat_elsewhere_tag(agent), &["elsewhere-tag"]).ellipsized();
-        tag.set_tooltip_text(Some(&agent.meta()));
-        line.append(&tag);
-        line.append(&text(
-            agent.activity.label(),
-            &["chat-status", agent.activity.class()],
-        ));
-        let glance = text(&agent.glance(), &["chat-glance"]).ellipsized();
-        glance.set_hexpand(true);
-        glance.set_width_chars(1);
-        line.append(&glance);
-        line.append(&text(&agent.provider(), &["caption"]));
-        open.set_child(Some(&line));
-        widgets::name(&open, &agent.name());
+        let content = hbox(16, &[]);
+        widgets::pad(&content, 0, Some(12), None);
+        super::super::zoom::size(&content, -1, 64);
+        // The selection lane stays empty: bulk actions are this computer's.
+        let lane = hbox(0, &[]);
+        super::super::zoom::size(&lane, 20, -1);
+        content.append(&lane);
+        let badge = widgets::agent_badge(&agent.icon_source(), 24);
+        badge.set_valign(gtk::Align::Center);
+        content.append(&badge);
+        let layout = self.live_session_columns();
+        for column in layout.visible() {
+            let cell = self.elsewhere_cell(agent, column);
+            cell.set_hexpand(true);
+            let frame =
+                super::super::sessions_page::session_column_frame(&cell, layout.width(column));
+            frame.set_hexpand(layout.expanding_column() == Some(column));
+            content.append(&frame);
+        }
+        let row = gtk::ListBoxRow::new();
+        row.add_css_class("session-row");
+        row.add_css_class("elsewhere-row");
+        row.set_selectable(false);
+        row.set_activatable(false);
+        widgets::action_cursor(&row);
+        row.set_child(Some(&content));
+        row.set_tooltip_text(Some(&agent.meta()));
+        widgets::name(&row, &format!("Open conversation: {}", agent.name()));
         let key = agent.key();
         let chat = self.on(move |app| app.show_chat_page(Some(&key)));
-        open.connect_clicked(move |_| chat());
-        holder.set_child(Some(&open));
-        holder
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |_, _, _, _| chat());
+        row.add_controller(click);
+        row
+    }
+
+    /// One column's cell for an agent elsewhere; a column only this
+    /// computer knows reads "—".
+    fn elsewhere_cell(&self, agent: &ChatAgent, column: SessionColumn) -> gtk::Widget {
+        let caption = |value: &str| -> gtk::Widget {
+            let label = text(if value.is_empty() { "—" } else { value }, &["caption"]).ellipsized();
+            label.set_halign(gtk::Align::Start);
+            label.set_valign(gtk::Align::Center);
+            label.upcast()
+        };
+        match column {
+            SessionColumn::Session => {
+                let words = vbox(3, &[]);
+                words.set_valign(gtk::Align::Center);
+                words.append(&text(&agent.name(), &["row-title"]).ellipsized());
+                let line = hbox(8, &[]);
+                line.append(&text(&chat_elsewhere_tag(agent), &["elsewhere-tag"]));
+                let glance = text(&agent.glance(), &["caption", "secondary"]).ellipsized();
+                glance.set_width_chars(1);
+                line.append(&glance);
+                words.append(&line);
+                words.upcast()
+            }
+            SessionColumn::Status => caption(agent.activity.label()),
+            SessionColumn::Project => caption(&agent.project()),
+            SessionColumn::Updated => {
+                caption(&relative_ms(agent.last_activity_ms, super::super::now_ms()))
+            }
+            SessionColumn::Harness => {
+                let identity = hbox(8, &[]);
+                identity.set_valign(gtk::Align::Center);
+                identity.append(&widgets::agent_badge(&agent.icon_source(), 20));
+                identity.append(&text(&agent.provider(), &["caption"]));
+                identity.upcast()
+            }
+            SessionColumn::Relay => {
+                let presence = if agent.activity == ChatActivity::Offline {
+                    Presence::Offline
+                } else {
+                    Presence::Online
+                };
+                let status = hbox(6, &[]);
+                status.set_halign(gtk::Align::Center);
+                status.set_valign(gtk::Align::Center);
+                status.append(&widgets::glyph(
+                    presence.message_symbol(),
+                    14,
+                    presence.message_class(),
+                ));
+                status.append(&text(presence.message_status(), &["caption"]));
+                status.upcast()
+            }
+            _ => caption(""),
+        }
     }
 }
