@@ -1,0 +1,123 @@
+import Foundation
+
+/// The turn the desktop an agent runs on publishes in its roster record
+/// (`metadata.activity.turn`). `working` also covers a turn blocked on a
+/// permission. An unknown value is no turn at all.
+enum AgentTurn: String, Equatable, Sendable {
+    case working, idle
+
+    init?(reported: String) {
+        self.init(rawValue: reported.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+}
+
+/// What an agent is doing now, as the list's badge shows it. The desktop
+/// Chat page also has Ended; iOS has no signal that a session ended, so it
+/// is left out.
+enum ChatActivity: Equatable, Sendable {
+    /// On a turn, or, with no turn reported, a loaded session wrote within
+    /// the last two minutes.
+    case working
+    /// Reachable and ready for a message.
+    case idle
+    /// Not reachable now; messages wait.
+    case offline
+
+    /// The list's order: working first, then idle, then offline.
+    var rank: Int {
+        switch self {
+        case .working: 0
+        case .idle: 1
+        case .offline: 2
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .working: "Working"
+        case .idle: "Idle"
+        case .offline: "Offline"
+        }
+    }
+}
+
+/// The agent list's order, the desktop Chat page's: by activity, then by
+/// recency in five-minute buckets, then by name. Recency is when the agent
+/// last did something (its reported activity changed, or its loaded session
+/// wrote), never its presence heartbeat, so a heartbeat never moves a row;
+/// the bucket keeps a busy agent from moving on every event.
+enum AgentListOrder {
+    /// How recently a loaded session must have written to count as working.
+    static let workingWindow: TimeInterval = 120
+    /// How coarsely recency orders agents.
+    static let bucketLength: TimeInterval = 300
+
+    /// What one row is ordered by.
+    struct Entry: Equatable {
+        var name: String
+        var activity: ChatActivity
+        /// The newest time the client knows the agent did something; nil
+        /// when it knows none. Never a heartbeat.
+        var lastActivity: Date?
+        /// Breaks a tie between equal names, so the order never depends on
+        /// the input's.
+        var id = ""
+    }
+
+    /// The activity from what iOS has: whether the agent is reachable
+    /// (`RelayAgent.isReachable`), the turn its roster record reports, and,
+    /// only when it reports none, the newest event of its session when that
+    /// session is already loaded. A presence status such as `waiting` is
+    /// not a turn.
+    static func activity(turn: AgentTurn?, reachable: Bool, lastEventAt: Date?, now: Date) -> ChatActivity {
+        guard reachable else { return .offline }
+        switch turn {
+        case .working: return .working
+        case .idle: return .idle
+        case nil:
+            if let lastEventAt, now.timeIntervalSince(lastEventAt) <= workingWindow { return .working }
+            return .idle
+        }
+    }
+
+    /// The time in a roster record's `metadata.activity.updated_ms`: whole
+    /// milliseconds since 1970. Absent, zero or less, a fraction, not finite,
+    /// a boolean or not a number is no time.
+    static func activityTime(_ value: Any?) -> Date? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, let ms = Int64(exactly: double), ms > 0 else { return nil }
+        return Date(timeIntervalSince1970: Double(ms) / 1000)
+    }
+
+    /// `date`'s five-minute bucket: `floor(ms / 300000)`.
+    static func bucket(_ date: Date) -> Int {
+        Int((date.timeIntervalSince1970 / bucketLength).rounded(.down))
+    }
+
+    /// Whether `a` comes before `b`: lower rank, then the newer bucket
+    /// (a missing time last), then the lowercase name.
+    static func precedes(_ a: Entry, _ b: Entry) -> Bool {
+        if a.activity.rank != b.activity.rank { return a.activity.rank < b.activity.rank }
+        let left = a.lastActivity.map(bucket), right = b.lastActivity.map(bucket)
+        if left != right {
+            switch (left, right) {
+            case let (l?, r?): return l > r
+            case (_?, nil): return true
+            default: return false
+            }
+        }
+        let leftName = a.name.lowercased(), rightName = b.name.lowercased()
+        if leftName != rightName { return leftName < rightName }
+        return a.id < b.id
+    }
+
+    /// `rows` with pinned rows first, each group in the list's order.
+    static func sorted<Row>(_ rows: [Row], pinned: (Row) -> Bool = { _ in false },
+                            entry: (Row) -> Entry) -> [Row] {
+        let keyed = rows.map { (row: $0, pinned: pinned($0), entry: entry($0)) }
+        return keyed.sorted { a, b in
+            a.pinned != b.pinned ? a.pinned : precedes(a.entry, b.entry)
+        }.map(\.row)
+    }
+}

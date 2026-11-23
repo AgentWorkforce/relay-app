@@ -1,11 +1,14 @@
 #if DEBUG
 import Foundation
 
-/// A closed, offline UI fixture. Only POST /dm advances it; reads never do.
+/// A closed, offline UI fixture. Only POST /dm advances the handoff; reads
+/// never do. A read receipt (POST /messages/<id>/read) is recorded, and
+/// nothing here is ever unread in /inbox.
 enum MobileHandoffFixture {
     private final class State: @unchecked Sendable {
         let lock = NSLock()
         var sent: String?
+        var reads: [String] = []
     }
     private static let state = State()
     private static let person = "ui-test-person"
@@ -16,6 +19,7 @@ enum MobileHandoffFixture {
     }
 
     static func trace(_ stage: String) {
+        QuestionCardFixture.note(stage)
         guard scenario != nil else { return }
         NSLog("Mobile handoff send: %@", stage)
     }
@@ -29,6 +33,12 @@ enum MobileHandoffFixture {
             state.sent = body?["text"] as? String
             return ["id": "handoff-send", "conversation_id": "dm_reviewer"]
         }
+        if method == "POST", let id = RelayUITestReadPosts.messageID(readPath: path) {
+            state.reads.append(id)
+            RelayUITestReadPosts.shared.record(id)
+            return JSONObject()
+        }
+        if path == "/inbox" { return RelayUITestReadPosts.inbox([]) }
         var metadata: JSONObject = ["source": "relay-desktop", "mobile_handoff_enabled": true, "host": "Test Mini.local",
                                     "session_kind": "claude-terminal", "session_id": "same-claude-session",
                                     "session_title": "Continue the same task"]

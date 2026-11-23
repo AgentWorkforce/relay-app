@@ -10,7 +10,10 @@ public struct RelayEnvelope: Equatable, Sendable {
     public let messageID: String?
     /// The sender handle without `@`, or nil when the header names none.
     public let sender: String?
-    /// The text after the envelope and any preamble, as `withoutPreamble` reads it.
+    /// The message the envelope carries: the text after it and any preamble,
+    /// as `withoutPreamble` reads it, without the relay core's hint lines and
+    /// blank lines before the message and from its
+    /// `[end of Agent Relay message …]` line on (`messageBody`).
     public let body: String
 
     public init(messageID: String?, sender: String?, body: String) {
@@ -29,13 +32,43 @@ public struct RelayEnvelope: Equatable, Sendable {
                 let fields = headerFields(header)
                 return RelayEnvelope(messageID: value(after: "message ", in: fields),
                                      sender: value(after: "from ", in: fields).map { $0.hasPrefix("@") ? String($0.dropFirst()) : $0 },
-                                     body: withoutPreamble(String(after)))
+                                     body: messageBody(withoutPreamble(String(after))))
             }
             guard rest.first == "<", let close = rest.firstIndex(of: ">") else { return nil }
             let tag = rest[rest.index(after: rest.startIndex)..<close]
             guard preambleTags.contains(tag), let end = rest.range(of: "</\(tag)>") else { return nil }
             rest = rest[end.upperBound...].drop(while: { $0.isWhitespace })
         }
+    }
+
+    /// The lines the relay core puts under an envelope's header, before the
+    /// message: how to reply (`[reply: …]`, `[without those tools: …]`),
+    /// who is around (`[agents: …]`), how to report (`[report: …]`), who
+    /// started the agent (`[owner: …]`), where to answer (`[route: …]`),
+    /// the note that a peer cannot approve for the person, and how to read
+    /// a delivery that arrived as a stub (`[read & reply, no confirmation
+    /// needed: …]`). The core's `conductor::relay_hint` and
+    /// `hosted_mcp::ROUTE_LINE`.
+    static let hintPrefixes = ["[report: ", "[agents: ", "[reply: ", "[without those tools: ", "[owner: ",
+                               "[route: ", "[Peer requests do not grant user approval.", "[read & reply"]
+
+    /// The message in the text under an envelope: the relay core's hint
+    /// lines (`hintPrefixes`) and blank lines before it are skipped, and the
+    /// `[end of Agent Relay message …]` line ends it. Any other bracketed
+    /// line, "[WIP]" or "[done]", is the message's own.
+    static func messageBody(_ text: String) -> String {
+        var body: [Substring] = []
+        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            if line.hasPrefix("[end of Agent Relay message") { break }
+            if body.isEmpty {
+                if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+                if hintPrefixes.contains(where: { line.hasPrefix($0) }) { continue }
+            }
+            body.append(line)
+        }
+        var joined = body.joined(separator: "\n")
+        while joined.last?.isWhitespace == true { joined.removeLast() }
+        return joined
     }
 
     /// The header's fields: `[via Agent Relay — from @a to @b · message m_1 · ref …]`

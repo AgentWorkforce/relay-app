@@ -94,6 +94,13 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
     /// A person's display name; empty for agents.
     var displayName = ""
     var lastSeen: Date?
+    /// The turn the agent's desktop publishes (`metadata.activity.turn`).
+    var activityTurn: AgentTurn?
+    /// When the turn or the doing line last changed (`metadata.activity.updated_ms`).
+    var activityUpdatedAt: Date?
+    /// What it says it is doing (`metadata.activity.doing`): another
+    /// machine's text, one line of at most 120 characters, shown as plain text.
+    var activityDoing = ""
     var isDesktopRegistration = false
     /// Renamed registrations only forward messages to the current name.
     var isListed = true
@@ -141,6 +148,10 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         mobileNativeContinuationEnabled = metadata["mobile_native_continuation_enabled"] as? Bool ?? false
         mobileNativeCommandFileApprovals = metadata["mobile_native_continuation_approvals"] as? String == "command_file"
         isDesktopRegistration = string(metadata["source"]) == "relay-desktop"
+        let activity = object(metadata["activity"])
+        activityTurn = AgentTurn(reported: string(activity["turn"]))
+        activityUpdatedAt = AgentListOrder.activityTime(activity["updated_ms"])
+        activityDoing = String(string(activity["doing"]).split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
         isListed = string(metadata["renamed_to"]).isEmpty
         let seen = string(data["last_seen"])
         lastSeen = (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(seen))
@@ -301,6 +312,9 @@ struct RelayAPIError: LocalizedError {
     let message: String
     var status: Int? = nil
     var code: String = ""
+    /// The server's `error.reason`: what tells apart answers that share a
+    /// code (every session events 501 has `unsupported_by_backend`).
+    var reason: String = ""
     var retryAfterSeconds: Int? = nil
     /// A paid GPT-Live session the voice broker created but couldn't confirm
     /// closed; the call reports usage for it until the close is confirmed.
@@ -312,6 +326,16 @@ struct RelayAPIError: LocalizedError {
     /// failure from it (SpawnFailure).
     var summary: String? = nil
     var errorDescription: String? { UserFacingError.apiMessage(self) }
+}
+
+/// The identifiers in an error body. Cloud routes report `{error, code}`;
+/// Relaycast nests the code in `error`; the reason is `error.reason`.
+enum RelayErrorBody {
+    static func identifiers(in json: JSONObject) -> (code: String, reason: String) {
+        let problem = object(json["error"])
+        let code = string(problem["code"]).isEmpty ? string(json["code"]) : string(problem["code"])
+        return (code, string(problem["reason"]))
+    }
 }
 
 private enum SecureStore {
@@ -430,6 +454,9 @@ private enum SecureStore {
         let task: Task<Void, Never>
     }
     private var sessionEventReads: [String: SessionEventRead] = [:]
+    /// When each session's newest page was last asked for, so a burst of
+    /// chat messages reads at most once per `SessionEventPolling.minimumSpacing`.
+    private var sessionEventLastRead: [String: Date] = [:]
     private var sessionEventsGeneration = 0
     /// Where session events persist between launches: the on-disk cache,
     /// or nothing in UI tests.
@@ -496,6 +523,12 @@ private enum SecureStore {
     private var latestMessageIDs: [String: String] = [:]
     private var localMessageNotices = LocalMessageNotices()
     private var latestIncomingMessageIDs: [String: String] = [:]
+    /// The server's read state (`/inbox`), for the session `readStateSession`.
+    private var readState = ConversationReadState()
+    private var readStateSession = 0
+    private var carryingOverSeen = false
+    var isAppActive: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
+    var notificationCenter = RelayNotificationCenter.system
     private var conversationsInitialized = false
     private var registeredPushToken: String?
     private var selectedConversation: String?
@@ -572,8 +605,7 @@ private enum SecureStore {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? JSONObject ?? [:]
             guard !(200..<300).contains(http.statusCode) else { return json }
             let problem = object(json["error"])
-            // Cloud routes report `{error, code}`; Relaycast nests the code in `error`.
-            let code = string(problem["code"]).isEmpty ? string(json["code"]) : string(problem["code"])
+            let (code, reason) = RelayErrorBody.identifiers(in: json)
             let headerDelay = http.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(Int.init).map { max($0, 0) }
             let retryDelay = headerDelay ?? min(2 << attempt, 10)
@@ -588,7 +620,7 @@ private enum SecureStore {
                 ? "Agent Relay is busy. Try again in a moment."
                 : (serverDetail.isEmpty ? "Agent Relay returned HTTP \(http.statusCode)" : serverDetail)
             let voiceSession = string(json["sessionId"])
-            throw RelayAPIError(message: detail, status: http.statusCode, code: code,
+            throw RelayAPIError(message: detail, status: http.statusCode, code: code, reason: reason,
                                 retryAfterSeconds: headerDelay,
                                 voiceSessionID: voiceSession.isEmpty ? nil : voiceSession,
                                 fromServer: code != "database_overloaded")
@@ -1368,16 +1400,76 @@ private enum SecureStore {
     func pollMessages(fromRefresh refresh: Int? = nil) async {
         guard paired, !signingOut, !Task.isCancelled,
               refresh == nil || refresh == refreshGeneration else { return }
+        await reloadConversations(fromRefresh: refresh, afterCarryOver: false)
+    }
+    /// Reads the conversation list and the server's read state together.
+    /// `afterCarryOver` is the one re-read after carrying the old device
+    /// cursor over: it applies the inbox as it is and starts no carry-over.
+    private func reloadConversations(fromRefresh refresh: Int?, afterCarryOver: Bool) async {
+        guard paired, !signingOut, !Task.isCancelled,
+              refresh == nil || refresh == refreshGeneration else { return }
+        resetReadStateIfSessionChanged()
         conversationRefreshGeneration += 1
         let generation = conversationRefreshGeneration
-        do {
-            let threads = try objects(await api("/dm/conversations", agent: true))
-            guard generation == conversationRefreshGeneration else { return }
+        let session = sessionGeneration
+        let ticket = readState.inboxRequested()
+        let inboxStarted = Date()
+        async let inboxData: Any? = try? api("/inbox", agent: true)
+        async let threadData: Any? = try? api("/dm/conversations", agent: true)
+        let inbox = await inboxData as? JSONObject
+        let threads = await threadData.map { objects($0) }
+        // A transient poll failure should not interrupt an open conversation.
+        guard generation == conversationRefreshGeneration, session == sessionGeneration,
+              paired, !signingOut else { return }
+        let defaults = UserDefaults.standard
+        let cursorKeys = [unreadSeenKey, unreadBaselineKey, unreadStoragePrefix + ".carryOverFailures"]
+        let oldCursor = ConversationReadState.oldSeenCursor(defaults.dictionary(forKey: cursorKeys[0]),
+                                                            hasBaseline: defaults.object(forKey: cursorKeys[1]) != nil)
+        var answer: [String: String]?
+        var carryOver: [(conversationID: String, messageID: String)] = []
+        if let unread = inbox.map({ ConversationReadState.unread(inInbox: $0, mine: messagingHandle) }) {
+            switch ConversationReadState.inboxStep(unread: unread, oldCursor: oldCursor,
+                                                   carryOverRunning: carryingOverSeen, afterCarryOver: afterCarryOver) {
+            case .apply(let forgetCursor):
+                answer = unread
+                if forgetCursor { cursorKeys.forEach(defaults.removeObject(forKey:)) }
+            case .keepLast: break
+            case .carryOver(let plan): carryOver = plan
+            }
+        }
+        var keepNotifications: Set<String> = []
+        if let answer { keepNotifications = readState.apply(inbox: answer, ticket: ticket) } else { readState.inboxUnanswered() }
+        if let threads {
             latestConversationThreads = threads
             updateConversations(threads, metadata: conversationAgentMetadata)
             Task { await enrichConversationMetadata() }
-        } catch {
-            // A transient poll failure should not interrupt an open conversation.
+        } else if answer != nil, conversationsInitialized {
+            updateConversations(latestConversationThreads, metadata: conversationAgentMetadata)
+        }
+        if answer != nil { await removeReadNotifications(deliveredBefore: inboxStarted, unread: keepNotifications) }
+        if !carryOver.isEmpty {
+            carryingOverSeen = true
+            var outcomes: [ConversationReadState.Outcome] = []
+            for step in carryOver {
+                outcomes.append(await postRead(step.messageID))
+                guard session == sessionGeneration else { return }
+            }
+            carryingOverSeen = false
+            let next = ConversationReadState.cursorAfterCarryOver(seen: oldCursor ?? [:], plan: carryOver, outcomes: outcomes,
+                                                                  failedReloads: defaults.integer(forKey: cursorKeys[2]))
+            if let seen = next.seen {
+                defaults.set(seen, forKey: cursorKeys[0])
+                defaults.set(next.failedReloads, forKey: cursorKeys[2])
+            } else {
+                cursorKeys.forEach(defaults.removeObject(forKey:))
+            }
+            await reloadConversations(fromRefresh: nil, afterCarryOver: true)
+            return
+        }
+        if attachedID == nil, let open = selectedConversation,
+           let agent = conversations.first(where: { $0.id == open }) ?? relayAgents.first(where: { $0.id == open }),
+           let conversationID = conversationIDs[agent.name] {
+            await markOpenConversationRead(agent, conversationID: conversationID)
         }
     }
     /// Lists workspace channels, marking the ones this person has joined.
@@ -1526,12 +1618,9 @@ private enum SecureStore {
     }
     private func updateConversations(_ threads: [JSONObject], metadata: [String: RelayAgent]) {
         let mine = UserDefaults.standard.string(forKey: "relay.mobileName") ?? ""
-        // Relaycast's unread_count includes this agent's own messages. Keep a
-        // device-local cursor for the newest incoming message instead.
+        // Relaycast's unread_count includes this agent's own messages; the
+        // server's read state (`/inbox`) says which conversations are unread.
         let defaults = UserDefaults.standard
-        var seen = defaults.dictionary(forKey: unreadSeenKey) as? [String: String] ?? [:]
-        let establishingBaseline = !defaults.bool(forKey: unreadBaselineKey)
-        var seenChanged = establishingBaseline
         var ids: [String: String] = [:]
         var latest: [String: String] = [:]
         var latestIncoming: [String: String] = [:]
@@ -1554,22 +1643,14 @@ private enum SecureStore {
             let incoming = !messageID.isEmpty &&
                 (!senderID.isEmpty && !myID.isEmpty ? senderID != myID :
                  !senderName.isEmpty && senderName != mine)
-            if incoming {
-                latestIncoming[conversationID] = messageID
-                if establishingBaseline {
-                    if seen[conversationID] != messageID {
-                        seen[conversationID] = messageID
-                        seenChanged = true
-                    }
-                } else if seen[conversationID] != messageID {
-                    unread.insert("conversation:\(name)")
-                }
-            }
+            if incoming { latestIncoming[conversationID] = messageID }
+            if readState.unreadConversationIDs.contains(conversationID) { unread.insert("conversation:\(name)") }
             if localMessageNotices.shouldPost(conversationID: conversationID, messageID: messageID,
                                               isCurrentPeer: isCurrentPeer,
                                               apnsToken: RelayPushState.shared.token,
                                               initialized: conversationsInitialized,
-                                              fromMe: string(last["agent_id"]) == myID) {
+                                              fromMe: string(last["agent_id"]) == myID,
+                                              serverSays: readState.notice(conversationID: conversationID)) {
                 let content = UNMutableNotificationContent()
                 // A person shows by name, as in the app; agents by their name.
                 let person = metadata[name]
@@ -1578,7 +1659,7 @@ private enum SecureStore {
                 content.body = "New message in Agent Relay"
                 content.sound = .default
                 content.userInfo = ["conversation_id": conversationID]
-                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: messageID,
+                notificationCenter.post(UNNotificationRequest(identifier: messageID,
                     content: content, trigger: nil))
             }
             var enriched = thread
@@ -1613,9 +1694,68 @@ private enum SecureStore {
         conversations = updated
         hiddenConversationIDs = hiddenIDs
         unreadConversationIDs = unread.intersection(visibleIDs).subtracting(hiddenIDs)
-        if seenChanged { defaults.set(seen, forKey: unreadSeenKey) }
-        if establishingBaseline { defaults.set(true, forKey: unreadBaselineKey) }
         conversationsInitialized = true
+    }
+    /// The read state belongs to the session it was read for.
+    private func resetReadStateIfSessionChanged() {
+        guard readStateSession != sessionGeneration else { return }
+        readState = ConversationReadState()
+        readStateSession = sessionGeneration
+        carryingOverSeen = false
+    }
+    /// Marks the open direct conversation read up to its newest incoming
+    /// message, once, while the app is in the foreground. A failed post is
+    /// tried again by the next history load.
+    private func markOpenConversationRead(_ agent: RelayAgent, conversationID: String) async {
+        resetReadStateIfSessionChanged()
+        guard ConversationReadState.mayMarkRead(isDirectConversation: agent.source != .channel,
+                                                isOpen: selectedConversation == agent.id,
+                                                historyLoaded: loadedHistoryConversation == agent.id,
+                                                appActive: isAppActive()) else { return }
+        let page = messages.map { (id: $0.hasServerID ? $0.id : "", mine: $0.mine) }
+        guard let messageID = ConversationReadState.messageToMarkRead(
+                page: page, latestIncomingID: latestIncomingMessageIDs[conversationID]),
+              readState.beginRead(conversationID: conversationID, messageID: messageID) else { return }
+        unreadConversationIDs.remove("conversation:\(agent.name)")
+        let session = sessionGeneration
+        let postStarted = Date()
+        let outcome = await postRead(messageID)
+        guard session == sessionGeneration else { return }
+        readState.finishRead(conversationID: conversationID, messageID: messageID, outcome: outcome)
+        if outcome == .success {
+            await removeReadNotifications(deliveredBefore: postStarted, unread: readState.unreadConversationIDs)
+        }
+    }
+    #if DEBUG
+    /// Tests only: replaces the read POST, so a test can hold it in flight
+    /// or fail it (the Debug fixture hook can do neither).
+    var readPostOverride: (@MainActor (_ messageID: String) async throws -> Void)?
+    #endif
+    private func postRead(_ messageID: String) async -> ConversationReadState.Outcome {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        let encoded = messageID.addingPercentEncoding(withAllowedCharacters: allowed) ?? messageID
+        do {
+            #if DEBUG
+            if let readPostOverride {
+                try await readPostOverride(messageID)
+                return .success
+            }
+            #endif
+            _ = try await api("/messages/\(encoded)/read", agent: true, method: "POST")
+            return .success
+        } catch let failure as RelayAPIError {
+            return ConversationReadState.outcome(forFailureStatus: failure.status)
+        } catch {
+            return .failed
+        }
+    }
+    /// Clears delivered notifications of direct conversations not in
+    /// `unread`, delivered before the read that decided it started.
+    private func removeReadNotifications(deliveredBefore cutoff: Date, unread: Set<String>) async {
+        let direct = Set(conversationIDs.values)
+        let read = ConversationReadState.deliveredNotificationsToRemove(
+            await notificationCenter.delivered(), before: cutoff, directConversationIDs: direct, unread: unread)
+        if !read.isEmpty { notificationCenter.remove(read) }
     }
     /// Hides a conversation from the Messages list on this device only.
     func hideConversation(_ agent: RelayAgent) {
@@ -1785,7 +1925,8 @@ private enum SecureStore {
             rowSummary: id.isEmpty ? nil : rowSummaries[id],
             recordedSummary: id.isEmpty ? nil : sessionSummaryState(for: id),
             goal: id.isEmpty ? "" : goals[id] ?? "",
-            unread: agent.source == .conversation && unreadConversationIDs.contains(agent.id))
+            unread: agent.source == .conversation && unreadConversationIDs.contains(agent.id),
+            lastEventAt: id.isEmpty ? nil : loadedLastEventAt(for: agent))
         return AgentRowModel(agent: agent, loaded: loaded, now: now)
     }
     /// Keeps what the summary list reported for a session: its revision and
@@ -1886,15 +2027,28 @@ private enum SecureStore {
         return store.loaded || store.failures > 0
     }
 
-    /// How long the open chat waits before reading the newest page again.
-    func sessionEventPollDelay(for agent: RelayAgent, now: Date = Date()) -> TimeInterval {
+    /// How long the open chat waits before reading the newest page again,
+    /// or nil for no timer. `chatActivityAt`: the chat's newest message,
+    /// sent or received.
+    func sessionEventPollDelay(for agent: RelayAgent, chatActivityAt: Date? = nil, now: Date = Date()) -> TimeInterval? {
         let store = sessionEvents[agent.sessionID]
-        return SessionEventPolling.interval(newestEventAt: store?.newest?.ts, now: now, failures: store?.failures ?? 0)
+        return SessionEventPolling.interval(newestEventAt: store?.newest?.ts, chatActivityAt: chatActivityAt, now: now,
+                                            failures: store?.failures ?? 0, unavailable: store?.unavailable ?? false,
+                                            unknownNotImplemented: store?.unknownNotImplemented ?? 0)
+    }
+
+    /// How long to wait before the next newest-page read of `agent`'s
+    /// session keeps reads `SessionEventPolling.minimumSpacing` apart; 0 when
+    /// it can read now.
+    func sessionEventReadWait(for agent: RelayAgent, now: Date = Date()) -> TimeInterval {
+        guard let last = sessionEventLastRead[agent.sessionID] else { return 0 }
+        return max(0, SessionEventPolling.minimumSpacing - now.timeIntervalSince(last))
     }
 
     /// Reads the session's newest page and merges it. One read runs per
     /// session; a call while one runs waits for it instead of starting
-    /// another. A failure keeps what is shown.
+    /// another. A failure keeps what is shown. Nothing once the server said
+    /// the session is unavailable.
     func refreshSessionEvents(for agent: RelayAgent) async {
         await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: false) { _ in
             SessionEventsRequest.newest
@@ -1902,7 +2056,8 @@ private enum SecureStore {
     }
 
     /// Reads the next older page, or the newest page again after the server
-    /// dropped the cursor. Nothing once the start was reached.
+    /// dropped the cursor. Nothing once the start was reached or the
+    /// session is unavailable.
     func loadOlderSessionEvents(for agent: RelayAgent) async {
         await readSessionEvents(agent.sessionID, available: sessionEventsAvailable(for: agent), older: true) { store in
             store.olderRequest
@@ -1917,6 +2072,8 @@ private enum SecureStore {
             await running.task.value
             if Task.isCancelled { return }
         }
+        // The server's answer was final: no read until the store is dropped.
+        if sessionEvents[id]?.unavailable == true { return }
         let generation = sessionEventsGeneration
         let workspaceID = cloudWorkspaceID
         let cacheWorkspace = workspaceID ?? ""
@@ -1936,7 +2093,8 @@ private enum SecureStore {
                         ?? SessionEventStore(sessionID: id)
                 }
             }
-            guard let store = self.sessionEvents[id], let spec = request(store) else { return }
+            guard let store = self.sessionEvents[id], !store.unavailable, let spec = request(store) else { return }
+            if !older { self.sessionEventLastRead[id] = Date() }
             do {
                 let page = try await self.fetchSessionEventPage(id, workspaceID: workspaceID, spec: spec)
                 guard self.sessionEventsGeneration == generation else { return }
@@ -1948,7 +2106,8 @@ private enum SecureStore {
             } catch {
                 guard self.sessionEventsGeneration == generation else { return }
                 let failure = error as? RelayAPIError
-                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "", older: older)
+                self.sessionEvents[id]?.failed(status: failure?.status, code: failure?.code ?? "",
+                                               reason: failure?.reason ?? "", older: older)
                 if SessionEventsRequest.accessRevoked(status: failure?.status) {
                     // This account may no longer read it: off the screen and the disk.
                     self.sessionEvents[id]?.forgetEvents()
@@ -1997,6 +2156,7 @@ private enum SecureStore {
         sessionEventsGeneration += 1
         sessionEventReads.values.forEach { $0.task.cancel() }
         sessionEventReads = [:]
+        sessionEventLastRead = [:]
         sessionEvents = [:]
         sessionEventSnapshots.removeAll()
     }
@@ -2044,18 +2204,10 @@ private enum SecureStore {
             messages = objects(result).reversed().enumerated().map { RelayMessage($0.element, index: $0.offset) }
             loadedHistoryConversation = agent.id
             if agent.source == .channel { await loadChannelSenders(in: messages) }
-            if let id = conversationID, let incomingID = latestIncomingMessageIDs[id],
-               messages.contains(where: { $0.id == incomingID && !$0.mine }) {
-                var seen = UserDefaults.standard.dictionary(forKey: unreadSeenKey) as? [String: String] ?? [:]
-                if seen[id] != incomingID {
-                    seen[id] = incomingID
-                    UserDefaults.standard.set(seen, forKey: unreadSeenKey)
-                    unreadConversationIDs.remove("conversation:\(agent.name)")
-                }
-            }
             error = nil
             refreshNotice = nil
             connectionReports.succeeded(ticket)
+            if let id = conversationID { await markOpenConversationRead(agent, conversationID: id) }
         } catch {
             if reportsErrors, selectedConversation == agent.id {
                 reportConnectionFailure(error, from: ticket, channel: agent.source == .channel)

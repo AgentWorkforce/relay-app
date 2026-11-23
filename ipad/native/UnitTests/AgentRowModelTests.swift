@@ -231,7 +231,63 @@ final class AgentRowModelTests: XCTestCase {
         XCTAssertFalse(row(agent()).unread)
         let model = row(agent(metadata: ["session_title": "Provider title"]), .init(cli: "codex", unread: true))
         XCTAssertTrue(model.unread)
-        XCTAssertEqual(model.accessibilityLabel, "builder, Provider title, Codex, Test Mini, Online, Unread messages")
+        // An agent's row reads its badge in place of the presence status.
+        XCTAssertEqual(model.accessibilityLabel, "builder, Provider title, Codex, Test Mini, Idle, Unread messages")
+    }
+
+    func testAgentBadgeFromTurnThenLoadedEventsAndNoneForPeopleOrChannels() {
+        func turn(_ value: String) -> JSONObject { ["activity": ["turn": value]] }
+        XCTAssertEqual(row(agent(metadata: turn("working"))).activity, .working)
+        XCTAssertEqual(row(agent(metadata: turn("idle"))).activity, .idle)
+        // A presence status is not a turn.
+        XCTAssertEqual(row(agent(status: "waiting")).activity, .idle)
+        XCTAssertEqual(row(agent(status: "offline", metadata: turn("working"))).activity, .offline)
+        XCTAssertEqual(row(agent(status: "")).activity, .offline)
+        XCTAssertEqual(row(agent(status: "active", extra: ["last_seen": seen(6 * 60)])).activity, .offline)
+        // An idle turn beats a recent event; with no turn, events decide.
+        let recent = AgentRowModel.Loaded(lastEventAt: now.addingTimeInterval(-30))
+        XCTAssertEqual(row(agent(metadata: turn("idle")), recent).activity, .idle)
+        XCTAssertEqual(row(agent(), recent).activity, .working)
+        XCTAssertEqual(row(agent(metadata: turn("unknown-value")), recent).activity, .working)
+        XCTAssertEqual(row(agent(), .init(lastEventAt: now.addingTimeInterval(-121))).activity, .idle)
+        XCTAssertEqual(row(agent(metadata: turn("working"))).accessibilityLabel, "builder, Test Mini, Working")
+        XCTAssertEqual(row(agent(status: "offline")).accessibilityLabel, "builder, Test Mini, Offline")
+        // Waiting on a person is not a turn, but VoiceOver still says it,
+        // as the orange circle shows it.
+        XCTAssertEqual(row(agent(status: "waiting")).accessibilityLabel, "builder, Test Mini, Idle, Waiting")
+        XCTAssertEqual(row(agent(status: "blocked", metadata: turn("working"))).accessibilityLabel,
+                       "builder, Test Mini, Working, Waiting")
+
+        let person = RelayAgent(relay: ["name": "sam-lee", "type": "human", "persona": "Sam Lee", "status": "active",
+                                        "last_seen": seen()])
+        XCTAssertNil(row(person, .init(displayName: "Sam Lee")).activity)
+        let channel = RelayAgent(channel: ["name": "launch", "member_count": 3], joined: true)
+        XCTAssertNil(row(channel).activity)
+    }
+
+    func testDoingComesAfterTheBriefAndNeverAsTheTitle() {
+        let busy = agent(metadata: ["session_title": "Provider title",
+                                    "activity": ["turn": "working", "doing": "  Running\n the  checks  "]])
+        XCTAssertEqual(busy.activityTurn, .working)
+        XCTAssertEqual(busy.activityDoing, "Running the checks")
+        // No brief: doing is the summary; the title stays the provider's.
+        XCTAssertEqual(row(busy).title, "Provider title")
+        XCTAssertEqual(row(busy).summary, "Running the checks")
+        // A brief comes first.
+        var loaded = AgentRowModel.Loaded()
+        loaded.rowSummary = AgentRowSummary(title: "Brief title", line: "Brief line")
+        XCTAssertEqual(row(busy, loaded).summary, "Brief line")
+        loaded.rowSummary = nil
+        loaded.recordedSummary = .ready(text: "Recorded", isShort: true)
+        XCTAssertEqual(row(busy, loaded).summary, "Recorded")
+        // Without a title, doing is still only the summary line.
+        let untitled = agent(metadata: ["activity": ["doing": "Running the checks"]])
+        XCTAssertNil(row(untitled).title)
+        XCTAssertEqual(row(untitled).summary, "Running the checks")
+        XCTAssertNil(untitled.activityTurn)
+        // Another machine's text is clipped to 120 characters.
+        let long = agent(metadata: ["activity": ["doing": String(repeating: "a", count: 200)]])
+        XCTAssertEqual(long.activityDoing.count, 120)
     }
 
     func testSearchMatchesWhatTheRowShowsAndTheRecordsOwnFields() {

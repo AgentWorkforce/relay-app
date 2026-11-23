@@ -60,12 +60,17 @@ bash ./install-macos.sh --status
 
 [docs/headless-mac-site-verification.md](../docs/headless-mac-site-verification.md)
 walks one verification run of a site build on a Mac.
+[docs/headless-mac-migration.md](../docs/headless-mac-migration.md) moves a
+Mac that runs a self-built core to the site build.
 
 It downloads `AgentRelay-<version>-macOS-<arch>-probe.tar.gz` (arm64, also
 from a shell under Rosetta, or x64), checks it against the release's
 `.sha256` and checks the core's Developer ID signature (team `QUJ7SA6X8X`)
 before running it, then installs it under
 `~/.local/lib/agent-relay/versions/<version>` and switches `current` to it.
+A site build on a `cloud` feed names the archive with its profile's asset
+prefix instead of `AgentRelay`, and checks its size and sha256 against the
+signed manifest instead of a `.sha256` file.
 The LaunchAgent in `~/Library/LaunchAgents` runs
 `current/agent-relay-probe relay serve --headless` in the user's login session
 (`gui/<uid>`), restarts it if it fails, and logs to

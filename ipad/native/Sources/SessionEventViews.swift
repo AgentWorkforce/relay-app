@@ -5,7 +5,9 @@ import SwiftUI
 // never the whole workspace view.
 
 /// One session event: a prompt or reply as a bubble, a tool call or other
-/// activity as a compact row. Long content is cut with "Show more".
+/// activity as a compact row. A relay message in the session is a bubble
+/// under its "⇄ Agent Relay" marker: one to the agent on the person's side,
+/// one it sent on its own. Long content is cut with "Show more".
 struct SessionEventBubble: View {
     let row: SessionEventRow
     let agentName: String
@@ -15,17 +17,28 @@ struct SessionEventBubble: View {
     var body: some View {
         let preview = SessionTimeline.preview(row.text)
         let shown = expanded ? row.text : preview.text
-        switch row.event.role {
-        case .person, .agent:
-            message(shown: shown, preview: preview)
-        case .tool, .activity:
-            compact(shown: shown, preview: preview)
+        if let mark = row.mark {
+            VStack(alignment: mark.isIncoming ? .trailing : .leading, spacing: 4) {
+                Text(mark.label)
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(accent).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: mark.isIncoming ? .trailing : .leading)
+                    .accessibilityIdentifier("Relay marker")
+                message(shown: shown, preview: preview, person: mark.isIncoming)
+            }
+        } else {
+            switch row.event.role {
+            case .person, .agent:
+                message(shown: shown, preview: preview, person: row.event.role == .person)
+            case .tool, .activity:
+                compact(shown: shown, preview: preview)
+            }
         }
     }
 
-    private func message(shown: String, preview: (text: String, isCut: Bool)) -> some View {
-        let person = row.event.role == .person
-        return HStack(alignment: .bottom) {
+    /// A bubble: the person's side (a prompt, or a relay message to the
+    /// agent) or the agent's.
+    private func message(shown: String, preview: (text: String, isCut: Bool), person: Bool) -> some View {
+        HStack(alignment: .bottom) {
             if person { Spacer(minLength: 45) }
             VStack(alignment: .leading, spacing: 5) {
                 Text(ChatLinks.render(shown)).font(.system(size: 14))
@@ -144,21 +157,23 @@ struct OlderSessionRow: View {
     }
 }
 
-/// "Working: <tool>" at the end of the chat while the agent looks busy. It
-/// only exists while the newest event is recent, and then re-reads the rule
-/// every five seconds so it clears by age.
+/// "Working…" at the end of the chat while the agent's turn is open
+/// (`SessionTurn`). It only exists while the newest event is recent, and
+/// then re-reads the rule every 30 seconds so it clears by age.
 struct SessionWorkingRow: View {
-    let events: [SessionEvent]
+    let open: Bool
+    let newestEventAt: Date?
+    let offline: Bool
     /// A fixed start, so a re-render does not restart the schedule.
     private static let start = Date(timeIntervalSinceReferenceDate: 0)
 
     var body: some View {
-        if let newest = events.last?.ts, Date().timeIntervalSince(newest) < SessionWorking.window {
-            TimelineView(.periodic(from: Self.start, by: 5)) { context in
-                if let state = SessionWorking.state(events: events, now: context.date) {
+        if SessionTurn.showsWorking(open: open, newestEventAt: newestEventAt, offline: offline, now: Date()) {
+            TimelineView(.periodic(from: Self.start, by: 30)) { context in
+                if SessionTurn.showsWorking(open: open, newestEventAt: newestEventAt, offline: offline, now: context.date) {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(state.label).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("Working…").font(.system(size: 12)).foregroundStyle(.secondary)
                         Spacer()
                     }
                     .accessibilityElement(children: .combine)
@@ -166,6 +181,84 @@ struct SessionWorkingRow: View {
                 }
             }
         }
+    }
+}
+
+/// One run of tool work as a collapsed "Activity" group. Open, it lists
+/// each call and result by its tool and target; a line opens that row.
+///
+/// What is open is kept by row (`ActivityExpansion`) beyond the view's
+/// life: when newer tool work joins the run, the group's id changes and
+/// SwiftUI makes a new view, which starts from what was open.
+struct SessionActivityGroupView: View {
+    let group: ActivityGroup
+    let agentName: String
+    let accent: Color
+    @State private var expansion: ActivityExpansion
+
+    /// Every group's open state, by row; read when a group view is made
+    /// and written when it changes, on the main thread only.
+    private static var kept = ActivityExpansion()
+
+    init(group: ActivityGroup, agentName: String, accent: Color) {
+        self.group = group
+        self.agentName = agentName
+        self.accent = accent
+        _expansion = State(initialValue: Self.kept)
+    }
+
+    private var expanded: Bool { expansion.isExpanded(group) }
+
+    private func update(_ change: (inout ActivityExpansion) -> Void) {
+        change(&expansion)
+        change(&Self.kept)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                let open = !expanded
+                update { $0.setExpanded(open, group) }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text("Activity").font(.system(size: 12, weight: .semibold))
+                    Text(group.rows.count == 1 ? "1 step" : "\(group.rows.count) steps")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("Session activity group")
+            if expanded {
+                ForEach(group.rows) { row in
+                    let line = ActivityGroup.line(for: row)
+                    Button {
+                        let open = !expansion.isOpened(row)
+                        update { $0.setOpened(row, open) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(line.title).font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            Text(line.target).font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("Session activity line")
+                    if expansion.isOpened(row) {
+                        SessionEventBubble(row: row, agentName: agentName, accent: accent)
+                    }
+                }
+                .padding(.leading, 16)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.tertiarySystemGroupedBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

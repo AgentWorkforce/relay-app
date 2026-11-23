@@ -99,6 +99,11 @@ struct RelayWorkspaceView: View {
     @FocusState private var phoneSearchFocused: Bool
     @FocusState private var commandFocused: Bool
     @State private var outgoing = OutgoingMessages()
+    /// The answer to a question Relaycast accepted, by "<chat id>|<ref>": its
+    /// first tap's time and its identity. Kept after the answer's bubble
+    /// leaves, so a card whose answer history has not shown yet never offers
+    /// a second send.
+    @State private var acceptedQuestionAnswers: [String: RelayQuestionState.AcceptedAnswer] = [:]
     @State private var uploadedAttachments: [RelayAttachment] = []
     @State private var showFileImporter = false
     @State private var attachmentUploadTask: Task<Void, Never>?
@@ -147,6 +152,11 @@ struct RelayWorkspaceView: View {
     // reasonable time; one long modifier chain made the archive fail.
     var body: some View {
         observedWorkspace
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if RelayUITestFixture.enabled { RelayUITestReadPostsProbe() }
+        }
+        #endif
         .alert("Agent Relay", isPresented: Binding(get: { client.error != nil }, set: { if !$0 { client.error = nil } })) {
             Button("OK", role: .cancel) { client.error = nil }
         } message: { Text(client.error ?? "") }
@@ -246,6 +256,7 @@ struct RelayWorkspaceView: View {
             discardStagedAttachments()
             showFileImporter = false
             outgoing.removeAll()
+            acceptedQuestionAnswers = [:]
             messageDraft = ""
             selected = nil
             phonePath = []
@@ -298,7 +309,13 @@ struct RelayWorkspaceView: View {
         // message. This view always observes the client, so that does not
         // wait for the chat view, pushed or not, to be built again.
         .onChange(of: client.messages.map(\.id)) { _, _ in
+            #if DEBUG
+            QuestionCardFixture.note("onChange(messages) selected=\(selected?.id ?? "nil") before=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))] history=[\(historyRows.map(\.id).joined(separator: ", "))]")
+            #endif
             if let selected { outgoing.reconcile(agentID: selected.id, with: historyRows) }
+            #if DEBUG
+            QuestionCardFixture.note("onChange(messages) after=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))]")
+            #endif
         }
         .onChange(of: client.channels) { _, channels in
             reconcileSelection(in: channels, source: .channel)
@@ -671,7 +688,7 @@ struct RelayWorkspaceView: View {
             // Search matches what the row shows (`AgentRowModel.searchText`).
             (search.isEmpty || client.rowModel(for: agent, now: now).matches(search))
         }
-        return matching.filter { pinnedAgentIDs.contains($0.id) } + matching.filter { !pinnedAgentIDs.contains($0.id) }
+        return page == .agents ? client.listOrdered(matching, pinned: pinnedAgentIDs, now: now) : matching.filter { pinnedAgentIDs.contains($0.id) } + matching.filter { !pinnedAgentIDs.contains($0.id) }
     }
     private var machines: [String] {
         let agents = page == .agents ? client.relayAgents.filter { showAll || $0.isReachable() } : client.conversations
@@ -1315,24 +1332,38 @@ struct RelayWorkspaceView: View {
         }
     }
     private func conversation(for agent: RelayAgent) -> some View {
+        let pending = shownPending(for: agent)
         let scrollRequest = MobileChatScrollRequest(
-            pending: outgoing.messages(for: agent.id).map(\.id),
+            pending: pending.map(\.id),
             messages: client.messages.map(\.id))
         let sessionApplies = client.sessionEventsAvailable(for: agent)
         let store = sessionApplies ? client.sessionEvents[agent.sessionID] : nil
-        let pending = outgoing.messages(for: agent.id)
-        let timeline = SessionTimeline.items(
+        let rows = SessionTimeline.items(
             messages: client.messages, events: store?.events ?? [],
             pending: pending.map { SessionTimeline.Pending(text: $0.text, createdAt: $0.createdAt) },
             me: client.messagingHandle)
+        let timeline = SessionTimeline.grouped(rows)
+        let turnOpen = SessionTurn.isOpen(rows, events: store?.events ?? [], me: client.messagingHandle)
+        // The roster's record when it has one: the open chat's copy can be stale.
+        let presence = client.relayAgents.first { $0.name == agent.name } ?? agent
+        let offline = SessionTurn.isOffline(status: presence.status, lastSeen: presence.lastSeen, now: Date())
         let placeholder = SessionTimeline.placeholder(
             hasRows: !timeline.isEmpty || !pending.isEmpty,
             historyChecked: client.historyCheckedConversation == agent.id || client.historyLoaded(for: agent),
             sessionApplies: sessionApplies, sessionSettled: client.sessionEventsSettled(for: agent))
         let lastMineID = client.messages.last(where: \.mine)?.id
+        // A question card reads the messages after its own, so it takes its
+        // message's place among the messages, not among the timeline's rows.
+        let messagePositions = Dictionary(client.messages.enumerated().map { ($0.element.id, $0.offset) },
+                                          uniquingKeysWith: { first, _ in first })
         let lastEventID = store?.newest?.id
-        // Restarts on another chat, and stops in the background: no reads there.
-        let pollID = "\(agent.id)|\(agent.sessionID)|\(sessionApplies)|\(scenePhase == .active)"
+        // The chat's newest message, sent or received: it sets the poll's
+        // pace with the newest event.
+        let chatActivityAt = (client.messages.compactMap(\.createdAt) + pending.map(\.createdAt)).max()
+        // Restarts on another chat, on a new message in this one (a read
+        // follows, at most one per 5 s), and stops in the background: no reads there.
+        let pollID = "\(agent.id)|\(agent.sessionID)|\(sessionApplies)|\(scenePhase == .active)|"
+            + "\(client.messages.last?.id ?? "")|\(pending.last?.id ?? "")"
         return VStack(spacing: 0) {
             if agent.source == .drive {
                 HStack(spacing: 10) {
@@ -1377,7 +1408,11 @@ struct RelayWorkspaceView: View {
                                     .font(.subheadline).foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity).padding(.top, 45)
                             }
-                            if let store, store.failures > 0 {
+                            if let store, store.unavailable {
+                                Text(store.loaded ? "Newer session activity is not available for this session."
+                                     : "Session activity is not available for this session.")
+                                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                            } else if let store, store.failures > 0 {
                                 Text(store.loaded ? "Session activity could not refresh. Retrying…"
                                      : "Session activity could not load. Retrying…")
                                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
@@ -1393,14 +1428,22 @@ struct RelayWorkspaceView: View {
                                 }
                                 switch item {
                                 case .message(let message):
-                                    messageRow(message, in: agent, showsDelivery: message.mine && message.id == lastMineID)
+                                    if let position = messagePositions[message.id],
+                                       let question = questionCard(message, at: position, in: agent) {
+                                        question
+                                    } else {
+                                        messageRow(message, in: agent, showsDelivery: message.mine && message.id == lastMineID)
+                                    }
                                 case .event(let row):
                                     messageTimeRow(at: row.event.ts) {
                                         SessionEventBubble(row: row, agentName: agent.name, accent: accent)
                                     }.id(MobileChatScrollTarget.message(row.id))
+                                case .activity(let group):
+                                    SessionActivityGroupView(group: group, agentName: agent.name, accent: accent)
+                                        .id(MobileChatScrollTarget.message(group.id))
                                 }
                             }
-                            ForEach(outgoing.messages(for: agent.id)) { pending in
+                            ForEach(pending) { pending in
                                 messageTimeRow(at: pending.createdAt) {
                                     HStack {
                                         Spacer(minLength: 45)
@@ -1433,7 +1476,18 @@ struct RelayWorkspaceView: View {
                                     }
                                 }.id(MobileChatScrollTarget.pending(pending.id))
                             }
-                            if let store { SessionWorkingRow(events: store.events) }
+                            #if DEBUG
+                            if QuestionCardFixture.enabled {
+                                // The composer's state for the UI test's kept tree; fixture launches only.
+                                Text(QuestionCardFixture.report(outgoing: outgoing.all, historyIDs: historyRows.map(\.id),
+                                                                selected: selected?.id))
+                                    .font(.system(size: 6)).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("Question fixture report")
+                            }
+                            #endif
+                            if let store {
+                                SessionWorkingRow(open: turnOpen, newestEventAt: store.newest?.ts, offline: offline)
+                            }
                             Color.clear.frame(height: 1)
                                 .id(MobileChatScrollTarget.message("chat-bottom"))
                                 .onAppear { chatPosition.atBottom = true }
@@ -1475,8 +1529,20 @@ struct RelayWorkspaceView: View {
                     .task(id: pollID) {
                         guard sessionApplies, scenePhase == .active else { return }
                         while !Task.isCancelled {
+                            // A burst of messages restarts this task each time;
+                            // reads of one session stay 5 s apart.
+                            let wait = client.sessionEventReadWait(for: agent)
+                            if wait > 0 {
+                                try? await Task.sleep(for: .seconds(wait))
+                                if Task.isCancelled { return }
+                            }
                             await client.refreshSessionEvents(for: agent)
-                            try? await Task.sleep(for: .seconds(client.sessionEventPollDelay(for: agent)))
+                            // Nil: no timer (activity a week old with no failed
+                            // read, or the session is unavailable). Opening the
+                            // chat, returning to the foreground or a new message
+                            // reads again.
+                            guard let delay = client.sessionEventPollDelay(for: agent, chatActivityAt: chatActivityAt) else { return }
+                            try? await Task.sleep(for: .seconds(delay))
                         }
                     }
                 }
@@ -1538,6 +1604,13 @@ struct RelayWorkspaceView: View {
         case .sent: Label("Sent", systemImage: "checkmark")
         case .failed: Label("Could not confirm send · tap to retry", systemImage: "exclamationmark.circle")
         }
+    }
+    /// The bubbles of `agent`'s conversation as shown: reconciled with its
+    /// loaded history when drawn, so a bubble never shows beside its own row
+    /// even if the reconcile of the stored state does not reach this view.
+    private func shownPending(for agent: RelayAgent) -> [OutgoingMessage] {
+        let shown = client.historyLoaded(for: agent) ? outgoing.reconciled(agentID: agent.id, with: historyRows) : outgoing
+        return shown.messages(for: agent.id)
     }
     /// The open conversation's history rows that carry a server id, as the
     /// composer reconciles its outgoing messages with them.
@@ -1704,6 +1777,39 @@ struct RelayWorkspaceView: View {
             }
         }
     }
+    /// The card for an agent's question in its DM, or nil to keep the bubble.
+    private func questionCard(_ message: RelayMessage, at index: Int, in agent: RelayAgent) -> AnyView? {
+        guard agent.source != .channel,
+              let question = RelayQuestionParser.parse(message.text, sender: message.sender,
+                                                       mine: message.mine, chatAgent: agent.name) else { return nil }
+        let messages = client.messages.map {
+            RelayQuestionState.Message(text: $0.text, mine: $0.mine, sender: $0.sender, createdAt: $0.createdAt,
+                                       id: $0.hasServerID ? $0.id : "")
+        }
+        let pending = shownPending(for: agent).map {
+            RelayQuestionState.PendingAnswer(text: $0.text, failed: $0.state == .failed, accepted: $0.state == .sent)
+        }
+        let accepted = acceptedQuestionAnswers["\(agent.id)|\(question.ref.lowercased())"]
+        let sentAt = message.createdAt
+        return AnyView(HStack {
+            QuestionCardView(question: question, expiresAt: question.expiresAt(sentAt: sentAt), state: { now in
+                RelayQuestionState.state(for: question, at: index, in: messages, chatAgent: agent.name,
+                                         pending: pending, accepted: accepted, sentAt: sentAt, now: now)
+            }, accent: accent) { line in
+                sendQuestionAnswer(line, to: agent)
+            }
+            Spacer(minLength: 24)
+        }.id(MobileChatScrollTarget.message(message.id)))
+    }
+    /// A card's answer goes the way a typed message does: a pending bubble,
+    /// one POST, a visible failure and a tap to retry. Only to `agent`, the
+    /// agent whose question it is, as the person.
+    private func sendQuestionAnswer(_ line: String, to agent: RelayAgent) {
+        guard selected?.id == agent.id else { return }
+        let message = outgoing.begin(agentID: agent.id, text: line, attachments: [],
+                                     history: client.historyLoaded(for: agent) ? historyRows : nil)
+        post(message, to: agent)
+    }
     private func sendDraft(to agent: RelayAgent) {
         let draft = messageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedAttachments
@@ -1738,7 +1844,19 @@ struct RelayWorkspaceView: View {
             MobileHandoffFixture.trace("composer received send result: \(outcome)")
             #endif
             outgoing.finish(message.id, attempt: attempt, outcome: outcome)
+            if case .accepted(let messageID) = outcome, let ref = RelayQuestionState.answeredRef(message.text) {
+                // The first tap's time and the send's identity, not the
+                // moment this POST (perhaps a replay) returned.
+                acceptedQuestionAnswers["\(agent.id)|\(ref)"] = RelayQuestionState.AcceptedAnswer(
+                    sentAt: message.createdAt, messageID: messageID, earlierRowIDs: message.earlierRowIDs)
+            }
+            #if DEBUG
+            QuestionCardFixture.note("post finished outcome=\(outcome) selected=\(selected?.id ?? "nil") agent=\(agent.id) history=[\(historyRows.map(\.id).joined(separator: ", "))]")
+            #endif
             if selected?.id == agent.id { outgoing.reconcile(agentID: agent.id, with: historyRows) }
+            #if DEBUG
+            QuestionCardFixture.note("post reconciled after=[\(outgoing.all.map(QuestionCardFixture.describe).joined(separator: ", "))]")
+            #endif
             #if DEBUG
             MobileHandoffFixture.trace("composer reconciled pending: \(outgoing.all.filter { $0.id == message.id }.count); history: \(client.messages.count)")
             #endif

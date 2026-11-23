@@ -60,8 +60,17 @@ final class SessionStreamUITests: XCTestCase {
 
     func testToolCallsShowAsCompactRows() throws {
         let app = open("builder")
+        // A run of tool work is one collapsed Activity group; a line opens its row.
+        let group = app.buttons.matching(identifier: "Session activity group").firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 10))
         let tool = app.descendants(matching: .any).matching(identifier: "Session tool row").firstMatch
-        XCTAssertTrue(tool.waitForExistence(timeout: 10))
+        XCTAssertFalse(tool.exists)
+        group.tap()
+        let line = app.buttons.matching(identifier: "Session activity line").firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 5))
+        XCTAssertTrue(line.label.contains("make release"), line.label)
+        line.tap()
+        XCTAssertTrue(tool.waitForExistence(timeout: 5))
         XCTAssertTrue(tool.staticTexts["Bash"].exists)
         XCTAssertTrue(tool.staticTexts["completed"].exists)
         XCTAssertTrue(tool.staticTexts["App.swift, Build.swift"].exists)
@@ -72,11 +81,26 @@ final class SessionStreamUITests: XCTestCase {
         attach(app, "tool-row")
     }
 
+    func testRelayTrafficShowsAsMarkedMessages() throws {
+        let app = open("builder")
+        let sent = app.staticTexts["Release build is ready for review."]
+        XCTAssertTrue(sent.waitForExistence(timeout: 10))
+        // The send and Cloud's text copy of it show once, marked.
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == 'Release build is ready for review.'")).count, 1)
+        let markers = app.staticTexts.matching(identifier: "Relay marker")
+        XCTAssertTrue(markers.matching(NSPredicate(format: "label == '⇄ Agent Relay · to @scout'")).firstMatch.exists)
+        // A message read from the inbox: only session text names its sender.
+        XCTAssertTrue(app.staticTexts["Looks good from here."].exists)
+        XCTAssertTrue(markers.matching(NSPredicate(format: "label == '⇄ Agent Relay'")).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["Weighing whether to tag the release"].exists)
+        attach(app, "relay-marked")
+    }
+
     func testRecentToolCallShowsWorking() throws {
         let app = open("builder", ["-RelayUITestSessionWorking"])
         let working = app.descendants(matching: .any).matching(identifier: "Agent working").firstMatch
         XCTAssertTrue(working.waitForExistence(timeout: 10))
-        XCTAssertTrue(working.label.contains("Working: Bash"))
+        XCTAssertTrue(working.label.contains("Working…"))
         attach(app, "working")
     }
 }

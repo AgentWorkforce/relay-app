@@ -67,30 +67,9 @@ struct SessionEvent: Identifiable, Hashable, Codable, Sendable {
         self.subagentID = subagentID
     }
 
-    private static let toolKinds: Set<String> = ["tool_use", "tool_call", "tool_result", "tool"]
-    private static let personKinds: Set<String> = ["prompt", "user", "user_message"]
-    private static let agentKinds: Set<String> = ["assistant", "assistant_message", "agent_message", "response"]
-
-    var role: Role {
-        let kind = kind.lowercased(), actor = actorRole.lowercased()
-        if !toolName.isEmpty || Self.toolKinds.contains(kind) || actor == "tool_result" || actor == "tool" { return .tool }
-        if actor == "user" || Self.personKinds.contains(kind) { return .person }
-        // The agent thinking out loud is activity, not a reply.
-        if kind.contains("reason") || kind.contains("think") { return .activity }
-        if actor == "assistant" || Self.agentKinds.contains(kind) { return .agent }
-        return .activity
-    }
-
-    /// Whether this is the agent's own activity (its tools, its thinking),
-    /// which says it is still working.
-    var isAgentActivity: Bool {
-        switch role {
-        case .tool: true
-        case .activity: actorRole.lowercased() == "assistant" || actorRole.isEmpty
-        case .agent: content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .person: false
-        }
-    }
+    /// How the chat draws the event, by `ChatEntryRules.role`: thinking
+    /// is activity, a tool's call and its result are tool rows.
+    var role: Role { entryRole.sessionRole }
 }
 
 /// One page of a session's events.
@@ -170,7 +149,13 @@ struct SessionEventPage: Equatable, Sendable {
                     event = nil
                     return
                 }
-                eventID = "ts:\(Int64(ts.timeIntervalSince1970 * 1000)):\(SessionEventPage.fingerprint(kind + "\u{1F}" + content))"
+                // A time outside Int64 milliseconds (a bad `ts` such as
+                // 1e19) cannot key the event: it is dropped, never a trap.
+                guard let millis = Int64(exactly: (ts.timeIntervalSince1970 * 1000).rounded(.towardZero)) else {
+                    event = nil
+                    return
+                }
+                eventID = "ts:\(millis):\(SessionEventPage.fingerprint(kind + "\u{1F}" + content))"
             }
             let files = ((try? container.decode([LenientString].self, forKey: AnyKey("filesTouched"))) ?? [])
                 .compactMap(\.value).filter { !$0.isEmpty }
@@ -223,7 +208,9 @@ enum SessionEventsRequest {
     /// `/workspaces/<ws>/reflex/sessions/<id>/events?…`, or nil when the
     /// workspace is not a Cloud workspace id or the session id is unusable.
     static func path(workspaceID: String, sessionID: String, spec: Spec) -> String? {
-        guard UUID(uuidString: workspaceID) != nil, !sessionID.isEmpty, sessionID.count <= 512 else { return nil }
+        guard UUID(uuidString: workspaceID) != nil, !sessionID.isEmpty, sessionID.count <= 512,
+              // A dot segment would change the path the request is authorized for.
+              sessionID != ".", sessionID != ".." else { return nil }
         let segment = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let query = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         guard let session = sessionID.addingPercentEncoding(withAllowedCharacters: segment) else { return nil }
@@ -244,9 +231,54 @@ enum SessionEventsRequest {
     static func accessRevoked(status: Int?) -> Bool { status == 401 || status == 403 }
 
     /// The server dropped the cursor (409 `cursor_backend_transition`, 410
-    /// `cursor_expired`): paging restarts from the newest page.
-    static func cursorLost(status: Int?, code: String) -> Bool {
+    /// `cursor_expired`, a lost-cursor 501): paging restarts from the newest
+    /// page.
+    static func cursorLost(status: Int?, code: String, reason: String = "") -> Bool {
         status == 410 || status == 409 || code == "cursor_expired" || code == "cursor_backend_transition"
+            || (status == 501 && notImplemented(code: code, reason: reason) == .cursorLost)
+    }
+
+    /// The server will not serve this session's events: a final 501. The
+    /// store reads the session no more until it is dropped. (Three unknown
+    /// 501s in a row make the store final too; see `SessionEventStore`.)
+    static func unavailable(status: Int?, code: String, reason: String = "") -> Bool {
+        status == 501 && notImplemented(code: code, reason: reason) == .permanent
+    }
+
+    /// What a session events 501 means.
+    enum NotImplemented: Equatable, Sendable {
+        /// The cursor does not fit the session: paging restarts.
+        case cursorLost
+        /// Not served yet (a session still being written): retried like a 500.
+        case transient
+        /// Never served for this session: the store is final at once.
+        case permanent
+        /// An identifier the app does not know, or none (a route in front may
+        /// drop the body): retried slowly, final after a few in a row.
+        case unknown
+    }
+
+    /// Unknown 501s in a row that make the store final.
+    static let unknownNotImplementedLimit = 3
+
+    /// What identifies a 501: the reason when there is one, else the code
+    /// unless it is empty or the shared `unsupported_by_backend`; nil when
+    /// neither says anything.
+    static func notImplementedIdentifier(code: String, reason: String) -> String? {
+        if !reason.isEmpty { return reason }
+        if !code.isEmpty, code != "unsupported_by_backend" { return code }
+        return nil
+    }
+
+    /// Classifies a 501 from its `error.code` and `error.reason`.
+    static func notImplemented(code: String, reason: String) -> NotImplemented {
+        guard let identifier = notImplementedIdentifier(code: code, reason: reason) else { return .unknown }
+        switch identifier {
+        case "canonical_cursor_scope", "foreign_cursor": return .cursorLost
+        case "session_partial", "history_floor_unknown_session": return .transient
+        case "history_floor": return .permanent
+        default: return identifier.hasPrefix("events_canonical_") ? .permanent : .unknown
+        }
     }
 }
 
@@ -285,7 +317,27 @@ final class MemoryOnlySessionEventSnapshots: SessionEventSnapshotStore, @uncheck
 }
 
 /// One session's events in time order, merged from pages by key.
+///
+/// The live store is capped like the disk copy. Only a newest-page merge
+/// trims, and only the oldest events: to the newest `liveLimit` until the
+/// person reads older history, and from their first older read on, to
+/// `pagedBackLimit` or to what was held after the last older page,
+/// whichever is more. So a poll never trims rows a person scrolled back to
+/// load; only events that arrive after more than that many are held push
+/// the oldest out.
+///
+/// A trim keeps older paging going below what is held: the store remembers
+/// each page's next cursor with the page's oldest event, and after a trim
+/// the older cursor becomes the one whose page starts nearest above the new
+/// oldest event. Pages that bring back only held events on the way down do
+/// not stop automatic older loading. With no such cursor (a restored
+/// snapshot), paging restarts from the newest page, in the same way.
 struct SessionEventStore: Equatable, Sendable {
+    /// The most events a store keeps before any older page was read.
+    static let liveLimit = 1_000
+    /// The floor of the cap once an older page has added events.
+    static let pagedBackLimit = 5_000
+
     let sessionID: String
     /// Oldest first, by time and then key.
     private(set) var events: [SessionEvent] = []
@@ -298,6 +350,10 @@ struct SessionEventStore: Equatable, Sendable {
     private(set) var loaded = false
     /// Failed reads in a row; a success resets it.
     private(set) var failures = 0
+    /// Unknown 501s in a row (`SessionEventsRequest.NotImplemented.unknown`);
+    /// a success or any other failure resets it. At the limit the store is
+    /// final.
+    private(set) var unknownNotImplemented = 0
     /// The last read failed and the store's paging has to restart.
     private var restarting = false
     /// Restarts after a lost cursor since older paging last added events.
@@ -306,7 +362,29 @@ struct SessionEventStore: Equatable, Sendable {
     /// an older page added nothing, an older read failed, or the cursor was
     /// lost twice in a row. An older page that adds events resumes them.
     private(set) var olderAutoLoadStopped = false
+    /// The server answered that it will not serve this session (a 501):
+    /// no further read, newest or older, and no timer. In memory only; it
+    /// ends when the store is dropped and is not part of the snapshot.
+    private(set) var unavailable = false
     private var keys: Set<SessionEvent.Key> = []
+    /// What a newest-page merge trims to; nil until an older page is read
+    /// (then `liveLimit` no longer applies).
+    private var pagedBackCap: Int?
+    /// A page's next cursor and the page's oldest event: reading it returns
+    /// what is older than that event.
+    private struct PageCursor: Equatable, Sendable {
+        let cursor: String
+        let oldest: SessionEvent
+    }
+    /// The cursors of pages whose oldest event is still held, by that event.
+    private var pageCursors: [SessionEvent.Key: PageCursor] = [:]
+    /// Older paging is walking down through events already held, after a
+    /// trim or from a trimmed snapshot: a page that adds nothing does not
+    /// stop automatic loading until one adds events or the start is reached.
+    private(set) var rewalking = false
+
+    /// The most events a newest-page merge keeps now.
+    var cap: Int { pagedBackCap ?? Self.liveLimit }
 
     init(sessionID: String) { self.sessionID = sessionID }
 
@@ -317,6 +395,7 @@ struct SessionEventStore: Equatable, Sendable {
         loaded = true
         // A trimmed snapshot has no cursor: older paging restarts from the newest page.
         restarting = snapshot.olderCursor == nil && !snapshot.reachedStart
+        rewalking = restarting
         merge(snapshot.events)
     }
 
@@ -325,12 +404,13 @@ struct SessionEventStore: Equatable, Sendable {
     }
 
     var newest: SessionEvent? { events.last }
-    var hasOlder: Bool { loaded && !reachedStart }
+    var hasOlder: Bool { loaded && !reachedStart && !unavailable }
 
     /// The request that reads the next older page: the newest page again
-    /// when the cursor was lost, nil when the start was reached.
+    /// when the cursor was lost, nil when the start was reached or the
+    /// session is unavailable.
     var olderRequest: SessionEventsRequest.Spec? {
-        guard loaded, !reachedStart else { return nil }
+        guard loaded, !reachedStart, !unavailable else { return nil }
         guard let olderCursor, !restarting else { return SessionEventsRequest.newest }
         return .init(order: .desc, limit: SessionEventsRequest.pageLimit, cursor: olderCursor)
     }
@@ -343,6 +423,7 @@ struct SessionEventStore: Equatable, Sendable {
     mutating func apply(_ page: SessionEventPage, for spec: SessionEventsRequest.Spec) -> Bool {
         guard page.sessionID == sessionID else { return false }
         failures = 0
+        unknownNotImplemented = 0
         let before = (olderCursor, reachedStart)
         if spec.cursor == nil {
             let overlaps = page.events.contains { keys.contains($0.key) }
@@ -354,27 +435,47 @@ struct SessionEventStore: Equatable, Sendable {
             restarting = false
         }
         let countBefore = events.count
-        let merged = merge(page.events)
+        var merged = merge(page.events)
+        if let next = page.nextCursor, let oldest = page.events.min(by: Self.ordered), keys.contains(oldest.key) {
+            pageCursors[oldest.key] = PageCursor(cursor: next, oldest: oldest)
+        }
         if spec.cursor != nil {
             olderCursor = page.nextCursor
             reachedStart = page.nextCursor == nil
+            // From the first older read on, a poll trims nothing they load.
+            pagedBackCap = max(Self.pagedBackLimit, events.count, pagedBackCap ?? 0)
             if events.count > countBefore {
                 olderAutoLoadStopped = false
                 restarts = 0
-            } else {
+                rewalking = false
+            } else if !rewalking {
                 olderAutoLoadStopped = true
             }
+            if reachedStart { rewalking = false }
+        } else if trimToCap() {
+            merged = true
         }
         return merged || before.0 != olderCursor || before.1 != reachedStart
     }
 
     /// Records a failed read. A lost cursor restarts paging from the newest
-    /// page; what is held stays.
+    /// page; a final 501, or the third unknown 501 in a row, makes the store
+    /// final; a transient 501 is retried like a 500. What is held stays.
     /// `older`: the read was for older history.
-    mutating func failed(status: Int?, code: String, older: Bool = false) {
+    mutating func failed(status: Int?, code: String, reason: String = "", older: Bool = false) {
         failures += 1
         if older { olderAutoLoadStopped = true }
-        if SessionEventsRequest.cursorLost(status: status, code: code) {
+        if status == 501, SessionEventsRequest.notImplemented(code: code, reason: reason) == .unknown {
+            unknownNotImplemented += 1
+            if unknownNotImplemented >= SessionEventsRequest.unknownNotImplementedLimit { unavailable = true }
+            return
+        }
+        unknownNotImplemented = 0
+        if SessionEventsRequest.unavailable(status: status, code: code, reason: reason) {
+            unavailable = true
+            return
+        }
+        if SessionEventsRequest.cursorLost(status: status, code: code, reason: reason) {
             restarting = true
             olderCursor = nil
             restarts += 1
@@ -393,6 +494,28 @@ struct SessionEventStore: Equatable, Sendable {
         restarting = false
         restarts = 0
         olderAutoLoadStopped = false
+        pagedBackCap = nil
+        pageCursors = [:]
+        rewalking = false
+    }
+
+    /// Drops the oldest events beyond `cap`. The older cursor pointed below
+    /// the dropped events, so it becomes the cursor of the page that starts
+    /// nearest above the new oldest event (reading it brings back a few held
+    /// events, then what is below); without one, paging restarts from the
+    /// newest page. Returns whether any went.
+    private mutating func trimToCap() -> Bool {
+        guard events.count > cap else { return false }
+        let dropped = events.prefix(events.count - cap)
+        for event in dropped { keys.remove(event.key) }
+        events.removeFirst(dropped.count)
+        pageCursors = pageCursors.filter { keys.contains($0.key) }
+        let resume = pageCursors.values.min { Self.ordered($0.oldest, $1.oldest) }
+        olderCursor = resume?.cursor
+        restarting = resume == nil
+        reachedStart = false
+        rewalking = true
+        return true
     }
 
     @discardableResult
@@ -418,41 +541,53 @@ struct SessionEventStore: Equatable, Sendable {
     }
 }
 
-/// How often the open chat re-reads its session's newest page.
+/// How often the open chat re-reads its session's newest page, by how old
+/// the session's activity is.
 enum SessionEventPolling {
     static let activeInterval: TimeInterval = 5
     static let idleInterval: TimeInterval = 15
-    static let activeWindow: TimeInterval = 120
-    static let maximumBackoff: TimeInterval = 120
+    static let quietInterval: TimeInterval = 60
+    static let dormantInterval: TimeInterval = 5 * 60
+    static let activeWindow: TimeInterval = 2 * 60
+    static let idleWindow: TimeInterval = 60 * 60
+    static let quietWindow: TimeInterval = 24 * 60 * 60
+    /// At this age or older there is no timer.
+    static let dormantWindow: TimeInterval = 7 * 24 * 60 * 60
+    /// With nothing loaded and no chat messages.
+    static let unknownInterval: TimeInterval = idleInterval
+    static let maximumBackoff: TimeInterval = 2 * 60
+    /// The shortest gap between two newest-page reads of one session, so a
+    /// burst of chat messages reads at most once per interval.
+    static let minimumSpacing: TimeInterval = activeInterval
 
-    /// Every 5 s while the newest event is under 2 minutes old, else 15 s;
-    /// failures in a row double it, up to 2 minutes.
-    static func interval(newestEventAt newest: Date?, now: Date, failures: Int) -> TimeInterval {
-        let base = newest.map { now.timeIntervalSince($0) < activeWindow } == true ? activeInterval : idleInterval
+    /// Age under the window → interval, youngest first.
+    static let tiers: [(window: TimeInterval, interval: TimeInterval)] = [
+        (activeWindow, activeInterval), (idleWindow, idleInterval),
+        (quietWindow, quietInterval), (dormantWindow, dormantInterval),
+    ]
+
+    /// The wait before the next read, or nil for no timer. The reference is
+    /// the later of the newest event and the chat's newest message: 5 s
+    /// under 2 minutes old, 15 s under an hour, 60 s under a day, 5 minutes
+    /// under a week, no timer after; 15 s with no reference. Failures in a
+    /// row double it, up to 2 minutes, never below the base. A failed read
+    /// in the no-timer tier is retried every 5 minutes until one succeeds.
+    /// After an unknown 501 (`unknownNotImplemented` > 0) the wait is at
+    /// least 2 minutes. An unavailable session has no timer.
+    static func interval(newestEventAt newest: Date?, chatActivityAt chat: Date? = nil, now: Date, failures: Int,
+                         unavailable: Bool = false, unknownNotImplemented: Int = 0) -> TimeInterval? {
+        guard !unavailable else { return nil }
+        let tier = baseInterval(reference: [newest, chat].compactMap { $0 }.max(), now: now)
+        let retry: TimeInterval? = failures > 0 || unknownNotImplemented > 0 ? dormantInterval : nil
+        guard let base = tier ?? retry else { return nil }
+        if unknownNotImplemented > 0 { return max(base, maximumBackoff) }
         guard failures > 0 else { return base }
-        return min(base * pow(2, Double(min(failures, 10))), maximumBackoff)
-    }
-}
-
-/// Whether the agent looks busy. The API has no in-progress flag, so this
-/// is read from the newest event: the agent's own tool call or activity
-/// under a minute old, with no reply of its own after it.
-enum SessionWorking {
-    static let window: TimeInterval = 60
-
-    struct State: Equatable {
-        /// The latest tool in the run, empty when none was named.
-        let tool: String
-        var label: String { tool.isEmpty ? "Working…" : "Working: \(tool)" }
+        return max(base, min(base * pow(2, Double(min(failures, 10))), maximumBackoff))
     }
 
-    static func state(events: [SessionEvent], now: Date) -> State? {
-        guard let newest = events.last, newest.isAgentActivity, let ts = newest.ts,
-              now.timeIntervalSince(ts) < window, now.timeIntervalSince(ts) > -window else { return nil }
-        for event in events.reversed() {
-            if !event.toolName.isEmpty { return State(tool: event.toolName) }
-            if !event.isAgentActivity { break }
-        }
-        return State(tool: "")
+    static func baseInterval(reference: Date?, now: Date) -> TimeInterval? {
+        guard let reference else { return unknownInterval }
+        let age = now.timeIntervalSince(reference)
+        return tiers.first { age < $0.window }?.interval
     }
 }

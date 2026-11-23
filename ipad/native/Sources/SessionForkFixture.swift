@@ -5,10 +5,12 @@ import Foundation
 /// `-RelayUITestFork` alongside `-RelayUITestConversations`. One computer
 /// accepts forks; the spawn POST is the only request that advances it.
 /// `-RelayUITestForkOldComputer` makes that computer predate forking.
+/// Read receipts are recorded; nothing is unread in /inbox.
 enum SessionForkFixture {
     private final class State: @unchecked Sendable {
         let lock = NSLock()
         var fork: JSONObject?
+        var reads: [String] = []
     }
     private static let state = State()
     private static let person = "ui-test-person"
@@ -24,6 +26,12 @@ enum SessionForkFixture {
             state.fork = body?["input"] as? JSONObject
             return ["invocation_id": "inv_fork_1", "status": "pending"]
         }
+        if method == "POST", let id = RelayUITestReadPosts.messageID(readPath: path) {
+            state.reads.append(id)
+            RelayUITestReadPosts.shared.record(id)
+            return JSONObject()
+        }
+        if path == "/inbox" { return RelayUITestReadPosts.inbox([]) }
         if path == "/actions/spawn/invocations/inv_fork_1" {
             let name = state.fork?["name"] as? String ?? ""
             return ["status": "completed", "output": ["spawned": true, "ready": true, "name": name,

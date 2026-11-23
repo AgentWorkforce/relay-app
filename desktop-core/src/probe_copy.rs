@@ -16,9 +16,9 @@
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// A probe build's release number.
@@ -176,16 +176,48 @@ fn sha256(path: &Path) -> Option<String> {
 /// The release an executable reports with `--version`, or `None` when it
 /// does not answer with one within five seconds.
 pub fn release_of(path: &Path) -> Option<Release> {
-    let mut command = Command::new(path);
-    agent_relay_node::platform::process::hide_window(&mut command);
-    let mut child = command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    release_within(Duration::from_secs(5), || {
+        let mut command = Command::new(path);
+        agent_relay_node::platform::process::hide_window(&mut command);
+        command
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+    })
+}
+
+/// `release_of` with the time limit and the spawn step given.
+///
+/// A file written a moment ago may still be busy when it is run: while
+/// this process held it open for writing (`copy_into`, a test writing a
+/// stand-in), another thread may have forked a child, which keeps that
+/// descriptor until its own exec. Running the file then fails with "Text
+/// file busy" (`ExecutableFileBusy`, Unix's `ETXTBSY`), which clears once
+/// that child has exec'd, so the spawn is tried again until the limit.
+/// Every other spawn error is `None` at once.
+///
+/// Windows needs no counterpart: it has no fork, so this cause does not
+/// arise there, and the same code serves it. A spawn error there is `None`
+/// at once as before; only one the standard library reported as
+/// `ExecutableFileBusy` would be tried again, within the same limit.
+fn release_within(
+    limit: Duration,
+    mut spawn: impl FnMut() -> std::io::Result<Child>,
+) -> Option<Release> {
+    let deadline = Instant::now() + limit;
+    let mut child = loop {
+        match spawn() {
+            Ok(child) => break child,
+            Err(error)
+                if error.kind() == ErrorKind::ExecutableFileBusy && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    };
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
@@ -553,6 +585,80 @@ pub(crate) mod tests {
             Some(&release("1.0.0")),
             Some(&release("1.0.0-rc.1"))
         ));
+    }
+
+    /// A spawn that finds the file busy is tried again, and the release
+    /// read once it starts.
+    #[test]
+    #[cfg(unix)]
+    fn a_busy_copy_is_asked_again_for_its_release() {
+        let mut attempts = 0;
+        let found = release_within(Duration::from_secs(5), || {
+            attempts += 1;
+            if attempts <= 2 {
+                return Err(ErrorKind::ExecutableFileBusy.into());
+            }
+            Command::new("/bin/sh")
+                .args(["-c", "echo 'agent-relay-probe 0.26.2'"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+        });
+        assert_eq!(found, Some(release("0.26.2")));
+        assert_eq!(attempts, 3);
+    }
+
+    /// A copy still busy at the limit has no release, and the limit holds;
+    /// any other spawn error has none without another try.
+    #[test]
+    fn a_copy_busy_past_the_limit_or_failing_otherwise_has_no_release() {
+        let mut attempts = 0;
+        let started = Instant::now();
+        let found = release_within(Duration::from_millis(100), || {
+            attempts += 1;
+            Err(ErrorKind::ExecutableFileBusy.into())
+        });
+        assert_eq!(found, None);
+        assert!(attempts > 1, "{attempts}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let mut attempts = 0;
+        let found = release_within(Duration::from_secs(5), || {
+            attempts += 1;
+            Err(ErrorKind::NotFound.into())
+        });
+        assert_eq!(found, None);
+        assert_eq!(attempts, 1);
+    }
+
+    /// The busy retries and the wait for the answer share one limit: a copy
+    /// busy for most of it and then silent is given up on at that limit, not
+    /// a second limit after it started.
+    #[test]
+    #[cfg(unix)]
+    fn busy_retries_and_the_answer_share_one_limit() {
+        let limit = Duration::from_secs(2);
+        let busy_for = Duration::from_millis(1800);
+        let mut spawned = 0;
+        let started = Instant::now();
+        let found = release_within(limit, || {
+            if started.elapsed() < busy_for {
+                return Err(ErrorKind::ExecutableFileBusy.into());
+            }
+            spawned += 1;
+            Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+        });
+        let took = started.elapsed();
+        assert_eq!(found, None);
+        assert_eq!(spawned, 1);
+        // A deadline reset after the spawn would end near 3.8 s or later.
+        assert!(took < Duration::from_millis(3500), "{took:?}");
     }
 
     #[test]

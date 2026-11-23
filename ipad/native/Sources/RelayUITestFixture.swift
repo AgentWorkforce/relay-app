@@ -1,14 +1,20 @@
 #if DEBUG
 import Foundation
+import SwiftUI
 
 /// Canned Relaycast responses for UI tests, enabled only in Debug builds with
 /// the `-RelayUITestConversations` launch argument. It lets the Messages list
 /// be exercised on a simulator that is not signed in. `-RelayUITestNewMessage`
-/// gives one conversation a newer incoming message, and `-RelayUITestReset`
-/// forgets the fixture account's hidden conversations and expands the sidebar.
+/// gives one conversation a newer incoming message, unread in /inbox until
+/// the app posts its read receipt, and `-RelayUITestReset` forgets the
+/// fixture account's hidden conversations and old device-local unread cursor
+/// and expands the sidebar. `-RelayUITestOldSeenCursor` then saves such a
+/// cursor, as an older build did, that had already seen the reviewer's newer
+/// message.
 enum RelayUITestFixture {
     static let enabled = ProcessInfo.processInfo.arguments.contains("-RelayUITestConversations")
     private static let me = "ui-test-person"
+    private static var newer: Bool { ProcessInfo.processInfo.arguments.contains("-RelayUITestNewMessage") }
 
     static func prepare() {
         guard enabled else { return }
@@ -17,17 +23,41 @@ enum RelayUITestFixture {
         UserDefaults.standard.set("UI Test", forKey: "relay.workspaceName")
         UserDefaults.standard.set("cloud", forKey: "relay.messagingIdentitySource")
         if ProcessInfo.processInfo.arguments.contains("-RelayUITestReset") {
-            UserDefaults.standard.removeObject(forKey: "relay.mobileUnread.ui-test-workspace.\(me).hidden")
             UserDefaults.standard.removeObject(forKey: WorkspaceSidebarLayout.collapsedKey)
+            for suffix in ["hidden", "seen", "baseline", "carryOverFailures"] {
+                UserDefaults.standard.removeObject(forKey: "relay.mobileUnread.ui-test-workspace.\(me).\(suffix)")
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("-RelayUITestOldSeenCursor") {
+            UserDefaults.standard.set(["dm_reviewer": "m_reviewer_2"], forKey: "relay.mobileUnread.ui-test-workspace.\(me).seen")
+            UserDefaults.standard.set(true, forKey: "relay.mobileUnread.ui-test-workspace.\(me).baseline")
         }
     }
 
+    /// Answers every Relaycast request in unit tests that drive RelayClient,
+    /// so they need no account, token or network.
+    static var unitTestResponder: ((_ path: String, _ method: String, _ body: JSONObject?) -> Any?)?
+
     static func response(_ path: String, method: String = "GET", body: JSONObject? = nil) -> Any? {
+        if let unitTestResponder { return unitTestResponder(path, method, body) }
         guard enabled else { return nil }
         if let handoff = MobileHandoffFixture.response(path, method: method, body: body) { return handoff }
         if let fork = SessionForkFixture.response(path, method: method, body: body) { return fork }
+        if let question = QuestionCardFixture.response(path, method: method, body: body) { return question }
+        // The server's read state: a read receipt for the newest incoming
+        // message makes its conversation read. An unknown ID gets an empty
+        // answer here (the server answers 404).
+        if method == "POST", let id = RelayUITestReadPosts.messageID(readPath: path) {
+            RelayUITestReadPosts.shared.record(id)
+            return JSONObject()
+        }
+        if path == "/inbox" {
+            let unread = newer && !RelayUITestReadPosts.shared.posted.contains("m_reviewer_2")
+            return RelayUITestReadPosts.inbox(unread ? [["conversation_id": "dm_reviewer", "from": "reviewer", "unread_count": 1,
+                                                          "last_message": ["id": "m_reviewer_2", "text": "One more thing on the PR",
+                                                                           "created_at": "2026-10-08T12:05:00.000Z"]]] : [])
+        }
         if path == "/dm/conversations" {
-            let newer = ProcessInfo.processInfo.arguments.contains("-RelayUITestNewMessage")
             return [
                 thread("dm_reviewer", peer: "reviewer", messageID: newer ? "m_reviewer_2" : "m_reviewer_1",
                        text: newer ? "One more thing on the PR" : "Review is done"),
@@ -41,7 +71,8 @@ enum RelayUITestFixture {
             return [message("m_me_builder", from: me, text: "Ship it"), message("m_builder_1", from: "builder", text: "Build passed")]
         }
         if path.hasPrefix("/dm/dm_reviewer/messages") {
-            return [message("m_me_reviewer", from: me, text: "Thanks"), message("m_reviewer_1", from: "reviewer", text: "Review is done")]
+            let history = [message("m_me_reviewer", from: me, text: "Thanks"), message("m_reviewer_1", from: "reviewer", text: "Review is done")]
+            return newer ? [message("m_reviewer_2", from: "reviewer", text: "One more thing on the PR")] + history : history
         }
         if path == "/messages/m_me_builder/readers" {
             return [["agent_name": "builder", "agent_id": "a_builder", "read_at": "2026-10-08T12:00:00.000Z"]]
@@ -87,7 +118,7 @@ enum RelayUITestFixture {
                 ["name": "reviewer-before-rename", "status": "active",
                  "metadata": ["renamed_to": "reviewer", "source": "relay-desktop"]],
                 ["name": "builder", "status": mixed ? "waiting" : "active", "address": "builder@test-mini-456",
-                 "metadata": ["host": "test-mini", "session_id": "session-builder", "cli": "claudecode"]],
+                 "metadata": (["host": "test-mini", "session_id": "session-builder", "cli": "claudecode"] as JSONObject).merging(mixed ? ["activity": ["turn": "working", "doing": "Running the fixture checks"]] : [:]) { first, _ in first }],
                 ["name": "sam-lee", "type": "human", "persona": "Sam Lee",
                  "address": "sam-lee@cloud-1234567890", "status": offlinePerson ? "offline" : "active"],
             ]
@@ -200,6 +231,57 @@ enum RelayUITestFixture {
             "participants": [["agent_name": me, "agent_id": "a_me"], ["agent_name": peer, "agent_id": "a_\(peer)"]],
             "last_message": ["id": messageID, "agent_id": "a_\(peer)", "agent_name": peer, "text": text],
         ]
+    }
+}
+
+/// Read receipts (POST /messages/<id>/read) the UI fixtures received, in
+/// order. All fixtures record here, so the probe below can show them.
+final class RelayUITestReadPosts: ObservableObject, @unchecked Sendable {
+    static let shared = RelayUITestReadPosts()
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    @Published private(set) var ids: [String] = []
+
+    var posted: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func record(_ id: String) {
+        lock.lock()
+        recorded.append(id)
+        let all = recorded
+        lock.unlock()
+        DispatchQueue.main.async { self.ids = all }
+    }
+
+    /// The message ID of a read receipt's path, or nil for any other path.
+    static func messageID(readPath path: String) -> String? {
+        guard path.hasPrefix("/messages/"), path.hasSuffix("/read") else { return nil }
+        let id = path.dropFirst("/messages/".count).dropLast("/read".count)
+        guard !id.isEmpty, !id.contains("/") else { return nil }
+        return String(id).removingPercentEncoding ?? String(id)
+    }
+
+    /// A `GET /inbox` answer, shaped like Relaycast's.
+    static func inbox(_ unreadDMs: [JSONObject]) -> JSONObject {
+        ["unread_channels": [JSONObject](), "mentions": [JSONObject](), "unread_dms": unreadDMs,
+         "recent_reactions": [JSONObject]()]
+    }
+}
+
+/// An invisible element listing the recorded read receipts for UI tests.
+struct RelayUITestReadPostsProbe: View {
+    @ObservedObject private var posts = RelayUITestReadPosts.shared
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .accessibilityElement()
+            .accessibilityLabel(posts.ids.isEmpty ? "none" : posts.ids.joined(separator: ","))
+            .accessibilityIdentifier("ui-test-read-posts")
     }
 }
 
