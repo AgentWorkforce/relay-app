@@ -4315,6 +4315,36 @@ fn coordination_notification_status_is_its_own_line(runtime: &tokio::runtime::Ru
     );
 }
 
+/// The display report repeats on the poll every 30 s on any page, shown
+/// or hidden: the core asks for an urgent system notification only while
+/// an app reported in the last 150 s.
+fn coordination_notification_display_repeats_off_settings(runtime: &tokio::runtime::Runtime) {
+    const DISPLAY: &str = "coordination_advisories.notifications.display";
+    let state = json!({
+        "enabled": true,
+        "notifications_enabled": true,
+        "notification_status": "Waiting for validated priority-one advisories.",
+    });
+    let case = Case::with(runtime, |core| {
+        core.answer("coordination_advisories.status", state.clone());
+        core.answer(DISPLAY, state.clone());
+    });
+    case.sign_in();
+    case.pump(|case| !case.called(DISPLAY).is_empty());
+    case.app.go(Page::Sessions);
+    for hidden in [false, true] {
+        case.app.window().set_visible(!hidden);
+        case.settle();
+        let before = case.called(DISPLAY).len();
+        for _ in 0..7 {
+            case.app.poll();
+        }
+        case.pump(|case| case.called(DISPLAY).len() > before);
+        assert_eq!(case.app.page(), Page::Sessions, "hidden={hidden}");
+    }
+    case.app.show_window();
+}
+
 fn relay_settings_deliver_directly(runtime: &tokio::runtime::Runtime) {
     let case = Case::with(runtime, |core| tools::answers(core, true));
     case.sign_in();
@@ -6136,6 +6166,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "coordination_notification_status_is_its_own_line",
         coordination_notification_status_is_its_own_line,
+    ),
+    (
+        "coordination_notification_display_repeats_off_settings",
+        coordination_notification_display_repeats_off_settings,
     ),
     (
         "relay_settings_deliver_directly",

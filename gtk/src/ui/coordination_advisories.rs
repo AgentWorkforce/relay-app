@@ -3,8 +3,8 @@
 //! default. The Mac's row of the same name matches it.
 
 use super::app::App;
-use super::settings_page::{pending_toggle_row, pending_toggle_row_with};
-use super::widgets::{settings_divider, text, LabelStyle};
+use super::settings_page::{pending_toggle_row, switch_accessory, toggle_switch};
+use super::widgets::{settings_divider, settings_row, text, LabelStyle};
 use crate::models::{
     COORDINATION_ADVISORIES_DETAIL, COORDINATION_ADVISORIES_TITLE,
     COORDINATION_NOTIFICATIONS_DETAIL, COORDINATION_NOTIFICATIONS_TITLE,
@@ -17,6 +17,10 @@ use agent_relay_desktop_core::contract::method;
 use agent_relay_node::relay::contract::NoParams;
 use gtk::prelude::*;
 use gtk4 as gtk;
+
+/// Poll ticks between reports of what the OS lets this app show: 30 s of
+/// the app's 5 s poll.
+const NOTIFICATION_DISPLAY_TICKS: u32 = 6;
 
 impl App {
     /// Reads the setting; a core built without an account never answers,
@@ -57,6 +61,15 @@ impl App {
                 }
             },
         );
+    }
+
+    /// The poll's share: every 30 s ([`NOTIFICATION_DISPLAY_TICKS`] ticks),
+    /// visible or not, since the core requests an urgent system
+    /// notification only while an app reported in the last 150 s.
+    pub(super) fn notification_display_tick(&self, ticks: u32) {
+        if ticks % NOTIFICATION_DISPLAY_TICKS == 0 {
+            self.report_notification_display();
+        }
     }
 
     /// Takes the core's answer when it differs from what the row shows.
@@ -135,21 +148,27 @@ impl App {
             .into_iter()
             .collect();
         let weak = self.downgrade();
-        settings_divider(group, 62);
-        group.append(&pending_toggle_row_with(
+        let switch = toggle_switch(
             COORDINATION_NOTIFICATIONS_TITLE,
-            COORDINATION_NOTIFICATIONS_DETAIL,
-            "notifications-symbolic",
             enabled,
             available && !pending,
-            pending,
-            &extra,
             move |enabled| {
                 if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
                     app.change_coordination_notifications(enabled);
                 }
             },
-        ));
+        );
+        settings_divider(group, 62);
+        group.append(
+            &settings_row(
+                COORDINATION_NOTIFICATIONS_TITLE,
+                COORDINATION_NOTIFICATIONS_DETAIL,
+                "notifications-symbolic",
+                Some(&switch_accessory(&switch, pending)),
+                &extra,
+            )
+            .0,
+        );
     }
 
     fn change_coordination_notifications(&self, enabled: bool) {

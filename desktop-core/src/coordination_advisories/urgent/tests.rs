@@ -36,6 +36,8 @@ struct Api {
     stale: Mutex<HashSet<String>>,
     /// List under the legacy contract instead of [`CONTRACT_V3`].
     legacy: AtomicBool,
+    /// Answer every listing with [`Listing::Failed`].
+    failed: AtomicBool,
 }
 impl AdvisoryApi for Api {
     fn list<'a>(&'a self, _: &'a ReadToken, target: &'a Target) -> BoxFuture<'a, Listing> {
@@ -46,6 +48,9 @@ impl AdvisoryApi for Api {
             .get(target)
             .cloned()
             .unwrap_or_default();
+        if self.failed.load(Ordering::SeqCst) {
+            return Box::pin(async { Listing::Failed });
+        }
         let contract = if self.legacy.load(Ordering::SeqCst) {
             ListingContract::Legacy
         } else {
@@ -906,33 +911,50 @@ async fn a_legacy_listing_is_forgotten_when_the_account_changes() {
     assert_eq!(advisories.report().notification_status, LEGACY_STATUS);
     *tokens.0.lock().unwrap() = "bob";
     assert_eq!(advisories.report().notification_status, IDLE_STATUS);
+    // The cache now belongs to bob, through a poll that lists nothing: the
+    // previous account's legacy listing is not his.
+    api.failed.store(true, Ordering::SeqCst);
+    advisories.poll(&[t], now).await;
+    assert_eq!(
+        advisories.state().principal,
+        Some(Switch::principal_for("bob"))
+    );
+    assert_eq!(advisories.report().notification_status, IDLE_STATUS);
 }
 
-#[tokio::test]
-async fn an_account_with_no_user_identity_says_so_in_the_pass_and_at_read_time() {
-    struct NoUser;
-    impl TokenSource for NoUser {
-        fn principal(&self) -> Option<Principal> {
-            Tokens.principal().map(|p| Principal { user_id: None, ..p })
-        }
-        fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
-            let principal = self.principal().unwrap();
-            Box::pin(async move {
-                Some(ReadToken {
-                    origin: "https://test.example".into(),
-                    bearer: Secret::new("synthetic-read-token"),
-                    workspace_id: principal.workspace_id.clone(),
-                    principal,
-                })
-            })
-        }
-        fn refused(&self, _: &ReadToken) {}
+/// An account with no user identity.
+struct NoUser;
+impl TokenSource for NoUser {
+    fn principal(&self) -> Option<Principal> {
+        Tokens.principal().map(|p| Principal { user_id: None, ..p })
     }
+    fn token(&self) -> BoxFuture<'_, Option<ReadToken>> {
+        let principal = self.principal().unwrap();
+        Box::pin(async move {
+            Some(ReadToken {
+                origin: "https://test.example".into(),
+                bearer: Secret::new("synthetic-read-token"),
+                workspace_id: principal.workspace_id.clone(),
+                principal,
+            })
+        })
+    }
+    fn refused(&self, _: &ReadToken) {}
+}
+
+/// [`setup`] for an account with no user identity ([`NoUser`]).
+fn no_user() -> (tempfile::TempDir, Arc<Api>, Arc<Advisories>) {
     let dir = tempfile::tempdir().unwrap();
     let api = Arc::new(Api::default());
     let advisories = displayed(Advisories::new(dir.path(), Arc::new(NoUser), api.clone()));
     advisories.set_enabled(true).unwrap();
     advisories.set_notifications_enabled(true).unwrap();
+    (dir, api, advisories)
+}
+
+#[tokio::test]
+async fn an_account_with_no_user_identity_says_so_in_the_pass_and_at_read_time() {
+    let (_dir, api, advisories) = no_user();
     // A standing condition: shown before any pass ran.
     assert_eq!(advisories.report().notification_status, NO_USER_STATUS);
     let t = target(A);
@@ -942,6 +964,29 @@ async fn an_account_with_no_user_identity_says_so_in_the_pass_and_at_read_time()
     let sink = Sink::default();
     advisories.deliver_urgent(&sink, now).await;
     assert!(sink.notices.lock().unwrap().is_empty());
+    assert_eq!(advisories.urgent_status(), NO_USER_STATUS);
+    assert_eq!(advisories.report().notification_status, NO_USER_STATUS);
+}
+
+#[tokio::test]
+async fn an_agent_path_failure_shows_over_a_standing_condition_until_a_clean_pass() {
+    let (dir, api, advisories) = no_user();
+    let t = target(A);
+    let now = Instant::now();
+    // The agent path's receipt cannot be written.
+    std::fs::create_dir(dir.path().join(FILE)).unwrap();
+    api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
+    advisories.poll(&[t], now).await;
+    let sink = Sink::default();
+    advisories.deliver_urgent(&sink, now).await;
+    assert!(sink.calls.lock().unwrap().is_empty());
+    assert_eq!(advisories.urgent_status(), SAVE_FAILED_STATUS);
+    assert_eq!(advisories.report().notification_status, SAVE_FAILED_STATUS);
+    // Storage works again: the next pass is clean, and the standing
+    // condition is the status again.
+    std::fs::remove_dir(dir.path().join(FILE)).unwrap();
+    advisories.deliver_urgent(&sink, now).await;
+    assert_eq!(sink.calls.lock().unwrap().len(), 1);
     assert_eq!(advisories.urgent_status(), NO_USER_STATUS);
     assert_eq!(advisories.report().notification_status, NO_USER_STATUS);
 }
