@@ -32,7 +32,16 @@ import RelayDesktopCore
         XCTAssertEqual(state.uploadState, model.uploadState(for: sessionRow.upload!))
         XCTAssertEqual(state.presence, .off)
         XCTAssertFalse(state.canToggleRelay, "Without a running session there is nothing to put on the relay")
+        XCTAssertNil(state.notRunningReason, "Without a local session there is nothing to explain")
         XCTAssertEqual(state.activityStatus, "Finished")
+    }
+
+    // relay#2239: a session not seen running says why, with what to do next.
+    func testNotRunningReasonNamesTheNextStep() {
+        XCTAssertEqual(RelayModel.notRunningMessage(for: .codex),
+                       "Agent Relay can't see this Codex chat running. Open it in Codex and try again.")
+        XCTAssertEqual(RelayModel.notRunningMessage(for: .claudeTerminal),
+                       "Agent Relay can't see this session running. Open it and try again.")
     }
 
     func testRowsRedrawOnlyForTheirOwnValues() {

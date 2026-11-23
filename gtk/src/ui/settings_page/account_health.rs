@@ -78,23 +78,26 @@ impl App {
         self.relay_changed();
         self.render_settings();
         let identity = self.with_state(|state| state.request_identity_revision);
-        self.call::<agent_relay_desktop_core::contract::method::AccountStatus>(NoParams {}, move |app, result| {
-            app.update_state(|state| {
-                state.checking_account_health = false;
-                if state.request_identity_revision != identity {
-                    return;
-                }
-                match result {
-                    Ok(report) => {
-                        if let Some(snapshot) = state.snapshot.as_mut() {
-                            snapshot.account = report.account;
-                        }
+        self.call::<agent_relay_desktop_core::contract::method::AccountStatus>(
+            NoParams {},
+            move |app, result| {
+                app.update_state(|state| {
+                    state.checking_account_health = false;
+                    if state.request_identity_revision != identity {
+                        return;
                     }
-                    Err(error) => state.account_health_error = Some(error.message),
-                }
-            });
-            app.relay_changed();
-            app.render_settings();
-        });
+                    match result {
+                        Ok(report) => {
+                            if let Some(snapshot) = state.snapshot.as_mut() {
+                                snapshot.account = report.account;
+                            }
+                        }
+                        Err(error) => state.account_health_error = Some(error.message),
+                    }
+                });
+                app.relay_changed();
+                app.render_settings();
+            },
+        );
     }
 }

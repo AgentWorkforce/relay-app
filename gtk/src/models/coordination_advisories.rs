@@ -2,8 +2,7 @@
 //! ends (desktop-core's `coordination_advisories.*`). Matches the Mac's
 //! CoordinationAdvisoriesCopy word for word.
 
-pub const COORDINATION_ADVISORIES_TITLE: &str =
-    "Show agents teammates' overlapping work";
+pub const COORDINATION_ADVISORIES_TITLE: &str = "Show agents teammates' overlapping work";
 pub const COORDINATION_ADVISORIES_DETAIL: &str = "Off: nothing is added. On: urgent notes may reach registered agents before a turn ends. Other notes appear once at the end of a supported Claude Code, Codex, Copilot, Devin or Cursor CLI turn. Your workspace must provide coordination notes.";
 
 pub const COORDINATION_NOTIFICATIONS_TITLE: &str = "Urgent coordination system notifications";

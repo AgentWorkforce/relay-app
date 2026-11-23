@@ -1,14 +1,24 @@
 //! Setup routes for hosted apps and cloud providers, without local MCP installation.
 use super::*;
 use crate::models::CloudProviderSetup;
-use crate::ui::widgets::{self, button, hbox, icon, settings_divider, settings_section, text, vbox, LabelStyle};
+use crate::ui::widgets::{
+    self, button, hbox, icon, settings_divider, settings_section, text, vbox, LabelStyle,
+};
 use gtk::prelude::*;
 use gtk4 as gtk;
 
 pub(super) fn is_external(id: &str) -> bool {
     matches!(
         id,
-        "conductor" | "paseo" | "capy" | "grok-bot" | "dot" | "muse-assistant" | "replicas" | "claude-cloud" | "amp"
+        "conductor"
+            | "paseo"
+            | "capy"
+            | "grok-bot"
+            | "dot"
+            | "muse-assistant"
+            | "replicas"
+            | "claude-cloud"
+            | "amp"
     )
 }
 
@@ -75,28 +85,45 @@ impl App {
 
     pub(super) fn cloud_setup_skill_link(&self, id: &str) -> Option<gtk::Button> {
         let url = CloudProviderSetup::for_id(id)?.skill_url()?;
-        Some(button("Read setup skill", &["flat"], self.on(move |app| {
-            app.inner.desktop.open_uri(url);
-        })))
+        Some(button(
+            "Read setup skill",
+            &["flat"],
+            self.on(move |app| {
+                app.inner.desktop.open_uri(url);
+            }),
+        ))
     }
 
     pub(super) fn cloud_setup_snippet(&self, id: &str) -> Option<gtk::Box> {
         let setup = CloudProviderSetup::for_id(id)?;
-        if !setup.copy_only() { return None; }
+        if !setup.copy_only() {
+            return None;
+        }
         let column = vbox(10, &[]);
         let block = vbox(0, &["transcript-code-block"]);
         block.append(&text(setup.prompt()?, &["mono"]).wrapped().copyable());
         column.append(&block);
         let actions = hbox(12, &[]);
-        actions.append(&button("Open Muse", &["flat"], self.on(move |app| app.open_cloud_provider_app(setup))));
-        if let Some(link) = self.cloud_setup_skill_link(id) { actions.append(&link); }
+        actions.append(&button(
+            "Open Muse",
+            &["flat"],
+            self.on(move |app| app.open_cloud_provider_app(setup)),
+        ));
+        if let Some(link) = self.cloud_setup_skill_link(id) {
+            actions.append(&link);
+        }
         column.append(&actions);
         Some(column)
     }
 
     fn open_cloud_provider_app(&self, setup: CloudProviderSetup) {
-        if let Some(url) = setup.app_url().filter(|url| self.inner.desktop.has_uri_handler(url.scheme())) {
-            self.inner.desktop.open_app_uri(url.as_str(), setup.web_url());
+        if let Some(url) = setup
+            .app_url()
+            .filter(|url| self.inner.desktop.has_uri_handler(url.scheme()))
+        {
+            self.inner
+                .desktop
+                .open_app_uri(url.as_str(), setup.web_url());
         } else {
             self.inner.desktop.open_uri(setup.web_url());
         }
@@ -105,12 +132,16 @@ impl App {
     /// Open the workspace's Cloud connections in the browser, where Amp connects.
     pub(super) fn amp_connections_button(&self, id: &str) -> Option<gtk::Button> {
         (id == "amp").then(|| {
-            button(AMP_ACTION, &["primary"], self.on(|app| {
-                let site = app.with_state(|state| state.account().site_url);
-                if let Some(url) = amp_connections(site.as_deref()) {
-                    app.open_url(&url);
-                }
-            }))
+            button(
+                AMP_ACTION,
+                &["primary"],
+                self.on(|app| {
+                    let site = app.with_state(|state| state.account().site_url);
+                    if let Some(url) = amp_connections(site.as_deref()) {
+                        app.open_url(&url);
+                    }
+                }),
+            )
         })
     }
 
@@ -122,13 +153,21 @@ impl App {
             setup.action(),
             &["primary"],
             self.on(move |app| {
-                if let Some(prompt) = setup.prompt() { widgets::copy_to_clipboard(prompt); }
-                if !setup.copy_only() { app.open_cloud_provider_app(setup); }
+                if let Some(prompt) = setup.prompt() {
+                    widgets::copy_to_clipboard(prompt);
+                }
+                if !setup.copy_only() {
+                    app.open_cloud_provider_app(setup);
+                }
                 app.update_state(|state| {
                     state.tools.setup_started.insert(id.clone());
-                    if setup == CloudProviderSetup::Capy { state.capy_prompt_copied = true; }
+                    if setup == CloudProviderSetup::Capy {
+                        state.capy_prompt_copied = true;
+                    }
                 });
-                if !app.render_tools_onboarding() { app.render_settings(); }
+                if !app.render_tools_onboarding() {
+                    app.render_settings();
+                }
             }),
         ))
     }

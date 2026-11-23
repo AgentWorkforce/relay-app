@@ -18,9 +18,10 @@ use crate::models::{
 };
 use crate::service::ServiceState;
 use crate::updates::Release;
+use agent_relay_desktop_core::contract::account::UploadSession;
+use agent_relay_desktop_core::contract::account::{SharingMode, Stage};
 use agent_relay_desktop_core::install::InstallKind;
 use agent_relay_node::relay::contract::account::SignInLink;
-use agent_relay_desktop_core::contract::account::UploadSession;
 use agent_relay_node::relay::contract::agents::{
     ArchivedAgent, LocalAgent, LocalSession, SettingsChange, SettingsValues,
 };
@@ -30,7 +31,6 @@ use agent_relay_node::relay::push::PushState;
 use agent_relay_node::relay::state::{
     AccountAction, AccountStatus, SignInState, Status, WorkspaceState, WorkspaceStatus,
 };
-use agent_relay_desktop_core::contract::account::{SharingMode, Stage};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// The window's top-level content areas, shared with macOS.
@@ -549,7 +549,8 @@ impl State {
         self.busy
             || self.status.as_ref().is_none_or(|status| {
                 status.upgrading
-                    || status.sharing_mode == agent_relay_desktop_core::contract::account::SharingMode::All
+                    || status.sharing_mode
+                        == agent_relay_desktop_core::contract::account::SharingMode::All
             })
             || self.account_state() != SignInState::SignedIn
     }
@@ -807,6 +808,45 @@ mod tests {
         );
         let spawned = state.local_sessions.last().unwrap();
         assert!(!state.can_toggle(spawned, state.presence_of(spawned)));
+    }
+
+    // relay#2239: an off switch for a session not seen running says why,
+    // with what to do next, instead of being silently dead.
+    #[test]
+    fn a_session_not_seen_running_explains_its_switch() {
+        let registered = json!({"name": "web", "address": "web@desk", "added_by_session": false,
+                                "push": null});
+        let mut state = local(json!([
+            session("codex", "a", false, serde_json::Value::Null),
+            session("claude-terminal", "b", false, serde_json::Value::Null),
+            session("codex", "c", true, serde_json::Value::Null),
+            session("codex", "d", false, registered),
+        ]));
+        let reasons: Vec<Option<&str>> = state
+            .local_sessions
+            .iter()
+            .map(|session| state.not_running_reason(session, state.presence_of(session)))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                Some("Agent Relay can't see this Codex chat running. Open it in Codex and try again."),
+                Some("Agent Relay can't see this session running. Open it and try again."),
+                None,
+                None,
+            ]
+        );
+        assert!(!state.can_toggle(
+            &state.local_sessions[0],
+            state.presence_of(&state.local_sessions[0])
+        ));
+        // Without a workspace, connecting one is the next step instead.
+        state.snapshot.as_mut().unwrap().workspace.state = WorkspaceState::Missing;
+        let first = &state.local_sessions[0];
+        assert_eq!(
+            state.not_running_reason(first, state.presence_of(first)),
+            None
+        );
     }
 
     #[test]

@@ -409,8 +409,14 @@ fn route(
     bearer: Option<&str>,
     body: &Value,
 ) -> (u16, Value) {
-    let key = (path.to_string(), bearer.unwrap_or_default().to_string(), body["method"].as_str().unwrap_or(method).to_string());
-    if let Some(response) = state.response_overrides.get(&key) { return response.clone(); }
+    let key = (
+        path.to_string(),
+        bearer.unwrap_or_default().to_string(),
+        body["method"].as_str().unwrap_or(method).to_string(),
+    );
+    if let Some(response) = state.response_overrides.get(&key) {
+        return response.clone();
+    }
     let authorized = bearer.is_some_and(|b| state.valid.iter().any(|v| v == b));
     let api = path.strip_prefix("/cloud/api/v1").unwrap_or(path);
     match (method, api) {
@@ -529,8 +535,12 @@ fn route(
             )
         }
         _ if !authorized => (401, json!({"error": {"message": "Unauthorized"}})),
-        (method, p) if p.starts_with(&format!("/workspaces/{WORKSPACE}/mcp/shared-sessions-tokens")) => {
-            provider_credentials_route(state,method,p,body)
+        (method, p)
+            if p.starts_with(&format!(
+                "/workspaces/{WORKSPACE}/mcp/shared-sessions-tokens"
+            )) =>
+        {
+            provider_credentials_route(state, method, p, body)
         }
         ("POST", "/mcp/shared-sessions") => {
             if state.mcp_status != 200 {
@@ -662,25 +672,42 @@ fn route(
     }
 }
 
-fn provider_credentials_route(state:&mut State,method:&str,path:&str,body:&Value)->(u16,Value) {
-    if state.provider_grant_status != 200 {return (state.provider_grant_status,json!({"error":if state.provider_grant_status==403 {"An Agent Relay app login is required."} else {"Unavailable"}}));}
+fn provider_credentials_route(
+    state: &mut State,
+    method: &str,
+    path: &str,
+    body: &Value,
+) -> (u16, Value) {
+    if state.provider_grant_status != 200 {
+        return (
+            state.provider_grant_status,
+            json!({"error":if state.provider_grant_status==403 {"An Agent Relay app login is required."} else {"Unavailable"}}),
+        );
+    }
     if method == "POST" {
-        let id=format!("grant-{}",body["provider"].as_str().unwrap());
-        if let Some(existing)=state.provider_grants.get(&id) {
-            if existing["accessToken"]!=body["accessToken"] {return (409,json!({"error":"Idempotent credential differs"}));}
+        let id = format!("grant-{}", body["provider"].as_str().unwrap());
+        if let Some(existing) = state.provider_grants.get(&id) {
+            if existing["accessToken"] != body["accessToken"] {
+                return (409, json!({"error":"Idempotent credential differs"}));
+            }
         }
-        let value=json!({"id":id,"provider":body["provider"],"workspaceId":WORKSPACE,"accessToken":body["accessToken"],
+        let value = json!({"id":id,"provider":body["provider"],"workspaceId":WORKSPACE,"accessToken":body["accessToken"],
             "leaseExpiresAt":agent_relay_node::relay::cloud_session::iso(agent_relay_node::relay::state::now_ms()+900_000)});
-        state.provider_grants.insert(id,value.clone());
-        return (200,value);
+        state.provider_grants.insert(id, value.clone());
+        return (200, value);
     }
-    let id=path.rsplit('/').next().unwrap();
-    if method=="DELETE" {state.provider_grants.remove(id);return (200,json!({}));}
-    if method=="PUT" {
-        if let Some(value)=state.provider_grants.get_mut(id) {
-            value["leaseExpiresAt"]=json!(agent_relay_node::relay::cloud_session::iso(agent_relay_node::relay::state::now_ms()+900_000));
-            return (200,value.clone());
+    let id = path.rsplit('/').next().unwrap();
+    if method == "DELETE" {
+        state.provider_grants.remove(id);
+        return (200, json!({}));
+    }
+    if method == "PUT" {
+        if let Some(value) = state.provider_grants.get_mut(id) {
+            value["leaseExpiresAt"] = json!(agent_relay_node::relay::cloud_session::iso(
+                agent_relay_node::relay::state::now_ms() + 900_000
+            ));
+            return (200, value.clone());
         }
     }
-    (404,json!({"error":"Not found"}))
+    (404, json!({"error":"Not found"}))
 }

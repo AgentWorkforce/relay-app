@@ -14,21 +14,21 @@ use super::appearance_preview::mini_window;
 use super::desktop::Confirmation;
 use super::state::{Page, Pane, UpdateState};
 use super::widgets::{
-    self, button, clear, hbox, icon, notice, settings_divider, settings_row,
-    settings_section, text, vbox, LabelStyle, Tone,
+    self, button, clear, hbox, icon, notice, settings_divider, settings_row, settings_section,
+    text, vbox, LabelStyle, Tone,
 };
-use agent_relay_desktop_core::install::InstallKind;
 use crate::models::{
-    managed_inbound_detail, DiagnosticsSection,
-    SharingModeText, WORKSPACE_FOUND_DETAIL, WORKSPACE_MISSING_DETAIL,
+    managed_inbound_detail, DiagnosticsSection, SharingModeText, WORKSPACE_FOUND_DETAIL,
+    WORKSPACE_MISSING_DETAIL,
 };
 use crate::prefs::{Appearance, SessionOpenPreference};
-use agent_relay_desktop_core::contract::account::SharingParams;
-use agent_relay_node::relay::contract::agents::SettingsChange;
-use agent_relay_desktop_core::contract::platform::LoginItemParams;
-use agent_relay_node::relay::contract::{method, NoParams};
-use agent_relay_desktop_core::telemetry::{TelemetryFailure, TelemetryOperation, TelemetryOutcome};
 use agent_relay_desktop_core::contract::account::SharingMode;
+use agent_relay_desktop_core::contract::account::SharingParams;
+use agent_relay_desktop_core::contract::platform::LoginItemParams;
+use agent_relay_desktop_core::install::InstallKind;
+use agent_relay_desktop_core::telemetry::{TelemetryFailure, TelemetryOperation, TelemetryOutcome};
+use agent_relay_node::relay::contract::agents::SettingsChange;
+use agent_relay_node::relay::contract::{method, NoParams};
 use gtk::{gio, glib, prelude::*};
 use gtk4 as gtk;
 use std::path::PathBuf;
@@ -369,9 +369,7 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            widgets::copy_to_clipboard(&crate::models::diagnostics_report(
-                &app.diagnostics(),
-            ));
+            widgets::copy_to_clipboard(&crate::models::diagnostics_report(&app.diagnostics()));
             copy.set_label("Copied");
             let copy = copy.downgrade();
             glib::timeout_add_local_once(Duration::from_secs(2), move || {
@@ -436,7 +434,15 @@ impl App {
     // Messages.
 
     fn relay_pane(&self, column: &gtk::Box) {
-        let (connected, allow) = self.with_state(|state| (state.connected(), state.settings.as_ref().is_none_or(|settings| settings.allow_self_registration)));
+        let (connected, allow) = self.with_state(|state| {
+            (
+                state.connected(),
+                state
+                    .settings
+                    .as_ref()
+                    .is_none_or(|settings| settings.allow_self_registration),
+            )
+        });
         if connected {
             let (section, group) = settings_section(
                 "Relay",
@@ -993,7 +999,10 @@ impl App {
     }
 
     pub(super) fn cancel_connect_workspace(&self) {
-        self.call::<agent_relay_desktop_core::contract::method::AccountSignInCancel>(NoParams {}, |_, _| {});
+        self.call::<agent_relay_desktop_core::contract::method::AccountSignInCancel>(
+            NoParams {},
+            |_, _| {},
+        );
     }
 }
 

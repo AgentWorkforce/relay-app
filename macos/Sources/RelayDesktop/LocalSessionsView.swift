@@ -176,7 +176,7 @@ struct LocalSessionsView: View {
             toggleRelay: {
                 guard let original = row.relay else { return }
                 let session = relay.sessions.first { $0.id == original.id } ?? original
-                relay.requestRelay(!relay.presence(of: session).isOn, for: session)
+                relay.pressRelay(for: session)
             },
             setHidden: { hidden in Task { await model.setSessionsHidden(keys: [id], hidden: hidden) } },
             openInCloud: { model.openSession($0) })
@@ -573,8 +573,9 @@ struct LocalSessionTableRow: View, Equatable {
 
     @ViewBuilder private var relayToggle: some View {
         if let session = state.relaySession {
-            MessageAvailabilityButton(title: row.title, presence: state.presence, enabled: state.canToggleRelay,
-                help: state.canToggleRelay ? state.presence.messageHelp : (session.live
+            MessageAvailabilityButton(title: row.title, presence: state.presence,
+                enabled: state.canToggleRelay || state.notRunningReason != nil,
+                help: state.canToggleRelay ? state.presence.messageHelp : state.notRunningReason ?? (session.live
                     ? "Connect a workspace to receive messages."
                     : "Start this session to receive messages."), action: actions.toggleRelay)
         } else {

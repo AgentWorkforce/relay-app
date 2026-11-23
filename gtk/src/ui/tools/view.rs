@@ -1,7 +1,7 @@
 //! Tools settings and the optional post-sign-in chooser.
 
 use super::*;
-use crate::models::{CloudProviderSetup, provider_onboarding_ready, provider_onboarding_detail};
+use crate::models::{provider_onboarding_detail, provider_onboarding_ready, CloudProviderSetup};
 use crate::ui::widgets::{self, button, hbox, text, vbox, LabelStyle};
 use agent_relay_desktop_core::contract::tool_integrations::ToolIntegration;
 use gtk::{prelude::*, Align};
@@ -44,7 +44,11 @@ impl App {
                 && provider_onboarding_ready(&state.account())
                 && state.tools.needs_onboarding()
         });
-        if !show || !self.bridge().offers(agent_relay_desktop_core::contract::method::ToolsSelect::NAME) {
+        if !show
+            || !self
+                .bridge()
+                .offers(agent_relay_desktop_core::contract::method::ToolsSelect::NAME)
+        {
             return false;
         }
         self.update_state(|state| state.view = None);
@@ -161,7 +165,13 @@ impl App {
         first_line.add_widget(&title);
         words.append(&title);
         let account = self.with_state(|state| state.account());
-        words.append(&text(provider_onboarding_detail(tool, &account), &["settings-row-detail"]).wrapped());
+        words.append(
+            &text(
+                provider_onboarding_detail(tool, &account),
+                &["settings-row-detail"],
+            )
+            .wrapped(),
+        );
         if let Some(setup) = self.cloud_setup_button(&tool.id) {
             setup.set_halign(gtk::Align::Start);
             setup.set_sensitive(!ui.busy && !ui.loading);
@@ -173,7 +183,9 @@ impl App {
                 words.append(&link);
             }
             if ui.setup_started.contains(&tool.id) {
-                if let Some(copied) = CloudProviderSetup::for_id(&tool.id).and_then(|setup| setup.copied()) {
+                if let Some(copied) =
+                    CloudProviderSetup::for_id(&tool.id).and_then(|setup| setup.copied())
+                {
                     words.append(&text(copied, &["caption", "secondary"]).wrapped());
                 }
             }
@@ -264,7 +276,11 @@ impl App {
                 self.available_providers_section(column, report, &ui);
             }
             self.tools_error(column, &ui);
-            let choose = button("Choose providers…", &[], self.on(App::reopen_tools_onboarding));
+            let choose = button(
+                "Choose providers…",
+                &[],
+                self.on(App::reopen_tools_onboarding),
+            );
             choose.set_sensitive(!ui.busy && ui.report.is_some());
             column.append(&choose);
         }
@@ -296,7 +312,12 @@ impl App {
                 self.on(move |app| app.manage_tool(&id, "enable")),
             );
             widgets::name(&add, &format!("Add {}", tool.name));
-            add.set_sensitive(!ui.busy && self.bridge().offers(agent_relay_desktop_core::contract::method::ToolsManage::NAME));
+            add.set_sensitive(
+                !ui.busy
+                    && self
+                        .bridge()
+                        .offers(agent_relay_desktop_core::contract::method::ToolsManage::NAME),
+            );
             row.append(&add);
             group.append(&row);
         }

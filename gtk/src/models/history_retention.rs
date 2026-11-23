@@ -3,7 +3,9 @@
 //! local session history, and the note that history not yet uploaded is
 //! kept longer.
 
-use agent_relay_node::relay::contract::agents::history_retention::{CHOICES, DEFAULT_DAYS, FOREVER};
+use agent_relay_node::relay::contract::agents::history_retention::{
+    CHOICES, DEFAULT_DAYS, FOREVER,
+};
 
 pub const HISTORY_RETENTION_SECTION: &str = "Session history";
 pub const HISTORY_RETENTION_TITLE: &str = "Keep session history";

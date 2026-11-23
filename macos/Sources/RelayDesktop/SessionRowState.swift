@@ -20,6 +20,9 @@ struct SessionRowState: Equatable {
     let activityStatus: String
     let presence: RelayPresence
     let canToggleRelay: Bool
+    /// Why an off switch cannot turn on while the session is not seen
+    /// running; the switch stays pressable to say so.
+    let notRunningReason: String?
     let title: String
 
     var host: String? { relaySession?.host ?? upload?.host }
@@ -66,6 +69,7 @@ struct SessionRowIndex {
             activityStatus: activityStatus(for: row),
             presence: presence,
             canToggleRelay: session.map { !hidden && relay.canToggle($0, presence: presence) } ?? false,
+            notRunningReason: session.flatMap { hidden ? nil : relay.notRunningReason($0, presence: presence) },
             title: relay.displayedTitle(for: row.withLatestSources(upload: upload, relay: session)))
     }
 }

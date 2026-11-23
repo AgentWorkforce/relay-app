@@ -56,7 +56,10 @@ pub(super) fn absent_amp_and_capy_stay_out_of_onboarding_until_present(
     snapshot["account"]["site_url"] = json!("http://localhost:3100");
     case.set_state(snapshot);
     case.app.show_window();
-    case.pump(|case| case.window_labels().contains(&"Choose your providers".into()));
+    case.pump(|case| {
+        case.window_labels()
+            .contains(&"Choose your providers".into())
+    });
     assert!(!case.window_labels().contains(&"Amp".into()));
     assert!(!case.window_labels().contains(&"Capy".into()));
     assert!(buttons(case.app.window(), "Open Cloud connections").is_empty());
@@ -69,8 +72,10 @@ pub(super) fn absent_amp_and_capy_stay_out_of_onboarding_until_present(
     available["tools"][0]["name"] = json!("Installed Codex");
     for (id, name) in [("amp", "Amp"), ("capy", "Capy")] {
         let mut candidate = available["tools"][2].clone();
-        candidate["id"] = json!(id); candidate["name"] = json!(name);
-        candidate["detected"] = json!(true); candidate["selected"] = json!(true);
+        candidate["id"] = json!(id);
+        candidate["name"] = json!(name);
+        candidate["detected"] = json!(true);
+        candidate["selected"] = json!(true);
         candidate["state"] = json!("configured");
         candidate["onboarding_available"] = json!(false);
         available["tools"].as_array_mut().unwrap().push(candidate);
@@ -90,9 +95,16 @@ pub(super) fn absent_amp_and_capy_stay_out_of_onboarding_until_present(
     case.pump(|case| case.window_labels().contains(&"Capy".into()));
     assert!(!case.window_labels().contains(&"Amp".into()));
     assert_eq!(buttons(case.app.window(), "Set up in Capy").len(), 1);
-    let checks: Vec<_> = case.checks().iter().map(|check| check.widget_name().to_string()).collect();
+    let checks: Vec<_> = case
+        .checks()
+        .iter()
+        .map(|check| check.widget_name().to_string())
+        .collect();
     assert!(!checks.contains(&"Capy".to_string()), "{checks:?}");
-    assert!(checks.contains(&"Installed Codex".to_string()), "{checks:?}");
+    assert!(
+        checks.contains(&"Installed Codex".to_string()),
+        "{checks:?}"
+    );
     assert!(case.called("tools.select").is_empty());
     assert!(case.called("tools.manage").is_empty());
 
@@ -106,8 +118,10 @@ pub(super) fn absent_amp_and_capy_stay_out_of_onboarding_until_present(
     assert!(open[0].is_sensitive());
     case.desktop.opened.borrow_mut().clear();
     open[0].emit_clicked();
-    assert_eq!(*case.desktop.opened.borrow(),
-        vec!["http://localhost:3100/cloud/dashboard/settings#connections".to_string()]);
+    assert_eq!(
+        *case.desktop.opened.borrow(),
+        vec!["http://localhost:3100/cloud/dashboard/settings#connections".to_string()]
+    );
     assert!(case.called("tools.select").is_empty());
     assert!(case.called("tools.manage").is_empty());
 }
@@ -125,10 +139,18 @@ pub(super) fn onboarding_does_not_wait_for_history_capture(runtime: &tokio::runt
     snapshot["account"]["phase"] = json!("preparing_local_sessions");
     case.set_state(snapshot);
     case.app.show_window();
-    case.pump(|case| case.window_labels().contains(&"Choose your providers".into()));
+    case.pump(|case| {
+        case.window_labels()
+            .contains(&"Choose your providers".into())
+    });
     assert!(case.called("tools.select").is_empty());
-    assert!(case.window_labels().contains(&"Choose this provider now. Setup will finish after your local sessions are prepared.".into()));
-    assert!(!case.window_labels().contains(&"Sign in to Agent Relay to connect your providers.".into()));
+    assert!(case.window_labels().contains(
+        &"Choose this provider now. Setup will finish after your local sessions are prepared."
+            .into()
+    ));
+    assert!(!case
+        .window_labels()
+        .contains(&"Sign in to Agent Relay to connect your providers.".into()));
 }
 
 pub(super) fn cursor_is_selectable_in_provider_onboarding(runtime: &tokio::runtime::Runtime) {
@@ -142,43 +164,80 @@ pub(super) fn cursor_is_selectable_in_provider_onboarding(runtime: &tokio::runti
         core.answer("tools.status", catalog);
     });
     show_chooser(&case);
-    let cursor = case.checks().into_iter().find(|check| check.widget_name() == "Cursor").unwrap();
+    let cursor = case
+        .checks()
+        .into_iter()
+        .find(|check| check.widget_name() == "Cursor")
+        .unwrap();
     assert!(cursor.is_sensitive());
     cursor.set_active(true);
     buttons(case.app.window(), "Continue")[0].emit_clicked();
     case.pump(|case| !case.called("tools.select").is_empty());
-    assert_eq!(case.called("tools.select")[0], json!({"tool_ids":["cursor"]}));
+    assert_eq!(
+        case.called("tools.select")[0],
+        json!({"tool_ids":["cursor"]})
+    );
 }
 
-pub(super) fn reopened_chooser_keeps_saved_choices_until_continue(runtime: &tokio::runtime::Runtime) {
+pub(super) fn reopened_chooser_keeps_saved_choices_until_continue(
+    runtime: &tokio::runtime::Runtime,
+) {
     let case = Case::with(runtime, |core| answers(core, true));
     case.sign_in();
     case.app.go(Page::Settings(Pane::Tools));
     case.pump(|case| case.app.with_state(|state| state.tools.report.is_some()));
     case.app.open_provider("codex");
     case.settle();
-    assert!(buttons(case.app.window(), "Choose providers…").is_empty(), "Individual providers do not reopen global onboarding");
+    assert!(
+        buttons(case.app.window(), "Choose providers…").is_empty(),
+        "Individual providers do not reopen global onboarding"
+    );
     case.app.open_providers();
     case.pump(|case| !case.app.with_state(|state| state.tools.loading));
     let gate = Arc::new(Notify::new());
     let held = gate.clone();
-    case.answer("tools.status", Answer::with(move |_| {
-        let gate = held.clone();
-        async move { gate.notified().await; Ok(report(true, true)) }
-    }));
+    case.answer(
+        "tools.status",
+        Answer::with(move |_| {
+            let gate = held.clone();
+            async move {
+                gate.notified().await;
+                Ok(report(true, true))
+            }
+        }),
+    );
     let before = case.called("tools.status").len();
     case.app.refresh_tools();
     case.pump(|case| case.called("tools.status").len() > before);
     buttons(case.app.window(), "Choose providers…")[0].emit_clicked();
-    case.pump(|case| case.window_labels().contains(&"Choose your providers".into()));
+    case.pump(|case| {
+        case.window_labels()
+            .contains(&"Choose your providers".into())
+    });
     assert!(!buttons(case.app.window(), "Continue")[0].is_sensitive());
     case.answer("tools.status", report(true, true));
     gate.notify_one();
-    case.pump(|case| buttons(case.app.window(), "Continue").iter().any(|button| button.is_sensitive()));
-    assert!(case.checks().iter().find(|check| check.widget_name() == "Codex").unwrap().is_active());
+    case.pump(|case| {
+        buttons(case.app.window(), "Continue")
+            .iter()
+            .any(|button| button.is_sensitive())
+    });
+    assert!(case
+        .checks()
+        .iter()
+        .find(|check| check.widget_name() == "Codex")
+        .unwrap()
+        .is_active());
     buttons(case.app.window(), "Not now")[0].emit_clicked();
-    case.pump(|case| !case.window_labels().contains(&"Choose your providers".into()));
-    assert!(case.called("tools.select").is_empty(), "Opening and cancelling never clears existing connections");
+    case.pump(|case| {
+        !case
+            .window_labels()
+            .contains(&"Choose your providers".into())
+    });
+    assert!(
+        case.called("tools.select").is_empty(),
+        "Opening and cancelling never clears existing connections"
+    );
 
     let mut catalog = report(true, true);
     for (id, supported) in [("paseo", false), ("replicas", false), ("pi", true)] {
@@ -193,15 +252,37 @@ pub(super) fn reopened_chooser_keeps_saved_choices_until_continue(runtime: &toki
     catalog["tools"][2]["supported"] = json!(true);
     case.answer("tools.status", catalog);
     case.app.refresh_tools();
-    case.pump(|case| case.app.with_state(|state| state.tools.report.as_ref().is_some_and(|report| report.tools.len() == 6)));
+    case.pump(|case| {
+        case.app.with_state(|state| {
+            state
+                .tools
+                .report
+                .as_ref()
+                .is_some_and(|report| report.tools.len() == 6)
+        })
+    });
     case.app.open_providers();
     buttons(case.app.window(), "Choose providers…")[0].emit_clicked();
-    case.pump(|case| case.window_labels().contains(&"Choose your providers".into()));
-    case.checks().iter().find(|check| check.widget_name() == "Codex").unwrap().set_active(false);
-    case.checks().iter().find(|check| check.widget_name() == "OpenCode").unwrap().set_active(true);
+    case.pump(|case| {
+        case.window_labels()
+            .contains(&"Choose your providers".into())
+    });
+    case.checks()
+        .iter()
+        .find(|check| check.widget_name() == "Codex")
+        .unwrap()
+        .set_active(false);
+    case.checks()
+        .iter()
+        .find(|check| check.widget_name() == "OpenCode")
+        .unwrap()
+        .set_active(true);
     buttons(case.app.window(), "Continue")[0].emit_clicked();
     case.pump(|case| !case.called("tools.select").is_empty());
-    assert_eq!(case.called("tools.select")[0], json!({"tool_ids":["opencode", "pi", "replicas"]}));
+    assert_eq!(
+        case.called("tools.select")[0],
+        json!({"tool_ids":["opencode", "pi", "replicas"]})
+    );
 }
 
 pub(super) fn available_cloud_setup_prefers_installed_apps(runtime: &tokio::runtime::Runtime) {
@@ -209,7 +290,12 @@ pub(super) fn available_cloud_setup_prefers_installed_apps(runtime: &tokio::runt
     let case = Case::with(runtime, |core| {
         answers(core, false);
         let mut catalog = report(false, false);
-        for (id, name) in [("capy", "Capy"), ("grok-bot", "Grok Bot"), ("dot", "Dot"), ("muse-assistant", "Muse")] {
+        for (id, name) in [
+            ("capy", "Capy"),
+            ("grok-bot", "Grok Bot"),
+            ("dot", "Dot"),
+            ("muse-assistant", "Muse"),
+        ] {
             let mut tool = catalog["tools"][1].clone();
             tool["id"] = json!(id);
             tool["name"] = json!(name);
@@ -222,37 +308,61 @@ pub(super) fn available_cloud_setup_prefers_installed_apps(runtime: &tokio::runt
         core.answer("tools.status", catalog);
     });
     show_chooser(&case);
-    assert!(case.checks().iter().all(|check| !matches!(check.widget_name().as_str(), "Capy" | "Grok Bot" | "Dot" | "Muse")));
+    assert!(case.checks().iter().all(|check| !matches!(
+        check.widget_name().as_str(),
+        "Capy" | "Grok Bot" | "Dot" | "Muse"
+    )));
     for (installed, fails) in [(false, false), (true, false), (true, true)] {
         case.desktop.cloud_apps_installed.set(installed);
         case.desktop.cloud_app_open_fails.set(fails);
-        for setup in [CloudProviderSetup::Capy, CloudProviderSetup::GrokBot, CloudProviderSetup::Dot, CloudProviderSetup::MuseAssistant] {
+        for setup in [
+            CloudProviderSetup::Capy,
+            CloudProviderSetup::GrokBot,
+            CloudProviderSetup::Dot,
+            CloudProviderSetup::MuseAssistant,
+        ] {
             case.desktop.opened.borrow_mut().clear();
             let action = buttons(case.app.window(), setup.action());
             assert_eq!(action.len(), 1);
             assert!(action[0].has_css_class("primary"));
             action[0].clipboard().set_text("clipboard sentinel");
             action[0].emit_clicked();
-            let expected = if setup.copy_only() { Vec::new() } else { match setup.app_url().filter(|_| installed) {
-                Some(app) if fails => vec![app.to_string(), setup.web_url().into()],
-                Some(app) => vec![app.to_string()],
-                None => vec![setup.web_url().into()],
-            }};
+            let expected = if setup.copy_only() {
+                Vec::new()
+            } else {
+                match setup.app_url().filter(|_| installed) {
+                    Some(app) if fails => vec![app.to_string(), setup.web_url().into()],
+                    Some(app) => vec![app.to_string()],
+                    None => vec![setup.web_url().into()],
+                }
+            };
             assert_eq!(*case.desktop.opened.borrow(), expected);
             let copied = Rc::new(RefCell::new(None));
             let received = copied.clone();
-            action[0].clipboard().read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
-                *received.borrow_mut() = Some(result.unwrap().unwrap().to_string());
-            });
+            action[0]
+                .clipboard()
+                .read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
+                    *received.borrow_mut() = Some(result.unwrap().unwrap().to_string());
+                });
             case.pump(|_| copied.borrow().is_some());
-            assert_eq!(copied.borrow().as_deref(), Some(setup.prompt().unwrap_or("clipboard sentinel")));
-            if let Some(copied) = setup.copied() { assert!(case.window_labels().contains(&copied.into())); }
+            assert_eq!(
+                copied.borrow().as_deref(),
+                Some(setup.prompt().unwrap_or("clipboard sentinel"))
+            );
+            if let Some(copied) = setup.copied() {
+                assert!(case.window_labels().contains(&copied.into()));
+            }
             if setup.copy_only() {
-                assert!(case.window_labels().contains(&setup.prompt().unwrap().into()));
+                assert!(case
+                    .window_labels()
+                    .contains(&setup.prompt().unwrap().into()));
                 let open = buttons(case.app.window(), "Open Muse");
                 assert_eq!(open.len(), 1);
                 open[0].emit_clicked();
-                assert_eq!(*case.desktop.opened.borrow(), vec![setup.web_url().to_string()]);
+                assert_eq!(
+                    *case.desktop.opened.borrow(),
+                    vec![setup.web_url().to_string()]
+                );
             }
         }
     }
@@ -315,7 +425,9 @@ pub(super) fn onboarding_persists_continue_and_not_now(runtime: &tokio::runtime:
             .iter()
             .find(|check| check.widget_name() == "Codex")
             .unwrap();
-        assert!(choices.iter().all(|check| check.widget_name() != "Claude Code"));
+        assert!(choices
+            .iter()
+            .all(|check| check.widget_name() != "Claude Code"));
         assert!(case.window_labels().contains(&"Claude Code".into()));
         assert!(choices
             .iter()
@@ -868,8 +980,11 @@ pub(super) fn open_session_provider(case: &Case, id: &str) {
     let mut catalog = report(true, true);
     catalog["tools"][2]["detected"] = json!(true);
     for (provider, name) in [
-        ("grok", "Grok"), ("devin", "Devin"), ("cursor", "Cursor"),
-        ("openclaw", "OpenClaw"), ("hermes", "Hermes"),
+        ("grok", "Grok"),
+        ("devin", "Devin"),
+        ("cursor", "Cursor"),
+        ("openclaw", "OpenClaw"),
+        ("hermes", "Hermes"),
     ] {
         let mut tool = catalog["tools"][0].clone();
         tool["id"] = json!(provider);
@@ -888,11 +1003,19 @@ pub(super) fn open_session_provider(case: &Case, id: &str) {
     case.app.refresh_tools();
     case.pump(|case| {
         !case.app.with_state(|state| state.tools.loading)
-            && case.app.with_state(|state| state.tools.report.as_ref().is_some_and(
-                |report| report.tools.iter().any(|tool| tool.id == "cursor")))
+            && case.app.with_state(|state| {
+                state
+                    .tools
+                    .report
+                    .as_ref()
+                    .is_some_and(|report| report.tools.iter().any(|tool| tool.id == "cursor"))
+            })
     });
     case.app.open_provider(id);
-    case.pump(|case| case.app.with_state(|state| state.tools.provider_id.as_deref() == Some(id)));
+    case.pump(|case| {
+        case.app
+            .with_state(|state| state.tools.provider_id.as_deref() == Some(id))
+    });
     case.settle();
 }
 
@@ -1000,19 +1123,36 @@ pub(super) fn provider_preferences_have_one_home(runtime: &tokio::runtime::Runti
     for (mode, shown) in [("new", false), ("all", false), ("selected", true)] {
         let mut status = uploader();
         status["sharing_mode"] = json!(mode);
-        case.answer("uploader.status", check::<agent_relay_desktop_core::contract::method::UploaderStatus>(status));
+        case.answer(
+            "uploader.status",
+            check::<agent_relay_desktop_core::contract::method::UploaderStatus>(status),
+        );
         case.app.refresh_uploader(false);
         case.pump(|case| {
             let policy_matches = case.app.with_state(|state| {
-                state.status.as_ref().is_some_and(|status| status.sharing_mode.as_str() == mode)
+                state
+                    .status
+                    .as_ref()
+                    .is_some_and(|status| status.sharing_mode.as_str() == mode)
             });
-            policy_matches && case.settings_labels().contains(
-                &agent_relay_app::models::CLAUDE_SESSION_HOOK_TITLE.into()) == shown
+            policy_matches
+                && case
+                    .settings_labels()
+                    .contains(&agent_relay_app::models::CLAUDE_SESSION_HOOK_TITLE.into())
+                    == shown
         });
-        assert_eq!(case.app.with_state(|state| state.settings.as_ref().and_then(
-            |settings| settings.claude_session_hook)), Some(false));
+        assert_eq!(
+            case.app.with_state(|state| state
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.claude_session_hook)),
+            Some(false)
+        );
     }
-    assert!(case.called("settings.set").is_empty(), "visibility never changes the saved hook");
+    assert!(
+        case.called("settings.set").is_empty(),
+        "visibility never changes the saved hook"
+    );
     // As on the Mac, delivery shows only while a Claude terminal session exists.
     case.app.update_state(|state| state.local_sessions.clear());
     case.app.render_settings();
@@ -1037,8 +1177,14 @@ pub(super) fn provider_preferences_have_one_home(runtime: &tokio::runtime::Runti
     controls["hermes_agent"] = json!(false);
     case.answer("settings.get", check::<method::SettingsGet>(controls));
     case.app.load_settings();
-    case.pump(|case| case.app.with_state(|state| state.settings.as_ref().is_some_and(
-        |settings| settings.codex_stop_hook.is_some())));
+    case.pump(|case| {
+        case.app.with_state(|state| {
+            state
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.codex_stop_hook.is_some())
+        })
+    });
     let rows = [
         ("grok", "Grok sessions"),
         ("opencode", "OpenCode sessions"),
@@ -1053,14 +1199,20 @@ pub(super) fn provider_preferences_have_one_home(runtime: &tokio::runtime::Runti
         assert!(shown.contains(&title.into()), "{title} on {id}: {shown:?}");
         for (other_id, other_title) in rows {
             if other_id != id {
-                assert!(!shown.contains(&other_title.into()), "{other_title} must stay on {other_id}");
+                assert!(
+                    !shown.contains(&other_title.into()),
+                    "{other_title} must stay on {other_id}"
+                );
             }
         }
     }
     case.app.go(Page::Settings(Pane::Relay));
     case.settle();
     for (_, title) in rows {
-        assert!(!case.settings_labels().contains(&title.into()), "{title} must not be duplicated on Relay");
+        assert!(
+            !case.settings_labels().contains(&title.into()),
+            "{title} must not be duplicated on Relay"
+        );
     }
 }
 
@@ -1267,8 +1419,22 @@ pub(super) fn amp_and_copilot_pages_show_the_core_wording(runtime: &tokio::runti
         // was added there too. Added and not yet set up, the core reports
         // Copilot as Setup needed, installable and repairable.
         for (id, name, detected, state, label, detail) in [
-            ("amp", "Amp", false, "external_setup", "Connects through Agent Relay Cloud", AMP),
-            ("copilot", "GitHub Copilot (VS Code)", true, "action_required", "Setup needed", COPILOT),
+            (
+                "amp",
+                "Amp",
+                false,
+                "external_setup",
+                "Connects through Agent Relay Cloud",
+                AMP,
+            ),
+            (
+                "copilot",
+                "GitHub Copilot (VS Code)",
+                true,
+                "action_required",
+                "Setup needed",
+                COPILOT,
+            ),
         ] {
             let selected = true;
             let mut tool = catalog["tools"][0].clone();
@@ -1306,7 +1472,10 @@ pub(super) fn amp_and_copilot_pages_show_the_core_wording(runtime: &tokio::runti
     case.app.open_provider("amp");
     case.settle();
     let labels = case.settings_labels();
-    assert!(labels.contains(&"Connects through Agent Relay Cloud".into()), "{labels:?}");
+    assert!(
+        labels.contains(&"Connects through Agent Relay Cloud".into()),
+        "{labels:?}"
+    );
     assert!(labels.contains(&AMP.into()));
     // Amp's on state needs a ready account, so its details show that line.
     provider_details(&case).set_expanded(true);
@@ -1339,10 +1508,15 @@ pub(super) fn amp_and_copilot_pages_show_the_core_wording(runtime: &tokio::runti
     assert!(buttons(&content, "Open Cloud connections").is_empty());
     // An added Copilot sets up through its one primary action, as on the Mac:
     // a selected provider's setup is a repair, named for its connection.
-    let connect=buttons(&content,"Fix GitHub Copilot (VS Code) connection");
-    assert_eq!(connect.len(),1);assert!(connect[0].has_css_class("primary"));connect[0].emit_clicked();
-    case.pump(|case|!case.called("tools.manage").is_empty());
-    assert_eq!(case.called("tools.manage")[0],json!({"tool_id":"copilot","action":"repair"}));
+    let connect = buttons(&content, "Fix GitHub Copilot (VS Code) connection");
+    assert_eq!(connect.len(), 1);
+    assert!(connect[0].has_css_class("primary"));
+    connect[0].emit_clicked();
+    case.pump(|case| !case.called("tools.manage").is_empty());
+    assert_eq!(
+        case.called("tools.manage")[0],
+        json!({"tool_id":"copilot","action":"repair"})
+    );
 }
 
 fn provider_details(case: &Case) -> gtk::Expander {

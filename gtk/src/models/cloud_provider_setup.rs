@@ -1,23 +1,29 @@
 //! External onboarding handoffs; keep these links and words aligned with the Mac.
 use super::{CAPY_SETUP_ACTION, CAPY_SETUP_COPIED, CAPY_SETUP_PROMPT, CAPY_URL};
-use agent_relay_node::relay::state::{AccountStatus, SignInState};
 use agent_relay_desktop_core::contract::tool_integrations::ToolIntegration;
+use agent_relay_node::relay::state::{AccountStatus, SignInState};
 
 /// Authentication is complete before the initial local history scan finishes.
 pub fn provider_onboarding_ready(account: &AccountStatus) -> bool {
     account.state == SignInState::SignedIn
-        || (account.state == SignInState::Preparing && account.phase.as_deref() == Some("preparing_local_sessions"))
+        || (account.state == SignInState::Preparing
+            && account.phase.as_deref() == Some("preparing_local_sessions"))
 }
 
 /// Initial onboarding uses the core's local-install witness for Amp/Capy.
 /// Saved choices, Cloud connections and retained data are not installation.
 pub fn provider_onboarding_present(tool: &ToolIntegration) -> bool {
-    !matches!(tool.id.as_str(), "amp" | "capy")
-        || tool.onboarding_available == Some(true)
+    !matches!(tool.id.as_str(), "amp" | "capy") || tool.onboarding_available == Some(true)
 }
 
-pub fn provider_onboarding_detail<'a>(tool: &'a ToolIntegration, account: &AccountStatus) -> &'a str {
-    if account.state == SignInState::Preparing && account.phase.as_deref() == Some("preparing_local_sessions") && tool.state == "signed_out" {
+pub fn provider_onboarding_detail<'a>(
+    tool: &'a ToolIntegration,
+    account: &AccountStatus,
+) -> &'a str {
+    if account.state == SignInState::Preparing
+        && account.phase.as_deref() == Some("preparing_local_sessions")
+        && tool.state == "signed_out"
+    {
         "Choose this provider now. Setup will finish after your local sessions are prepared."
     } else {
         &tool.detail
@@ -40,21 +46,44 @@ mod tests {
     fn absent_amp_and_capy_catalog_actions_are_not_presence() {
         for id in ["amp", "capy"] {
             let absent = ToolIntegration {
-                id: id.into(), name: id.into(), detected: false, onboarding_available: None, supported: true,
-                selected: false, state: "external_setup".into(), status_label: "Setup".into(),
-                detail: "Setup is available".into(), can_install: true, can_repair: true, can_uninstall: true,
+                id: id.into(),
+                name: id.into(),
+                detected: false,
+                onboarding_available: None,
+                supported: true,
+                selected: false,
+                state: "external_setup".into(),
+                status_label: "Setup".into(),
+                detail: "Setup is available".into(),
+                can_install: true,
+                can_repair: true,
+                can_uninstall: true,
             };
-            assert!(!provider_onboarding_present(&absent), "setup capability is not detection");
+            assert!(
+                !provider_onboarding_present(&absent),
+                "setup capability is not detection"
+            );
             for evidence in ["detected", "selected", "configured"] {
                 let mut present = absent.clone();
                 present.detected = evidence == "detected";
                 present.selected = evidence == "selected";
-                present.state = if evidence == "configured" { "configured" } else { "external_setup" }.into();
-                assert!(!provider_onboarding_present(&present), "{id} {evidence} is not installation");
+                present.state = if evidence == "configured" {
+                    "configured"
+                } else {
+                    "external_setup"
+                }
+                .into();
+                assert!(
+                    !provider_onboarding_present(&present),
+                    "{id} {evidence} is not installation"
+                );
                 present.onboarding_available = Some(false);
                 assert!(!provider_onboarding_present(&present));
                 present.onboarding_available = Some(true);
-                assert!(provider_onboarding_present(&present), "the core's installed witness admits the row");
+                assert!(
+                    provider_onboarding_present(&present),
+                    "the core's installed witness admits the row"
+                );
             }
         }
     }
@@ -63,12 +92,24 @@ mod tests {
     fn provider_setup_does_not_wait_for_history_but_waits_for_authentication() {
         for (state, phase, ready) in [
             (SignInState::SignedIn, None, true),
-            (SignInState::Preparing, Some("preparing_local_sessions"), true),
+            (
+                SignInState::Preparing,
+                Some("preparing_local_sessions"),
+                true,
+            ),
             (SignInState::Preparing, Some("connecting_workspace"), false),
             (SignInState::PendingApproval, None, false),
-            (SignInState::SignedOut, Some("preparing_local_sessions"), false),
+            (
+                SignInState::SignedOut,
+                Some("preparing_local_sessions"),
+                false,
+            ),
         ] {
-            let account = AccountStatus { state, phase: phase.map(String::from), ..Default::default() };
+            let account = AccountStatus {
+                state,
+                phase: phase.map(String::from),
+                ..Default::default()
+            };
             assert_eq!(provider_onboarding_ready(&account), ready);
         }
     }
@@ -78,7 +119,10 @@ mod tests {
         let muse = CloudProviderSetup::for_id("muse-assistant").unwrap();
         assert!(muse.copy_only());
         let skill = muse.skill_url().unwrap();
-        assert_eq!(skill, "https://github.com/AgentWorkforce/skills/blob/main/skills/agent-relay-muse/SKILL.md");
+        assert_eq!(
+            skill,
+            "https://github.com/AgentWorkforce/skills/blob/main/skills/agent-relay-muse/SKILL.md"
+        );
         assert!(muse.prompt().unwrap().contains(skill));
         assert!(muse.app_url().is_none());
         assert_eq!(muse.web_url(), "https://muse.ai/");
@@ -95,12 +139,21 @@ mod tests {
             assert_eq!(url.scheme(), scheme);
             assert_eq!(url.host_str(), Some("app"));
             assert_eq!(url.path(), path);
-            assert_eq!(url.query_pairs().collect::<Vec<_>>(), vec![(key.into(), setup.prompt().unwrap().into())]);
+            assert_eq!(
+                url.query_pairs().collect::<Vec<_>>(),
+                vec![(key.into(), setup.prompt().unwrap().into())]
+            );
         }
         let dot = CloudProviderSetup::for_id("dot").unwrap();
         assert!(dot.app_url().is_none() && dot.prompt().is_none());
-        assert_eq!(dot.web_url(), "https://chatgpt.com/plugins/plugin_asdk_app_6ad1e2038840819189295d49199c2915");
-        assert!(CloudProviderSetup::for_id("grok").is_none(), "Grok CLI is separate");
+        assert_eq!(
+            dot.web_url(),
+            "https://chatgpt.com/plugins/plugin_asdk_app_6ad1e2038840819189295d49199c2915"
+        );
+        assert!(
+            CloudProviderSetup::for_id("grok").is_none(),
+            "Grok CLI is separate"
+        );
     }
 }
 
@@ -138,14 +191,18 @@ impl CloudProviderSetup {
     }
 
     pub fn skill_url(self) -> Option<&'static str> {
-        (self == Self::MuseAssistant).then_some("https://github.com/AgentWorkforce/skills/blob/main/skills/agent-relay-muse/SKILL.md")
+        (self == Self::MuseAssistant).then_some(
+            "https://github.com/AgentWorkforce/skills/blob/main/skills/agent-relay-muse/SKILL.md",
+        )
     }
 
     pub fn web_url(self) -> &'static str {
         match self {
             Self::Capy => CAPY_URL,
             Self::GrokBot => "https://cursor.com/bot",
-            Self::Dot => "https://chatgpt.com/plugins/plugin_asdk_app_6ad1e2038840819189295d49199c2915",
+            Self::Dot => {
+                "https://chatgpt.com/plugins/plugin_asdk_app_6ad1e2038840819189295d49199c2915"
+            }
             Self::MuseAssistant => "https://muse.ai/",
         }
     }

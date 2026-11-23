@@ -348,6 +348,9 @@ struct DrawnRow {
     presence: Option<Presence>,
     relay_error: Option<String>,
     can_relay: bool,
+    /// Why an off switch cannot turn on while the session is not seen
+    /// running; the switch stays pressable to say so.
+    not_running: Option<&'static str>,
     hidden: bool,
     requesting: bool,
     stopping: bool,
@@ -600,7 +603,9 @@ impl App {
                 button,
                 column,
                 next,
-                self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME),
+                self.bridge().offers(
+                    agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
+                ),
             );
             widgets::name(
                 button,
@@ -677,7 +682,7 @@ impl App {
             .iter()
             .map(|session| {
                 let key = session.key();
-                let (presence, relay_error, can_relay) = self.with_state(|state| {
+                let (presence, relay_error, can_relay, not_running) = self.with_state(|state| {
                     let presence = session.relay.as_ref().map(|s| state.presence_of(s));
                     let error = session
                         .relay
@@ -688,7 +693,11 @@ impl App {
                         .relay
                         .as_ref()
                         .is_some_and(|s| state.can_toggle(s, state.presence_of(s)));
-                    (presence, error, can)
+                    let not_running = session
+                        .relay
+                        .as_ref()
+                        .and_then(|s| state.not_running_reason(s, state.presence_of(s)));
+                    (presence, error, can, not_running)
                 });
                 DrawnRow {
                     activity: activity.activity(session),
@@ -699,6 +708,7 @@ impl App {
                     presence,
                     relay_error,
                     can_relay: can_relay && !hidden_sessions.contains(&key),
+                    not_running: not_running.filter(|_| !hidden_sessions.contains(&key)),
                     hidden: hidden_sessions.contains(&key),
                     requesting: requesting.contains(&key),
                     stopping: stopping.contains(&key),
@@ -988,14 +998,18 @@ impl App {
                 self,
                 &query,
                 facets.as_ref().map(|f| f.harnesses.as_slice()).unwrap_or(
-                    if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
+                    if self.bridge().offers(
+                        agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
+                    ) {
                         &[]
                     } else {
                         &data.sources
                     },
                 ),
                 facets.as_ref().map(|f| f.projects.as_slice()).unwrap_or(
-                    if self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME) {
+                    if self.bridge().offers(
+                        agent_relay_desktop_core::contract::method::UploaderSessionsQuery::NAME,
+                    ) {
                         &[]
                     } else {
                         &data.projects
@@ -1074,8 +1088,7 @@ impl App {
         let local = session.relay.clone();
         let relay = button("", &["flat", "message-control"], move || {
             if let (Some(app), Some(local)) = (weak.upgrade(), &local) {
-                let on = app.with_state(|state| state.presence_of(local).is_on());
-                app.toggle_relay(local, !on);
+                app.press_relay(local);
             }
         });
         // GtkListBox selects a row when a child takes focus. A mouse click
@@ -1083,7 +1096,7 @@ impl App {
         relay.set_focus_on_click(false);
         relay.set_valign(gtk::Align::Center);
         relay.set_halign(gtk::Align::Center);
-        relay.set_sensitive(drawn.can_relay);
+        relay.set_sensitive(drawn.can_relay || drawn.not_running.is_some());
         message_controls::set_cursor(&relay, presence);
         relay.set_widget_name(&format!("receive-messages {key}"));
         relay.add_css_class(presence.message_class());
@@ -1101,6 +1114,8 @@ impl App {
         );
         let help = if drawn.can_relay {
             presence.message_help()
+        } else if let Some(reason) = drawn.not_running {
+            reason
         } else if let Some(local) = &session.relay {
             if local.live {
                 "Connect a workspace to receive messages."
@@ -1771,13 +1786,15 @@ impl App {
             }
         };
         if include {
-            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsInclude>(params, move |app, result| {
-                finished(app, result.err())
-            });
+            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsInclude>(
+                params,
+                move |app, result| finished(app, result.err()),
+            );
         } else {
-            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsDelete>(params, move |app, result| {
-                finished(app, result.err())
-            });
+            self.view_call::<agent_relay_desktop_core::contract::method::UploaderSessionsDelete>(
+                params,
+                move |app, result| finished(app, result.err()),
+            );
         }
     }
 

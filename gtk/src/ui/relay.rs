@@ -87,7 +87,9 @@ impl App {
     /// this one ends.
     pub fn refresh_uploader(&self, sessions: bool) {
         if !self.with_state(|state| state.connected())
-            || !self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderStatus::NAME)
+            || !self
+                .bridge()
+                .offers(agent_relay_desktop_core::contract::method::UploaderStatus::NAME)
         {
             return;
         }
@@ -114,20 +116,23 @@ impl App {
         let current = move |app: &App| {
             app.with_state(|state| state.generation == generation && state.connected())
         };
-        self.call::<agent_relay_desktop_core::contract::method::UploaderStatus>(NoParams {}, move |app, result| {
-            if app.with_state(|state| state.generation) != generation {
-                return;
-            }
-            app.update_state(|state| state.refreshing_uploader = false);
-            if !current(app) {
-                return;
-            }
-            match result {
-                Ok(status) => app.upload_status_answered(&status),
-                Err(error) => app.refresh_failed(&error),
-            }
-            app.refresh_if_stale();
-        });
+        self.call::<agent_relay_desktop_core::contract::method::UploaderStatus>(
+            NoParams {},
+            move |app, result| {
+                if app.with_state(|state| state.generation) != generation {
+                    return;
+                }
+                app.update_state(|state| state.refreshing_uploader = false);
+                if !current(app) {
+                    return;
+                }
+                match result {
+                    Ok(status) => app.upload_status_answered(&status),
+                    Err(error) => app.refresh_failed(&error),
+                }
+                app.refresh_if_stale();
+            },
+        );
     }
 
     fn refresh_if_stale(&self) {
@@ -322,6 +327,34 @@ impl App {
         self.render_chrome();
         self.update_tray();
         self.schedule_activity_check();
+    }
+
+    /// A press on a session's Messages switch: flips it, or, when Agent
+    /// Relay does not see the session running, says so inline on its row
+    /// and looks for it again, instead of doing nothing (relay#2239).
+    pub fn press_relay(&self, session: &LocalSession) {
+        let (on, reason) = self.with_state(|state| {
+            let presence = state.presence_of(session);
+            let reason = (!state.can_toggle(session, presence))
+                .then(|| state.not_running_reason(session, presence))
+                .flatten();
+            (presence.is_on(), reason)
+        });
+        let Some(reason) = reason else {
+            self.toggle_relay(session, !on);
+            return;
+        };
+        eprintln!(
+            "relay: messages switch pressed for a {} session the core does not report running; see the core log's codex discovery line",
+            session.target.kind.as_str()
+        );
+        self.update_state(|state| {
+            state
+                .relay_errors
+                .insert(session.target.key(), reason.to_string());
+        });
+        self.relay_changed();
+        self.refresh_local();
     }
 
     /// Puts `session` on the relay or takes it off. The switch shows the new

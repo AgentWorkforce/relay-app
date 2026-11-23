@@ -11,8 +11,8 @@ use crate::ui::state::{Page, Pane, State};
 use crate::ui::widgets::{
     self, hbox, notice, settings_divider, settings_row, settings_section, Tone,
 };
-use agent_relay_node::relay::contract::agents::SettingsChange;
 use agent_relay_desktop_core::contract::account::SharingMode;
+use agent_relay_node::relay::contract::agents::SettingsChange;
 use gtk::prelude::*;
 use gtk4 as gtk;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -181,7 +181,9 @@ impl App {
             Pane::Sharing => self.render_settings(),
             Pane::General if self.general_uploads_changed() => self.render_settings(),
             Pane::General => self.refresh_history_retention(),
-            Pane::Tools if self.claude_session_prompt_visibility_changed() => self.render_settings(),
+            Pane::Tools if self.claude_session_prompt_visibility_changed() => {
+                self.render_settings()
+            }
             Pane::Tools => self.refresh_claude_cloud_health(),
             _ => {}
         }
@@ -191,16 +193,26 @@ impl App {
     /// unchanged polls free to preserve focus and open disclosures.
     fn claude_session_prompt_visibility_changed(&self) -> bool {
         let wanted = self.with_state(|state| {
-            if state.tools.provider_overview
-                || state.tools.provider_id.as_deref() != Some("claude") {
+            if state.tools.provider_overview || state.tools.provider_id.as_deref() != Some("claude")
+            {
                 return None;
             }
-            Some(state.sharing_mode() == Some(SharingMode::Selected)
-                && state.settings.as_ref().is_some_and(
-                    |settings| settings.claude_session_hook.is_some()))
+            Some(
+                state.sharing_mode() == Some(SharingMode::Selected)
+                    && state
+                        .settings
+                        .as_ref()
+                        .is_some_and(|settings| settings.claude_session_hook.is_some()),
+            )
         });
-        let (Some(wanted), Some(shell)) = (wanted, self.shell()) else { return false };
-        let shown = named(shell.settings.column.upcast_ref(), CLAUDE_SESSION_PROMPT_NAME).is_some();
+        let (Some(wanted), Some(shell)) = (wanted, self.shell()) else {
+            return false;
+        };
+        let shown = named(
+            shell.settings.column.upcast_ref(),
+            CLAUDE_SESSION_PROMPT_NAME,
+        )
+        .is_some();
         shown != wanted
     }
 

@@ -80,9 +80,17 @@ impl App {
             }
         };
         let started = if paused {
-            self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderPause>(NoParams {}, "Pausing…", finished)
+            self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderPause>(
+                NoParams {},
+                "Pausing…",
+                finished,
+            )
         } else {
-            self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderResume>(NoParams {}, "Resuming…", finished)
+            self.uploader_command::<agent_relay_desktop_core::contract::method::UploaderResume>(
+                NoParams {},
+                "Resuming…",
+                finished,
+            )
         };
         if !started {
             self.update_state(|state| state.paused_wanted.clear());

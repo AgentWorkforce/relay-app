@@ -73,7 +73,9 @@ pub trait Desktop {
     /// Open a known app handoff, falling back to its web page on launch failure.
     /// System implementations wait for launcher results off the UI thread.
     fn open_app_uri(&self, uri: &str, fallback: &str) {
-        if !self.open_uri(uri) { self.open_uri(fallback); }
+        if !self.open_uri(uri) {
+            self.open_uri(fallback);
+        }
     }
     fn has_uri_handler(&self, scheme: &str) -> bool;
     /// Starts an interactive CLI resume command in a terminal.
@@ -222,8 +224,14 @@ impl Desktop for System {
 impl System {
     fn platform_open_app_uri(&self, uri: &str, fallback: &str) {
         let (uri, fallback) = (uri.to_string(), fallback.to_string());
-        let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
-        std::thread::spawn(move || { open_app_link(opener.as_ref(), &uri, &fallback); });
+        let opener = if cfg!(target_os = "linux") {
+            "xdg-open"
+        } else {
+            "open"
+        };
+        std::thread::spawn(move || {
+            open_app_link(opener.as_ref(), &uri, &fallback);
+        });
     }
 
     fn platform_has_uri_handler(&self, scheme: &str) -> bool {
@@ -348,7 +356,11 @@ mod app_link_tests {
             std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert!(open_app_link(opener.as_os_str(), native, web));
             let log = opener.with_extension("log");
-            let expected = if fail { format!("{native}\n{web}\n") } else { format!("{native}\n") };
+            let expected = if fail {
+                format!("{native}\n{web}\n")
+            } else {
+                format!("{native}\n")
+            };
             assert_eq!(std::fs::read_to_string(&log).unwrap(), expected);
             std::fs::remove_file(log).unwrap();
         }

@@ -4,8 +4,8 @@
 
 use super::core_crates::CoreCrates;
 use super::time::dated_clock;
-use agent_relay_node::relay::contract::account::SignInLink;
 use agent_relay_desktop_core::contract::account::{ClaudeCloudHealth, ClaudeCloudHealthState};
+use agent_relay_node::relay::contract::account::SignInLink;
 use agent_relay_node::relay::contract::agents::{ClaudeConfigDir, SettingsChange, SettingsValues};
 use agent_relay_node::relay::push::PushState;
 use agent_relay_node::relay::state::{AccountStatus, Status, Verification, WorkspaceState};
@@ -37,8 +37,10 @@ pub fn detected_tools_label(settings: Option<&SettingsValues>) -> Option<String>
 /// Claude Code's SessionStart prompt, shown for selected-session uploads. The Mac's
 /// `ClaudeSessionHookCopy` matches these word for word.
 pub const CLAUDE_SESSION_HOOK_TITLE: &str = "Ask Claude chats to join";
-pub const CLAUDE_SESSION_HOOK_ON: &str = "Ask at the beginning of the session if it should go on the relay.";
-pub const CLAUDE_SESSION_HOOK_OFF: &str = "Ask at the beginning of the session if it should go on the relay.";
+pub const CLAUDE_SESSION_HOOK_ON: &str =
+    "Ask at the beginning of the session if it should go on the relay.";
+pub const CLAUDE_SESSION_HOOK_OFF: &str =
+    "Ask at the beginning of the session if it should go on the relay.";
 pub const CLAUDE_SESSION_HOOK_TURN_ON_HELP: &str =
     "Add the session-start prompt and permissions for Agent Relay's own read and reply commands. Registration still needs approval.";
 pub const CLAUDE_SESSION_HOOK_TURN_OFF_HELP: &str =

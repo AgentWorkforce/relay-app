@@ -56,6 +56,24 @@ impl State {
                 || (session.live && self.has_workspace()))
     }
 
+    /// Why pressing an off switch cannot put `session` on the relay
+    /// because Agent Relay does not see it running, with what to do next;
+    /// `None` when the switch works or another reason applies. The switch
+    /// stays pressable then and shows this inline, so it is never silently
+    /// dead (relay#2239).
+    pub fn not_running_reason(
+        &self,
+        session: &LocalSession,
+        presence: Presence,
+    ) -> Option<&'static str> {
+        let blocked = !SpawnHandover::can_end(Some(session))
+            && !presence.is_on()
+            && !presence.is_changing()
+            && !session.live
+            && self.has_workspace();
+        blocked.then(|| not_running_message(session.target.kind))
+    }
+
     /// What a session's switch does, or why it can't.
     pub fn switch_help(&self, session: &LocalSession, presence: Presence) -> &'static str {
         if SpawnHandover::can_end(Some(session)) {
@@ -191,3 +209,14 @@ impl State {
 #[path = "session_queries.rs"]
 mod session_queries;
 pub(super) use session_queries::SessionQueryState;
+
+/// The inline reason a session not seen running cannot receive messages.
+pub fn not_running_message(kind: agent_relay_node::relay::store::SessionKind) -> &'static str {
+    use agent_relay_node::relay::store::SessionKind;
+    match kind {
+        SessionKind::Codex => {
+            "Agent Relay can't see this Codex chat running. Open it in Codex and try again."
+        }
+        _ => "Agent Relay can't see this session running. Open it and try again.",
+    }
+}

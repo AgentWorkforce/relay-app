@@ -123,11 +123,10 @@ pub(super) fn onboarding_action(
 pub(super) fn onboarding_tools(
     report: &ToolsReport,
 ) -> impl Iterator<Item = &agent_relay_desktop_core::contract::tool_integrations::ToolIntegration> {
-    report
-        .tools
-        .iter()
-        .filter(|tool| crate::models::provider_onboarding_present(tool)
-            && (tool.detected || onboarding_action(tool) != OnboardingAction::NoChoice))
+    report.tools.iter().filter(|tool| {
+        crate::models::provider_onboarding_present(tool)
+            && (tool.detected || onboarding_action(tool) != OnboardingAction::NoChoice)
+    })
 }
 
 #[derive(Clone, Default)]
@@ -154,7 +153,9 @@ pub struct ToolsUi {
 
 impl ToolsUi {
     fn read(&mut self, report: ToolsReport) {
-        if !self.onboarding_requested { self.retained_onboarding.clear(); }
+        if !self.onboarding_requested {
+            self.retained_onboarding.clear();
+        }
         if !self.draft_initialized || (report.onboarding_complete && !self.onboarding_requested) {
             self.selected = report
                 .tools
@@ -167,7 +168,9 @@ impl ToolsUi {
         if self.onboarding_requested {
             for tool in &report.tools {
                 if chooser_eligible(tool) {
-                    if self.retained_onboarding.remove(&tool.id) { self.selected.insert(tool.id.clone()); }
+                    if self.retained_onboarding.remove(&tool.id) {
+                        self.selected.insert(tool.id.clone());
+                    }
                 } else if tool.selected && self.selected.contains(&tool.id) {
                     self.retained_onboarding.insert(tool.id.clone());
                 }
@@ -197,23 +200,31 @@ impl ToolsUi {
     }
 
     fn selection_to_save(&self) -> Vec<String> {
-        let mut selected = self.selected.union(&self.retained_onboarding)
-            .cloned().collect::<BTreeSet<_>>();
+        let mut selected = self
+            .selected
+            .union(&self.retained_onboarding)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         if let Some(report) = &self.report {
             // Retain only already-saved hidden choices, never a catalog default.
-            selected.extend(report.tools.iter().filter(|tool| {
-                matches!(tool.id.as_str(), "amp" | "capy") && tool.selected
-            }).map(|tool| tool.id.clone()));
+            selected.extend(
+                report
+                    .tools
+                    .iter()
+                    .filter(|tool| matches!(tool.id.as_str(), "amp" | "capy") && tool.selected)
+                    .map(|tool| tool.id.clone()),
+            );
         }
         selected.into_iter().collect()
     }
 
     pub fn needs_onboarding(&self) -> bool {
         !self.dismissed
-            && (self.onboarding_requested || self
-                .report
-                .as_ref()
-                .is_some_and(|report| !report.onboarding_complete))
+            && (self.onboarding_requested
+                || self
+                    .report
+                    .as_ref()
+                    .is_some_and(|report| !report.onboarding_complete))
     }
 
     pub fn choose(&mut self, id: &str, selected: bool) {
@@ -244,7 +255,9 @@ impl ToolsUi {
             self.retained_onboarding.remove(id);
             for choices in [&mut self.selected, &mut self.retained_onboarding] {
                 choices.retain(|host| {
-                    !external::agent_providers(host).iter().any(|(_, provider)| *provider == id)
+                    !external::agent_providers(host)
+                        .iter()
+                        .any(|(_, provider)| *provider == id)
                 });
             }
         }
@@ -284,7 +297,8 @@ impl App {
             true
         });
         if self.with_state(|state| {
-            (changed || state.tools.report.is_none()) && crate::models::provider_onboarding_ready(&state.account())
+            (changed || state.tools.report.is_none())
+                && crate::models::provider_onboarding_ready(&state.account())
         }) {
             self.refresh_tools();
         }
@@ -382,9 +396,12 @@ impl App {
         self.update_state(|state| state.tools.checking = true);
         self.tools_changed();
         let identity = self.with_state(|state| state.request_identity_revision);
-        self.view_call::<agent_relay_desktop_core::contract::method::ToolsCheck>(NoParams {}, move |app, result| {
-            app.finish_tools_action(result, false, identity);
-        });
+        self.view_call::<agent_relay_desktop_core::contract::method::ToolsCheck>(
+            NoParams {},
+            move |app, result| {
+                app.finish_tools_action(result, false, identity);
+            },
+        );
     }
 
     fn start_tools_action(&self, method: &str) -> bool {
@@ -508,16 +525,33 @@ impl App {
     }
 
     pub fn continue_without_tools(&self) {
-        self.update_state(|state| { state.tools.dismissed = true; state.tools.onboarding_requested = false; });
+        self.update_state(|state| {
+            state.tools.dismissed = true;
+            state.tools.onboarding_requested = false;
+        });
         self.tools_changed();
     }
 
     pub fn reopen_tools_onboarding(&self) {
         self.update_state(|state| {
-            if state.tools.busy { return; }
-            let Some(report) = &state.tools.report else { return; };
-            state.tools.selected = report.tools.iter().filter(|tool| tool.selected && chooser_eligible(tool)).map(|tool| tool.id.clone()).collect();
-            state.tools.retained_onboarding = report.tools.iter().filter(|tool| tool.selected && !chooser_eligible(tool)).map(|tool| tool.id.clone()).collect();
+            if state.tools.busy {
+                return;
+            }
+            let Some(report) = &state.tools.report else {
+                return;
+            };
+            state.tools.selected = report
+                .tools
+                .iter()
+                .filter(|tool| tool.selected && chooser_eligible(tool))
+                .map(|tool| tool.id.clone())
+                .collect();
+            state.tools.retained_onboarding = report
+                .tools
+                .iter()
+                .filter(|tool| tool.selected && !chooser_eligible(tool))
+                .map(|tool| tool.id.clone())
+                .collect();
             state.tools.onboarding_requested = true;
             state.tools.dismissed = false;
             state.tools.error = None;
@@ -556,14 +590,27 @@ mod tests {
         absent.onboarding_available = Some(false);
         absent.state = "configured".into();
         let mut ui = ToolsUi::default();
-        ui.read(ToolsReport { onboarding_complete: false, account_health: None,
-            tools: vec![hidden, absent, tool("codex", true, true, true)], workspace_error: None });
+        ui.read(ToolsReport {
+            onboarding_complete: false,
+            account_health: None,
+            tools: vec![hidden, absent, tool("codex", true, true, true)],
+            workspace_error: None,
+        });
         assert_eq!(ui.selected, BTreeSet::from(["codex".into()]));
         ui.choose("amp", true);
         assert_eq!(ui.selection_to_save(), vec!["capy", "codex"]);
-        assert_eq!(onboarding_tools(ui.report.as_ref().unwrap()).map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["codex"]);
+        assert_eq!(
+            onboarding_tools(ui.report.as_ref().unwrap())
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
         ui.report.as_mut().unwrap().tools[0].onboarding_available = Some(true);
-        assert_eq!(ui.selection_to_save(), vec!["capy", "codex"], "installed Cloud setup is not deselection");
+        assert_eq!(
+            ui.selection_to_save(),
+            vec!["capy", "codex"],
+            "installed Cloud setup is not deselection"
+        );
     }
 
     #[test]
@@ -698,9 +745,16 @@ mod tests {
 
     #[test]
     fn newly_detected_retained_choice_can_be_deselected() {
-        let mut ui = ToolsUi { onboarding_requested: true, ..Default::default() };
+        let mut ui = ToolsUi {
+            onboarding_requested: true,
+            ..Default::default()
+        };
         ui.retained_onboarding.insert("opencode".into());
-        ui.read(ToolsReport { onboarding_complete: true, tools: vec![tool("opencode", true, true, true)], ..Default::default() });
+        ui.read(ToolsReport {
+            onboarding_complete: true,
+            tools: vec![tool("opencode", true, true, true)],
+            ..Default::default()
+        });
         assert!(ui.selected.contains("opencode"));
         assert!(ui.retained_onboarding.is_empty());
         ui.choose("opencode", false);
@@ -712,7 +766,10 @@ mod tests {
     fn active_cloud_provider_is_visible_without_local_installation() {
         let mut cloud = tool("grok-bot", false, false, false);
         cloud.state = "configured".into();
-        let mut report = ToolsReport { tools: vec![cloud], ..Default::default() };
+        let mut report = ToolsReport {
+            tools: vec![cloud],
+            ..Default::default()
+        };
         assert_eq!(visible_providers(&report).len(), 1);
         assert!(available_providers(&report).is_empty());
         assert!(!chooser_eligible(&report.tools[0]));
@@ -748,7 +805,9 @@ mod tests {
         );
         assert_eq!(action("claude"), OnboardingAction::NoChoice);
         assert_eq!(
-            onboarding_tools(&report).map(|tool| tool.id.as_str()).collect::<Vec<_>>(),
+            onboarding_tools(&report)
+                .map(|tool| tool.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["copilot", "claude"]
         );
     }
@@ -758,14 +817,30 @@ mod tests {
         for id in ["amp", "capy"] {
             for evidence in ["detected", "selected", "configured"] {
                 let mut candidate = tool(id, evidence == "detected", false, evidence == "selected");
-                candidate.state = if evidence == "configured" { "configured" } else { "external_setup" }.into();
-                let mut report = ToolsReport { tools: vec![candidate], ..Default::default() };
+                candidate.state = if evidence == "configured" {
+                    "configured"
+                } else {
+                    "external_setup"
+                }
+                .into();
+                let mut report = ToolsReport {
+                    tools: vec![candidate],
+                    ..Default::default()
+                };
                 assert_eq!(onboarding_tools(&report).count(), 0);
                 report.tools[0].onboarding_available = Some(false);
                 assert_eq!(onboarding_tools(&report).count(), 0);
                 report.tools[0].onboarding_available = Some(true);
-                assert_eq!(onboarding_tools(&report).map(|tool| tool.id.as_str()).collect::<Vec<_>>(), vec![id]);
-                assert!(!chooser_eligible(&report.tools[0]), "Cloud setup never becomes a local MCP choice");
+                assert_eq!(
+                    onboarding_tools(&report)
+                        .map(|tool| tool.id.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![id]
+                );
+                assert!(
+                    !chooser_eligible(&report.tools[0]),
+                    "Cloud setup never becomes a local MCP choice"
+                );
             }
         }
     }

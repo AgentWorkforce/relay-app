@@ -45,7 +45,10 @@ impl App {
                 let again =
                     widgets::button("Try again", &[], self.on(|app| app.sign_in(false, None)));
                 again.set_sensitive(
-                    self.inner.bridge.offers(agent_relay_desktop_core::contract::method::AccountSignIn::NAME) && !starting,
+                    self.inner
+                        .bridge
+                        .offers(agent_relay_desktop_core::contract::method::AccountSignIn::NAME)
+                        && !starting,
                 );
                 actions.append(&again);
                 panel.append(&actions);

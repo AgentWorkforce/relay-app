@@ -3,7 +3,10 @@ use agent_relay_desktop_core::contract::account::{SessionFacetParams, SessionFac
 
 impl App {
     pub(super) fn refresh_session_facets(&self) {
-        if !self.bridge().offers(agent_relay_desktop_core::contract::method::UploaderSessionsFacets::NAME) {
+        if !self
+            .bridge()
+            .offers(agent_relay_desktop_core::contract::method::UploaderSessionsFacets::NAME)
+        {
             return;
         }
         let generation = self.update_state(|state| {
