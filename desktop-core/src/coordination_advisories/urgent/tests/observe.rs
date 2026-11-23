@@ -54,7 +54,7 @@ async fn an_accepted_note_observed_delivered_is_acked_exactly_once() {
 #[tokio::test]
 async fn after_a_restart_the_held_note_is_observed_not_injected() {
     let (dir, api, _advisories, _sink, t, now) = accepted().await;
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     restarted.poll(&[t.clone()], now).await;
     let next = Sink::default();
     *next.observation.lock().unwrap() = Some(Observation::Delivered);
@@ -129,7 +129,7 @@ async fn reserved_and_uncertain_receipts_are_observed_too() {
             .unwrap()
             .set_agent(&principal, &t, &key(&t, "p1"), attempt.clone(), unix_now());
         assert!(advisories.save_urgent().await);
-        let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+        let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
         api.rows.lock().unwrap().insert(t.clone(), vec![p1("p1")]);
         let now = Instant::now();
         restarted.poll(&[t.clone()], now).await;
@@ -273,7 +273,7 @@ async fn a_held_id_outside_a_full_page_is_kept_past_8_days_and_never_resubmitted
     let page: Vec<Advisory> = (0..10).map(|i| p1(&format!("other-{i}"))).collect();
     api.rows.lock().unwrap().insert(t.clone(), page);
     for _launch in 0..2 {
-        let relaunched = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+        let relaunched = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
         relaunched.poll(&[t.clone()], now).await;
         let next = Sink::default();
         *next.outcome.lock().unwrap() = Some(InjectOutcome::Accepted("queued".into()));
@@ -381,7 +381,7 @@ async fn while_storage_is_blocked_the_turn_end_keeps_back_urgent_agent_notes_onl
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(FILE), b"broken").unwrap();
     let api = Arc::new(Api::default());
-    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     advisories.set_enabled(true).unwrap();
     let t = target(A);
     let now = Instant::now();
@@ -403,7 +403,7 @@ async fn while_storage_is_blocked_the_turn_end_keeps_back_urgent_agent_notes_onl
     // A row already delivered by DM is not one the urgent path would attempt.
     assert_eq!(advisories.take_at(&t, now).unwrap().ids, keys(&t, &["low", "ineligible", "by-dm"]));
     // Relaunch: still blocked; the P1 note is still kept back.
-    let relaunched = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let relaunched = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     relaunched.poll(&[t.clone()], now).await;
     let ids = relaunched.take_at(&t, now).map(|n| n.ids).unwrap_or_default();
     assert!(!ids.contains(&key(&t, "p1")), "{ids:?}");
@@ -505,7 +505,7 @@ async fn a_blocked_journal_keeps_its_fault_status_with_notifications_off() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(FILE), b"broken").unwrap();
     let api = Arc::new(Api::default());
-    let advisories = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     advisories.set_enabled(true).unwrap();
     assert!(!advisories.notifications_enabled());
     let t = target(A);

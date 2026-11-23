@@ -1053,6 +1053,11 @@ impl App {
         if visible && ticks % 6 == 0 {
             self.refresh_settings_delivery(page);
         }
+        // Every 30 s, visible or not: the core requests an urgent system
+        // notification only while an app reported in the last 150 s.
+        if ticks % 6 == 0 {
+            self.report_notification_display();
+        }
     }
 
     // Account.

@@ -120,8 +120,8 @@ impl Advisories {
                 }
             }
             match listing {
-                Listing::Advisories(advisories) => {
-                    self.listed(&token.principal, target, advisories, now);
+                Listing::Advisories(advisories, contract) => {
+                    self.listed(&token.principal, target, advisories, contract, now);
                     answered.push(target.clone());
                 }
                 Listing::Failed => {
@@ -162,6 +162,7 @@ impl Advisories {
         principal: &Principal,
         target: &Target,
         advisories: Vec<Advisory>,
+        contract: ListingContract,
         now: Instant,
     ) {
         let current = self.tokens.principal();
@@ -172,6 +173,9 @@ impl Advisories {
         {
             return;
         }
+        // The most recent listing's contract, for this account only: the
+        // status says when the workspace lists no urgent-capable rows.
+        state.listing_contract = Some(contract);
         state.sessions.remove(target);
         let scope = receipts::Scope::from(principal);
         let advisories: Vec<Advisory> = advisories

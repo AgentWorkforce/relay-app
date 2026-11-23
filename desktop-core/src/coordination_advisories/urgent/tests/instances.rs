@@ -58,7 +58,7 @@ fn scope_json() -> Value {
 
 /// Advisories over `dir`, with both switches on.
 fn opened(dir: &Path, api: &Arc<Api>) -> Arc<Advisories> {
-    let advisories = Advisories::new(dir, Arc::new(Tokens), api.clone());
+    let advisories = displayed(Advisories::new(dir, Arc::new(Tokens), api.clone()));
     advisories.set_enabled(true).unwrap();
     advisories.set_notifications_enabled(true).unwrap();
     advisories
@@ -206,7 +206,7 @@ async fn a_v2_ack_404_is_a_settled_no_match_never_retried_shown_again_or_deliver
     assert!(advisories.take_at(&t, now).is_none());
     // Nor after a restart: the settled receipt is saved as such, and no
     // urgent receipt ever says delivered.
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     restarted.poll(&[t.clone()], now).await;
     assert!(restarted.take_at(&t, now).is_none());
     restarted.send_shown(now).await;
@@ -575,7 +575,7 @@ async fn an_upper_case_incarnation_is_echoed_verbatim_and_keys_as_its_lower_case
     assert_eq!(on_disk["receipts"][0]["incarnation"], json!(upper));
     // Restored, it is the same instance: not handed out again, acked as listed.
     *api.answer.lock().unwrap() = None;
-    let restarted = Advisories::new(dir.path(), Arc::new(Tokens), api.clone());
+    let restarted = displayed(Advisories::new(dir.path(), Arc::new(Tokens), api.clone()));
     restarted.poll(&[t.clone()], now).await;
     assert!(restarted.take_at(&t, now).is_none());
     assert_eq!(

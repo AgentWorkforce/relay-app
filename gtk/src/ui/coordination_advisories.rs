@@ -3,13 +3,16 @@
 //! default. The Mac's row of the same name matches it.
 
 use super::app::App;
-use super::settings_page::pending_toggle_row;
-use super::widgets::settings_divider;
+use super::settings_page::{pending_toggle_row, pending_toggle_row_with};
+use super::widgets::{settings_divider, text, LabelStyle};
 use crate::models::{
     COORDINATION_ADVISORIES_DETAIL, COORDINATION_ADVISORIES_TITLE,
     COORDINATION_NOTIFICATIONS_DETAIL, COORDINATION_NOTIFICATIONS_TITLE,
 };
-use agent_relay_desktop_core::contract::coordination::CoordinationAdvisoriesParams;
+use agent_relay_desktop_core::contract::coordination::{
+    CoordinationAdvisoriesParams, CoordinationAdvisoriesState,
+    CoordinationNotificationsDisplayParams, NotificationPermission,
+};
 use agent_relay_desktop_core::contract::method;
 use agent_relay_node::relay::contract::NoParams;
 use gtk::prelude::*;
@@ -31,9 +34,57 @@ impl App {
                         s.coordination_notification_status = Some(state.notification_status);
                     });
                     app.settings_changed();
+                    app.report_notification_display();
                 }
             },
         );
+    }
+
+    /// Tells the core what the OS lets this app show, so it requests an
+    /// urgent system notification only while an app can show it. Sent on
+    /// connect and on the poll timer, well inside the core's 150 s window.
+    pub(super) fn report_notification_display(&self) {
+        if self.with_state(|s| s.coordination_advisories.is_none()) {
+            return;
+        }
+        self.call::<method::CoordinationNotificationsDisplay>(
+            CoordinationNotificationsDisplayParams {
+                permission: notification_permission(),
+            },
+            |app, result| {
+                if let Ok(state) = result {
+                    app.refresh_coordination_state(state);
+                }
+            },
+        );
+    }
+
+    /// Takes the core's answer when it differs from what the row shows.
+    fn refresh_coordination_state(&self, state: CoordinationAdvisoriesState) {
+        let changed = self.update_state(|s| {
+            let fresh = (
+                Some(state.enabled),
+                Some(state.notifications_enabled),
+                Some(state.notification_status),
+            );
+            let shown = (
+                s.coordination_advisories,
+                s.coordination_notifications,
+                s.coordination_notification_status.clone(),
+            );
+            if fresh == shown {
+                return false;
+            }
+            (
+                s.coordination_advisories,
+                s.coordination_notifications,
+                s.coordination_notification_status,
+            ) = fresh;
+            true
+        });
+        if changed {
+            self.settings_changed();
+        }
     }
 
     pub(super) fn append_coordination_advisories_row(&self, group: &gtk::Box) {
@@ -77,18 +128,22 @@ impl App {
         }) else {
             return;
         };
-        let detail = status
-            .map(|s| format!("{COORDINATION_NOTIFICATIONS_DETAIL} {s}"))
-            .unwrap_or_else(|| COORDINATION_NOTIFICATIONS_DETAIL.into());
+        // The status is its own line under the detail, as on the Mac.
+        let extra: Vec<gtk::Widget> = status
+            .filter(|s| !s.is_empty())
+            .map(|s| text(&s, &["secondary", "caption"]).wrapped().upcast())
+            .into_iter()
+            .collect();
         let weak = self.downgrade();
         settings_divider(group, 62);
-        group.append(&pending_toggle_row(
+        group.append(&pending_toggle_row_with(
             COORDINATION_NOTIFICATIONS_TITLE,
-            &detail,
+            COORDINATION_NOTIFICATIONS_DETAIL,
             "notifications-symbolic",
             enabled,
             available && !pending,
             pending,
+            &extra,
             move |enabled| {
                 if let Some(app) = weak.upgrade().filter(|app| !app.inner.updating.get()) {
                     app.change_coordination_notifications(enabled);
@@ -166,4 +221,19 @@ impl App {
             },
         );
     }
+}
+
+/// What the OS lets this app show. Linux: the desktop decides and there is
+/// nothing to read, so `unknown`.
+#[cfg(not(windows))]
+fn notification_permission() -> NotificationPermission {
+    NotificationPermission::Unknown
+}
+
+/// Windows: the toast notifier in use (tauri-winrt-notification) exposes
+/// no read of the toast setting, and reading it otherwise needs a new
+/// dependency, so `unknown`.
+#[cfg(windows)]
+fn notification_permission() -> NotificationPermission {
+    NotificationPermission::Unknown
 }

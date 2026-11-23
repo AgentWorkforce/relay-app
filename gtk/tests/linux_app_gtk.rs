@@ -4266,6 +4266,55 @@ fn spawned_agents_can_let_teammates_spawn_here(runtime: &tokio::runtime::Runtime
     case.pump(|case| !case.called("spawn.claim.retry").is_empty());
 }
 
+/// The urgent-notifications status is its own line under the unchanged
+/// detail, as on the Mac; the app reports what the OS lets it show
+/// (`unknown` on Linux) and takes the core's answer when it differs.
+fn coordination_notification_status_is_its_own_line(runtime: &tokio::runtime::Runtime) {
+    use agent_relay_app::models::{
+        COORDINATION_NOTIFICATIONS_DETAIL, COORDINATION_NOTIFICATIONS_TITLE,
+    };
+    const IDLE: &str = "Waiting for validated priority-one advisories.";
+    const LEGACY: &str = "Your workspace does not provide urgent alerts yet.";
+    let case = Case::with(runtime, |core| {
+        core.answer(
+            "coordination_advisories.status",
+            json!({"enabled": true, "notifications_enabled": true, "notification_status": IDLE}),
+        );
+        core.answer(
+            "coordination_advisories.notifications.display",
+            json!({"enabled": true, "notifications_enabled": true, "notification_status": LEGACY}),
+        );
+    });
+    case.sign_in();
+    case.app.go(Page::Settings(Pane::Relay));
+    case.pump(|case| case.settings_labels().contains(&LEGACY.to_string()));
+    case.settle();
+    let shown = case.settings_labels();
+    for line in [
+        COORDINATION_NOTIFICATIONS_TITLE,
+        COORDINATION_NOTIFICATIONS_DETAIL,
+        LEGACY,
+    ] {
+        assert!(shown.contains(&line.to_string()), "{line} in {shown:?}");
+    }
+    assert!(
+        !shown
+            .iter()
+            .any(|l| l.contains(COORDINATION_NOTIFICATIONS_DETAIL)
+                && l != COORDINATION_NOTIFICATIONS_DETAIL),
+        "the status is not appended to the detail: {shown:?}"
+    );
+    assert!(!shown.contains(&IDLE.to_string()), "{shown:?}");
+    let reports = case.called("coordination_advisories.notifications.display");
+    assert!(!reports.is_empty());
+    assert!(
+        reports
+            .iter()
+            .all(|r| r == &json!({"permission": "unknown"})),
+        "{reports:?}"
+    );
+}
+
 fn relay_settings_deliver_directly(runtime: &tokio::runtime::Runtime) {
     let case = Case::with(runtime, |core| tools::answers(core, true));
     case.sign_in();
@@ -6083,6 +6132,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "about_copies_diagnostics_without_secrets",
         about_copies_diagnostics_without_secrets,
+    ),
+    (
+        "coordination_notification_status_is_its_own_line",
+        coordination_notification_status_is_its_own_line,
     ),
     (
         "relay_settings_deliver_directly",

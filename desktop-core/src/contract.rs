@@ -128,6 +128,7 @@ methods! {
     CoordinationAdvisoriesStatus = "coordination_advisories.status", NoParams => CoordinationAdvisoriesState;
     CoordinationAdvisoriesSet = "coordination_advisories.set", CoordinationAdvisoriesParams => CoordinationAdvisoriesState;
     CoordinationNotificationsSet = "coordination_advisories.notifications.set", CoordinationAdvisoriesParams => CoordinationAdvisoriesState;
+    CoordinationNotificationsDisplay = "coordination_advisories.notifications.display", CoordinationNotificationsDisplayParams => CoordinationAdvisoriesState;
 
     // Skip chat.
     ChatConversation = "chat.conversation", NoParams => chat::ChatConversation;

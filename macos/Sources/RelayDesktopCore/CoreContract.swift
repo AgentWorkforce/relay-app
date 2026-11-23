@@ -126,6 +126,7 @@ public enum CoreMethod {
     public static let coordinationAdvisoriesStatus = "coordination_advisories.status"
     public static let coordinationAdvisoriesSet = "coordination_advisories.set"
     public static let coordinationAdvisoriesNotificationsSet = "coordination_advisories.notifications.set"
+    public static let coordinationAdvisoriesNotificationsDisplay = "coordination_advisories.notifications.display"
     public static let chatConversation = "chat.conversation"
     public static let chatSend = "chat.send"
     public static let chatClear = "chat.clear"
@@ -2912,6 +2913,30 @@ public struct CoordinationAdvisoriesState: Codable, Equatable, Hashable, Sendabl
         try c.encode(self.enabled, forKey: .enabled)
         try c.encode(self.notificationStatus, forKey: .notificationStatus)
         try c.encode(self.notificationsEnabled, forKey: .notificationsEnabled)
+    }
+}
+
+/// The app's report that it can show a system notification, and whether
+/// the OS allows it.
+public struct CoordinationNotificationsDisplayParams: Codable, Equatable, Hashable, Sendable {
+    public let permission: NotificationPermission
+
+    public init(permission: NotificationPermission) {
+        self.permission = permission
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case permission
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.permission = try c.decode(NotificationPermission.self, forKey: .permission)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.permission, forKey: .permission)
     }
 }
 
@@ -6229,6 +6254,15 @@ public enum NodeReach: String, Codable, CaseIterable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         self = NodeReach(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
     }
+}
+
+/// What the app last read of the OS's permission for its notifications;
+/// it never asks for it to read it.
+public enum NotificationPermission: String, Codable, CaseIterable, Hashable, Sendable {
+    case allowed
+    case denied
+    /// The app cannot read it (Linux), or the person has not been asked.
+    case unknown
 }
 
 /// `openclaw.relay_tools.connect`: `waiting` with the page the person
@@ -13711,6 +13745,12 @@ extension CoreClient {
     @discardableResult
     public func coordinationAdvisoriesNotificationsSet(_ params: CoordinationAdvisoriesParams) async throws -> CoordinationAdvisoriesState {
         try await call(CoreMethod.coordinationAdvisoriesNotificationsSet, params)
+    }
+
+    /// `coordination_advisories.notifications.display`; only a core built with an account answers it.
+    @discardableResult
+    public func coordinationAdvisoriesNotificationsDisplay(_ params: CoordinationNotificationsDisplayParams) async throws -> CoordinationAdvisoriesState {
+        try await call(CoreMethod.coordinationAdvisoriesNotificationsDisplay, params)
     }
 
     /// `chat.conversation`; only a core built with an account answers it.
