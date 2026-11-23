@@ -264,6 +264,7 @@ label.elsewhere-tag { font-size: 11px; font-weight: 600; color: $accent; backgro
 .chat-header { background-color: $panel; }
 .chat-dock { background-color: $window; }
 .chat-pending { opacity: 0.7; }
+textview.chat-message-input { font-size: 15px; }
 .chat-attachment { background-color: $panel_alt; border: 1px solid $border; border-radius: 6px; padding: 2px 4px 2px 8px; }
 picture.chat-inline-image { border-radius: 8px; border: 1px solid $border; }
 .chat-details { background-color: $panel; }

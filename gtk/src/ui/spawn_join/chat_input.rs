@@ -11,6 +11,7 @@ pub struct ChatInput {
     pub root: gtk::Overlay,
     pub view: gtk::TextView,
     placeholder: gtk::Label,
+    scroll: gtk::ScrolledWindow,
 }
 
 impl ChatInput {
@@ -43,7 +44,20 @@ impl ChatInput {
             root,
             view,
             placeholder,
+            scroll,
         }
+    }
+
+    /// Starts at `min` points tall and grows with what is typed up to `max`,
+    /// the placeholder at the top as in Pear's message box.
+    pub fn grow(&self, min: i32, max: i32) {
+        self.scroll
+            .set_min_content_height(super::super::zoom::px(min));
+        self.scroll
+            .set_max_content_height(super::super::zoom::px(max));
+        self.scroll.set_valign(gtk::Align::Fill);
+        self.placeholder.set_valign(gtk::Align::Start);
+        self.placeholder.set_margin_top(super::super::zoom::px(5));
     }
 
     pub fn text(&self) -> glib::GString {

@@ -43,6 +43,9 @@ impl Composer {
         attach.set_valign(gtk::Align::End);
         line.append(&attach);
         let input = ChatInput::build();
+        // About three lines to start, growing to about ten.
+        input.grow(72, 240);
+        input.view.add_css_class("chat-message-input");
         line.append(&input.root);
         input.focus_within(&line);
         let send = gtk::Button::with_label(CHAT_SEND);
