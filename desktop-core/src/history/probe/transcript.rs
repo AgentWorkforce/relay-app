@@ -7,6 +7,8 @@ use anyhow::{ensure, Context, Result};
 use clap::Args;
 use rusqlite::Connection;
 
+mod attachment_images;
+
 #[derive(Args)]
 pub struct ReadSession {
     #[arg(long)]
@@ -151,7 +153,15 @@ pub fn read(options: ReadSession) -> Result<()> {
         .after_ts
         .zip(options.after_id)
         .map(|(ts_ms, id)| LocalTranscriptCursor { ts_ms, id });
-    let page = read_from(&store, &db, source, &options.session_id, cursor)?;
+    let attachments = attachment_images::root();
+    let page = read_from(
+        &store,
+        &db,
+        &attachments,
+        source,
+        &options.session_id,
+        cursor,
+    )?;
     super::bridge::emit(serde_json::to_value(page)?);
     Ok(())
 }
@@ -161,10 +171,12 @@ pub fn read(options: ReadSession) -> Result<()> {
 /// cache holds refreshes it and reads again, so a transcript still being
 /// written (a spawned agent followed live) shows what was written since,
 /// however many pages it spans. That refresh is best effort: the page
-/// already read stands if it fails.
+/// already read stands if it fails. `attachments` is the core's directory
+/// of saved message files, the only place a turn's images are drawn from.
 fn read_from(
     store: &ai_hist::SessionStore,
     db: &std::path::Path,
+    attachments: &std::path::Path,
     source: Source,
     session_id: &str,
     cursor: Option<LocalTranscriptCursor>,
@@ -173,12 +185,12 @@ fn read_from(
         hydrate(store, source, session_id)?;
     }
     let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let page = read_page(&conn, source.as_str(), session_id, cursor.clone())?;
+    let page = read_page(&conn, attachments, source.as_str(), session_id, cursor.clone())?;
     if cursor.is_none() || page.next_cursor.is_some() {
         return Ok(page);
     }
     match hydrate(store, source, session_id) {
-        Ok(()) => read_page(&conn, source.as_str(), session_id, cursor),
+        Ok(()) => read_page(&conn, attachments, source.as_str(), session_id, cursor),
         Err(_) => Ok(page),
     }
 }
@@ -254,6 +266,7 @@ fn hydrate_with_remote(
 
 fn read_page(
     conn: &Connection,
+    attachments: &std::path::Path,
     source: &str,
     session_id: &str,
     cursor: Option<LocalTranscriptCursor>,
@@ -309,18 +322,20 @@ fn read_page(
             ts_ms: event.ts_ms,
             id: event.id,
         };
-        let Some(entry) = event.display_entry(conn)? else {
-            last = Some(position);
-            continue;
-        };
-        let size = serde_json::to_vec(&entry)?.len();
-        if !result.entries.is_empty() && bytes + size > 512 * 1024 {
+        // An event and the extra images it brought are one group: the page
+        // holds all of it or none, so a cursor never points inside a group.
+        let group = event.display_entries(conn, attachments)?;
+        let mut size = 0;
+        for entry in &group {
+            size += serde_json::to_vec(entry)?.len();
+        }
+        if !group.is_empty() && !result.entries.is_empty() && bytes + size > 512 * 1024 {
             result.next_cursor = last;
             return Ok(result);
         }
         bytes += size;
         last = Some(position);
-        result.entries.push(entry);
+        result.entries.extend(group);
     }
     Ok(result)
 }
@@ -353,9 +368,15 @@ impl TranscriptEvent {
         })
     }
 
-    /// None means the display filtered a context wrapper or usage-only event;
+    /// Empty means the display filtered a context wrapper or usage-only event;
     /// its database position must still count toward the next page cursor.
-    fn display_entry(self, conn: &Connection) -> Result<Option<LocalTranscriptEntry>> {
+    /// A person's turn that brought several saved images is one entry per
+    /// image, the first holding the text.
+    fn display_entries(
+        self,
+        conn: &Connection,
+        attachments: &std::path::Path,
+    ) -> Result<Vec<LocalTranscriptEntry>> {
         let Self {
             ts_ms,
             event_uid,
@@ -370,7 +391,7 @@ impl TranscriptEvent {
         // Grok’s unified log adds accounting records without message content.
         // Keep their database positions for pagination, but never draw a bubble.
         if raw_kind.as_deref() == Some("unified_log_usage") {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let text = text.as_deref().unwrap_or("");
         let system_context =
@@ -381,12 +402,24 @@ impl TranscriptEvent {
             text.to_string()
         };
         if display.is_empty() && !text.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let image_path = match conn.path().and_then(|p| std::path::Path::new(p).parent()) {
             Some(directory) => super::transcript_display::cache_image(&display, directory)?,
             None => None,
         };
+        // Only a whole, plain turn of a person's own text names saved files.
+        let saved = (image_path.is_none()
+            && role == "user"
+            && kind == "text"
+            && !system_context
+            && control_kind.is_none()
+            && text_bytes.unwrap_or(0) <= 64 * 1024)
+            .then(|| attachment_images::pictures(&display, attachments))
+            .flatten();
+        if let Some(pictures) = saved {
+            return Ok(picture_entries(pictures, &event_uid, &role, &kind, ts_ms));
+        }
         let text = if image_path.is_some() {
             ""
         } else {
@@ -396,7 +429,7 @@ impl TranscriptEvent {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        Ok(Some(LocalTranscriptEntry {
+        Ok(vec![LocalTranscriptEntry {
             id: event_uid,
             role,
             kind: if control_kind.is_some() || system_context {
@@ -408,13 +441,59 @@ impl TranscriptEvent {
             image_path: image_path.clone(),
             timestamp_ms: ts_ms,
             truncated: image_path.is_none() && text_bytes.unwrap_or(0) > 64 * 1024,
-        }))
+        }])
     }
 }
+
+fn picture_entries(
+    pictures: attachment_images::Pictures,
+    event_uid: &str,
+    role: &str,
+    kind: &str,
+    ts_ms: i64,
+) -> Vec<LocalTranscriptEntry> {
+    let has_text = !pictures.text.is_empty();
+    let mut group = Vec::new();
+    if has_text {
+        group.push(LocalTranscriptEntry {
+            id: event_uid.into(),
+            role: role.into(),
+            kind: kind.into(),
+            text: pictures.text,
+            image_path: None,
+            timestamp_ms: ts_ms,
+            truncated: false,
+        });
+    }
+    for (index, image) in pictures.images.into_iter().enumerate() {
+        group.push(LocalTranscriptEntry {
+            id: if index == 0 && !has_text {
+                event_uid.into()
+            } else {
+                format!("{event_uid}:image:{}", index + 1)
+            },
+            role: role.into(),
+            kind: kind.into(),
+            text: String::new(),
+            image_path: Some(image),
+            timestamp_ms: ts_ms,
+            truncated: false,
+        });
+    }
+    group
+}
+
+#[cfg(test)]
+mod attachment_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No saved message files: these sessions' turns name none.
+    fn no_attachments() -> std::path::PathBuf {
+        std::env::temp_dir().join("no-such-attachments-root").join("attachments")
+    }
 
     #[test]
     fn grok_usage_records_do_not_become_empty_messages_and_pagination_keeps_progress() {
@@ -432,10 +511,10 @@ mod tests {
         ] {
             crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('grok','s',?1,?2,?3,?4,?5)", rusqlite::params![ts,id,role,kind,text]).unwrap();
         }
-        let first = read_page(&conn, "grok", "s", None).unwrap();
+        let first = read_page(&conn, &no_attachments(), "grok", "s", None).unwrap();
         assert!(first.entries.is_empty());
         assert_eq!(first.next_cursor.as_ref().unwrap().ts_ms, 100);
-        let second = read_page(&conn, "grok", "s", first.next_cursor).unwrap();
+        let second = read_page(&conn, &no_attachments(), "grok", "s", first.next_cursor).unwrap();
         assert_eq!(
             second
                 .entries
@@ -698,7 +777,7 @@ mod tests {
         ] {
             crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,?1,?2,?3,?4)",rusqlite::params![id,role,kind,text]).unwrap();
         }
-        let page = read_page(&conn, "claude", "s", None).unwrap();
+        let page = read_page(&conn, &no_attachments(), "claude", "s", None).unwrap();
         assert_eq!(
             page.entries
                 .iter()
@@ -774,7 +853,7 @@ mod tests {
         let conn = Connection::open(db).unwrap();
         let nudge = "The user hasn't heard from you in a while — say in a few words what you're doing, then continue.";
         crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,'nudge','user','text',?1)", [nudge]).unwrap();
-        assert!(read_page(&conn, "claude", "s", None)
+        assert!(read_page(&conn, &no_attachments(), "claude", "s", None)
             .unwrap()
             .entries
             .is_empty());
@@ -795,7 +874,7 @@ mod tests {
         let conn = Connection::open(db).unwrap();
         let content = "# Environment\nYou have been invoked in the following environment:\n- Working directory: ~/work";
         crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,'setup','user','text',?1)", [content]).unwrap();
-        let page = read_page(&conn, "claude", "s", None).unwrap();
+        let page = read_page(&conn, &no_attachments(), "claude", "s", None).unwrap();
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].kind, "context");
         assert_eq!(page.entries[0].text, content);
@@ -820,10 +899,10 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(&bytes)
         );
         crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,raw_kind,text) VALUES('codex','s',2,'image','user','text','input_image',?1)", [&markdown]).unwrap();
-        let first = read_page(&conn, "codex", "s", None).unwrap();
+        let first = read_page(&conn, &no_attachments(), "codex", "s", None).unwrap();
         assert!(first.entries.is_empty());
         assert!(first.next_cursor.is_some());
-        let second = read_page(&conn, "codex", "s", first.next_cursor).unwrap();
+        let second = read_page(&conn, &no_attachments(), "codex", "s", first.next_cursor).unwrap();
         assert_eq!(second.entries.len(), 1);
         let entry = &second.entries[0];
         assert_eq!(
@@ -907,7 +986,7 @@ mod tests {
         let store = ai_hist::SessionStore::open(options).unwrap();
         hydrate(&store, Source::Codex, id).unwrap();
         let conn = Connection::open(db).unwrap();
-        let page = read_page(&conn, "codex", id, None).unwrap();
+        let page = read_page(&conn, &no_attachments(), "codex", id, None).unwrap();
         assert!(page
             .entries
             .iter()
@@ -951,7 +1030,7 @@ mod tests {
             root.join("opencode.db"),
         ));
         let store = ai_hist::SessionStore::open(options).unwrap();
-        let first = read_from(&store, &db, Source::Codex, id, None).unwrap();
+        let first = read_from(&store, &db, &no_attachments(), Source::Codex, id, None).unwrap();
         assert!(first
             .entries
             .iter()
@@ -974,7 +1053,7 @@ mod tests {
             line(2, "assistant", "output_text", "**Fixed** the tests.").as_bytes(),
         )
         .unwrap();
-        let next = read_from(&store, &db, Source::Codex, id, Some(at)).unwrap();
+        let next = read_from(&store, &db, &no_attachments(), Source::Codex, id, Some(at)).unwrap();
         assert!(next.next_cursor.is_none());
         assert!(next
             .entries
@@ -996,15 +1075,15 @@ mod tests {
             crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events (source,session_id,ts_ms,role,kind,text,event_uid,control_kind) VALUES ('codex','same',1,'user','text',?1,?2,?3)", rusqlite::params![if i == 0 { "```swift\nlet x = 1\n```" } else { "Hello" }, format!("e{i}"), if i == 1 { Some("codex_context_wrapper") } else { None }]).unwrap();
         }
         crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events (source,session_id,ts_ms,role,kind,text,event_uid) VALUES ('claude','same',1,'user','text','Other harness','other')", []).unwrap();
-        let first = read_page(&conn, "codex", "same", None).unwrap();
+        let first = read_page(&conn, &no_attachments(), "codex", "same", None).unwrap();
         assert_eq!(first.entries.len(), 100);
         assert_eq!(first.entries[0].text, "```swift\nlet x = 1\n```");
         assert_eq!(first.entries[1].kind, "context");
-        let second = read_page(&conn, "codex", "same", first.next_cursor).unwrap();
+        let second = read_page(&conn, &no_attachments(), "codex", "same", first.next_cursor).unwrap();
         assert_eq!(second.entries.len(), 3);
         assert_eq!(second.entries[0].id, "e100");
         assert!(second.next_cursor.is_none());
-        assert!(read_page(&conn, "codex", "missing", None)
+        assert!(read_page(&conn, &no_attachments(), "codex", "missing", None)
             .unwrap()
             .entries
             .is_empty());
@@ -1097,7 +1176,7 @@ mod tests {
             "out of order",
             Some("m-late"),
         );
-        let page = read_page(&conn, "devin", "s", None).unwrap();
+        let page = read_page(&conn, &no_attachments(), "devin", "s", None).unwrap();
         let ids: Vec<&str> = page.entries.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -1129,7 +1208,7 @@ mod tests {
             )
             .unwrap();
         }
-        let page = read_page(&conn, "codex", "s", None).unwrap();
+        let page = read_page(&conn, &no_attachments(), "codex", "s", None).unwrap();
         assert_eq!(page.entries.len(), 2);
     }
 
@@ -1142,10 +1221,10 @@ mod tests {
         for i in 0..30 {
             crate::history::delivery::test_evidence(&conn).execute("INSERT INTO session_events (source,session_id,ts_ms,role,kind,text,event_uid) VALUES ('codex','large',1,'assistant','tool_result',?1,?2)", rusqlite::params!["🦀\n".repeat(30000), format!("e{i}")]).unwrap();
         }
-        let page = read_page(&conn, "codex", "large", None).unwrap();
+        let page = read_page(&conn, &no_attachments(), "codex", "large", None).unwrap();
         assert!(page.entries[0].truncated);
         assert!(serde_json::to_vec(&page).unwrap().len() < 1024 * 1024);
-        let next = read_page(&conn, "codex", "large", page.next_cursor).unwrap();
+        let next = read_page(&conn, &no_attachments(), "codex", "large", page.next_cursor).unwrap();
         assert_ne!(next.entries[0].id, page.entries[0].id);
     }
 }
