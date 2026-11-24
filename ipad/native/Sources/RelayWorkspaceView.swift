@@ -1438,7 +1438,8 @@ struct RelayWorkspaceView: View {
                                     }
                                 case .event(let row):
                                     messageTimeRow(at: row.event.ts) {
-                                        SessionEventBubble(row: row, agentName: agent.name, accent: accent)
+                                        SessionEventBubble(row: row, agentName: agent.name, accent: accent,
+                                                           pictures: attachmentPictureContext)
                                     }.id(MobileChatScrollTarget.message(row.id))
                                 case .activity(let group):
                                     SessionActivityGroupView(group: group, agentName: agent.name, accent: accent)
@@ -1587,7 +1588,7 @@ struct RelayWorkspaceView: View {
                             "\(message.mine ? "Sent" : "Received") \(ChatTimestamps.divider($0))"
                         } ?? "")
                     ForEach(message.attachments) { attachment in
-                        attachmentButton(attachment)
+                        attachmentView(attachment)
                     }
                     Text(senderLabel(message, in: agent))
                         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -1736,19 +1737,45 @@ struct RelayWorkspaceView: View {
             }
         }
     }
+    /// A posted image as a picture (`AttachmentPreview.showsPicture`); any
+    /// other file, or an image that cannot be shown, as the download button.
+    @ViewBuilder
+    private func attachmentView(_ attachment: RelayAttachment) -> some View {
+        if AttachmentPreview.showsPicture(attachment) {
+            AttachmentPicture(attachment: attachment, context: attachmentPictureContext) {
+                attachmentButton(attachment)
+            }
+        } else {
+            attachmentButton(attachment)
+        }
+    }
+    private var attachmentPictureContext: AttachmentPictureContext {
+        let client = client
+        let openURL = openURL
+        return AttachmentPictureContext(
+            store: client.attachmentImages,
+            generation: client.sessionGeneration,
+            resolve: { try await client.downloadURL(for: $0) },
+            open: { attachment in Self.openAttachment(attachment, client: client, openURL: openURL) })
+    }
+    /// Opens a posted file's download URL, unless the identity session
+    /// changed while the URL was asked for.
+    @MainActor private static func openAttachment(_ attachment: RelayAttachment, client: RelayClient, openURL: OpenURLAction) {
+        let generation = client.sessionGeneration
+        Task {
+            do {
+                let url = try await client.downloadURL(for: attachment)
+                guard generation == client.sessionGeneration else { return }
+                openURL(url)
+            } catch is CancellationError {
+            } catch {
+                if generation == client.sessionGeneration { client.reportFailure(error) }
+            }
+        }
+    }
     private func attachmentButton(_ attachment: RelayAttachment) -> some View {
         Button {
-            let generation = client.sessionGeneration
-            Task {
-                do {
-                    let url = try await client.downloadURL(for: attachment)
-                    guard generation == client.sessionGeneration else { return }
-                    openURL(url)
-                } catch is CancellationError {
-                } catch {
-                    if generation == client.sessionGeneration { client.reportFailure(error) }
-                }
-            }
+            Self.openAttachment(attachment, client: client, openURL: openURL)
         } label: {
             attachmentLabel(attachment, downloadable: true)
         }
