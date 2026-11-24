@@ -349,8 +349,6 @@ impl App {
             return;
         };
         let page = &shell.pages.chat;
-        // A title renamed here settles once the session list shows it.
-        self.reconcile_native_session_titles();
         let agents = self.chat_agents();
         let (harnesses, projects) = chat_filter_choices(&agents);
         page.filters.offer(&harnesses, &projects);

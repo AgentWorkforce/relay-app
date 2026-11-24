@@ -177,7 +177,7 @@ impl App {
             state.busy
         });
         match self.page() {
-            Page::Sessions => self.render_page(),
+            Page::Sessions | Page::Chat => self.render_page(),
             Page::Settings(pane) if !busy => self.render_uploader_settings(pane),
             _ => {}
         }

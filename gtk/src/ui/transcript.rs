@@ -300,6 +300,7 @@ impl App {
             .is_some_and(|selected| selected.key() == row.key());
         if same {
             self.render_transcript_controls();
+            self.refresh_session_title_cells();
             return;
         }
         page.generation.set(page.generation.get() + 1);

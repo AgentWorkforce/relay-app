@@ -61,6 +61,9 @@ impl App {
                                     state.sessions_refreshed = Some(crate::ui::now_ms());
                                 });
                                 app.reconcile_hidden_sessions();
+                                // A title renamed here settles once the
+                                // list shows it, whichever page is shown.
+                                app.reconcile_native_session_titles();
                                 app.update_uploader_views();
                             }
                         }
