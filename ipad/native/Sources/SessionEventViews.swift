@@ -12,11 +12,16 @@ struct SessionEventBubble: View {
     let row: SessionEventRow
     let agentName: String
     let accent: Color
+    /// Draws the posted pictures a person's prompt names in its
+    /// `Attachments:` block (`SessionAttachmentBlock`); nil leaves the text.
+    var pictures: AttachmentPictureContext? = nil
     @State private var expanded = false
 
     var body: some View {
-        let preview = SessionTimeline.preview(row.text)
-        let shown = expanded ? row.text : preview.text
+        let attached = attachedPictures
+        let text = attached?.text ?? row.text
+        let preview = SessionTimeline.preview(text)
+        let shown = expanded ? text : preview.text
         if let mark = row.mark {
             VStack(alignment: mark.isIncoming ? .trailing : .leading, spacing: 4) {
                 Text(mark.label)
@@ -28,23 +33,46 @@ struct SessionEventBubble: View {
         } else {
             switch row.event.role {
             case .person, .agent:
-                message(shown: shown, preview: preview, person: row.event.role == .person)
+                message(shown: shown, preview: preview, person: row.event.role == .person,
+                        attached: attached?.pictures ?? [])
             case .tool, .activity:
                 compact(shown: shown, preview: preview)
             }
         }
     }
 
+    /// The pictures of a person's own prompt, which the core hands the
+    /// session as text with no relay envelope (owner native input), and
+    /// that text without their lines. Only a whole prompt is read: a row
+    /// the session store shortened, or one with a relay mark, keeps its text.
+    private var attachedPictures: SessionAttachmentBlock.Parsed? {
+        guard pictures != nil, row.mark == nil, row.event.role == .person,
+              !row.event.contentTruncated else { return nil }
+        return SessionAttachmentBlock.parse(row.text)
+    }
+
     /// A bubble: the person's side (a prompt, or a relay message to the
     /// agent) or the agent's.
-    private func message(shown: String, preview: (text: String, isCut: Bool), person: Bool) -> some View {
+    private func message(shown: String, preview: (text: String, isCut: Bool), person: Bool,
+                         attached: [SessionAttachmentBlock.Picture] = []) -> some View {
         HStack(alignment: .bottom) {
             if person { Spacer(minLength: 45) }
             VStack(alignment: .leading, spacing: 5) {
-                Text(ChatLinks.render(shown)).font(.system(size: 14))
-                    .textSelection(.enabled).tint(accent)
+                if !shown.isEmpty || attached.isEmpty {
+                    Text(ChatLinks.render(shown)).font(.system(size: 14))
+                        .textSelection(.enabled).tint(accent)
+                }
                 if preview.isCut || row.event.contentTruncated {
                     showMore(canExpand: preview.isCut)
+                }
+                if let pictures {
+                    ForEach(Array(attached.enumerated()), id: \.offset) { _, item in
+                        AttachmentPicture(attachment: item.attachment, context: pictures) {
+                            // The line as written, never a link built from it.
+                            Text(item.line).font(.system(size: 12)).foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
                 }
                 Text(person ? "In session" : "\(agentName) · in session")
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
