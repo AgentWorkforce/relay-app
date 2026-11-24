@@ -1196,8 +1196,12 @@ own description is in relay's `crates/relay-node/docs/relay-core.md`.
 ### Approvals from the owner's delegates
 
 In Agent Relay Cloud an owner can name agents as delegates that relay the
-owner's approval for named actions. Nothing changes until the owner names
-one; the desktop apps and their CLI have no way to name one.
+owner's approval for named actions. Nothing changes until a delegate is
+named in Cloud. With the default (`code_owners`) that can be this computer's
+owner or a code owner of the action's target, so a code owner's delegate is
+accepted for actions on that target without this computer's owner naming
+anyone; `own_owner` limits it to the owner's own delegates. The desktop apps
+and their CLI have no way to name one.
 
 - A delegate's message whose approval Agent Relay Cloud attests, checked
   against keys the build's site publishes, carries a `[delegate approval: …]`
