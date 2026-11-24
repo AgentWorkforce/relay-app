@@ -54,8 +54,14 @@ impl App {
 
     /// Where the agent shown is on the web: its uploaded session in Cloud.
     pub(super) fn chat_web_url(&self, agent: &ChatAgent) -> Option<String> {
-        let site = self.with_state(|state| state.account().site_url.unwrap_or_default());
-        chat_web_url(agent, &site)
+        let (site, workspace) = self.with_state(|state| {
+            let workspace = state
+                .status
+                .as_ref()
+                .and_then(|status| status.upload_workspace.clone());
+            (state.account().site_url.unwrap_or_default(), workspace)
+        });
+        chat_web_url(agent, &site, workspace.as_deref())
     }
 
     fn view_chat_agent_on_web(&self) {

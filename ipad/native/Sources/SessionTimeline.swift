@@ -148,6 +148,11 @@ enum SessionTimeline {
     /// line that repeats a tool call goes, thinking is not shown, and an
     /// event with no content shows its tool's name or is left out.
     ///
+    /// Events that only copy another are left out (`ChatEntryRules.withoutCopies`):
+    /// the provider's prompt log (`history` events), a hook's context stored as
+    /// a person's event, and a turn the transcript holds twice a moment apart.
+    /// The stored events stay as they are; this is only how the chat reads them.
+    ///
     /// A relay message inside the session is shown as one, marked
     /// (`RelayMark`): a relayed prompt and a relay frame in a tool's output
     /// (received), and a relay send in a tool call or the agent's text
@@ -184,7 +189,7 @@ enum SessionTimeline {
             }
         }
         var rows: [SessionEventRow] = []
-        for event in ChatEntryRules.withoutToolEchoes(events) {
+        for event in ChatEntryRules.withoutToolEchoes(ChatEntryRules.withoutCopies(events)) {
             if let row = reader.row(for: event) { rows.append(row) }
         }
         var result: [ChatTimelineItem] = []

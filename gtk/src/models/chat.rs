@@ -375,17 +375,17 @@ fn chat_app_link_for(source: &str, id: &str) -> Option<String> {
 
 /// Where `agent`'s session is on the web, at `site`: an uploaded session
 /// here, or the session an agent elsewhere uploads.
-pub fn chat_web_url(agent: &ChatAgent, site: &str) -> Option<String> {
+pub fn chat_web_url(agent: &ChatAgent, site: &str, workspace: Option<&str>) -> Option<String> {
     match &agent.place {
         ChatPlace::Elsewhere(remote) => remote
             .session_id
             .as_deref()
             .filter(|id| !id.is_empty())
-            .and_then(|id| cloud_session_url(site, id)),
+            .and_then(|id| cloud_session_url(site, id, remote.provider.as_deref(), workspace)),
         _ => agent
             .row()
             .and_then(|row| row.upload.as_ref())
-            .and_then(|upload| uploaded_session_url(site, upload)),
+            .and_then(|upload| uploaded_session_url(site, upload, workspace)),
     }
 }
 

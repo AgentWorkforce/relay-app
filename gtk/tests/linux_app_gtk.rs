@@ -112,6 +112,7 @@ fn uploader() -> Value {
         "delivery": {"bootstrap_complete": true, "pending_records": 2, "acknowledged_records": 6,
                      "skipped_records": 0, "quarantined_records": 0, "unqueued_changes": 0},
         "sessions": {"total": 2, "shared": 1, "excluded": 0},
+        "workspace_id": "w-upload",
     })
 }
 
@@ -2687,12 +2688,10 @@ fn session_opening_settings_route_clicks(runtime: &tokio::runtime::Runtime) {
     let page = &shell.pages.sessions.transcript;
     assert!(page.view_web.is_visible());
     page.view_web.emit_clicked();
-    let site = case
-        .app
-        .with_state(|state| state.account().site_url.unwrap());
+    // The workspace the install uploads to, not the account's current one.
     assert_eq!(
-        case.desktop.opened.borrow().last(),
-        agent_relay_app::models::cloud_session_url(&site, "one").as_ref()
+        case.desktop.opened.borrow().last().map(String::as_str),
+        Some("https://agentrelay.com/cloud/dashboard/sessions/one?source=codex&workspace=w-upload")
     );
     assert_session_open_action(&page.open, "codex", "Open session");
     let opened_count = case.desktop.opened.borrow().len();

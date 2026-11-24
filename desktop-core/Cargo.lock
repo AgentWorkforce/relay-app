@@ -68,7 +68,7 @@ dependencies = [
 [[package]]
 name = "agent-relay-node"
 version = "0.1.0"
-source = "git+https://github.com/AgentWorkforce/relay?rev=f8b0ff90075363db06cd29de2cf69c517e2a9bba#f8b0ff90075363db06cd29de2cf69c517e2a9bba"
+source = "git+https://github.com/AgentWorkforce/relay?rev=231781a6cbd1c04b374dd4dafd6cc6233399c47c#231781a6cbd1c04b374dd4dafd6cc6233399c47c"
 dependencies = [
  "anyhow",
  "atomicwrites",
@@ -135,9 +135,9 @@ dependencies = [
 
 [[package]]
 name = "ai-hist"
-version = "0.61.0"
+version = "0.62.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e1d402d32261e178586be242513bba59ffb99f4bb9642c8be32cbb1c565e5a3"
+checksum = "d7644ac4265006ee7e0119df05f2280b2ad643d3b67f0129dc89163dd6ae1f85"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -800,9 +800,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "history-provider-sources"
-version = "0.61.0"
+version = "0.62.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b481ce6e14f09e960f5f941e2bf5a6c6118ccffe3fe629dfe35a1183b1f1724"
+checksum = "5bd3ab1b8a55ba57f45cdef959199ed34c868eb743686585a4d8a00874c8600b"
 dependencies = [
  "ai-hist",
  "anyhow",

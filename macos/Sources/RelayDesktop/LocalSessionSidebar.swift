@@ -44,7 +44,7 @@ struct LocalSessionSidebar: View {
                         Text("\(SpawnHandover.failedTitle): \(error)").zoomFont(.caption).foregroundStyle(CloudTheme.warning)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
-                    if let upload, let url = SessionNavigation.cloudURL(siteURL: model.siteURL, session: upload) {
+                    if let upload, let url = SessionNavigation.cloudURL(siteURL: model.siteURL, session: upload, workspaceID: model.status?.workspaceId) {
                         Button { NSWorkspace.shared.open(url) } label: {
                             Label("View on web", systemImage: "globe").frame(maxWidth: .infinity)
                         }.buttonStyle(CloudControlStyle(height: 38, horizontalPadding: 12))

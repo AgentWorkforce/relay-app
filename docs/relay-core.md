@@ -777,19 +777,26 @@ the bridge socket is for UIs, the relay-send socket for sessions
 - **Caller.** `SessionDirectory::caller(pid)` names the session from kernel
   evidence alone. A present `CODEX_THREAD_ID` decides alone: it is accepted
   only when the nearest trusted Codex ancestor (same user; on macOS OpenAI's
-  valid signature, on Linux owned by root or the user and writable by no one
-  else) holds that thread's writer lock. An ordinary Codex must hold only
+  valid signature, on Linux owned by root or the user, writable by no one
+  else, and in a folder Codex's installers use: a system `bin` or package
+  folder, `CODEX_HOME`, or a home folder of Codex's updater, npm, the usual
+  Node version managers, mise, asdf, pnpm, Bun, Cargo or `~/.local/bin`)
+  holds that thread's writer lock. An ordinary Codex must hold only
   that lock, or hold it as the oldest rollout inode that process still has
   open, while every other lock is a newer team/subagent rollout whose header
   names this thread as parent. Replacing the path, or rewriting the header,
   cannot promote a newer inode to the root. A
   descendant still cannot claim one of those subagent locks; that takes a
-  nearer ancestor that holds the subagent lock on its own, or an
-  `app-server`, which may hold several but must hold the claimed one. An invalid ID is
-  refused rather than tried as anything else. Without it, the nearest
-  ancestor that is a live Claude Code session with its recorded start time,
-  or a trusted Codex running `resume <thread>`; the walk ends at the first
-  Codex either way. A registry record is read up to the end of its first
+  nearer ancestor that holds the subagent lock on its own. An `app-server`
+  holding one chat's lock names that chat; one holding several names none
+  (unattributed), since any process under it can set the variable. An
+  invalid ID is refused rather than tried as anything else. Without it, the
+  nearest ancestor that is a live Claude Code session with its recorded
+  start time and whose executable is Claude Code, or a trusted Codex running
+  `resume <thread>` while it holds that thread's writer lock; the walk ends
+  at the first Codex either way. Likewise an OpenCode process or managed
+  OpenCode server holding several sessions, and a Cursor window with several
+  live conversations, name none of them until only one remains. A registry record is read up to the end of its first
   JSON value. An ancestor that is a running Claude Code session whose
   `<pid>.json` does not parse (a `<pid>.<hash>.key` records its start
   time) ends the walk with `session_file_unreadable` (409), naming the
@@ -799,8 +806,40 @@ the bridge socket is for UIs, the relay-send socket for sessions
   session's identity, and a lock file's recorded pid counts only while that
   pid still holds the lock. A process inside no supported session is
   `not_a_relay_session`; another user's is `not_this_user`.
+- **Kept messages.** `GET /messages?ref=…` (the probe's `read`) answers a
+  kept message's text and its `framing`. The framing is proven by a seal
+  under a key the core holds only in memory. A kept message framed as the
+  owner's, a leader's or a delegate's whose seal does not verify (kept
+  before the core restarted) is read again from Relaycast as the session's
+  own agent, only at the origin its registration recorded (never a loopback
+  one in a release build), and the text is rebuilt from the server's copy
+  as delivery builds it, with the framing its sender gives. A delegate's
+  approval is attested by Agent Relay Cloud again only while the delivery
+  is unacknowledged. A failed read, a timeout (10 s for the whole re-check)
+  or another message id answers a peer's framing, with the framing line
+  taken out of the kept text. Nothing of the kept file but its message id
+  is used for the rebuilt text.
+- **Send tokens.** With the person-only setting `session_send_tokens` on
+  (off by default; no desktop app row yet), the core gives each registered
+  session a random token, kept in memory only and new on every core start
+  or registration, and puts it only in that session's own reply commands
+  (`session_token=<t>` in the curl query, `--session-token <t>` on the
+  probe's `send`). `POST /send` uses it only when the caller is unattributed
+  because its host holds several sessions, and then names the token's
+  session only if that same host holds it. A caller the kernel already
+  names is never renamed by a token.
+- **Person-only bridge methods.** The bridge methods that change the
+  person's agents, sessions or delivery choices by name (registering,
+  ending, renaming or taking over agents, their webhooks and integrations,
+  Claude delivery changes, session titles and launches, fleet release, and
+  the like) are refused when the calling process runs inside an agent
+  session. The desktop apps call them from outside any session.
 - **Routes.** `POST /send` and `GET /agents` need the caller's registration;
   `GET /whoami`, `POST`/`DELETE /register` and the setup routes do not.
+  `POST /delegation/redeem` and `POST /delegation/withdraw` let a session
+  redeem or withdraw an owner's delegate approval through Agent Relay Cloud
+  (see [Approvals from the owner's delegates](native-spawn.md#approvals-from-the-owners-delegates));
+  they answer `unavailable` when the computer is signed out or gate-only.
   Every route except `/whoami` counts against the session's 30 requests a
   minute. `/agents` reads with the key saved on the caller's own
   registration and caches the roster 30 s.
@@ -821,7 +860,9 @@ the bridge socket is for UIs, the relay-send socket for sessions
   session runs it: a live Claude Code session with its recorded start time, or
   a trusted Codex holding that thread's writer lock alone (or as the root
   session whose other locks are proven subagents), a trusted shared
-  app-server holding the claimed lock, or an older Codex resuming it. Hints
+  app-server holding only that chat's lock, or an older Codex resuming it
+  while holding its lock. A host holding several sessions gets no reply
+  command unless send tokens are on. Hints
   for macOS Codex threads without a `resume <thread>` ancestor invoke this
   probe's own client because the system curl binary does not expose
   `CODEX_THREAD_ID` to process inspection: the self-limiting commands
@@ -909,7 +950,10 @@ Signing in to another workspace replaces it.
 Only `rk_…` keys of at least 12 characters without whitespace qualify.
 `RELAYCAST_URL` overrides the origin when it is a bare https origin (http and
 a port only for `localhost`/`127.0.0.1`; no user info, path, query or
-fragment); anything else leaves `https://cast.agentrelay.com`. The daemon
+fragment); anything else leaves `https://cast.agentrelay.com`. A release
+build ignores a loopback `RELAYCAST_URL` and refuses an account signed in
+against a loopback origin, so the workspace key never goes to one; local
+loopback testing needs a debug build. The daemon
 rediscovers every 30 s and on `workspace.refresh`, and verifies a new key with
 `GET /v1/workspace`.
 
@@ -946,6 +990,9 @@ Linux). One format on both platforms: the macOS app's, plus
 }
 ```
 
+- On macOS and Linux an existing app data folder that other users can read
+  or enter is made private (group and other access removed) when the core
+  starts, and the change is logged. Windows is unchanged.
 - Written 0600 by swapping a complete temporary file into place, under an
   exclusive `flock` on `injectable-agents.json.lock`. Every writer folds its
   changes onto what another wrote since it last read the file (a three-way
@@ -1162,7 +1209,8 @@ upstream request and is deleted once the SDK has it.
 | `POST /v1/messages/{id}/replies` | `at_` | `AgentClient::reply` |
 | `GET /v1/dm/conversations` | `at_` | `AgentClient::dm_conversations` — **gap**: participants are flattened to names, losing the immutable `agent_id` exact-address proof needs (`sdk_gaps::dm_conversations`) |
 | `GET /v1/dm/{id}/messages` | `at_` | `AgentClient::dm_messages` — **gap**: `MessageWithMeta` has no `agent_address` or `thread_id` (`sdk_gaps::dm_messages`) |
-| `GET /v1/messages/{id}` | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`) |
+| `GET /v1/messages/{id}` | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`); also the kept-message re-check (see **Kept messages**) |
+| `GET /v1/deliveries/by-message/{id}` | `at_` | **gap**: no method (`sdk_gaps::delivery_by_message`); the kept-message re-check's proof of a delegate's approval |
 | `GET /v1/workspace` | `rk_` | `RelayCast::workspace_info` |
 
 Every gap is still a call through the SDK's own `HttpClient` (auth,

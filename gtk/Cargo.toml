@@ -36,13 +36,13 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main f8b0ff9: #2256 (an exact-address history read trusts the conversation
-# that proved it, not walking its proof every call) on top of f508832: #2254
-# (fewer serial Relaycast round trips per history read) and bfce36c: #2244
-# (messages.inbox and messages.mark_read; a history read marks only its own
-# conversation read).
+# main 231781a: #2265 (an address is looked for only in conversations that
+# list its agent) on top of ecc9700: #2253 (kept messages are re-checked
+# against Relaycast after a restart), over 4cfe098: #2258 (Codex installed
+# through mise is found) and b8c5243: #2251 (stricter session caller
+# attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "f8b0ff90075363db06cd29de2cf69c517e2a9bba", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "231781a6cbd1c04b374dd4dafd6cc6233399c47c", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:

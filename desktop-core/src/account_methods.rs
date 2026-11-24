@@ -218,6 +218,7 @@ pub(crate) async fn account_call(
                     enforced_settings: uploader.enforced_settings(),
                     uploads_withheld: uploader.uploads_withheld(),
                     suggested_sharing_mode: uploader.suggested_sharing_mode(),
+                    workspace_id: uploader.workspace_id(),
                     ..crate::history::uploader::status_report(&status)
                 })
             })

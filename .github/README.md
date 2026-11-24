@@ -5,6 +5,10 @@ from a repository Actions variable and falls back to the GitHub-hosted label
 below when the variable is unset, so moving a lane is a settings change.
 Read-only jobs use `CI_LINUX_*`; release publishing and changelog promotion use
 `DEPLOY_LINUX_RUNNER`. TestFlight keeps its own GitHub-hosted runner.
+The iOS jobs (the Mobile CI simulator job and the TestFlight upload job) run on
+the GitHub-hosted `xcode-27` image and select Xcode 27.2 through
+`DEVELOPER_DIR`. That label is fixed in the workflow files, not taken from a
+repository variable.
 
 | Repository variable | Default runner (when unset) |
 | --- | --- |

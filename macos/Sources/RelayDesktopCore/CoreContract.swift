@@ -9770,6 +9770,17 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Adds or removes Agent Relay's hooks in Cursor CLI's
     /// `~/.cursor/hooks.json`.
     public let cursorDirectDelivery: Bool?
+    /// Whose delegates' approvals this computer's sessions accept: `off`,
+    /// `own_owner` (delegates of the person who owns this computer or the
+    /// spawn) or `code_owners` (also delegates of any code owner of each
+    /// action's target). A delegate is an agent an owner named in Agent Relay Cloud
+    /// to relay their approval for named actions; with a choice other than
+    /// `off`, a message carrying such an approval that Cloud attests is
+    /// delivered with a `[delegate approval: …]` line naming those actions
+    /// only. `code_owners` unless the person changes it; only the person may
+    /// widen it. Absent in older cores, and on a gate-only install, where it
+    /// cannot work and only `off` is taken.
+    public let delegatedApprovalsFrom: String?
     /// Adds or removes Agent Relay's lifecycle hooks in Devin's
     /// `config.json`.
     public let devinDirectDelivery: Bool?
@@ -9808,12 +9819,26 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// owner's person identity again. Only the person (or fleet policy)
     /// sets it; an agent may clear it.
     public let questionEscalationInbox: String?
+    /// Turns per-session send tokens on or off. Only the person turns it on.
+    public let sessionSendTokens: Bool?
     /// Shows each relay message whole in agent chats (`true`), or hides it
     /// (`false`, the default): the agent still reads it from hidden history.
     public let showRelayMessages: Bool?
     public let spawnAllowTeammates: Bool?
     public let spawnBillingClaude: String?
     public let spawnBillingCodex: String?
+    /// Whether the machine owner's delegates may approve or deny permission
+    /// requests of agents spawned on this computer. A delegate's 1:1 direct
+    /// message `approve <ref>` or `deny <ref>` whose owner approval Agent
+    /// Relay Cloud attests as one `prompt_approval` action naming this
+    /// session and request answers it, as the machine owner could, Codex
+    /// extra-permission requests included; choices, forms, input and local
+    /// verification stay with the owner. Independent of
+    /// `spawn_leader_approvals` and `spawn_native_input`; needs
+    /// `delegated_approvals_from` other than `off`. On unless the person
+    /// turns it off. Absent in older cores, and on a gate-only install,
+    /// where it cannot work and turning it on is refused.
+    public let spawnDelegateApprovals: Bool?
     public let spawnFullAccessClaude: Bool?
     public let spawnFullAccessCodex: Bool?
     /// Changes the spawn settings of the harnesses named, each by id; a
@@ -9830,7 +9855,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Replaces the relay senders trusted like the person.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationInbox: String? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, delegatedApprovalsFrom: String? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationInbox: String? = nil, sessionSendTokens: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnDelegateApprovals: Bool? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
@@ -9845,6 +9870,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.connectDetectedTools = connectDetectedTools
         self.contractorAccess = contractorAccess
         self.cursorDirectDelivery = cursorDirectDelivery
+        self.delegatedApprovalsFrom = delegatedApprovalsFrom
         self.devinDirectDelivery = devinDirectDelivery
         self.directDelivery = directDelivery
         self.directDeliveryDefault = directDeliveryDefault
@@ -9860,10 +9886,12 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.piExtension = piExtension
         self.questionEscalation = questionEscalation
         self.questionEscalationInbox = questionEscalationInbox
+        self.sessionSendTokens = sessionSendTokens
         self.showRelayMessages = showRelayMessages
         self.spawnAllowTeammates = spawnAllowTeammates
         self.spawnBillingClaude = spawnBillingClaude
         self.spawnBillingCodex = spawnBillingCodex
+        self.spawnDelegateApprovals = spawnDelegateApprovals
         self.spawnFullAccessClaude = spawnFullAccessClaude
         self.spawnFullAccessCodex = spawnFullAccessCodex
         self.spawnHarnesses = spawnHarnesses
@@ -9892,6 +9920,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case connectDetectedTools = "connect_detected_tools"
         case contractorAccess = "contractor_access"
         case cursorDirectDelivery = "cursor_direct_delivery"
+        case delegatedApprovalsFrom = "delegated_approvals_from"
         case devinDirectDelivery = "devin_direct_delivery"
         case directDelivery = "direct_delivery"
         case directDeliveryDefault = "direct_delivery_default"
@@ -9907,10 +9936,12 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case piExtension = "pi_extension"
         case questionEscalation = "question_escalation"
         case questionEscalationInbox = "question_escalation_inbox"
+        case sessionSendTokens = "session_send_tokens"
         case showRelayMessages = "show_relay_messages"
         case spawnAllowTeammates = "spawn_allow_teammates"
         case spawnBillingClaude = "spawn_billing_claude"
         case spawnBillingCodex = "spawn_billing_codex"
+        case spawnDelegateApprovals = "spawn_delegate_approvals"
         case spawnFullAccessClaude = "spawn_full_access_claude"
         case spawnFullAccessCodex = "spawn_full_access_codex"
         case spawnHarnesses = "spawn_harnesses"
@@ -9940,6 +9971,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.connectDetectedTools = try c.decodeIfPresent(Bool.self, forKey: .connectDetectedTools)
         self.contractorAccess = try c.decodeIfPresent(Bool.self, forKey: .contractorAccess)
         self.cursorDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .cursorDirectDelivery)
+        self.delegatedApprovalsFrom = try c.decodeIfPresent(String.self, forKey: .delegatedApprovalsFrom)
         self.devinDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .devinDirectDelivery)
         self.directDelivery = try c.decodeIfPresent(Bool.self, forKey: .directDelivery)
         self.directDeliveryDefault = try c.decodeIfPresent(Bool.self, forKey: .directDeliveryDefault)
@@ -9955,10 +9987,12 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.piExtension = try c.decodeIfPresent(Bool.self, forKey: .piExtension)
         self.questionEscalation = try c.decodeIfPresent(String.self, forKey: .questionEscalation)
         self.questionEscalationInbox = try c.decodeIfPresent(String.self, forKey: .questionEscalationInbox)
+        self.sessionSendTokens = try c.decodeIfPresent(Bool.self, forKey: .sessionSendTokens)
         self.showRelayMessages = try c.decodeIfPresent(Bool.self, forKey: .showRelayMessages)
         self.spawnAllowTeammates = try c.decodeIfPresent(Bool.self, forKey: .spawnAllowTeammates)
         self.spawnBillingClaude = try c.decodeIfPresent(String.self, forKey: .spawnBillingClaude)
         self.spawnBillingCodex = try c.decodeIfPresent(String.self, forKey: .spawnBillingCodex)
+        self.spawnDelegateApprovals = try c.decodeIfPresent(Bool.self, forKey: .spawnDelegateApprovals)
         self.spawnFullAccessClaude = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessClaude)
         self.spawnFullAccessCodex = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessCodex)
         self.spawnHarnesses = try c.decodeIfPresent([String: SpawnHarnessSettings].self, forKey: .spawnHarnesses)
@@ -9988,6 +10022,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.connectDetectedTools, forKey: .connectDetectedTools)
         try c.encodeIfPresent(self.contractorAccess, forKey: .contractorAccess)
         try c.encodeIfPresent(self.cursorDirectDelivery, forKey: .cursorDirectDelivery)
+        try c.encodeIfPresent(self.delegatedApprovalsFrom, forKey: .delegatedApprovalsFrom)
         try c.encodeIfPresent(self.devinDirectDelivery, forKey: .devinDirectDelivery)
         try c.encodeIfPresent(self.directDelivery, forKey: .directDelivery)
         try c.encodeIfPresent(self.directDeliveryDefault, forKey: .directDeliveryDefault)
@@ -10003,10 +10038,12 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.piExtension, forKey: .piExtension)
         try c.encodeIfPresent(self.questionEscalation, forKey: .questionEscalation)
         try c.encodeIfPresent(self.questionEscalationInbox, forKey: .questionEscalationInbox)
+        try c.encodeIfPresent(self.sessionSendTokens, forKey: .sessionSendTokens)
         try c.encodeIfPresent(self.showRelayMessages, forKey: .showRelayMessages)
         try c.encodeIfPresent(self.spawnAllowTeammates, forKey: .spawnAllowTeammates)
         try c.encodeIfPresent(self.spawnBillingClaude, forKey: .spawnBillingClaude)
         try c.encodeIfPresent(self.spawnBillingCodex, forKey: .spawnBillingCodex)
+        try c.encodeIfPresent(self.spawnDelegateApprovals, forKey: .spawnDelegateApprovals)
         try c.encodeIfPresent(self.spawnFullAccessClaude, forKey: .spawnFullAccessClaude)
         try c.encodeIfPresent(self.spawnFullAccessCodex, forKey: .spawnFullAccessCodex)
         try c.encodeIfPresent(self.spawnHarnesses, forKey: .spawnHarnesses)
@@ -10078,6 +10115,17 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// when its turn ends. Off unless turned on. Absent where Cursor CLI has
     /// never run.
     public let cursorDirectDelivery: Bool?
+    /// Whose delegates' approvals this computer's sessions accept: `off`,
+    /// `own_owner` (delegates of the person who owns this computer or the
+    /// spawn) or `code_owners` (also delegates of any code owner of each
+    /// action's target). A delegate is an agent an owner named in Agent Relay Cloud
+    /// to relay their approval for named actions; with a choice other than
+    /// `off`, a message carrying such an approval that Cloud attests is
+    /// delivered with a `[delegate approval: …]` line naming those actions
+    /// only. `code_owners` unless the person changes it; only the person may
+    /// widen it. Absent in older cores, and on a gate-only install, where it
+    /// cannot work and only `off` is taken.
+    public let delegatedApprovalsFrom: String?
     /// Read-only: the tools signing in connects, by name (`Claude Code`, …).
     public let detectedTools: [String]?
     /// Whether Agent Relay's lifecycle hooks are in Devin's `config.json`,
@@ -10165,6 +10213,14 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// Where question escalation works, in words: written from
     /// `question_escalation_coverage`. Read-only; absent in older cores.
     public let questionEscalationStatus: String?
+    /// Whether each registered session gets a send token, carried in the
+    /// reply commands handed to that session, that names it on the session
+    /// socket when its tool runs under a host process holding several
+    /// sessions (a Codex app-server, an OpenCode, a Cursor window). Off
+    /// unless the person turns it on; tokens are kept in memory and change
+    /// when the core restarts or the session registers again. Absent in
+    /// older cores.
+    public let sessionSendTokens: Bool?
     /// Whether relay messages show in agent chats. Off unless turned on: the
     /// agent reads each message from hidden history and the chat shows none
     /// of it.
@@ -10178,6 +10234,18 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// How spawned Codex is paid for, as advertised to requesters:
     /// `unspecified`, `subscription` or `api`.
     public let spawnBillingCodex: String?
+    /// Whether the machine owner's delegates may approve or deny permission
+    /// requests of agents spawned on this computer. A delegate's 1:1 direct
+    /// message `approve <ref>` or `deny <ref>` whose owner approval Agent
+    /// Relay Cloud attests as one `prompt_approval` action naming this
+    /// session and request answers it, as the machine owner could, Codex
+    /// extra-permission requests included; choices, forms, input and local
+    /// verification stay with the owner. Independent of
+    /// `spawn_leader_approvals` and `spawn_native_input`; needs
+    /// `delegated_approvals_from` other than `off`. On unless the person
+    /// turns it off. Absent in older cores, and on a gate-only install,
+    /// where it cannot work and turning it on is refused.
+    public let spawnDelegateApprovals: Bool?
     /// Spawned Claude skips permission prompts; off lets it edit files and
     /// sends anything else that would ask to be answered remotely. On unless
     /// turned off.
@@ -10243,7 +10311,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationCoverage: [String: QuestionCoverage]? = nil, questionEscalationInbox: String? = nil, questionEscalationStatus: String? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, delegatedApprovalsFrom: String? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationCoverage: [String: QuestionCoverage]? = nil, questionEscalationInbox: String? = nil, questionEscalationStatus: String? = nil, sessionSendTokens: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnDelegateApprovals: Bool? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -10258,6 +10326,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.connectDetectedTools = connectDetectedTools
         self.contractorAccess = contractorAccess
         self.cursorDirectDelivery = cursorDirectDelivery
+        self.delegatedApprovalsFrom = delegatedApprovalsFrom
         self.detectedTools = detectedTools
         self.devinDirectDelivery = devinDirectDelivery
         self.directDelivery = directDelivery
@@ -10280,10 +10349,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.questionEscalationCoverage = questionEscalationCoverage
         self.questionEscalationInbox = questionEscalationInbox
         self.questionEscalationStatus = questionEscalationStatus
+        self.sessionSendTokens = sessionSendTokens
         self.showRelayMessages = showRelayMessages
         self.spawnAllowTeammates = spawnAllowTeammates
         self.spawnBillingClaude = spawnBillingClaude
         self.spawnBillingCodex = spawnBillingCodex
+        self.spawnDelegateApprovals = spawnDelegateApprovals
         self.spawnFullAccessClaude = spawnFullAccessClaude
         self.spawnFullAccessCodex = spawnFullAccessCodex
         self.spawnHarnesses = spawnHarnesses
@@ -10314,6 +10385,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case connectDetectedTools = "connect_detected_tools"
         case contractorAccess = "contractor_access"
         case cursorDirectDelivery = "cursor_direct_delivery"
+        case delegatedApprovalsFrom = "delegated_approvals_from"
         case detectedTools = "detected_tools"
         case devinDirectDelivery = "devin_direct_delivery"
         case directDelivery = "direct_delivery"
@@ -10336,10 +10408,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case questionEscalationCoverage = "question_escalation_coverage"
         case questionEscalationInbox = "question_escalation_inbox"
         case questionEscalationStatus = "question_escalation_status"
+        case sessionSendTokens = "session_send_tokens"
         case showRelayMessages = "show_relay_messages"
         case spawnAllowTeammates = "spawn_allow_teammates"
         case spawnBillingClaude = "spawn_billing_claude"
         case spawnBillingCodex = "spawn_billing_codex"
+        case spawnDelegateApprovals = "spawn_delegate_approvals"
         case spawnFullAccessClaude = "spawn_full_access_claude"
         case spawnFullAccessCodex = "spawn_full_access_codex"
         case spawnHarnesses = "spawn_harnesses"
@@ -10371,6 +10445,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.connectDetectedTools = try c.decodeIfPresent(Bool.self, forKey: .connectDetectedTools)
         self.contractorAccess = try c.decodeIfPresent(Bool.self, forKey: .contractorAccess)
         self.cursorDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .cursorDirectDelivery)
+        self.delegatedApprovalsFrom = try c.decodeIfPresent(String.self, forKey: .delegatedApprovalsFrom)
         self.detectedTools = try c.decodeIfPresent([String].self, forKey: .detectedTools)
         self.devinDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .devinDirectDelivery)
         self.directDelivery = try c.decodeIfPresent(Bool.self, forKey: .directDelivery)
@@ -10393,10 +10468,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.questionEscalationCoverage = try c.decodeIfPresent([String: QuestionCoverage].self, forKey: .questionEscalationCoverage)
         self.questionEscalationInbox = try c.decodeIfPresent(String.self, forKey: .questionEscalationInbox)
         self.questionEscalationStatus = try c.decodeIfPresent(String.self, forKey: .questionEscalationStatus)
+        self.sessionSendTokens = try c.decodeIfPresent(Bool.self, forKey: .sessionSendTokens)
         self.showRelayMessages = try c.decodeIfPresent(Bool.self, forKey: .showRelayMessages)
         self.spawnAllowTeammates = try c.decodeIfPresent(Bool.self, forKey: .spawnAllowTeammates)
         self.spawnBillingClaude = try c.decodeIfPresent(String.self, forKey: .spawnBillingClaude)
         self.spawnBillingCodex = try c.decodeIfPresent(String.self, forKey: .spawnBillingCodex)
+        self.spawnDelegateApprovals = try c.decodeIfPresent(Bool.self, forKey: .spawnDelegateApprovals)
         self.spawnFullAccessClaude = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessClaude)
         self.spawnFullAccessCodex = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessCodex)
         self.spawnHarnesses = try c.decodeIfPresent([String: SpawnHarnessSettings].self, forKey: .spawnHarnesses)
@@ -10428,6 +10505,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.connectDetectedTools, forKey: .connectDetectedTools)
         try c.encodeIfPresent(self.contractorAccess, forKey: .contractorAccess)
         try c.encodeIfPresent(self.cursorDirectDelivery, forKey: .cursorDirectDelivery)
+        try c.encodeIfPresent(self.delegatedApprovalsFrom, forKey: .delegatedApprovalsFrom)
         try c.encodeIfPresent(self.detectedTools, forKey: .detectedTools)
         try c.encodeIfPresent(self.devinDirectDelivery, forKey: .devinDirectDelivery)
         try c.encodeIfPresent(self.directDelivery, forKey: .directDelivery)
@@ -10450,10 +10528,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.questionEscalationCoverage, forKey: .questionEscalationCoverage)
         try c.encodeIfPresent(self.questionEscalationInbox, forKey: .questionEscalationInbox)
         try c.encodeIfPresent(self.questionEscalationStatus, forKey: .questionEscalationStatus)
+        try c.encodeIfPresent(self.sessionSendTokens, forKey: .sessionSendTokens)
         try c.encodeIfPresent(self.showRelayMessages, forKey: .showRelayMessages)
         try c.encodeIfPresent(self.spawnAllowTeammates, forKey: .spawnAllowTeammates)
         try c.encodeIfPresent(self.spawnBillingClaude, forKey: .spawnBillingClaude)
         try c.encodeIfPresent(self.spawnBillingCodex, forKey: .spawnBillingCodex)
+        try c.encodeIfPresent(self.spawnDelegateApprovals, forKey: .spawnDelegateApprovals)
         try c.encodeIfPresent(self.spawnFullAccessClaude, forKey: .spawnFullAccessClaude)
         try c.encodeIfPresent(self.spawnFullAccessCodex, forKey: .spawnFullAccessCodex)
         try c.encodeIfPresent(self.spawnHarnesses, forKey: .spawnHarnesses)
@@ -12740,8 +12820,11 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
     /// read: the read at the first sign-in to the workspace failed. The
     /// apps lock the upload policy and say why.
     public let uploadsWithheld: Bool?
+    /// The Cloud workspace the attached install uploads to, which its
+    /// uploaded sessions are in. Absent without an install or a workspace.
+    public let workspaceId: String?
 
-    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, enforcedSettings: [String: String]? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, suggestedSharingMode: SharingMode? = nil, upgrading: Bool, uploadPolicyRevision: Int64? = nil, uploadsWithheld: Bool? = nil) {
+    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, enforcedSettings: [String: String]? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, suggestedSharingMode: SharingMode? = nil, upgrading: Bool, uploadPolicyRevision: Int64? = nil, uploadsWithheld: Bool? = nil, workspaceId: String? = nil) {
         self.claudeCloud = claudeCloud
         self.collectorOutdated = collectorOutdated
         self.collectorReplacing = collectorReplacing
@@ -12761,6 +12844,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         self.upgrading = upgrading
         self.uploadPolicyRevision = uploadPolicyRevision
         self.uploadsWithheld = uploadsWithheld
+        self.workspaceId = workspaceId
     }
 
     enum CodingKeys: String, CodingKey {
@@ -12783,6 +12867,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         case upgrading
         case uploadPolicyRevision = "upload_policy_revision"
         case uploadsWithheld = "uploads_withheld"
+        case workspaceId = "workspace_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -12806,6 +12891,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         self.upgrading = try c.decode(Bool.self, forKey: .upgrading)
         self.uploadPolicyRevision = try c.decodeIfPresent(Int64.self, forKey: .uploadPolicyRevision)
         self.uploadsWithheld = try c.decodeIfPresent(Bool.self, forKey: .uploadsWithheld)
+        self.workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -12829,6 +12915,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.upgrading, forKey: .upgrading)
         try c.encode(self.uploadPolicyRevision, forKey: .uploadPolicyRevision)
         try c.encodeIfPresent(self.uploadsWithheld, forKey: .uploadsWithheld)
+        try c.encodeIfPresent(self.workspaceId, forKey: .workspaceId)
     }
 }
 

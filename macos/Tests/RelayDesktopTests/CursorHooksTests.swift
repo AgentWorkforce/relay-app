@@ -37,6 +37,14 @@ final class CursorHooksTests: XCTestCase {
                        "cursor:6e0af963-e21c-4fb8-a8e8-7f34765b6d64")
     }
 
+    func testCursorEditorChatsAreLabelledCursor() {
+        XCTAssertEqual(SessionKind.cursorCli.label(host: SessionHost.cursorEditor), "Cursor")
+        XCTAssertEqual(SessionKind.cursorCli.label(host: nil), "Cursor CLI")
+        XCTAssertEqual(SessionKind.codex.label(host: "Cursor"), "Codex")
+        XCTAssertEqual(SessionKind.codex.label(host: "conductor"), "Codex in Conductor")
+        XCTAssertEqual(SessionKind.claudeCloud.label(host: SessionHost.claudeWeb), "Claude Code on the web")
+    }
+
     func testCopilotSessionsAreLabelledAndKeyedLikeRelayNode() throws {
         let kind = try JSONDecoder().decode(SessionKind.self, from: Data("\"copilot\"".utf8))
         XCTAssertEqual(kind, .copilot)

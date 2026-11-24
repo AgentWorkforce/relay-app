@@ -20,10 +20,42 @@ final class SessionNavigationTests: XCTestCase {
     func testOnlyUploadedSessionsHaveACloudPage() {
         let uploaded = Fixture.uploadSession(sessionId: "one", status: .uploaded)
         XCTAssertEqual(
-            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", session: uploaded)?.absoluteString,
-            "https://agentrelay.com/cloud/dashboard/sessions/one"
+            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", session: uploaded, workspaceID: "w")?.absoluteString,
+            "https://agentrelay.com/cloud/dashboard/sessions/one?source=\(uploaded.source)&workspace=w"
         )
         XCTAssertNil(SessionNavigation.cloudURL(siteURL: "https://agentrelay.com",
-                                                session: Fixture.uploadSession(sessionId: "one", status: .notShared)))
+                                                session: Fixture.uploadSession(sessionId: "one", status: .notShared),
+                                                workspaceID: "w"))
+    }
+
+    func testUploaderStatusNamesTheInstallUploadWorkspace() throws {
+        let encoded = try JSONEncoder().encode(Fixture.uploaderStatus())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(try JSONDecoder().decode(UploaderStatus.self, from: encoded).workspaceId)
+        object["workspace_id"] = "w-upload"
+        let status = try JSONDecoder().decode(UploaderStatus.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(status.workspaceId, "w-upload")
+        let uploaded = Fixture.uploadSession(sessionId: "one", status: .uploaded)
+        XCTAssertEqual(
+            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", session: uploaded, workspaceID: status.workspaceId)?.absoluteString,
+            "https://agentrelay.com/cloud/dashboard/sessions/one?source=\(uploaded.source)&workspace=w-upload"
+        )
+    }
+
+    func testCloudURLNamesSourceAndWorkspaceLikeDesktopCore() {
+        XCTAssertEqual(
+            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", sessionId: "a b", source: "cursor",
+                                       workspaceID: "0f8fad5b-d9cb-469f-a165-70867728950e")?.absoluteString,
+            "https://agentrelay.com/cloud/dashboard/sessions/a%20b?source=cursor&workspace=0f8fad5b-d9cb-469f-a165-70867728950e"
+        )
+        XCTAssertEqual(
+            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", sessionId: "s", source: "a&b=c",
+                                       workspaceID: " ")?.absoluteString,
+            "https://agentrelay.com/cloud/dashboard/sessions/s?source=a%26b%3Dc"
+        )
+        XCTAssertEqual(
+            SessionNavigation.cloudURL(siteURL: "https://agentrelay.com", sessionId: "s", workspaceID: "w")?.absoluteString,
+            "https://agentrelay.com/cloud/dashboard/sessions/s?workspace=w"
+        )
     }
 }

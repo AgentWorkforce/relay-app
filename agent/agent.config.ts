@@ -61,6 +61,9 @@ export default defineLayeredAgent({
   repos: ["AgentWorkforce/relay-app"],
   env: { LEDGER_COUNTERPARTS: "macos=app-ui gtk=app-ui" },
   relayDescription: "relay-app layered agent: ledger, sized review flows, releases (EC2, Fable 5.1)",
+  // Codex until the Anthropic credit is topped up (Khaliq, 2026-11-24). Must match
+  // layered-agents infra/agents.ts (#69), which lets the host read this key.
+  lead: { harness: "codex", model: "gpt-6.2-astra", openaiKeyParam: `/relaycast-agent-host/${stage}/openai-api-key-relay-app` },
   // Names. The rule: everything this stack CREATES carries a -relay-app
   // suffix or a /relay-app path segment, so it can never collide with the
   // relay-desktop agent's live stack or relaycast-cloud's shared host

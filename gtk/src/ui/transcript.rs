@@ -4,11 +4,12 @@
 //! upload), and the drawing of transcript entries Chat's thread uses.
 use super::{
     app::App,
+    session_links,
     widgets::{self, clear, hbox, text, vbox, LabelStyle},
 };
 use crate::models::{
     merge_local_sessions, session_header_identity, source_name, transcript_entry_context,
-    uploaded_session_url, AgentName, LocalSessionRow, SessionUploadState,
+    AgentName, LocalSessionRow, SessionUploadState,
 };
 use agent_relay_node::relay::contract::{agents::RenameParams, method, transcript::LocalTranscriptEntry};
 use gtk::prelude::*;
@@ -327,13 +328,12 @@ impl App {
             return;
         };
         let url = self.with_state(|state| {
-            let site = state.account().site_url.unwrap_or_default();
             merge_local_sessions(&state.sessions, &state.local_sessions)
                 .into_iter()
                 .find(|row| row.key() == original.key())
                 .unwrap_or(original)
                 .upload
-                .and_then(|upload| uploaded_session_url(&site, &upload))
+                .and_then(|upload| session_links::uploaded_page(state, &upload))
         });
         if let Some(url) = url {
             self.inner.desktop.open_uri(&url);
@@ -362,11 +362,10 @@ impl App {
                     .upload
                     .as_ref()
                     .is_some_and(|upload| upload.included || requesting);
-            let site = state.account().site_url.unwrap_or_default();
             page.view_web.set_visible(
                 row.upload
                     .as_ref()
-                    .and_then(|upload| uploaded_session_url(&site, upload))
+                    .and_then(|upload| session_links::uploaded_page(state, upload))
                     .is_some(),
             );
             // Turning an uploading session off deletes it from Cloud; when

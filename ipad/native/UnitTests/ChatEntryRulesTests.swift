@@ -93,4 +93,107 @@ final class ChatEntryRulesTests: XCTestCase {
                       event("2", at: 1, type: "tool_call", actor: "assistant", content: "git status", tool: "Bash")]
         XCTAssertEqual(ids(ChatEntryRules.withoutToolEchoes(events)), ["2"])
     }
+
+    // MARK: Copies of session events
+
+    /// An event with a kind as well as a type, and a time that may be absent.
+    private func copy(_ id: String, at seconds: TimeInterval? = 0, type: String = "user", kind: String = "",
+                      actor: String = "user", content: String, tool: String = "") -> SessionEvent {
+        SessionEvent(key: .init(source: "codex", machineID: "m1", kind: type, eventID: id),
+                     ts: seconds.map { Date(timeIntervalSince1970: 1_790_000_000 + $0) }, kind: kind, type: type,
+                     actorRole: actor, content: content, toolName: tool)
+    }
+
+    func testTheHistoryCopyAndTheHookContextAreLeftOut() {
+        let events = [copy("1", at: 0, type: "history", content: "ping"),
+                      copy("2", at: 0.1, content: "SessionStart hook additional context: This session joins"),
+                      copy("3", at: 0.2, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["3"])
+    }
+
+    func testOnlyAnEventNamedHistoryIsAHistoryCopy() {
+        let events = [copy("1", type: "", kind: "history", content: "Ship the harbor notes"),
+                      copy("2", type: "History", content: "Ship the harbor notes 2"),
+                      copy("3", type: "HISTORY", content: "Ship the harbor notes 3"),
+                      copy("4", type: "message", kind: "History", content: "Ship the harbor notes 4"),
+                      copy("5", type: "history_note", content: "Ship the harbor notes 5"),
+                      copy("6", type: "message", kind: "histories", content: "Ship the harbor notes 6")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["5", "6"])
+    }
+
+    func testHookContextIsFoundAtTheStartOfTheTextOnly() {
+        let prefix = ChatEntryRules.hookContextPrefix
+        XCTAssertEqual(prefix, "SessionStart hook additional context:")
+        let events = [copy("1", at: 0, content: "\n  " + prefix + " first"),
+                      copy("2", at: 20, content: "Note: " + prefix + " in the middle"),
+                      copy("3", at: 40, content: "sessionstart hook additional context: lower case"),
+                      copy("4", at: 60, type: "assistant", actor: "assistant", content: prefix + " from the agent"),
+                      copy("5", at: 80, type: "tool_result", actor: "tool_result", content: prefix + " in a result"),
+                      copy("6", at: 100, content: prefix)]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["2", "3"])
+    }
+
+    func testTwoRecordsOfOneTurnWithinTheWindowAreOne() {
+        XCTAssertEqual(ChatEntryRules.sameTurnWindow, 10)
+        let close = [copy("1", at: 0, content: "ping"), copy("2", at: 0.081, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(close)), ["1"])
+        let edge = [copy("1", at: 0, content: "ping"), copy("2", at: 10, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(edge)), ["1"])
+        let past = [copy("1", at: 0, content: "ping"), copy("2", at: 10.001, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(past)), ["1", "2"])
+        // Either order inside the window is a repeat.
+        let backwards = [copy("1", at: 5, content: "ping"), copy("2", at: 4.9, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(backwards)), ["1"])
+    }
+
+    func testAChainOfRepeatsIsOneRowButTheSameTextLaterIsANewTurn() {
+        let chain = [copy("1", at: 0, content: "ping"), copy("2", at: 8, content: "ping"),
+                     copy("3", at: 16, content: "ping"), copy("4", at: 24, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(chain)), ["1"])
+        let later = chain + [copy("5", at: 40, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(later)), ["1", "5"])
+    }
+
+    func testTheOtherWriterAndOtherTextAreAnotherTurn() {
+        let events = [copy("1", at: 0, content: "ok"),
+                      copy("2", at: 0.5, type: "assistant", actor: "assistant", content: "ok"),
+                      copy("3", at: 1, content: " ok \n"),
+                      copy("4", at: 1.5, type: "assistant", actor: "assistant", content: "\nok"),
+                      copy("5", at: 2, content: "o k"),
+                      copy("6", at: 2.5, content: "Ok")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["1", "2", "5", "6"])
+    }
+
+    func testOnlyAPersonsAndTheAgentsTextCanBeARepeat() {
+        let events = [copy("1", at: 0, type: "tool_use", actor: "assistant", content: "swift test", tool: "Bash"),
+                      copy("2", at: 0.5, type: "tool_use", actor: "assistant", content: "swift test", tool: "Bash"),
+                      copy("3", at: 1, type: "tool_result", actor: "tool_result", content: "ok"),
+                      copy("4", at: 1.5, type: "tool_result", actor: "tool_result", content: "ok"),
+                      copy("5", at: 2, type: "thinking", actor: "assistant", content: "Weighing two fixes"),
+                      copy("6", at: 2.5, type: "thinking", actor: "assistant", content: "Weighing two fixes"),
+                      copy("7", at: 3, type: "note", actor: "system", content: "Resumed"),
+                      copy("8", at: 3.5, type: "note", actor: "system", content: "Resumed"),
+                      copy("9", at: 4, content: "  "), copy("10", at: 4.5, content: "  ")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"])
+    }
+
+    func testAnEventWithoutATimeIsNeverARepeatAndHidesNothing() {
+        let events = [copy("1", at: nil, content: "ping"), copy("2", at: nil, content: "ping"),
+                      copy("3", at: 0, content: "ping"), copy("4", at: 1, content: "ping"),
+                      copy("5", at: nil, content: "ping")]
+        // The untimed ones stay; the two timed ones are one turn.
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["1", "2", "3", "5"])
+    }
+
+    func testRemovedCopiesTakeNoPartInTheRepeatRule() {
+        // A history copy takes no part: the first real prompt stays, its repeat 6 s later goes.
+        let events = [copy("1", at: 0, type: "history", content: "ping"),
+                      copy("2", at: 9, content: "ping"),
+                      copy("3", at: 15, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["2"])
+        // The kept order is the given order.
+        let mixed = [copy("a", at: 30, content: "later"), copy("b", at: 0, type: "history", content: "x"),
+                     copy("c", at: 10, content: "earlier")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(mixed)), ["a", "c"])
+    }
 }

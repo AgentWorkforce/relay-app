@@ -1,4 +1,17 @@
-use super::{target_arguments, SharingMode, Target};
+use super::{SharingMode, Target};
+
+/// `--site-url/--account/--workspace` for `target`, the install a command
+/// acts on.
+pub fn target_arguments(target: &Target) -> Vec<String> {
+    let mut args = vec!["--site-url".to_string(), target.site_url.clone()];
+    if let Some(account) = target.account_id.as_ref().filter(|a| !a.is_empty()) {
+        args.extend(["--account".to_string(), account.clone()]);
+    }
+    if let Some(workspace) = target.workspace_id.as_ref().filter(|w| !w.is_empty()) {
+        args.extend(["--workspace".to_string(), workspace.clone()]);
+    }
+    args
+}
 
 /// The `cloud install` flag that asks for `mode`.
 pub fn install_flag(mode: SharingMode) -> &'static str {

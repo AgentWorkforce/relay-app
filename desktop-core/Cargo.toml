@@ -29,20 +29,20 @@ service-callers-dev-attest = []
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main f8b0ff9: #2256 (an exact-address history read trusts the conversation
-# that proved it, not walking its proof every call) on top of f508832: #2254
-# (fewer serial Relaycast round trips per history read) and bfce36c: #2244
-# (messages.inbox and messages.mark_read; a history read marks only its own
-# conversation read).
+# main 231781a: #2265 (an address is looked for only in conversations that
+# list its agent) on top of ecc9700: #2253 (kept messages are re-checked
+# against Relaycast after a restart), over 4cfe098: #2258 (Codex installed
+# through mise is found) and b8c5243: #2251 (stricter session caller
+# attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "f8b0ff90075363db06cd29de2cf69c517e2a9bba", default-features = false }
-# relayhistory 0.61.0 from crates.io. `history-provider-sources` pins ai-hist
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "231781a6cbd1c04b374dd4dafd6cc6233399c47c", default-features = false }
+# relayhistory 0.62.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
-ai-hist = { version = "=0.61.0", features = ["opencode-backup", "git-hooks", "fs-events"] }
+ai-hist = { version = "=0.62.0", features = ["opencode-backup", "git-hooks", "fs-events"] }
 # The remote source connectors session history composes (`devin-cloud`,
 # `cursor-cloud`).
-history-provider-sources = "=0.61.0"
+history-provider-sources = "=0.62.0"
 # The watcher ai-hist's own watch is built on, for selected mode's catalog
 # (src/probe/inventory.rs), which ai-hist's sync-driven watch cannot serve.
 notify = "8"
