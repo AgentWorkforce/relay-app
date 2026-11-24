@@ -130,7 +130,8 @@ final class ChatEntryRulesTests: XCTestCase {
                       copy("4", at: 60, type: "assistant", actor: "assistant", content: prefix + " from the agent"),
                       copy("5", at: 80, type: "tool_result", actor: "tool_result", content: prefix + " in a result"),
                       copy("6", at: 100, content: prefix)]
-        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["2", "3"])
+        // Only the person's events are dropped; the agent's text and a result stay.
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["2", "3", "4", "5"])
     }
 
     func testTwoRecordsOfOneTurnWithinTheWindowAreOne() {
@@ -155,13 +156,39 @@ final class ChatEntryRulesTests: XCTestCase {
     }
 
     func testTheOtherWriterAndOtherTextAreAnotherTurn() {
+        // Each repeat directly follows its original; the other writer's text and near matches stay.
         let events = [copy("1", at: 0, content: "ok"),
-                      copy("2", at: 0.5, type: "assistant", actor: "assistant", content: "ok"),
-                      copy("3", at: 1, content: " ok \n"),
+                      copy("3", at: 0.5, content: " ok \n"),
+                      copy("2", at: 1, type: "assistant", actor: "assistant", content: "ok"),
                       copy("4", at: 1.5, type: "assistant", actor: "assistant", content: "\nok"),
                       copy("5", at: 2, content: "o k"),
                       copy("6", at: 2.5, content: "Ok")]
         XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["1", "2", "5", "6"])
+    }
+
+    func testARepeatMustDirectlyFollowItsOriginalAmongTexts() {
+        let person = [copy("1", at: 0, content: "yes"),
+                      copy("2", at: 3, type: "assistant", actor: "assistant", content: "Done"),
+                      copy("3", at: 6, content: "yes")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(person)), ["1", "2", "3"])
+        let agent = [copy("1", at: 0, type: "assistant", actor: "assistant", content: "Done"),
+                     copy("2", at: 2, content: "yes"),
+                     copy("3", at: 5, type: "assistant", actor: "assistant", content: "Done")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(agent)), ["1", "2", "3"])
+        // A kept text with no time and another key also ends the turn.
+        let untimed = [copy("1", at: 0, content: "yes"), copy("2", at: nil, content: "no"),
+                       copy("3", at: 1, content: "yes")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(untimed)), ["1", "2", "3"])
+    }
+
+    func testAToolEventBetweenTwoSameTextsKeepsThemOneTurn() {
+        let events = [copy("1", at: 0, content: "ping"),
+                      copy("2", at: 1, type: "tool_use", actor: "assistant", content: "swift test", tool: "Bash"),
+                      copy("3", at: 2, type: "tool_result", actor: "tool_result", content: "ok"),
+                      copy("4", at: 3, content: "  "),
+                      copy("5", at: 4, type: "history", content: "other"),
+                      copy("6", at: 5, content: "ping")]
+        XCTAssertEqual(ids(ChatEntryRules.withoutCopies(events)), ["1", "2", "3", "4"])
     }
 
     func testOnlyAPersonsAndTheAgentsTextCanBeARepeat() {

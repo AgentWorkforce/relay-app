@@ -90,29 +90,44 @@ enum ChatEntryRules {
     /// lines.
     /// - An event whose `type` or `kind` is `history` (any case): the
     ///   provider's prompt log, a copy of each prompt the transcript has.
-    /// - An event, whoever it names as its writer, whose content starts
-    ///   (after any leading blank space) with `hookContextPrefix`: a hook's
-    ///   context, not something a person wrote. The prefix is matched
-    ///   exactly, in this case.
+    /// - A person's event whose content starts (after any leading blank
+    ///   space) with `hookContextPrefix`: a hook's context, not something a
+    ///   person wrote. The prefix is matched exactly, in this case. The
+    ///   agent's text and a tool's result that start with the same words
+    ///   stay.
     /// - A repeat of one turn: a person's or the agent's text (never a tool
     ///   call, a result or thinking) with the same writer role and the same
-    ///   text (trimmed at both ends) as an earlier event, at most
-    ///   `sameTurnWindow` seconds from it. Every record of a turn, kept or
-    ///   not, moves the time it is compared with, so a run of repeats that
-    ///   are each within the window of the one before shows once, and the
-    ///   first is the one kept. An event with no time is never a repeat. The
-    ///   same text after longer, or from the other writer, is another turn.
+    ///   text (trimmed at both ends) as the text kept just before it among
+    ///   the person's and the agent's texts, at most `sameTurnWindow`
+    ///   seconds from it. Only the last kept text is remembered, so a text
+    ///   of another key between two same texts (a person's "yes", the
+    ///   agent's "Done", the person's "yes") makes the later one a new turn;
+    ///   an event that is not a person's or agent's text (a tool call or
+    ///   result, thinking, empty text, an event left out above) changes
+    ///   nothing. Every record of a turn, kept or not, moves the time it is
+    ///   compared with, so a run of repeats that are each within the window
+    ///   of the one before shows once, and the first is the one kept. An
+    ///   event with no time is never a repeat; a kept text with no time and
+    ///   a different key still replaces the remembered text, and leaves no
+    ///   time to compare with. The same text after longer, or from the other
+    ///   writer, is another turn.
     static func withoutCopies(_ events: [SessionEvent]) -> [SessionEvent] {
-        var lastSeen: [TurnKey: Date] = [:]
+        var last: (key: TurnKey, time: Date?)?
         return events.filter { event in
             if event.type.lowercased() == "history" || event.kind.lowercased() == "history" { return false }
-            let text = event.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.hasPrefix(hookContextPrefix) { return false }
             let role = event.entryRole
+            let text = event.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if role == .person, text.hasPrefix(hookContextPrefix) { return false }
             guard role == .person || role == .agent, !text.isEmpty else { return true }
             let key = TurnKey(isPerson: role == .person, text: text)
-            let previous = lastSeen[key]
-            if let time = event.ts { lastSeen[key] = time }
+            let previous: Date?
+            if let current = last, current.key == key {
+                previous = current.time
+                if let time = event.ts { last = (key: key, time: time) }
+            } else {
+                previous = nil
+                last = (key: key, time: event.ts)
+            }
             guard let time = event.ts, let previous else { return true }
             return abs(time.timeIntervalSince(previous)) > sameTurnWindow
         }
