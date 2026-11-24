@@ -327,7 +327,8 @@ impl Thread {
         let (body, mut images) = chat_pasted_images(&body);
         let (body, attached) = chat_attached_images(&body, &attachments_dir());
         images.extend(attached);
-        if body.trim().is_empty() && images.is_empty() {
+        // A turn that is only an attached image is still a turn.
+        if body.trim().is_empty() && images.is_empty() && entry.image_path.is_none() {
             return None;
         }
         let relay = (sender.is_some() || self.relay_only.get())

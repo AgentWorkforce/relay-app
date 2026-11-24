@@ -88,6 +88,13 @@ fn cursor_messaging_and_history_share_the_upload_control(runtime: &tokio::runtim
     let id = "e142445f-f5d7-4b0a-a4d7-02ab80d4833f";
     let key = format!("cursor:{id}");
     let history = upload_row("cursor", id, "test, 1,2", "/w/cursor", false, "not_shared");
+    // The core lists the Cursor session, so Chat keeps it after a refresh.
+    let mut listed = local();
+    listed["sessions"]
+        .as_array_mut()
+        .unwrap()
+        .push(local_session("cursor-cli", id, "test, 1,2", true, Value::Null));
+    case.answer("sessions.list", listed);
     case.app.update_state(|state| {
         state
             .sessions
@@ -1893,7 +1900,8 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
         vec!["---"; 32].join("|"),
         vec!["|"; 16].join("\n")
     );
-    let many_tables = vec![table.clone(); 4].join("\n\n");
+    // More 32×17 tables than Chat's 4000-cell budget holds.
+    let many_tables = vec![table.clone(); 8].join("\n\n");
     let first_page = json!({"entries": [
         {"id":"budget", "role":"assistant", "kind":"text", "text":many_tables, "timestamp_ms":0, "truncated":false},
         {"id": "context", "role": "user", "kind": "context", "text": "Injected system context", "timestamp_ms": 0, "truncated": false},
@@ -1914,7 +1922,8 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     case.sign_in();
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions;
-    named::<gtk::MenuButton>(&page.controls, "session-columns")[0].popup();
+    let columns = named::<gtk::MenuButton>(&page.controls, "session-columns").remove(0);
+    columns.popup();
     let group: gtk::DropDown = named(&page.controls, "session-grouping").remove(0);
     group.set_selected(1);
     let before = page.row_keys();
@@ -1939,6 +1948,8 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     let expand: gtk::Button = named(&page.list, "session-group Codex").remove(0);
     expand.emit_clicked();
     assert_eq!(page.row_keys(), before);
+    // The menu closes before a row is opened, as a click outside it does.
+    columns.popdown();
     let open: gtk::Button = named(&page.list, "open-session codex:one").remove(0);
     open.emit_clicked();
     // A row opens Chat on its agent: the conversation, and the session's
@@ -2009,8 +2020,8 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     let grids = widgets::<gtk::Grid>(messages);
     assert_eq!(
         grids.len(),
-        4,
-        "One ordinary table and three bounded grids from the multi-table message"
+        8,
+        "One ordinary table and seven bounded grids from the multi-table message"
     );
     let cell_count: usize = grids
         .iter()
@@ -2018,7 +2029,7 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
         .sum();
     assert_eq!(
         cell_count,
-        4 + 1632,
+        4 + 7 * 544,
         "The rendered conversation must share its budget across tables, entries and pages"
     );
     assert_eq!(
@@ -2047,10 +2058,11 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     assert!(labels(&group).contains(&"All tests passed".into()));
     assert_eq!(case.called("sessions.transcript")[0]["session_id"], "one");
     assert!(case.called("uploader.sessions.include").is_empty());
-    assert_eq!(
-        case.called("sessions.transcript")[1]["cursor"],
-        json!({"id":3,"ts_ms":3})
-    );
+    // The second page is read from where the first ended.
+    assert!(case
+        .called("sessions.transcript")
+        .iter()
+        .any(|read| read["session_id"] == "one" && read["cursor"] == json!({"id":3,"ts_ms":3})));
     shell.sessions_button.emit_clicked();
     assert_eq!(case.app.page(), Page::Sessions);
     assert!(page.table.get_visible());
@@ -2060,7 +2072,12 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     assert!(case.desktop.opened.borrow().is_empty());
     let active: gtk::Button = named(&page.list, "open-session codex:thread-1").remove(0);
     active.emit_clicked();
-    case.pump(|case| case.called("sessions.transcript").len() >= 3);
+    let thread_one = |case: &Case| {
+        case.called("sessions.transcript")
+            .iter()
+            .any(|read| read["session_id"] == "thread-1")
+    };
+    case.pump(thread_one);
     assert!(labels(&page.row("codex:thread-1").unwrap()).contains(&"Indexing".into()));
     assert!(labels(&page.transcript.sidebar).contains(&"Indexing".into()));
     assert!(!labels(&page.transcript.sidebar).contains(&"Upload unavailable".into()));
@@ -2068,15 +2085,11 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
         !page.transcript.save.is_sensitive(),
         "Upload selection waits for the catalog"
     );
-    assert_eq!(
-        case.called("sessions.transcript")[2]["session_id"],
-        "thread-1"
-    );
     assert!(!shell.topbar.get_visible());
     case.pump(|_| labels(messages).contains(&"Last message".into()));
     assert_eq!(
         widgets::<gtk::Grid>(messages).len(),
-        4,
+        8,
         "Selecting a new conversation resets the table budget"
     );
     shell.sessions_button.emit_clicked();
