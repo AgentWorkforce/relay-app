@@ -51,7 +51,11 @@ jobs:
   upload:
     if: ${{ !inputs.inventory_only }}
     name: Archive and upload iOS
-    runs-on: macos-26
+    # xcode-27 is a GitHub-hosted image label, not a self-hosted one. The image
+    # carries Xcode 27; DEVELOPER_DIR below chooses the exact Xcode.
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,9 +64,12 @@ jobs:
 
       - name: Require current iOS SDK
         run: |
+          if [ ! -d "$DEVELOPER_DIR" ]; then echo "::error::$DEVELOPER_DIR is not on this runner image"; exit 1; fi
+          xcodebuild -version
           sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
-          if [ "${sdk_version%%.*}" -lt 26 ]; then
-            echo "::error::iOS 26 SDK or newer is required for App Store Connect uploads; found $sdk_version"
+          echo "iphoneos SDK $sdk_version"
+          if [ "${sdk_version%%.*}" -lt 27 ]; then
+            echo "::error::iOS 27 SDK or newer is required for App Store Connect uploads; found $sdk_version"
             exit 1
           fi
 
