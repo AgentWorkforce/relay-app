@@ -805,6 +805,19 @@ the bridge socket is for UIs, the relay-send socket for sessions
   session's identity, and a lock file's recorded pid counts only while that
   pid still holds the lock. A process inside no supported session is
   `not_a_relay_session`; another user's is `not_this_user`.
+- **Kept messages.** `GET /messages?ref=…` (the probe's `read`) answers a
+  kept message's text and its `framing`. The framing is proven by a seal
+  under a key the core holds only in memory. A kept message framed as the
+  owner's, a leader's or a delegate's whose seal does not verify (kept
+  before the core restarted) is read again from Relaycast as the session's
+  own agent, only at the origin its registration recorded (never a loopback
+  one in a release build), and the text is rebuilt from the server's copy
+  as delivery builds it, with the framing its sender gives. A delegate's
+  approval is attested by Agent Relay Cloud again only while the delivery
+  is unacknowledged. A failed read, a timeout (10 s for the whole re-check)
+  or another message id answers a peer's framing, with the framing line
+  taken out of the kept text. Nothing of the kept file but its message id
+  is used for the rebuilt text.
 - **Send tokens.** With the person-only setting `session_send_tokens` on
   (off by default; no desktop app row yet), the core gives each registered
   session a random token, kept in memory only and new on every core start
@@ -1195,7 +1208,8 @@ upstream request and is deleted once the SDK has it.
 | `POST /v1/messages/{id}/replies` | `at_` | `AgentClient::reply` |
 | `GET /v1/dm/conversations` | `at_` | `AgentClient::dm_conversations` — **gap**: participants are flattened to names, losing the immutable `agent_id` exact-address proof needs (`sdk_gaps::dm_conversations`) |
 | `GET /v1/dm/{id}/messages` | `at_` | `AgentClient::dm_messages` — **gap**: `MessageWithMeta` has no `agent_address` or `thread_id` (`sdk_gaps::dm_messages`) |
-| `GET /v1/messages/{id}` | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`) |
+| `GET /v1/messages/{id}` | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`); also the kept-message re-check (see **Kept messages**) |
+| `GET /v1/deliveries/by-message/{id}` | `at_` | **gap**: no method (`sdk_gaps::delivery_by_message`); the kept-message re-check's proof of a delegate's approval |
 | `GET /v1/workspace` | `rk_` | `RelayCast::workspace_info` |
 
 Every gap is still a call through the SDK's own `HttpClient` (auth,

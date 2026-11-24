@@ -735,9 +735,12 @@ before reading it, the desktop requires server history to attribute the exact
 immutable `agent_address` to the same immutable `agent_id` listed as that 1:1
 conversation's participant. Missing evidence, a released/reused name, or a
 different machine generation fails closed instead of exposing another
-endpoint's history. The clients search the complete visible conversation list
-and page backward through a candidate's history, so an older proof does not
-expire merely because 50 newer messages were sent. A first outbound message
+endpoint's history. The clients search the visible conversations that list
+an agent with the address's name or the agent id the address carries (only
+those can hold its proof), and page backward through a candidate's history,
+so an older proof does not expire merely because 50 newer messages were
+sent. An agent you never wrote to is answered without reading any
+conversation. A first outbound message
 alone cannot prove which immutable recipient accepted it—the send receipt does
 not contain the recipient id—so exact-address history stays closed until a
 recipient-authored history row supplies that proof. A proof miss is cached
@@ -936,10 +939,19 @@ owner's note instead (`message_pointer::OWNER_READ_NOTE`; see
 
 Without the probe, the same route answers on the socket:
 `curl -s --unix-socket <socket> 'http://relay/messages?ref=<ref>'`.
-`GET /messages?ref=<12 hex>` answers `{"message_id","ref","text"}` only to the
+`GET /messages?ref=<12 hex>` answers `{"message_id","ref","text","framing"}` (`framing` is `peer`, `owner`, `owner_authority`, `leader` or `delegate`) only to the
 session the message was handed to; another session, an unknown reference or
 an expired message gets `message_not_found` (404), and a reference that is not
 12 hex digits `invalid_ref` (400).
+A kept message framed as the owner's, a leader's or a delegate's whose seal
+this core cannot prove, because it was kept before the core restarted, is
+read again from Relaycast (`GET /v1/messages/{id}`, and for a delegate's
+approval `GET /v1/deliveries/by-message/{id}`) with the session's own agent
+token, only at the origin its registration recorded. The answer is then the
+text delivery builds from the server's copy, with the framing its sender
+gives. If Relaycast cannot be reached, refuses, takes over 10 seconds or
+answers another message, the kept text is shown as a peer's message. A
+peer's message is never read again.
 
 The full text is written to `<app data>/delivered-messages/` before the
 pointer is handed over, so a message is never acknowledged without it, and

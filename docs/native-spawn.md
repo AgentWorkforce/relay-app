@@ -129,8 +129,12 @@ because the requester asks. Everything else is unchanged:
   `PEER_NOTE` and `PEER_AUTHORITY_NOTE`). A spawned Claude's peer inbox, and any terminal pointer, end
   `read` with the owner's note (`message_pointer::OWNER_READ_NOTE` in
   place of `READ_NOTE`) only for a message this core kept and sealed with
-  that framing; any other kept file, including one kept before the core
-  restarted, reads as a peer's message with its framing line removed. Muse keeps the line under the attribution, above its
+  that framing. A kept message whose framing the seal cannot prove, such as
+  one kept before the core restarted, is read again from Relaycast as the
+  session's own agent, at its registration's own origin, and shown as
+  delivery builds it from the server's copy, with the framing its sender
+  gives; if that read fails or takes over 10 seconds, or for any other kept
+  file, it reads as a peer's message with its framing line removed. Muse keeps the line under the attribution, above its
   request. OpenCode, Grok and Devin are prompted with the text as it is when
   **Native input from the spawning agent** is off.
 - The requester cannot answer approvals; only the verified machine owner can
@@ -759,7 +763,10 @@ rather than a terminal. Adapter: `probe/src/relay/harness/grok.rs`.
   refused with `spawn_harness_unavailable: Grok here is version 1.0.24, older
   than 1.0.46, the first that spawned Grok agents run on. Update it with
   `grok update`, then try again.` A Grok whose file name carries no version
-  is offered; a launch it cannot do fails with the reason.
+  is offered; a launch it cannot do fails with the reason. A spawn is also
+  refused as unavailable when Grok's resolved executable is not one the
+  session socket would recognise as a Grok leader: it must be named `grok`
+  or `grok-…`, owned by the user or root, and writable by no one else.
 - **Launch.** Each spawned Grok gets a leader of its own:
   `grok agent leader --no-exit-on-disconnect --no-auto-update
   --relay-on-demand --leader-socket <socket>`, in the agent's folder, with the
