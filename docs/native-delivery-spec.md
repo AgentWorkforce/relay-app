@@ -93,7 +93,10 @@ directly.
   desktop app, `'cli'` a terminal, `'exec'` a headless run.
 - **Which binary:** prefer the one inside the desktop app
   (`/Applications/ChatGPT.app/Contents/Resources/codex`) — it is the build that
-  reads the queue for app threads — then the user's CLI. Check
+  reads the queue for app threads — then the user's CLI. On macOS and Linux
+  the CLI search covers mise's installs (its `codex` tool and its npm backend,
+  in `MISE_DATA_DIR`, `$XDG_DATA_HOME/mise` or `~/.local/share/mise`) and
+  Node versions, never mise's shims; `RELAY_DESKTOP_CODEX` still wins. Check
   `codex queue --help` exits 0 before using a binary; older builds lack it.
 - **Thread ids must be UUIDs.** `--thread` also matches session *names*; never
   let an externally supplied value be matched that way.

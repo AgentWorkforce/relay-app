@@ -128,7 +128,9 @@ because the requester asks. Everything else is unchanged:
   turn carries a developer note to match (`compact::OWNER_NOTE` in place of
   `PEER_NOTE` and `PEER_AUTHORITY_NOTE`). A spawned Claude's peer inbox, and any terminal pointer, end
   `read` with the owner's note (`message_pointer::OWNER_READ_NOTE` in
-  place of `READ_NOTE`). Muse keeps the line under the attribution, above its
+  place of `READ_NOTE`) only for a message this core kept and sealed with
+  that framing; any other kept file, including one kept before the core
+  restarted, reads as a peer's message with its framing line removed. Muse keeps the line under the attribution, above its
   request. OpenCode, Grok and Devin are prompted with the text as it is when
   **Native input from the spawning agent** is off.
 - The requester cannot answer approvals; only the verified machine owner can
@@ -1190,6 +1192,40 @@ agent it did not ask for.
 read only and absent until a list has been read. The desktop apps do not
 show the list yet; it is the same on macOS, Linux and Windows. The core's
 own description is in relay's `crates/relay-node/docs/relay-core.md`.
+
+### Approvals from the owner's delegates
+
+In Agent Relay Cloud an owner can name agents as delegates that relay the
+owner's approval for named actions. Nothing changes until a delegate is
+named in Cloud. With the default (`code_owners`) that can be this computer's
+owner or a code owner of the action's target, so a code owner's delegate is
+accepted for actions on that target without this computer's owner naming
+anyone; `own_owner` limits it to the owner's own delegates. The desktop apps
+and their CLI have no way to name one.
+
+- A delegate's message whose approval Agent Relay Cloud attests, checked
+  against keys the build's site publishes, carries a `[delegate approval: …]`
+  line under its attribution that names the exact actions and how long they
+  hold; the agent redeems each action through the session socket
+  (`POST /delegation/redeem`) right before it takes it. Anything that fails a
+  check, or a computer that is signed out or gate-only, delivers the message
+  as an ordinary peer's.
+- **Approvals from the owner's delegates** (`spawn_delegate_approvals`, on
+  unless the person turns it off) lets a delegate of the signed-in owner
+  answer `approve <ref>` or `deny <ref>` in a 1:1 direct message for a
+  spawned session's open approval request, once Cloud attests that exact
+  answer. Choices, forms, `AskUserQuestion` and local verification stay with
+  the owner, and the session's own agent, its spawning agent and a session
+  that was taken over never count. An approvable request's approval DM also
+  goes to each delegate Cloud names for the session.
+- `delegated_approvals_from` (`off`, `own_owner` or `code_owners`, default
+  `code_owners`) says whose delegates this computer's sessions accept; with
+  `off` the core never asks Cloud.
+- Both settings are person-only to widen (an agent can only narrow them),
+  appear in `settings.get`/`settings.set`, and are unavailable on gate-only
+  installs. The desktop apps have no row for them yet; the behaviour is the
+  same on macOS, Linux and Windows. The core's own description is in relay's
+  `crates/relay-node/docs/relay-core.md`.
 
 ### Approvals from the spawning agent
 
