@@ -14,10 +14,10 @@ use super::super::transcript::{entry_view, is_tool, tool_group_label};
 use super::super::widgets::{self, clear, hbox, text, vbox, LabelStyle};
 use super::sources::{entry_source, read_page, DIRECT};
 use crate::models::{
-    chat_pasted_images, chat_relay_incoming, chat_relay_marker, chat_relay_outgoing,
-    chat_relay_sent_marker, chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent,
-    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_EARLIER, CHAT_JUMP_LATEST, CHAT_LOADING,
-    CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
+    chat_attached_images, chat_pasted_images, chat_relay_incoming, chat_relay_marker,
+    chat_relay_outgoing, chat_relay_sent_marker, chat_turn_open, chat_user_text,
+    transcript_entry_visible, ChatAgent, ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_EARLIER,
+    CHAT_JUMP_LATEST, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
 };
 use agent_relay_node::relay::contract::transcript::{LocalTranscriptCursor, LocalTranscriptEntry};
 use gtk::{glib, prelude::*};
@@ -323,7 +323,9 @@ impl Thread {
             });
         }
         let (sender, body) = chat_user_text(&entry.text);
-        let (body, images) = chat_pasted_images(&body);
+        let (body, mut images) = chat_pasted_images(&body);
+        let (body, attached) = chat_attached_images(&body, &attachments_dir());
+        images.extend(attached);
         if body.trim().is_empty() && images.is_empty() {
             return None;
         }
@@ -376,11 +378,12 @@ impl Thread {
                 .sender
                 .as_ref()
                 .map_or_else(|| person.to_string(), |sender| format!("@{sender}"));
+            let (body, images) = chat_attached_images(&incoming.body, &attachments_dir());
             (
                 format!("in:{}", incoming.body.trim()),
                 Turn {
-                    images: Vec::new(),
-                    entry: message(entry, "user", incoming.body),
+                    images,
+                    entry: message(entry, "user", body),
                     author,
                     relay: Some(chat_relay_marker(incoming.sender.as_deref())),
                     from_person: false,
@@ -519,4 +522,12 @@ fn relay_turn(widget: &gtk::Widget, marker: &str) -> gtk::Box {
     turn.append(&mark);
     turn.append(widget);
     turn
+}
+
+/// Where the core saves the files messages come with: `attachments` in its
+/// data directory, the same on every platform as the core's own default.
+fn attachments_dir() -> std::path::PathBuf {
+    let env = |key: &str| std::env::var(key).ok();
+    let home = agent_relay_node::platform::home_dir().unwrap_or_default();
+    agent_relay_node::relay::app_store::default_data_dir(&env, &home).join("attachments")
 }

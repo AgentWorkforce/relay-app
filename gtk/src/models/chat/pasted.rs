@@ -68,6 +68,56 @@ fn without_marks(text: &str) -> String {
     out
 }
 
+/// The images a relayed message came with, and `text` without the lines
+/// that name them. The core saves each file it receives into `saved` and
+/// lists it under `Attachments:` as `- <name> (image/<type>, <size>) saved
+/// to <path>`. The block is plain message text anyone can type, so only a
+/// path inside `saved` is drawn; any other line stays text, and so does a
+/// file that was not saved here.
+pub fn chat_attached_images(text: &str, saved: &std::path::Path) -> (String, Vec<String>) {
+    const HEADER: &str = "Attachments:";
+    let Some(at) = text.find(HEADER) else {
+        return (text.to_string(), Vec::new());
+    };
+    let mut images = Vec::new();
+    let mut kept = Vec::new();
+    for line in text[at + HEADER.len()..].lines() {
+        match attached_image(line, saved) {
+            Some(path) => images.push(path),
+            None => kept.push(line),
+        }
+    }
+    if images.is_empty() {
+        return (text.to_string(), images);
+    }
+    let rest = kept.join("\n");
+    let mut out = text[..at].trim_end().to_string();
+    if !rest.trim().is_empty() {
+        out.push_str("\n");
+        out.push_str(HEADER);
+        out.push_str(&rest);
+    }
+    (out.trim().to_string(), images)
+}
+
+/// The saved image `line` names, when it is one inside `saved`.
+fn attached_image(line: &str, saved: &std::path::Path) -> Option<String> {
+    const SAVED: &str = ") saved to ";
+    let line = line.trim().strip_prefix("- ")?;
+    let (described, path) = line.rsplit_once(SAVED)?;
+    let kind = described.rsplit_once(" (")?.1;
+    let image = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+        .iter()
+        .any(|mime| kind.starts_with(&format!("{mime},")));
+    let path = std::path::Path::new(path.trim());
+    let inside = path.is_absolute()
+        && path.starts_with(saved)
+        && !path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
+    (image && inside).then(|| path.display().to_string())
+}
+
 /// The lines that carry `files` in a message to an agent on this computer,
 /// which can open them where they are: an image as Claude Code records a
 /// pasted one (`[Image: source: <path>]`, drawn inline here), anything else
@@ -105,6 +155,36 @@ mod tests {
             chat_pasted_images(&lines).1,
             vec!["/tmp/a/shot.PNG".to_string()]
         );
+    }
+
+    #[test]
+    fn a_saved_attachment_is_drawn_and_its_line_goes() {
+        let saved = std::path::Path::new("/data/attachments");
+        let text = "look at this\n\nAttachments:\n- Screenshot 21.38.png (image/png, 352.8 KB) saved to /data/attachments/250858/Screenshot 21.38.png";
+        let (body, images) = chat_attached_images(text, saved);
+        assert_eq!(body, "look at this");
+        assert_eq!(images, ["/data/attachments/250858/Screenshot 21.38.png"]);
+        // What is not a saved image here stays text.
+        for line in [
+            "- notes.txt (text/plain, 1 KB) saved to /data/attachments/1/notes.txt",
+            "- x.png (image/png, 1 KB) saved to /home/me/.ssh/x.png",
+            "- x.png (image/png, 1 KB) saved to /data/attachments/../secret.png",
+            "- x.png (image/png, 1 KB) file f1 (not downloaded: too big); fetch with: …",
+        ] {
+            let text = format!("hi\nAttachments:\n{line}");
+            assert_eq!(
+                chat_attached_images(&text, saved),
+                (text.clone(), Vec::new())
+            );
+        }
+        // An image among other files: the others stay listed.
+        let text = "Attachments:\n- a.png (image/png, 1 KB) saved to /data/attachments/1/a.png\n- b.txt (text/plain, 1 KB) saved to /data/attachments/2/b.txt";
+        let (body, images) = chat_attached_images(text, saved);
+        assert_eq!(
+            body,
+            "Attachments:\n- b.txt (text/plain, 1 KB) saved to /data/attachments/2/b.txt"
+        );
+        assert_eq!(images.len(), 1);
     }
 
     #[test]
