@@ -431,6 +431,7 @@ private enum SecureStore {
                 resetPeople()
                 resetRowSummaries()
                 resetSessionEvents()
+                attachmentImages.clear()
             }
         }
     }
@@ -560,6 +561,8 @@ private enum SecureStore {
     /// Changes whenever the signed-in identity does, so file work started for
     /// one account or workspace is dropped instead of landing in the next.
     @Published private(set) var sessionGeneration = 0
+    /// Posted pictures in memory, cleared with every new identity session.
+    let attachmentImages = AttachmentImageStore()
     private var lastScreenCapture = Date.distantPast
     private let cloud = "https://agentrelay.com/cloud/api/v1"
     private let defaultRelaycast = "https://cast.agentrelay.com"
@@ -2150,6 +2153,7 @@ private enum SecureStore {
     /// even when the workspace id stays the same.
     func advanceSessionGeneration() {
         sessionGeneration += 1
+        attachmentImages.clear()
         resetSessionEvents()
     }
 

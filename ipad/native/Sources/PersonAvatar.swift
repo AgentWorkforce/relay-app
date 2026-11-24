@@ -31,6 +31,17 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
     private var buffer = Data()
     private var acceptedResponse = false
     private var finished = false
+    /// The largest body accepted, declared or received.
+    private let maximumBytes: Int
+    /// Whether the response must say it is an image. Off for posted files,
+    /// whose storage may not name the type; decoding decides there.
+    private let requiresImageType: Bool
+
+    init(maximumBytes: Int = PersonPhotoLoader.maximumBytes, requiresImageType: Bool = true) {
+        self.maximumBytes = maximumBytes
+        self.requiresImageType = requiresImageType
+        super.init()
+    }
 
     func data(from url: URL, configuration: URLSessionConfiguration) async -> Data? {
         await withTaskCancellationHandler {
@@ -84,8 +95,8 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
         if let http = response as? HTTPURLResponse, let url = http.url {
             valid = (200..<300).contains(http.statusCode) &&
                 PersonPhotoURL.parse(url.absoluteString) != nil &&
-                http.mimeType?.hasPrefix("image/") == true &&
-                http.expectedContentLength <= Int64(PersonPhotoLoader.maximumBytes)
+                (!requiresImageType || http.mimeType?.hasPrefix("image/") == true) &&
+                http.expectedContentLength <= Int64(maximumBytes)
         } else {
             valid = false
         }
@@ -101,7 +112,7 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lock.lock()
         guard !finished else { lock.unlock(); return }
-        guard acceptedResponse, data.count <= PersonPhotoLoader.maximumBytes - buffer.count else {
+        guard acceptedResponse, data.count <= maximumBytes - buffer.count else {
             acceptedResponse = false
             lock.unlock()
             finish(acceptData: false)
