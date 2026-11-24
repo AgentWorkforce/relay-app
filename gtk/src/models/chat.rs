@@ -198,6 +198,8 @@ pub const CHAT_CLOUD: &str = "Cloud";
 pub const CHAT_ELSEWHERE_SECTION: &str = "Agents elsewhere";
 /// Above a long conversation's newest messages.
 pub const CHAT_EARLIER: &str = "Show earlier messages";
+/// The arrow over a conversation scrolled away from its end.
+pub const CHAT_JUMP_LATEST: &str = "Jump to the latest messages";
 /// The head of the Chat list: agents with messages you have not opened.
 pub const CHAT_UNREAD_SECTION: &str = "New messages";
 /// The rest of the list, under the agents with new messages.

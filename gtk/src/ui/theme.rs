@@ -270,6 +270,7 @@ label.chat-message-placeholder { font-size: 15px; margin-top: 6px; }
 .chat-attachment { background-color: $panel_alt; border: 1px solid $border; border-radius: 6px; padding: 2px 4px 2px 8px; }
 picture.chat-inline-image { border-radius: 8px; border: 1px solid $border; }
 .chat-details { background-color: $panel; padding: 18px 20px; }
+button.chat-jump { border-radius: 999px; min-width: 36px; min-height: 36px; padding: 0; background-color: $card; border: 1px solid $border; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
 label.chat-unread { background-color: $accent; color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 700; min-width: 8px; }
 .relay-turn { border-left: 3px solid $accent; padding-left: 10px; }
 label.relay-marker { font-size: 11px; font-weight: 600; color: $accent; }

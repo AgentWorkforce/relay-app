@@ -16,8 +16,8 @@ use super::sources::{entry_source, read_page, DIRECT};
 use crate::models::{
     chat_pasted_images, chat_relay_incoming, chat_relay_marker, chat_relay_outgoing,
     chat_relay_sent_marker, chat_turn_open, chat_user_text, transcript_entry_visible, ChatAgent,
-    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_EARLIER, CHAT_LOADING, CHAT_NO_MESSAGES,
-    CHAT_SENDING, CHAT_WORKING,
+    ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_EARLIER, CHAT_JUMP_LATEST, CHAT_LOADING,
+    CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
 };
 use agent_relay_node::relay::contract::transcript::{LocalTranscriptCursor, LocalTranscriptEntry};
 use gtk::{glib, prelude::*};
@@ -27,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 mod earlier;
+mod jump;
 mod reading;
 
 /// How often the conversation shown is read for what was written since.
@@ -55,6 +56,9 @@ const SAME_MESSAGE_MS: i64 = 600_000;
 const MAX_PAGES: usize = 200;
 
 pub struct Thread {
+    /// The conversation as placed on the page: its scroll, with the arrow
+    /// back to the end over it (`jump.rs`).
+    pub view: gtk::Overlay,
     /// Shows the entries before those drawn (`earlier.rs`).
     pub earlier: gtk::Button,
     /// The pages read so far when a conversation opens, drawn at the end.
@@ -125,7 +129,9 @@ impl Thread {
         let scroll = widgets::scrolled(&holder);
         scroll.set_vexpand(true);
         scroll.set_hexpand(true);
+        let view = jump::overlay(&scroll);
         Thread {
+            view,
             scroll,
             earlier,
             loading: RefCell::default(),

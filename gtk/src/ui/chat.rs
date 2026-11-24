@@ -179,7 +179,7 @@ impl ChatPage {
         body.append(&controls.root);
         view.append(&body);
         let thread = Thread::build();
-        conversation.append(&thread.scroll);
+        conversation.append(&thread.view);
 
         let composer = composer::Composer::build();
         conversation.append(&composer.dock);
