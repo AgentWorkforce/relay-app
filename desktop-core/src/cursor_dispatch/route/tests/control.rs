@@ -227,9 +227,23 @@ async fn the_verifier_refuses_what_cloud_refuses() {
         verify(&other_tool, &registered, now()),
         Err("tool mismatch")
     );
-    assert_eq!(verify(&body, &registered, now() + 61), Err("expired"));
+    // The bounds come from the signed claims, not from a second clock read.
+    let proof = request["params"]["arguments"][FIELD].as_str().unwrap();
+    let claims: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(proof.split('.').nth(1).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let (iat, exp) = (
+        claims["iat"].as_i64().unwrap(),
+        claims["exp"].as_i64().unwrap(),
+    );
+    assert_eq!(verify(&body, &registered, exp), Ok(sid()));
+    assert_eq!(verify(&body, &registered, exp + 1), Err("expired"));
+    assert_eq!(verify(&body, &registered, iat - MAX_FUTURE_SKEW), Ok(sid()));
     assert_eq!(
-        verify(&body, &registered, now() - 31),
+        verify(&body, &registered, iat - MAX_FUTURE_SKEW - 1),
         Err("issued in the future")
     );
     let elsewhere = Registered {
