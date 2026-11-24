@@ -4,11 +4,21 @@
 //! Claude Code caches `headersHelper` output per MCP connection, so the
 //! hosted server cannot tell which chat makes a call from its headers. Agent
 //! Relay's PreToolUse hook (`claude-attestation-hook`) runs for every
-//! hosted Agent Relay tool call, asks the core for a proof over the session
-//! socket, and adds it to the call's arguments as
-//! `_agent_relay_attestation`, overwriting any value already there. Cloud
-//! verifies the proof against the key this installation registered through
-//! the desktop identity sync.
+//! hosted Agent Relay tool call. For a tool that acts as the chat
+//! ([`needs_proof`]) it asks the core for a proof over the session socket.
+//!
+//! When Cloud advertises `claude_attestation_handoff`, the core hands the
+//! proof to Cloud before the hook returns, keyed by Claude's `tool_use_id`
+//! ([`HANDOFF_PATH`]), and the hook leaves the call exactly as Claude made
+//! it. Cloud matches the proof to the call by
+//! `params._meta["claudecode/toolUseId"]`, which Claude Code sets and the
+//! model cannot. Claude Code's auto mode refuses any call whose input a hook
+//! changed, so the hook must not rewrite one.
+//!
+//! An older Cloud without the handoff gets the proof in the call's arguments
+//! as `_agent_relay_attestation` instead, overwriting any value already
+//! there. Either way Cloud verifies it against the key this installation
+//! registered through the desktop identity sync.
 //!
 //! The proof is a compact JWS (`alg: EdDSA`) signed with one Ed25519 key per
 //! installation, kept private in the app data directory and never logged:
@@ -54,6 +64,34 @@ const PROFILE_ID_MAX: usize = 20;
 pub const ROUTE: &str = "/claude/attestation";
 /// Longest `tool_use_id` signed.
 const TOOL_USE_ID_MAX: usize = 256;
+/// Cloud's handoff route under the account workspace's messaging API:
+/// `POST {"attestation": "<compact JWS>"}`, 204 once stored.
+pub const HANDOFF_PATH: &str = "messaging/desktop-identities/attestations";
+
+/// Hosted tools that never act as the chat: Cloud answers them the same
+/// with or without a proof (its `RELAY_IDENTITY_FREE_TOOLS`, shared-session
+/// reads, team activity and screens in `tool-catalog.ts`). They are not
+/// signed, so they cost no round trip. Any tool not named here is signed,
+/// so a tool Cloud adds later keeps its chat identity.
+const IDENTITY_FREE_TOOLS: &[&str] = &[
+    "list_relay_agents",
+    "get_relay_agent_card",
+    "open_shared_sessions",
+    "search_shared_sessions",
+    "get_shared_session",
+    "get_shared_session_context",
+    "list_session_timings",
+    "list_session_summaries",
+    "get_session_summary",
+    "list_team_activity",
+    "show_ui",
+    "show_ui_guide",
+];
+
+/// Whether a hosted tool acts as the chat, and so is signed.
+pub fn needs_proof(tool: &str) -> bool {
+    !IDENTITY_FREE_TOOLS.contains(&tool)
+}
 
 pub mod hook;
 
@@ -286,9 +324,13 @@ pub fn valid_tool_use_id(id: &str) -> bool {
 }
 
 /// What the hook sends the core for Claude's PreToolUse input, or `None`
-/// when the input is not a PreToolUse call to an object of arguments.
+/// when the input is not a PreToolUse call to an object of arguments, or
+/// calls a tool that never acts as the chat ([`needs_proof`]).
 pub fn hook_request(input: &Value) -> Option<Value> {
     if input["hook_event_name"] != "PreToolUse" || !input["tool_input"].is_object() {
+        return None;
+    }
+    if !hook_tool(input["tool_name"].as_str()?).is_some_and(needs_proof) {
         return None;
     }
     let mut request = json!({
@@ -315,9 +357,10 @@ pub fn hook_request(input: &Value) -> Option<Value> {
     Some(request)
 }
 
-/// Claude's PreToolUse output: the call's own arguments with the proof
-/// added, replacing any value already there. Permission is left to the
-/// person's own settings.
+/// Claude's PreToolUse output for a Cloud without the handoff: the call's
+/// own arguments with the proof added, replacing any value already there.
+/// Permission is left to the person's own settings. Auto mode refuses a call
+/// changed this way, which is why the handoff replaces it.
 pub fn hook_output(input: &Value, attestation: &str) -> Option<Value> {
     let mut arguments = input["tool_input"].as_object()?.clone();
     arguments.insert(FIELD.into(), Value::String(attestation.into()));

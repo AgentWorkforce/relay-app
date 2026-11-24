@@ -1465,8 +1465,8 @@ Codex and Claude Code use native header helpers. Grok, OpenCode, Devin, Muse,
 Pi, OpenClaw and Hermes use app-bound credentials for global installation.
 
 Claude Code also gets a PreToolUse hook (`agent-relay-probe
-claude-attestation-hook`) that adds a per-call chat proof to each hosted tool
-call; see [hosted MCP runtime and native chat
+claude-attestation-hook`) that proves which chat makes each hosted tool call
+that acts as the chat, without changing the call; see [hosted MCP runtime and native chat
 identity](hosted-mcp-runtime.md#claude-code-chat-identity).
 Existing clients need an MCP reload or a new session to load changed configuration.
 The hosted endpoint and toolset remain unchanged.

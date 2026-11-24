@@ -72,9 +72,13 @@ bundled in a plugin. Install, repair and uninstall add and remove only this
 group's Agent Relay command; other hooks and settings stay. Claude Code's setup
 reports **Setup needed** until both the MCP entry and the hook are present.
 
-For each call the hook reads Claude's `session_id`, `tool_name` and
-`tool_use_id`, and asks the core over the session socket
-(`POST /claude/attestation`). The core signs only when all of these hold:
+For each call to a tool that acts as the chat, the hook reads Claude's
+`session_id`, `tool_name` and `tool_use_id`, and asks the core over the session
+socket (`POST /claude/attestation`). Tools that never act as the chat are not
+signed and the hook prints nothing for them: directory reads
+(`list_relay_agents`, `get_relay_agent_card`), shared-session reads, team
+activity and screens (`show_ui`, `show_ui_guide`). Any other tool, including
+one Cloud adds later, is signed. The core signs only when all of these hold:
 
 - Cloud advertised `capabilities.claude_session_attestation: 1` for the
   signed-in account and identity-sync generation;
@@ -89,12 +93,32 @@ The proof is a compact JWS (`alg: EdDSA`) with protected header
 the lowercase session UUID, `src` the installation's identity-sync source ID,
 `tuid` Claude's `tool_use_id` (equal to the call's
 `_meta["claudecode/toolUseId"]`), `tool` the name without its `mcp__…__`
-prefix, and `exp` is `iat + 60`. The hook returns
-`hookSpecificOutput.updatedInput`: the call's own arguments with
-`_agent_relay_attestation` set to the proof, replacing any value the model
-supplied. It never sets `permissionDecision`. When the core is unreachable, the
-chat is not registered, or signing fails, the hook prints nothing and exits 0;
-the call proceeds without a proof and Cloud refuses actor operations.
+prefix, and `exp` is `iat + 60`.
+
+How the proof reaches Cloud depends on Cloud:
+
+- **Handoff** (Cloud advertises `capabilities.claude_attestation_handoff: 1`):
+  before answering the hook, the core sends the proof to
+  `POST /workspaces/{workspace}/messaging/desktop-identities/attestations` as
+  `{"attestation": "<proof>"}`, signed in as the person, and waits up to 3
+  seconds for a 2xx. The hook then prints nothing, so the call goes out exactly
+  as Claude made it. Cloud matches the stored proof to the call by
+  `params._meta["claudecode/toolUseId"]`, which Claude Code sets and the model
+  cannot. A native `join_relay` keeps the name the model passed; Cloud accepts
+  it when it is the chat's verified desktop name. A failed or slow handoff is
+  never retried in the arguments: the call goes out unsigned (a join is denied
+  with retry guidance). Claude Code's auto mode refuses any call whose input a
+  hook changed, so with the handoff every hosted tool works in auto mode.
+- **In the arguments** (an older Cloud without the handoff): the hook returns
+  `hookSpecificOutput.updatedInput`, the call's own arguments with
+  `_agent_relay_attestation` set to the proof, replacing any value the model
+  supplied; a native join also drops `name` and `description`. Auto mode
+  refuses these calls.
+
+The hook sets `permissionDecision` only to deny a join it cannot complete. When
+the core is unreachable, the chat is not registered, or signing fails, the hook
+prints nothing and exits 0; the call proceeds without a proof and Cloud refuses
+actor operations.
 
 Each installation has one Ed25519 key, created by the core in
 `claude-attestation-key.json` (mode 0600) under its app data directory. The
