@@ -52,15 +52,42 @@ enum AttachmentPreview {
 /// still running, so a picture of one account never shows in the next.
 /// Nothing is written to disk.
 final class AttachmentImageStore {
-    /// Fetches `url` with no credentials, refusing a body over the byte limit.
-    typealias Fetch = (URL, Int) async -> Data?
+    /// What a download of a posted file gave.
+    enum Download {
+        case data(Data)
+        /// It can never give a picture: the file is over the byte limit
+        /// (declared or received) or the URL is refused.
+        case refused
+        /// Nothing this time (network, server, timeout or cancellation);
+        /// a later try may work.
+        case unavailable
+    }
+
+    /// What `load` gave.
+    enum Load {
+        case image(UIImage)
+        /// No picture this time: the row shows the download button. Only
+        /// a failure that a retry cannot change is remembered (`failed`).
+        case failed
+        /// Canceled, or `clear()` ran while it loaded: not a failure, and
+        /// the row may load again.
+        case dropped
+    }
+
+    /// Fetches `url` with no credentials, refusing a body over the byte
+    /// limit. A thrown error counts as `.unavailable`.
+    typealias Fetch = (URL, Int) async throws -> Download
     /// The short-lived download URL of a file (`RelayClient.downloadURL`).
     typealias Resolve = @MainActor (RelayAttachment) async throws -> URL
 
     private let fetch: Fetch
     private let images = NSCache<NSString, UIImage>()
-    /// Files whose picture could not be made this session: they show the
-    /// download button straight away instead of loading again.
+    /// Files whose picture can never be made, whatever a retry does: the
+    /// data is not an image, the file is over the byte limit, or its URL
+    /// is refused. They show the download button without loading again
+    /// until `clear()`. Resolve, network, server and timeout errors and
+    /// cancellations are not recorded: the row shows the button for that
+    /// try and loads again the next time it appears.
     private var failed: Set<String> = []
     /// Moves on every `clear()`; a load that started before it is dropped.
     private var generation = 0
@@ -76,42 +103,50 @@ final class AttachmentImageStore {
     }
 
     /// Whether the file shows the download button rather than a picture:
-    /// not a picture by `AttachmentPreview.showsPicture`, or its load failed.
+    /// not a picture by `AttachmentPreview.showsPicture`, or its picture
+    /// can never be made (`failed`).
     @MainActor func showsButton(_ attachment: RelayAttachment) -> Bool {
         !AttachmentPreview.showsPicture(attachment) || failed.contains(attachment.id)
     }
 
-    /// The picture of `attachment`, from the cache or loaded now; nil when
-    /// it shows the button, the load fails or was canceled, or `clear()`
-    /// ran meanwhile.
-    @MainActor func load(_ attachment: RelayAttachment, resolve: Resolve) async -> UIImage? {
-        guard !showsButton(attachment) else { return nil }
-        if let image = cached(attachment) { return image }
+    /// The picture of `attachment`, from the cache or loaded now.
+    @MainActor func load(_ attachment: RelayAttachment, resolve: Resolve) async -> Load {
+        guard !showsButton(attachment) else { return .failed }
+        if let image = cached(attachment) { return .image(image) }
         let generation = self.generation
         let url: URL
         do {
             url = try await resolve(attachment)
         } catch {
-            if !(error is CancellationError) { markFailed(attachment, generation) }
-            return nil
+            return interrupted(generation, error) ? .dropped : .failed
         }
-        guard generation == self.generation, !Task.isCancelled else { return nil }
-        let data = await fetch(url, AttachmentPreview.maximumBytes)
-        guard generation == self.generation else { return nil }
-        guard let data, data.count <= AttachmentPreview.maximumBytes else {
-            // A canceled fetch also returns nil; that is not a failure.
-            if !Task.isCancelled { markFailed(attachment, generation) }
-            return nil
+        if interrupted(generation) { return .dropped }
+        let download: Download
+        do {
+            download = try await fetch(url, AttachmentPreview.maximumBytes)
+        } catch {
+            return interrupted(generation, error) ? .dropped : .failed
+        }
+        if interrupted(generation) { return .dropped }
+        let data: Data
+        switch download {
+        case .data(let received) where received.count <= AttachmentPreview.maximumBytes:
+            data = received
+        case .data, .refused:
+            markFailed(attachment)
+            return .failed
+        case .unavailable:
+            return .failed
         }
         let image = await AttachmentPreview.thumbnail(data)
-        guard generation == self.generation else { return nil }
+        if interrupted(generation) { return .dropped }
         guard let image else {
-            markFailed(attachment, generation)
-            return nil
+            markFailed(attachment)
+            return .failed
         }
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
         images.setObject(image, forKey: attachment.id as NSString, cost: cost)
-        return image
+        return .image(image)
     }
 
     /// Forgets every picture and failure and drops loads still running.
@@ -121,16 +156,27 @@ final class AttachmentImageStore {
         failed = []
     }
 
-    @MainActor private func markFailed(_ attachment: RelayAttachment, _ generation: Int) {
-        guard generation == self.generation else { return }
+    /// Whether a load that started at `generation` must stop without a
+    /// result: `clear()` ran, the task was canceled, or `error` is a
+    /// cancellation (Swift's or URLSession's).
+    @MainActor private func interrupted(_ generation: Int, _ error: Error? = nil) -> Bool {
+        if generation != self.generation || Task.isCancelled { return true }
+        guard let error else { return false }
+        return error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
+    /// Called only after `interrupted` said no, so a canceled or dropped
+    /// load is never recorded.
+    @MainActor private func markFailed(_ attachment: RelayAttachment) {
         failed.insert(attachment.id)
     }
 
     /// The download with an ephemeral session: no cookies, credentials,
     /// URL cache or extra headers, and the byte limit enforced on the
     /// declared and the received size.
-    static func download(_ url: URL, maximumBytes: Int) async -> Data? {
-        guard !Task.isCancelled, url.scheme?.lowercased() == "https" else { return nil }
+    static func download(_ url: URL, maximumBytes: Int) async -> Download {
+        guard url.scheme?.lowercased() == "https" else { return .refused }
+        guard !Task.isCancelled else { return .unavailable }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpAdditionalHeaders = nil
         configuration.httpShouldSetCookies = false
@@ -139,7 +185,8 @@ final class AttachmentImageStore {
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 60
-        return await PersonPhotoDownload(maximumBytes: maximumBytes, requiresImageType: false)
-            .data(from: url, configuration: configuration)
+        let request = PersonPhotoDownload(maximumBytes: maximumBytes, requiresImageType: false)
+        if let data = await request.data(from: url, configuration: configuration) { return .data(data) }
+        return request.exceededLimit ? .refused : .unavailable
     }
 }
