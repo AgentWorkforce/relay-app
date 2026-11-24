@@ -1471,6 +1471,22 @@ RelayHistory embedded-image release; the published 0.40.0 capture engine omits
 these bytes. Cloud additionally needs the History image-preservation change and
 transcript renderer deployed before shared copies appear there.
 
+A person's turn that ends in the `Attachments:` block Agent Relay adds to a
+delivered message shows the images that message brought, in the same
+**Attached image** disclosure. The reader takes the last `Attachments:` line
+that starts the text or follows a blank line, and draws a line of its block
+only when the type is PNG, JPEG, GIF or WebP and the path is an absolute
+`<file id>/<name>` under the core's attachments folder (its app data folder,
+from the variable the core starts the reader with, else the default folder)
+with no `..`, still inside that folder once links are resolved, naming a
+regular file of at most 25 MiB. It only checks the file; it never reads or
+copies it. Drawn lines leave the text, and the heading too once none is left;
+the first image goes with the message's text and each further one is its own
+entry, `<event id>:image:<n>`, kept on one page with the message. A block
+followed by a framed message's closing line, a turn over 64 KiB, assistant
+turns, context and the channel form (`Attachments of message <id>:`) are left
+as text.
+
 Session titles include a compact harness · model · reasoning subtitle on both
 platforms, with the full value in a tooltip. A session on the relay leads that
 line with its agent name (`@name`, its newest name once renamed, in the foreground
