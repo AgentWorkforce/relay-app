@@ -14,12 +14,16 @@ struct AttachmentPictureContext {
 /// A posted image drawn as a picture: a placeholder of the picture's size
 /// while it loads, the picture (a tap opens the file), or `fallback` (the
 /// download button) when it cannot be shown. A picture loaded under an
-/// earlier identity session is never drawn.
+/// earlier identity session is never drawn. A load that failed for a
+/// reason a retry may change shows the button and tries again the next
+/// time the row appears; a load dropped by `clear()` tries again at once.
 struct AttachmentPicture<Fallback: View>: View {
     let attachment: RelayAttachment
     let context: AttachmentPictureContext
     @ViewBuilder let fallback: () -> Fallback
     @State private var loaded: (image: UIImage, generation: Int)?
+    /// The session whose last try failed: the button shows until a later
+    /// try (the next appearance) gives the picture.
     @State private var failedGeneration: Int?
 
     private struct LoadKey: Equatable {
@@ -27,24 +31,41 @@ struct AttachmentPicture<Fallback: View>: View {
         let generation: Int
     }
 
+    /// Loads tried in a row while each is dropped, before the button shows.
+    private static var attempts: Int { 3 }
+
     var body: some View {
         Group {
-            if failedGeneration == context.generation || context.store.showsButton(attachment) {
+            if context.store.showsButton(attachment) {
                 fallback()
             } else if let image = shownImage {
                 picture(image)
+            } else if failedGeneration == context.generation {
+                fallback()
             } else {
                 placeholder
             }
         }
         .task(id: LoadKey(fileID: attachment.id, generation: context.generation)) {
             let generation = context.generation
-            guard loaded?.generation != generation, failedGeneration != generation else { return }
-            let image = await context.store.load(attachment, resolve: context.resolve)
-            guard !Task.isCancelled, generation == context.generation else { return }
-            // No picture: it failed, or the store was cleared under it.
-            // Either way the row falls back to the download button.
-            if let image { loaded = (image, generation) } else { failedGeneration = generation }
+            guard loaded?.generation != generation else { return }
+            for _ in 0..<Self.attempts {
+                let result = await context.store.load(attachment, resolve: context.resolve)
+                guard !Task.isCancelled, generation == context.generation else { return }
+                switch result {
+                case .image(let image):
+                    loaded = (image, generation)
+                    failedGeneration = nil
+                    return
+                case .failed:
+                    failedGeneration = generation
+                    return
+                case .dropped:
+                    // The store was cleared under it; not a failure.
+                    continue
+                }
+            }
+            failedGeneration = generation
         }
     }
 

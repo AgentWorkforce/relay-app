@@ -31,6 +31,7 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
     private var buffer = Data()
     private var acceptedResponse = false
     private var finished = false
+    private var overLimit = false
     /// The largest body accepted, declared or received.
     private let maximumBytes: Int
     /// Whether the response must say it is an image. Off for posted files,
@@ -41,6 +42,14 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
         self.maximumBytes = maximumBytes
         self.requiresImageType = requiresImageType
         super.init()
+    }
+
+    /// Whether the download was refused because a successful response
+    /// declared, or sent, more than `maximumBytes`.
+    var exceededLimit: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return overLimit
     }
 
     func data(from url: URL, configuration: URLSessionConfiguration) async -> Data? {
@@ -92,7 +101,9 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         let valid: Bool
+        var tooLarge = false
         if let http = response as? HTTPURLResponse, let url = http.url {
+            tooLarge = (200..<300).contains(http.statusCode) && http.expectedContentLength > Int64(maximumBytes)
             valid = (200..<300).contains(http.statusCode) &&
                 PersonPhotoURL.parse(url.absoluteString) != nil &&
                 (!requiresImageType || http.mimeType?.hasPrefix("image/") == true) &&
@@ -103,6 +114,7 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
         lock.lock()
         let accept = !finished && valid
         acceptedResponse = accept
+        if !finished && tooLarge { overLimit = true }
         lock.unlock()
         // Reject oversized declared bodies before allowing any data callbacks.
         completionHandler(accept ? .allow : .cancel)
@@ -113,6 +125,7 @@ final class PersonPhotoDownload: NSObject, URLSessionDataDelegate, @unchecked Se
         lock.lock()
         guard !finished else { lock.unlock(); return }
         guard acceptedResponse, data.count <= maximumBytes - buffer.count else {
+            if acceptedResponse { overLimit = true }
             acceptedResponse = false
             lock.unlock()
             finish(acceptData: false)
