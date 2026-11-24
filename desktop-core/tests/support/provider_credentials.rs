@@ -242,6 +242,85 @@ async fn legacy_app_login_gets_an_app_signin_action_not_a_per_provider_login() {
     harness.stop().await;
 }
 
+/// A login from before Desktop's consent screen still works for everything
+/// else, so the account looked healthy while every provider asked for a
+/// sign-in. Account health now asks for one too, and signing in again
+/// issues the provider credentials without another provider action.
+#[tokio::test]
+async fn a_login_refused_provider_credentials_asks_the_account_to_sign_in_again() {
+    for reauth_code in [false, true] {
+        let harness = Harness::start_with(|cloud, _| {
+            let mut state = cloud.state.lock().unwrap();
+            state.relaycast_url = Some(cloud.site_url.clone());
+            state.provider_grant_status = 403;
+            state.provider_grant_reauth_code = reauth_code;
+        })
+        .await;
+        let mut client = harness.client().await;
+        client
+            .ok("account.sign_in", json!({"sharing":"new","flow":"device"}))
+            .await;
+        eventually("signed in", || harness.account_state() == "signed_in").await;
+        harness.account.check_auth_health().await;
+        assert_eq!(
+            harness.core.status().account.auth_health.as_deref(),
+            Some("ready")
+        );
+        let report = client
+            .ok("tools.select", json!({"tool_ids":["grok"]}))
+            .await;
+        assert_eq!(
+            tool(&report, "grok")["state"],
+            "signed_out",
+            "{reauth_code}"
+        );
+        assert_eq!(
+            report["account_health"], "sign_in_required",
+            "{reauth_code}"
+        );
+        let account = harness.core.status().account;
+        assert_eq!(account.auth_health.as_deref(), Some("sign_in_required"));
+        assert_eq!(
+            account.auth_error.as_deref(),
+            Some("Sign in again to share your sessions.")
+        );
+        // A later health check keeps saying so while the grant is refused.
+        harness
+            .core
+            .hub()
+            .update(|status| status.account.auth_checked_at = None);
+        harness.account.check_auth_health().await;
+        assert_eq!(
+            harness.core.status().account.auth_health.as_deref(),
+            Some("sign_in_required")
+        );
+
+        // Signing in again (through consent) issues the grant by itself.
+        harness.cloud.state.lock().unwrap().provider_grant_status = 200;
+        client
+            .ok("account.sign_in", json!({"sharing":"new","flow":"device"}))
+            .await;
+        eventually("provider credentials issued", || {
+            !harness
+                .cloud
+                .state
+                .lock()
+                .unwrap()
+                .provider_grants
+                .is_empty()
+        })
+        .await;
+        eventually("account health ready", || {
+            harness.core.status().account.auth_health.as_deref() == Some("ready")
+        })
+        .await;
+        assert_eq!(harness.core.status().account.auth_error, None);
+        let report = client.ok("tools.status", json!({})).await;
+        assert_ne!(tool(&report, "grok")["state"], "signed_out");
+        harness.stop().await;
+    }
+}
+
 #[tokio::test]
 async fn enabling_a_host_installs_detected_providers_before_returning() {
     let harness = Harness::start().await;

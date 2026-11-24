@@ -10,6 +10,29 @@ use crate::mcp_settings::{Binding, Installer};
 use file::{Credentials, Grant};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Why account health asks for a sign-in while the login itself still works.
+pub(super) const PROVIDER_SIGN_IN_AGAIN: &str = "Sign in again to share your sessions.";
+
+/// Account health with a provider's need for a new app login folded in: a
+/// ready login that cannot issue provider credentials needs a sign-in, and
+/// that sign-in requirement (and only it) clears once they issue again.
+pub(super) fn health_with_provider_sign_in(
+    health: Option<&str>,
+    error: Option<&str>,
+    required: bool,
+) -> (Option<String>, Option<String>) {
+    match health {
+        Some("ready") if required => (
+            Some("sign_in_required".into()),
+            Some(PROVIDER_SIGN_IN_AGAIN.into()),
+        ),
+        Some("sign_in_required") if !required && error == Some(PROVIDER_SIGN_IN_AGAIN) => {
+            (Some("ready".into()), None)
+        }
+        _ => (health.map(Into::into), error.map(Into::into)),
+    }
+}
+
 impl Account {
     /// Called before installation and periodically by the daemon. No user token
     /// enters a provider config: only endpoint-scoped, parent-bound child grants.
@@ -18,7 +41,14 @@ impl Account {
         requested: Vec<String>,
         retry_removals: bool,
     ) {
-        let _one = self.provider_credentials.lock().await;
+        {
+            let _one = self.provider_credentials.lock().await;
+            self.refresh_provider_grants(requested, retry_removals).await;
+        }
+        self.sync_provider_sign_in_health();
+    }
+
+    async fn refresh_provider_grants(&self, requested: Vec<String>, retry_removals: bool) {
         let Some(installer) = self.mcp_config.get().cloned() else {
             return;
         };
@@ -106,6 +136,58 @@ impl Account {
             &selected,
             agent_relay_node::relay::state::now_ms(),
         );
+    }
+
+    /// After a sign-in again: issues the grants that waited for a new app
+    /// login now, instead of after their retry delay.
+    pub(super) async fn retry_provider_sign_in(&self) {
+        let (Some(installer), Some((_, binding))) =
+            (self.mcp_config.get().cloned(), self.provider_context())
+        else {
+            return;
+        };
+        let selected = installer.provider_ids();
+        let waiting: Vec<String> = Credentials::load(&self.provider_credentials_path(), &binding)
+            .map(|saved| {
+                saved
+                    .grants
+                    .into_iter()
+                    .filter(|(id, grant)| grant.needs_app_login && selected.contains(id))
+                    .map(|(id, _)| id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !waiting.is_empty() {
+            self.refresh_provider_credentials(waiting, false).await;
+        }
+    }
+
+    /// Account health says a sign-in is needed while Cloud refuses this
+    /// login for provider credentials (a login from before the Desktop
+    /// consent screen), so the Account page offers Sign in again instead of
+    /// showing a healthy connection; and returns to ready once it is fixed.
+    pub(super) fn sync_provider_sign_in_health(&self) {
+        // Read before updating: the status lock is held inside `update`.
+        let required = self.provider_sign_in_required();
+        let status = self.status();
+        let next = health_with_provider_sign_in(
+            status.auth_health.as_deref(),
+            status.auth_error.as_deref(),
+            required,
+        );
+        if status.state != SignInState::SignedIn || next == (status.auth_health, status.auth_error)
+        {
+            return;
+        }
+        self.update(|status| {
+            if status.state == SignInState::SignedIn {
+                (status.auth_health, status.auth_error) = health_with_provider_sign_in(
+                    status.auth_health.as_deref(),
+                    status.auth_error.as_deref(),
+                    required,
+                );
+            }
+        });
     }
 
     /// A selected provider's grant needs a new app login (an older login

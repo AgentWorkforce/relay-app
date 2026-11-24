@@ -170,3 +170,79 @@ fn provider_login_requirement_is_pinned_to_its_account() {
     installer.set_provider_login_required(&pinned, Vec::new());
     assert!(!installer.provider_login_required(&pinned));
 }
+
+#[test]
+fn desktop_reauth_refusals_ask_for_a_new_app_login() {
+    use remote::{refusal, Change};
+    let message = "An Agent Relay app login is required.";
+    for body in [
+        json!({"error": message}),
+        json!({"error": message, "error_code": "desktop_reauth_required"}),
+        json!({"error": "Sign in again.", "error_code": "desktop_reauth_required"}),
+    ] {
+        for has_id in [false, true] {
+            assert!(
+                matches!(refusal(403, &body, has_id), Some(Change::SignInRequired)),
+                "{body}"
+            );
+        }
+    }
+    // Any other refusal keeps today's meaning.
+    for body in [
+        json!({"error": "Forbidden"}),
+        json!({"error": "Forbidden", "error_code": "workspace_forbidden"}),
+        json!({}),
+    ] {
+        assert!(
+            matches!(refusal(403, &body, true), Some(Change::Rejected)),
+            "{body}"
+        );
+    }
+    let reauth = json!({"error": message, "error_code": "desktop_reauth_required"});
+    assert!(matches!(
+        refusal(401, &reauth, false),
+        Some(Change::Rejected)
+    ));
+    assert!(matches!(
+        refusal(404, &json!({}), true),
+        Some(Change::Remove)
+    ));
+    assert!(matches!(
+        refusal(404, &json!({}), false),
+        Some(Change::Rejected)
+    ));
+    assert!(refusal(200, &reauth, true).is_none());
+    assert!(refusal(500, &json!({}), true).is_none());
+}
+
+#[test]
+fn account_health_asks_for_sign_in_while_providers_need_a_new_app_login() {
+    let ours = Some(PROVIDER_SIGN_IN_AGAIN);
+    let owned =
+        |health: &str, error: Option<&str>| (Some(health.to_string()), error.map(String::from));
+    // A working login Cloud refuses for provider credentials is not healthy.
+    assert_eq!(
+        health_with_provider_sign_in(Some("ready"), None, true),
+        owned("sign_in_required", ours)
+    );
+    // Once the new login issues them, health is ready again.
+    assert_eq!(
+        health_with_provider_sign_in(Some("sign_in_required"), ours, false),
+        owned("ready", None)
+    );
+    // Other states, and a sign-in required for another reason, are kept.
+    let other = Some("Sign in again to restore Agent Relay authentication.");
+    assert_eq!(
+        health_with_provider_sign_in(Some("sign_in_required"), other, false),
+        owned("sign_in_required", other)
+    );
+    assert_eq!(
+        health_with_provider_sign_in(Some("offline"), Some("Retrying"), true),
+        owned("offline", Some("Retrying"))
+    );
+    assert_eq!(health_with_provider_sign_in(None, None, true), (None, None));
+    assert_eq!(
+        health_with_provider_sign_in(Some("ready"), None, false),
+        owned("ready", None)
+    );
+}

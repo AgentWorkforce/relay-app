@@ -27,6 +27,10 @@ final class SettingsLayoutTests: XCTestCase {
         XCTAssertTrue(try health("ready").isHealthy)
         XCTAssertEqual(try health("ready").label, "Connected")
         XCTAssertEqual(try health("sign_in_required").label, "Sign in required")
+        // A login Cloud refuses provider credentials for says why, not "Connected".
+        let provider = try health("sign_in_required", error: "Sign in again to share your sessions.")
+        XCTAssertFalse(provider.isHealthy)
+        XCTAssertEqual(provider.detail, "Sign in again to share your sessions.")
         XCTAssertFalse(try health("offline").isHealthy)
         XCTAssertEqual(try health("offline", error: "Network unavailable").detail, "Network unavailable")
         XCTAssertEqual(try health("workspace_unavailable", error: "No workspace key").label, "Workspace not available")

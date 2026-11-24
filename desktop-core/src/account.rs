@@ -837,6 +837,11 @@ impl Account {
         }
         self.show_install(Some(&install));
         self.announce(&self.status());
+        if kept.is_ok() {
+            // Provider credentials refused to the old login issue now.
+            let account = self.clone();
+            tokio::spawn(async move { account.retry_provider_sign_in().await });
+        }
         if let (Some(telemetry), Ok(())) = (&self.telemetry, &kept) {
             telemetry.sign_in_completed();
         }

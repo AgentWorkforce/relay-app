@@ -256,6 +256,8 @@ impl Account {
     }
 
     fn publish_auth_health(&self, check: &HealthCheck, result: Result<(), HealthFailure>) {
+        // Read before updating: the status lock is held inside `update`.
+        let provider_sign_in = result.is_ok() && self.provider_sign_in_required();
         self.update(|status| {
             if status.state != SignInState::SignedIn || !self.health_is_current(check) {
                 return;
@@ -279,13 +281,21 @@ impl Account {
                     ),
                 ),
             };
-            status.auth_health = Some(health.into());
+            // A working login Cloud refuses for provider credentials (one
+            // from before the Desktop consent screen) still needs a sign-in.
+            let (health, error) = super::provider_credentials::health_with_provider_sign_in(
+                Some(health),
+                error.as_deref(),
+                provider_sign_in,
+            );
+            let health = health.unwrap_or_default();
             // The workspace refusal is the more specific cause: keep it.
             status.auth_error = if health != "workspace_unavailable"
                 && self.health_environment_conflict()
             {
                 Some("Remove CLOUD_API_ACCESS_TOKEN and sign in through Agent Relay to share your Desktop login with MCP.".into())
             } else { error };
+            status.auth_health = Some(health);
             status.auth_checked_at = Some(agent_relay_node::relay::state::now_ms());
             self.auth_generation.fetch_add(1, Ordering::SeqCst);
         });

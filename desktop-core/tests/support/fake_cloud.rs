@@ -56,6 +56,9 @@ pub struct State {
     pub mcp_status: u16,
     pub provider_grants: HashMap<String, Value>,
     pub provider_grant_status: u16,
+    /// A 403 grant refusal also names `desktop_reauth_required`, as newer
+    /// Cloud does.
+    pub provider_grant_reauth_code: bool,
     pub mcp_native_identity: bool,
     /// The browser handoff exchange answers 500.
     pub exchange_fails: bool,
@@ -138,6 +141,7 @@ impl Default for State {
             mcp_status: 200,
             provider_grants: HashMap::new(),
             provider_grant_status: 200,
+            provider_grant_reauth_code: false,
             mcp_native_identity: true,
             exchange_fails: false,
             refresh_status: None,
@@ -663,6 +667,7 @@ fn route(
 }
 
 fn provider_credentials_route(state:&mut State,method:&str,path:&str,body:&Value)->(u16,Value) {
+    if state.provider_grant_status == 403 && state.provider_grant_reauth_code {return (403,json!({"error":"An Agent Relay app login is required.","error_code":"desktop_reauth_required"}));}
     if state.provider_grant_status != 200 {return (state.provider_grant_status,json!({"error":if state.provider_grant_status==403 {"An Agent Relay app login is required."} else {"Unavailable"}}));}
     if method == "POST" {
         let id=format!("grant-{}",body["provider"].as_str().unwrap());

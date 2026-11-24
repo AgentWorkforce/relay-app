@@ -95,6 +95,11 @@ mod account_health_tests {
         account.auth_health = Some("sign_in_required".into());
         assert_eq!(account_health(&account).0, "Sign in required");
         assert!(!account_health(&account).2);
+        account.auth_error = Some("Sign in again to share your sessions.".into());
+        assert_eq!(
+            account_health(&account).1,
+            "Sign in again to share your sessions."
+        );
         account.auth_health = Some("offline".into());
         account.auth_error = Some("Network unavailable".into());
         assert_eq!(account_health(&account).1, "Network unavailable");
