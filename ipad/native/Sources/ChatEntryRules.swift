@@ -1,8 +1,9 @@
 import Foundation
 
 /// How a chat reads one session event: who wrote it and what it is, what
-/// text it shows, and which agent lines only repeat a tool call. Pure rules,
-/// so the timeline and the working row agree on them.
+/// text it shows, which events only copy another event, and which agent
+/// lines only repeat a tool call. Pure rules, so the timeline and the
+/// working row agree on them.
 enum ChatEntryRules {
     /// What an event is in the chat.
     enum Role: Equatable, Sendable {
@@ -69,6 +70,52 @@ enum ChatEntryRules {
     static func shownText(content: String, toolName: String) -> String? {
         if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return content }
         return toolName.isEmpty ? nil : toolName
+    }
+
+    /// What a hook adds to a session when it starts. Cloud stores it as a
+    /// person's event, but nobody wrote it.
+    static let hookContextPrefix = "SessionStart hook additional context:"
+
+    /// How far apart (in seconds) two records of the same turn can be.
+    static let sameTurnWindow: TimeInterval = 10
+
+    /// Who wrote a text, and what it says: what makes two records one turn.
+    private struct TurnKey: Hashable {
+        let isPerson: Bool
+        let text: String
+    }
+
+    /// `events` in the same order without the ones that only copy another
+    /// event: Cloud's session events hold more than the transcript's own
+    /// lines.
+    /// - An event whose `type` or `kind` is `history` (any case): the
+    ///   provider's prompt log, a copy of each prompt the transcript has.
+    /// - An event, whoever it names as its writer, whose content starts
+    ///   (after any leading blank space) with `hookContextPrefix`: a hook's
+    ///   context, not something a person wrote. The prefix is matched
+    ///   exactly, in this case.
+    /// - A repeat of one turn: a person's or the agent's text (never a tool
+    ///   call, a result or thinking) with the same writer role and the same
+    ///   text (trimmed at both ends) as an earlier event, at most
+    ///   `sameTurnWindow` seconds from it. Every record of a turn, kept or
+    ///   not, moves the time it is compared with, so a run of repeats that
+    ///   are each within the window of the one before shows once, and the
+    ///   first is the one kept. An event with no time is never a repeat. The
+    ///   same text after longer, or from the other writer, is another turn.
+    static func withoutCopies(_ events: [SessionEvent]) -> [SessionEvent] {
+        var lastSeen: [TurnKey: Date] = [:]
+        return events.filter { event in
+            if event.type.lowercased() == "history" || event.kind.lowercased() == "history" { return false }
+            let text = event.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.hasPrefix(hookContextPrefix) { return false }
+            let role = event.entryRole
+            guard role == .person || role == .agent, !text.isEmpty else { return true }
+            let key = TurnKey(isPerson: role == .person, text: text)
+            let previous = lastSeen[key]
+            if let time = event.ts { lastSeen[key] = time }
+            guard let time = event.ts, let previous else { return true }
+            return abs(time.timeIntervalSince(previous)) > sameTurnWindow
+        }
     }
 
     /// `events` without the agent lines that only repeat a tool call: Cloud

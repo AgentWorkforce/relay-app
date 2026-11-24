@@ -110,6 +110,18 @@ final class SessionTimelineTests: XCTestCase {
         XCTAssertEqual(row.text, "Fix the build")
     }
 
+    func testCopiesOfSessionEventsAreNotRows() {
+        let events = [event("h1", at: "2026-11-20T10:00:00Z", kind: "history", role: "user", content: "Ship the harbor notes"),
+                      event("k1", at: "2026-11-20T10:00:00Z", kind: "prompt", role: "user",
+                            content: "SessionStart hook additional context: This session joins"),
+                      event("p1", at: "2026-11-20T10:00:01.000Z", kind: "prompt", role: "user", content: "Ship the harbor notes"),
+                      event("p2", at: "2026-11-20T10:00:01.081Z", kind: "prompt", role: "user", content: "Ship the harbor notes"),
+                      event("r1", at: "2026-11-20T10:00:05Z", content: "Done: the notes are shipped.")]
+        let shown = rows(SessionTimeline.items(messages: [], events: events))
+        XCTAssertEqual(shown.map(\.text), ["Ship the harbor notes", "Done: the notes are shipped."])
+        XCTAssertEqual(shown.map(\.event.key.eventID), ["p1", "r1"])
+    }
+
     private func rows(_ items: [ChatTimelineItem]) -> [SessionEventRow] {
         items.compactMap { if case .event(let row) = $0 { row } else { nil } }
     }
