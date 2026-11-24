@@ -160,7 +160,6 @@ pub struct ChatAgent {
 }
 
 pub const CHAT_TITLE: &str = "Chat";
-pub const CHAT_OPEN_FALLBACK: &str = "Open";
 pub const CHAT_AGENT: &str = "Agent";
 pub const CHAT_RELAY_MARK: &str = "⇄ Agent Relay";
 
@@ -243,19 +242,9 @@ pub const CHAT_WORKING: &str = "Working…";
 pub const CHAT_DELIVERED: &str = "Delivered: your message is in the session.";
 pub const CHAT_HIDE_LIST: &str = "Hide agent list";
 pub const CHAT_SHOW_LIST: &str = "Show agent list";
-pub const CHAT_NAME: &str = "Agent name";
-pub const CHAT_MESSAGING: &str = "Messaging";
 pub const CHAT_DETAILS: &str = "Details";
 pub const CHAT_VIEW_WEB: &str = "View on web";
 pub const CHAT_VIEW_WEB_HELP: &str = "Open this session in Cloud in your browser";
-pub const CHAT_NAME_HELP: &str =
-    "The name other agents see on Agent Relay. Press Return to rename; your session title stays the same.";
-pub const CHAT_UPLOAD: &str = "Upload";
-pub const CHAT_UPLOAD_HELP: &str =
-    "Upload this session to Cloud. Turning it off asks before deleting the cloud copy.";
-pub const CHAT_RECEIVES: &str = "Receives messages";
-pub const CHAT_RECEIVES_HELP: &str =
-    "Receive messages from other agents. This also uploads the session to Cloud.";
 
 pub const CHAT_NOT_LIVE: &str =
     "This session can't take a message right now. What you send waits until it can.";

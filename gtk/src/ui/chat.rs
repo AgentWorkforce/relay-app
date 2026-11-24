@@ -26,7 +26,6 @@ mod images;
 mod inbox;
 mod list;
 pub(in crate::ui) use inbox::with_unread;
-mod open;
 mod send;
 mod sources;
 mod thread;
@@ -53,8 +52,6 @@ pub struct ChatPage {
     /// the head of the list, and in the header while the list is hidden.
     pub back: gtk::Button,
     back_header: gtk::Button,
-    /// Opens the agent in its own app, where it has one.
-    pub open: gtk::Button,
     pub header_badge: gtk::Box,
     pub header_name: gtk::Label,
     pub header_meta: gtk::Label,
@@ -153,8 +150,8 @@ impl ChatPage {
         words.append(&header_summary);
         header.append(&words);
         let controls = Controls::build();
-        let open = controls.open.clone();
         let details = gtk::ToggleButton::with_label(CHAT_DETAILS);
+        details.set_widget_name("chat-details");
         details.add_css_class("flat");
         details.set_active(true);
         details.set_valign(gtk::Align::Center);
@@ -196,7 +193,6 @@ impl ChatPage {
             toggle_list,
             back,
             back_header,
-            open,
             header_badge,
             header_name,
             header_meta,
@@ -230,8 +226,6 @@ impl App {
         page.back.connect_clicked(move |_| home());
         let home = self.on(|app| app.open_section(super::state::Section::Mine));
         page.back_header.connect_clicked(move |_| home());
-        let native = self.on(App::open_chat_agent_natively);
-        page.open.connect_clicked(move |_| native());
         let toggle = self.on(App::toggle_chat_list);
         page.toggle_list.connect_clicked(move |_| toggle());
         let earlier = self.on(App::show_earlier_chat);
@@ -355,6 +349,8 @@ impl App {
             return;
         };
         let page = &shell.pages.chat;
+        // A title renamed here settles once the session list shows it.
+        self.reconcile_native_session_titles();
         let agents = self.chat_agents();
         let (harnesses, projects) = chat_filter_choices(&agents);
         page.filters.offer(&harnesses, &projects);
@@ -398,26 +394,17 @@ impl App {
                 page.stack.set_visible_child_name(THREAD);
                 self.render_chat_header(page, &agent);
             }
-            None => page.stack.set_visible_child_name(EMPTY),
+            None => {
+                page.stack.set_visible_child_name(EMPTY);
+                self.render_chat_controls(&page.controls, None);
+            }
         }
     }
 
     fn render_chat_header(&self, page: &ChatPage, agent: &ChatAgent) {
         clear(&page.header_badge);
         page.header_badge.append(&agent_badge(agent, 32));
-        let upload = agent.upload_key().map(|key| {
-            self.with_state(|state| {
-                state.requesting.contains(&key)
-                    || (!state.stopping.contains(&key)
-                        && agent
-                            .row()
-                            .and_then(|row| row.upload.as_ref())
-                            .is_some_and(|upload| upload.included))
-            })
-        });
-        page.controls
-            .show(agent, upload, self.chat_web_url(agent).as_deref());
-        self.render_chat_open(&page.open, agent);
+        self.render_chat_controls(&page.controls, Some(agent));
         page.header_name.set_text(&agent.name());
         let mut meta = agent.meta();
         if let Some(address) = agent.address() {
@@ -470,7 +457,7 @@ impl App {
     }
 
     /// Reads the sessions, the roster and the conversation shown again.
-    pub(super) fn refresh_chat_page(&self) {
+    pub(in crate::ui) fn refresh_chat_page(&self) {
         self.refresh_local();
         self.refresh_roster();
         if let Some(key) = self

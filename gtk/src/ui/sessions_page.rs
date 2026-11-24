@@ -285,7 +285,6 @@ impl SessionsPage {
         ));
 
         root.append(&table);
-        root.append(&transcript.root);
         SessionsPage {
             root,
             table,
@@ -436,11 +435,7 @@ impl App {
                 return glib::Propagation::Proceed;
             }
             if let Some(app) = weak.upgrade() {
-                if app.page() != super::state::Page::Sessions
-                    || app
-                        .shell()
-                        .is_some_and(|shell| shell.pages.sessions.transcript.root.is_visible())
-                {
+                if app.page() != super::state::Page::Sessions {
                     return glib::Propagation::Proceed;
                 }
                 app.focus_search();
@@ -950,7 +945,6 @@ impl App {
             let toolbar = SessionControls::build(self, &page.search);
             if let Some(shell) = self.shell() {
                 shell.header_search.append(&toolbar.root);
-                shell.header_search.append(&page.transcript.heading);
                 shell.header_grouping.append(&page.controls);
             }
             let columns =

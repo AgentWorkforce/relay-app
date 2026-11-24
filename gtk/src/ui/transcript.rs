@@ -1,22 +1,19 @@
-//! Local conversations; asynchronous reads never change upload selection.
+//! The session a conversation in Chat is with: its controls in Chat's
+//! details panel (its title, opening it in its own app, taking over or
+//! ending a spawned agent, receiving messages, its agent name and its
+//! upload), and the drawing of transcript entries Chat's thread uses.
 use super::{
     app::App,
     widgets::{self, clear, hbox, text, vbox, LabelStyle},
 };
 use crate::models::{
     merge_local_sessions, session_header_identity, source_name, transcript_entry_context,
-    uploaded_session_url, AgentName, LocalSessionRow, SessionUploadState, SpawnHandover,
-    TranscriptScrollState,
+    uploaded_session_url, AgentName, LocalSessionRow, SessionUploadState,
 };
-use agent_relay_node::relay::contract::{
-    agents::RenameParams,
-    method,
-    transcript::{LocalTranscriptCursor, LocalTranscriptEntry, LocalTranscriptParams},
-};
+use agent_relay_node::relay::contract::{agents::RenameParams, method, transcript::LocalTranscriptEntry};
 use gtk::prelude::*;
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
 mod entry;
 use entry::copy_button;
@@ -26,28 +23,21 @@ use markdown::append_markdown;
 mod receive_feedback;
 use receive_feedback::sidebar_note;
 mod controls;
-mod latest;
 mod rename;
 mod title;
 use title::render_identity;
 
+/// The selected session's controls. Chat shows `sidebar` in its details
+/// panel while the agent shown is a session on this computer.
 pub struct TranscriptPage {
-    pub root: gtk::Box,
-    pub heading: gtk::Box,
     pub sidebar: gtk::Box,
-    pub details: gtk::ToggleButton,
-    details_panel: gtk::Box,
-    pub latest: gtk::Button,
-    pub latest_row: gtk::Box,
-    pub scroll: gtk::ScrolledWindow,
-    scroll_position: Rc<RefCell<TranscriptScrollState>>,
-    pub back: gtk::Button,
-    pub refresh: gtk::Button,
     pub open: gtk::Button,
     pub view_web: gtk::Button,
+    /// Reads the conversation shown from the start again.
+    pub refresh: gtk::Button,
     pub copy_name: gtk::Button,
     pub(super) opening_error: gtk::Label,
-    /// Joining and taking over a spawned agent.
+    /// Taking over and ending a spawned agent.
     pub join: super::spawn_join::SpawnJoin,
     pub save: gtk::Switch,
     pub receive: gtk::Switch,
@@ -62,52 +52,22 @@ pub struct TranscriptPage {
     drawing: Cell<bool>,
     renaming: Cell<bool>,
     current_name: RefCell<Option<AgentName>>,
-    seen_cursors: RefCell<Vec<LocalTranscriptCursor>>,
-    pub(super) entry_ids: RefCell<std::collections::HashSet<String>>,
-    pub(super) table_cells_remaining: Cell<usize>,
-    pub retry: gtk::Button,
     title: gtk::Label,
-    title_group: gtk::Box,
+    /// The session's title, editable, and under it the provider, agent
+    /// name and presence badge.
+    pub title_group: gtk::Box,
     pub(super) title_cell: RefCell<Option<super::session_titles::SessionTitleCell>>,
     pub subtitle: gtk::Label,
-    /// The header's second line: the provider and agent name, then the
-    /// presence badge.
     identity: gtk::Box,
     pub presence_badge: gtk::Label,
-    pub messages: gtk::Box,
-    notice: gtk::Label,
     pub(super) selected: RefCell<Option<LocalSessionRow>>,
-    cursor: RefCell<Option<LocalTranscriptCursor>>,
+    /// Bumped whenever another session is selected: an answer for the one
+    /// before is not shown.
     pub(super) generation: Cell<u64>,
-    pub(super) loading: Cell<bool>,
-    pub(super) tool_group: RefCell<Option<(gtk::Expander, gtk::Box, usize)>>,
 }
 
 impl TranscriptPage {
     pub fn build() -> Self {
-        let root = vbox(0, &[]);
-        root.set_visible(false);
-        root.set_vexpand(true);
-        let actions = hbox(6, &[]);
-        let back = super::session_open::back_to_sessions_button();
-        let heading = hbox(12, &[]);
-        heading.append(&back);
-        let divider = gtk::Separator::new(gtk::Orientation::Vertical);
-        super::zoom::size(&divider, -1, 28);
-        divider.set_valign(gtk::Align::Center);
-        heading.append(&divider);
-        let title_group = vbox(3, &[]);
-        title_group.set_hexpand(true);
-        heading.append(&title_group);
-        let details = gtk::ToggleButton::with_label("Details");
-        details.add_css_class("flat");
-        details.set_valign(gtk::Align::Center);
-        widgets::action_cursor(&details);
-        widgets::name(&details, "Details");
-        heading.append(&details);
-        heading.set_hexpand(true);
-        heading.set_visible(false);
-        heading.set_valign(gtk::Align::Center);
         let title = text("", &["row-title"]).ellipsized();
         let subtitle = text("", &["caption"]).ellipsized();
         let presence_badge = text("", &["presence-badge"]);
@@ -116,6 +76,7 @@ impl TranscriptPage {
         let identity = hbox(8, &[]);
         identity.append(&subtitle);
         identity.append(&presence_badge);
+        let title_group = vbox(3, &[]);
         title_group.append(&title);
         title_group.append(&identity);
 
@@ -125,7 +86,6 @@ impl TranscriptPage {
         open.set_hexpand(true);
         open.set_halign(gtk::Align::Fill);
         open.add_css_class("session-action");
-        actions.append(&open);
         let view_web = gtk::Button::with_label("View on web");
         widgets::action_cursor(&view_web);
         view_web.set_visible(false);
@@ -138,41 +98,18 @@ impl TranscriptPage {
         refresh.set_halign(gtk::Align::Fill);
         refresh.set_hexpand(true);
         refresh.add_css_class("session-action");
-        crate::ui::widgets::action_cursor(&refresh);
+        widgets::action_cursor(&refresh);
         refresh.set_tooltip_text(Some("Refresh transcript"));
         widgets::name(&refresh, "Refresh transcript");
-
         let opening_error = text("", &["caption"]).wrapped();
         opening_error.set_visible(false);
 
-        let (column, holder) = widgets::column(760);
-        super::zoom::spacing(&column, 20);
-        let messages = vbox(20, &[]);
-        column.append(&messages);
-        let notice = text("", &["caption"]).wrapped();
-        notice.set_halign(gtk::Align::Center);
-        column.append(&notice);
-        let retry = gtk::Button::with_label("Try again");
-        crate::ui::widgets::action_cursor(&retry);
-        retry.set_halign(gtk::Align::Center);
-        retry.set_visible(false);
-        column.append(&retry);
-        let scroll = widgets::scrolled(&holder);
-        scroll.set_vexpand(true);
-        scroll.set_hexpand(true);
-        let scroll_position = Rc::new(RefCell::new(TranscriptScrollState::default()));
-        let (latest, latest_row, conversation) = latest::follow_latest(&scroll, &scroll_position);
-        let body = hbox(0, &[]);
         let join = super::spawn_join::SpawnJoin::build();
-        body.append(&join.under(&conversation));
-        let details_panel = hbox(0, &[]);
-        details_panel.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        details_panel.set_visible(false);
         let sidebar = vbox(12, &[]);
-        super::zoom::size(&sidebar, 264, -1);
-        widgets::pad(&sidebar, 16, Some(16), None);
+        sidebar.set_visible(false);
+        sidebar.append(&title_group);
         let shortcuts = vbox(8, &[]);
-        shortcuts.append(&actions);
+        shortcuts.append(&open);
         shortcuts.append(&join.actions);
         shortcuts.append(&view_web);
         shortcuts.append(&refresh);
@@ -233,26 +170,11 @@ impl TranscriptPage {
         let status = vbox(6, &[]);
         saving.append(&status);
         sidebar.append(&saving);
-        let sidebar_scroll = widgets::scrolled(&sidebar);
-        sidebar_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        details_panel.append(&sidebar_scroll);
-        body.append(&details_panel);
-        let panel = details_panel.clone();
-        details.connect_toggled(move |button| panel.set_visible(button.is_active()));
-        root.append(&body);
         Self {
-            root,
-            heading,
             sidebar,
-            details,
-            details_panel,
-            latest,
-            latest_row,
-            scroll_position,
-            back,
-            refresh,
             open,
             view_web,
+            refresh,
             copy_name,
             opening_error,
             join,
@@ -269,24 +191,14 @@ impl TranscriptPage {
             drawing: Cell::new(false),
             renaming: Cell::new(false),
             current_name: RefCell::default(),
-            seen_cursors: RefCell::default(),
-            entry_ids: RefCell::default(),
-            table_cells_remaining: Cell::new(2048),
-            retry,
             title,
             title_group,
             title_cell: RefCell::default(),
             subtitle,
             identity,
             presence_badge,
-            messages,
-            scroll,
-            notice,
             selected: RefCell::default(),
-            cursor: RefCell::default(),
             generation: Cell::new(0),
-            loading: Cell::new(false),
-            tool_group: RefCell::default(),
         }
     }
 }
@@ -334,26 +246,17 @@ impl App {
             }
             gtk::glib::Propagation::Stop
         });
-        let weak = self.downgrade();
-        page.rename.connect_clicked(move |_| {
-            if let Some(app) = weak.upgrade() {
-                app.rename_transcript_agent();
-            }
+        let rename = self.on(App::rename_transcript_agent);
+        page.rename.connect_clicked(move |_| rename());
+        let rename = self.on(App::rename_transcript_agent);
+        page.agent_name.connect_activate(move |_| rename());
+        let web = self.on(App::view_transcript_on_web);
+        page.view_web.connect_clicked(move |_| web());
+        let refresh = self.on(App::refresh_chat_page);
+        page.refresh.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            refresh();
         });
-        let weak = self.downgrade();
-        page.agent_name.connect_activate(move |_| {
-            if let Some(app) = weak.upgrade() {
-                app.rename_transcript_agent();
-            }
-        });
-
-        let weak = self.downgrade();
-        page.view_web.connect_clicked(move |_| {
-            if let Some(app) = weak.upgrade() {
-                app.view_transcript_on_web();
-            }
-        });
-
         self.connect_spawn_join(page);
         let weak = self.downgrade();
         page.copy_name.connect_clicked(move |button| {
@@ -363,83 +266,55 @@ impl App {
             let Some(shell) = app.shell() else {
                 return;
             };
-            let page = &shell.pages.sessions.transcript;
-            let name = page.current_name.borrow().clone();
+            let name = shell.pages.sessions.transcript.current_name.borrow().clone();
             if let Some(name) = name {
                 button.clipboard().set_text(name.shown());
             }
         });
-        let weak = self.downgrade();
-        page.back.connect_clicked(move |_| {
-            if let Some(app) = weak.upgrade() {
-                if let Some(shell) = app.shell() {
-                    let sessions = &shell.pages.sessions;
-                    sessions
-                        .transcript
-                        .generation
-                        .set(sessions.transcript.generation.get() + 1);
-                    sessions.transcript.loading.set(false);
-                    sessions.transcript.root.set_visible(false);
-                    sessions.transcript.heading.set_visible(false);
-                    sessions.table.set_visible(true);
-                    shell.topbar.set_visible(false);
-                    if let Some(search) = shell.header_search.first_child() {
-                        search.set_visible(true);
-                        shell.header_grouping.set_visible(true);
-                    }
-                }
-            }
-        });
-        for (widget, more) in [(&page.refresh, false), (&page.retry, true)] {
-            let weak = self.downgrade();
-            widget.connect_clicked(move |_| {
-                if let Some(app) = weak.upgrade() {
-                    app.load_transcript(more, false);
-                }
-            });
+    }
+
+    /// A read of the conversation shown ended: it can be refreshed again.
+    pub(in crate::ui) fn chat_read_ended(&self) {
+        if let Some(shell) = self.shell() {
+            shell.pages.sessions.transcript.refresh.set_sensitive(true);
         }
     }
 
-    pub fn open_local_session(&self, row: LocalSessionRow) {
+    /// Shows `row`'s controls, or none for an agent with no session here.
+    /// The same session again keeps what is being typed and done.
+    pub(in crate::ui) fn select_session_controls(&self, row: Option<&LocalSessionRow>) {
         let Some(shell) = self.shell() else {
             return;
         };
-        let sessions = &shell.pages.sessions;
-        let page = &sessions.transcript;
+        let page = &shell.pages.sessions.transcript;
+        let Some(row) = row else {
+            page.sidebar.set_visible(false);
+            page.selected.borrow_mut().take();
+            return;
+        };
+        page.sidebar.set_visible(true);
+        let same = page
+            .selected
+            .borrow()
+            .as_ref()
+            .is_some_and(|selected| selected.key() == row.key());
+        if same {
+            self.render_transcript_controls();
+            return;
+        }
         page.generation.set(page.generation.get() + 1);
-        page.loading.set(false);
         page.join.open_plan.borrow_mut().take();
-        page.details.set_active(false);
-        page.details_panel.set_visible(false);
-        *page.scroll_position.borrow_mut() = TranscriptScrollState::default();
-        page.latest_row.set_visible(false);
-        *page.cursor.borrow_mut() = None;
         page.renaming.set(false);
         page.current_name.borrow_mut().take();
         page.rename_status.set_text("");
         page.rename_status.set_visible(false);
-        self.install_transcript_title(page, &row);
+        self.install_transcript_title(page, row);
         page.opening_error.set_visible(false);
-        *page.selected.borrow_mut() = Some(row);
-        clear(&page.messages);
-        page.table_cells_remaining.set(2048);
-        *page.tool_group.borrow_mut() = None;
-        sessions.table.set_visible(false);
-        page.root.set_visible(true);
-        page.heading.set_visible(true);
-        shell.topbar.set_visible(false);
-        if let Some(search) = shell.header_search.first_child() {
-            search.set_visible(false);
-            shell.header_grouping.set_visible(false);
-        }
+        *page.selected.borrow_mut() = Some(row.clone());
         self.render_transcript_controls();
-        self.load_transcript(false, false);
         self.refresh_session_title_cells();
-        let selected = page.selected.borrow().clone();
-        if let Some(row) = selected {
-            self.load_session_title_capability(&row);
-            self.load_session_title_overview(&row);
-        }
+        self.load_session_title_capability(row);
+        self.load_session_title_overview(row);
     }
 
     /// Opens the selected session's Cloud page with its current upload state.
@@ -571,77 +446,6 @@ impl App {
             page.drawing.set(false);
         });
         self.render_spawn_join();
-    }
-
-    pub(super) fn load_transcript(&self, more: bool, following: bool) {
-        let Some(shell) = self.shell() else {
-            return;
-        };
-        let page = &shell.pages.sessions.transcript;
-        if page.loading.replace(true) {
-            return;
-        }
-        let Some(row) = page.selected.borrow().clone() else {
-            page.loading.set(false);
-            return;
-        };
-        if !more {
-            *page.cursor.borrow_mut() = None;
-            page.seen_cursors.borrow_mut().clear();
-            page.join.reset();
-        }
-        let cursor = if more {
-            page.cursor.borrow().clone()
-        } else {
-            None
-        };
-        let replace = cursor.is_none();
-        let session_id = row.session_id();
-        let agent = SpawnHandover::transcript_agent(self.joined_session(&row).as_ref());
-        let generation = page.generation.get();
-        page.notice.set_text("Reading local transcript…");
-        page.notice.set_visible(true);
-        page.retry.set_visible(false);
-        page.refresh.set_sensitive(false);
-        let requested_cursor = cursor.clone();
-        self.transcript_page(agent.clone(), LocalTranscriptParams { source: row.source().into(), session_id, cursor, following }, move |app, result| {
-            let Some(shell) = app.shell() else { return; };
-            let page = &shell.pages.sessions.transcript;
-            if page.generation.get() != generation { return; }
-            page.loading.set(false);
-            page.refresh.set_sensitive(true);
-            match result {
-                Ok(result) => {
-                    if replace {
-                        clear(&page.messages);
-                        page.table_cells_remaining.set(2048);
-                        page.entry_ids.borrow_mut().clear();
-                        *page.tool_group.borrow_mut() = None;
-                    }
-                    page.join.read(agent, requested_cursor.as_ref(), &result);
-                    app.append_transcript_entries(page, result.entries, row.source());
-                    if let Some(next) = &result.next_cursor {
-                        if Some(next) == requested_cursor.as_ref() || page.seen_cursors.borrow().contains(next) {
-                            page.notice.set_text("The transcript stopped advancing. Try refreshing this session.");
-                            page.notice.set_visible(true);
-                            page.retry.set_visible(true);
-                            return;
-                        }
-                        page.seen_cursors.borrow_mut().push(next.clone());
-                    }
-                    *page.cursor.borrow_mut() = result.next_cursor;
-                    let empty = page.messages.first_child().is_none() && page.cursor.borrow().is_none();
-                    page.notice.set_text("No local transcript available\nThis session’s contents are not available on this machine.");
-                    page.notice.set_visible(empty);
-                    let more = page.cursor.borrow().is_some();
-                    if more && page.root.get_visible() { app.load_transcript(true, following); }
-                }
-                Err(error) => {
-                    page.notice.set_text(&format!("Couldn’t read this session\n{}", error.message));
-                    page.retry.set_visible(true);
-                }
-            }
-        });
     }
 }
 

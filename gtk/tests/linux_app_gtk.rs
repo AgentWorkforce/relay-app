@@ -62,6 +62,23 @@ mod zoom;
 
 /// Inspect the actual action subtree, including its loaded provider artwork.
 /// A plain gtk::Button label (the old refresh path) cannot satisfy this.
+/// Opens Chat on `row`'s agent, as a click on its row does when it has no
+/// app of its own.
+fn open_in_chat(case: &Case, row: &agent_relay_app::models::LocalSessionRow) {
+    // A session in history is listed as the core lists it.
+    if let Some(upload) = &row.upload {
+        case.app.update_state(|state| {
+            if !state.sessions.iter().any(|listed| {
+                listed.session_id == upload.session_id && listed.source == upload.source
+            }) {
+                state.sessions.push(upload.clone());
+            }
+        });
+    }
+    case.app
+        .show_chat_page(Some(&agent_relay_app::models::chat_key(row)));
+}
+
 fn assert_session_open_action(button: &gtk::Button, source: &str, title: &str) {
     assert_eq!(labels(button), vec![title.to_string()]);
     assert_eq!(button.halign(), gtk::Align::Fill);
@@ -2481,36 +2498,32 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
         })
     };
     case.app.go(Page::Sessions);
-    case.app.open_local_session(LocalSessionRow {
+    open_in_chat(&case, &LocalSessionRow {
         upload: None,
         relay: session(SESSION),
     });
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions.transcript;
-    // Joined: its own output is its transcript, followed live, with a
-    // message box; it is never resumed beside the headless agent.
+    let composer = &shell.pages.chat.composer;
+    // Joined: its own output is its conversation, followed live, with
+    // Chat's message box; it is never resumed beside the headless agent.
     case.pump(|case| !case.called("agents.transcript").is_empty());
     assert_eq!(case.called("agents.transcript")[0]["name"], "c1");
     assert!(case.called("sessions.transcript").is_empty());
-    page.details.set_active(true);
     assert!(!page.open.is_visible());
     assert!(page.join.take_over.is_visible());
     assert_eq!(
         page.join.take_over.label().as_deref(),
         Some("Take over in Terminal")
     );
-    assert!(page.join.composer.is_visible());
-    assert!(page.join.send.has_css_class("primary"));
-    // Send sits at the far right of the composer's one rounded shell, and
-    // latest-message navigation is its own row, never over the messages.
-    let shell = page.join.send.parent().unwrap();
-    assert!(shell.has_css_class("chat-composer"));
-    assert_eq!(shell.last_child().as_ref(), Some(page.join.send.upcast_ref()));
-    assert_eq!(page.latest.label().as_deref(), Some("Latest message"));
-    assert_eq!(page.latest.parent().as_ref(), Some(page.latest_row.upcast_ref()));
-    assert!(page.latest_row.has_css_class("transcript-latest-row"));
+    assert!(composer.dock.is_visible());
+    assert!(composer.send.has_css_class("primary"));
+    // Send sits at the end of the composer's one rounded shell.
+    let toolbar = composer.send.parent().unwrap();
+    assert!(toolbar.parent().unwrap().has_css_class("chat-composer"));
+    assert_eq!(toolbar.last_child().as_ref(), Some(composer.send.upcast_ref()));
     assert_eq!(
-        page.join.entry.placeholder_text().as_deref(),
+        composer.input.placeholder_text().as_deref(),
         Some("Message @c1")
     );
     // The header's second line names the agent on the relay, then its
@@ -2526,13 +2539,13 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
         "{badge}"
     );
     // Return sends; Shift+Return keeps the draft for a new line.
-    let controllers = page.join.entry.view.observe_controllers();
+    let controllers = composer.input.view.observe_controllers();
     let keys = (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))
         .filter_map(|item| item.downcast::<gtk::EventControllerKey>().ok())
         .find(|controller| controller.name().as_deref() == Some("chat-input-send"))
         .unwrap();
-    page.join.entry.set_text("Run the tests");
+    composer.input.set_text("Run the tests");
     assert!(!keys.emit_by_name::<bool>(
         "key-pressed",
         &[
@@ -2552,12 +2565,13 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     ));
     case.pump(|case| !case.called("messages.send").is_empty());
     assert_eq!(case.called("messages.send")[0]["text"], "Run the tests");
-    case.pump(|_| page.join.entry.text().is_empty());
-    case.pump(|case| case.called("agents.transcript").len() >= 2);
-    assert_eq!(
-        case.called("agents.transcript")[1]["cursor"],
-        json!({"ts_ms": 0, "id": 40})
-    );
+    case.pump(|_| composer.input.text().is_empty());
+    // Following goes on from where the read ended.
+    case.pump(|case| {
+        case.called("agents.transcript")
+            .iter()
+            .any(|read| read["cursor"] == json!({"ts_ms": 0, "id": 40}))
+    });
     // Taken over: asked first, then resumed in Terminal in its folder.
     page.join.take_over.emit_clicked();
     case.pump(|case| !case.called("agents.take_over").is_empty());
@@ -2572,7 +2586,7 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     case.answer("sessions.open_plan", json!({"action":"unavailable","reason":"Background owner", "choices":[]}));
     let planned_before_codex = case.called("sessions.open_plan").len();
     // A spawned Codex thread opens live in Codex, never in Terminal.
-    case.app.open_local_session(LocalSessionRow {
+    open_in_chat(&case, &LocalSessionRow {
         upload: None,
         relay: session("thread-9"),
     });
@@ -2588,7 +2602,7 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
         false
     );
     assert!(!page.join.take_over.is_visible());
-    assert!(page.join.composer.is_visible());
+    assert!(composer.dock.is_visible());
     assert_session_open_action(&page.open, "codex", "Open in Codex");
     assert_eq!(
         page.join.note.text(),
@@ -2603,7 +2617,7 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     );
     assert_eq!(case.called("sessions.open_plan").len(), planned_before_codex);
     case.desktop.codex_installed.set(false);
-    case.app.open_local_session(LocalSessionRow {
+    open_in_chat(&case, &LocalSessionRow {
         upload: None,
         relay: session("thread-9"),
     });
@@ -2611,19 +2625,19 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     let opened = case.desktop.opened.borrow().len();
     page.open.emit_clicked();
     assert_eq!(case.desktop.opened.borrow().len(), opened);
-    assert_eq!(case.app.page(), Page::Sessions);
+    assert_eq!(case.app.page(), Page::Chat);
     // A spawned Grok session has no app to open it live: it is never resumed
     // in Terminal beside the leader that runs it. Another session's draft is
     // not carried over to it.
-    page.join.entry.set_text("for x1");
-    case.app.open_local_session(LocalSessionRow {
+    composer.input.set_text("for x1");
+    open_in_chat(&case, &LocalSessionRow {
         upload: None,
         relay: session("grok-7"),
     });
     assert!(!page.open.is_visible());
     assert!(!page.join.take_over.is_visible());
-    assert!(page.join.composer.is_visible());
-    assert_eq!(page.join.entry.text(), "");
+    assert!(composer.dock.is_visible());
+    assert_eq!(composer.input.text(), "");
     assert_eq!(page.join.note.text(), agent_relay_app::models::SPAWN_HOSTED);
 }
 
@@ -2668,10 +2682,9 @@ fn session_opening_settings_route_clicks(runtime: &tokio::runtime::Runtime) {
         relay: None,
     };
     case.app.go(Page::Sessions);
-    case.app.open_local_session(row.clone());
+    open_in_chat(&case, &row.clone());
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions.transcript;
-    page.details.set_active(true);
     assert!(page.view_web.is_visible());
     page.view_web.emit_clicked();
     let site = case
@@ -2726,14 +2739,14 @@ fn session_opening_drops_a_stale_reply_and_coalesces_rapid_clicks(
         ),
         relay: None,
     };
-    case.app.open_local_session(row("one"));
+    open_in_chat(&case, &row("one"));
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions.transcript;
     page.open.emit_clicked();
     page.open.emit_clicked();
     case.pump(|case| !case.called("sessions.open_plan").is_empty());
     assert_eq!(case.called("sessions.open_plan").len(), 1);
-    case.app.open_local_session(row("two"));
+    open_in_chat(&case, &row("two"));
     case.settle();
     std::thread::sleep(Duration::from_millis(180));
     case.settle();
@@ -2770,8 +2783,7 @@ fn session_opening_transport_errors_never_dispatch_a_replacement(
         )),
     );
     case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
+    open_in_chat(&case, &agent_relay_app::models::LocalSessionRow {
             upload: Some(
                 serde_json::from_value(upload_row(
                     "claude",
@@ -2789,7 +2801,7 @@ fn session_opening_transport_errors_never_dispatch_a_replacement(
     let page = &shell.pages.sessions.transcript;
     page.open.emit_clicked();
     case.pump(|_| {
-        labels(&page.root)
+        labels(&page.sidebar)
             .iter()
             .any(|label| label.contains("No replacement session was started"))
     });
@@ -2810,8 +2822,7 @@ fn session_opening_explicit_default_retry_replans_before_dispatch(
         }
     }));
     case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
+    open_in_chat(&case, &agent_relay_app::models::LocalSessionRow {
             upload: Some(
                 serde_json::from_value(upload_row(
                     "claude",
@@ -2852,7 +2863,7 @@ fn session_opening_explicit_default_retry_replans_before_dispatch(
         .response(gtk::ResponseType::Accept);
     case.pump(|case| case.called("sessions.open_plan").len() == 2);
     case.pump(|_| {
-        labels(&page.root)
+        labels(&page.sidebar)
             .iter()
             .any(|label| label.contains("state changed"))
     });
@@ -2877,31 +2888,31 @@ fn session_opening_pending_failure_requires_resolution_before_default_retry(runt
         }
     }));
     case.sign_in();
-    case.app.open_local_session(agent_relay_app::models::LocalSessionRow {
+    open_in_chat(&case, &agent_relay_app::models::LocalSessionRow {
         upload: Some(serde_json::from_value(upload_row("claude","one","Session","/w/api",false,"not_shared")).unwrap()),
         relay: None,
     });
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions.transcript;
     page.open.emit_clicked();
-    case.pump(|_| labels(&page.root).iter().any(|label| label.contains("Launch acknowledgement timed out")));
+    case.pump(|_| labels(&page.sidebar).iter().any(|label| label.contains("Launch acknowledgement timed out")));
     assert_eq!(case.desktop.session_plans.borrow().len(), 1);
     page.open.emit_clicked();
-    case.pump(|_| labels(&page.root).iter().any(|label| label == agent_relay_app::models::PENDING_RESUME_MESSAGE));
+    case.pump(|_| labels(&page.sidebar).iter().any(|label| label == agent_relay_app::models::PENDING_RESUME_MESSAGE));
     case.settle();
     assert_eq!(case.desktop.session_plans.borrow().len(), 1);
     let dialog_named = |title: &str| gtk::Window::list_toplevels().into_iter()
         .filter_map(|window| window.downcast::<gtk::MessageDialog>().ok())
         .find(|dialog| dialog.is_visible() && dialog.text().as_deref() == Some(title));
     assert!(dialog_named("The original application couldn’t resume this session").is_none());
-    buttons(&page.root,"Resolve earlier launch…")[0].emit_clicked();
+    buttons(&page.sidebar,"Resolve earlier launch…")[0].emit_clicked();
     case.pump(|_| dialog_named("Did you close or stop the earlier launch?").is_some());
     dialog_named("Did you close or stop the earlier launch?").unwrap().response(gtk::ResponseType::Accept);
     case.pump(|_| dialog_named("The original application couldn’t resume this session").is_some());
     assert_eq!(case.desktop.session_plans.borrow().len(), 1);
     dialog_named("The original application couldn’t resume this session").unwrap().response(gtk::ResponseType::Accept);
     case.pump(|case| case.called("sessions.open_plan").iter().any(|params|params["use_default_terminal"]==true));
-    case.pump(|_| labels(&page.root).iter().any(|label|label.contains("state changed")));
+    case.pump(|_| labels(&page.sidebar).iter().any(|label|label.contains("state changed")));
     assert_eq!(case.desktop.session_plans.borrow().len(), 1, "Fresh ownership prevents the explicitly requested replacement");
 }
 
@@ -2925,7 +2936,7 @@ fn session_opening_reloads_pending_launches_and_blocks_corrupt_storage(runtime: 
             }
         });
         case.sign_in();
-        case.app.open_local_session(row);
+        open_in_chat(&case, &row);
         let shell = case.app.shell().unwrap();
         let page = &shell.pages.sessions.transcript;
         page.open.emit_clicked();
@@ -2934,7 +2945,7 @@ fn session_opening_reloads_pending_launches_and_blocks_corrupt_storage(runtime: 
         assert!(case.desktop.session_plans.borrow().is_empty(), "No native resume after restart/corrupt storage");
         assert!(case.desktop.opened.borrow().is_empty());
         let message = if corrupt { "Resume is blocked." } else { "A resume request was already sent." };
-        assert!(labels(&page.root).iter().any(|label|label.contains(message)));
+        assert!(labels(&page.sidebar).iter().any(|label|label.contains(message)));
     }
 }
 
@@ -2951,8 +2962,7 @@ fn session_opening_multiple_owners_requires_an_explicit_choice(runtime: &tokio::
         }
     }));
     case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
+    open_in_chat(&case, &agent_relay_app::models::LocalSessionRow {
             upload: Some(
                 serde_json::from_value(upload_row(
                     "claude",

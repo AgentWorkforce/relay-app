@@ -241,13 +241,14 @@ impl App {
         );
     }
 
-    /// Only the open transcript preloads metadata; the table never does.
+    /// Only the session shown in Chat preloads metadata; the table never
+    /// does.
     pub(super) fn preload_session_titles(&self) {
         let Some(shell) = self.shell() else {
             return;
         };
         let page = &shell.pages.sessions.transcript;
-        if page.root.is_visible() && page.root.is_mapped() {
+        if page.sidebar.is_visible() && page.sidebar.is_mapped() {
             let selected = page.selected.borrow().clone();
             if let Some(row) = selected {
                 self.load_session_title_capability(&row);

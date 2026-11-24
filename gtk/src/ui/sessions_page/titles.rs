@@ -19,7 +19,22 @@ pub(super) fn with_optimistic_title(state: &State, mut row: LocalSessionRow) -> 
 }
 
 impl App {
-    pub(super) fn reconcile_native_session_titles(&self) {
+    pub(in crate::ui) fn reconcile_native_session_titles(&self) {
+        // Only a title the session list now shows settles: nothing else
+        // changes the state, so a redraw that reconciles does not redraw.
+        let settles = self.with_state(|state| {
+            !state.session_titles.is_empty()
+                && merge_local_sessions(&state.sessions, &state.local_sessions)
+                    .iter()
+                    .any(|row| {
+                        state.session_titles.get(&row.key()).is_some_and(|edit| {
+                            !edit.pending && edit.optimistic.as_deref() == Some(&row.title())
+                        })
+                    })
+        });
+        if !settles {
+            return;
+        }
         // Reconcile against native snapshots before applying display overlays.
         self.update_state(|state| {
             if !state.session_titles.is_empty() {

@@ -10,7 +10,6 @@
 use super::app::App;
 use super::state::{Page, Pane, State, View};
 use crate::models::{merge_local_sessions, MenuSummaryFilter, SessionUploadState};
-use gtk4::prelude::*;
 use std::collections::BTreeSet;
 
 impl App {
@@ -32,9 +31,6 @@ impl App {
             TrayAction::ShowWindow => self.show_window(),
             TrayAction::Go(page) => self.go(page),
             TrayAction::Search(search) => {
-                if let Some(shell) = self.shell() {
-                    shell.pages.sessions.transcript.back.emit_clicked();
-                }
                 self.set_session_search(&search);
                 self.go(Page::Sessions);
             }

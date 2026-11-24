@@ -66,7 +66,8 @@ pub struct Thread {
     /// How many of the entries read are drawn, newest last.
     showing: Cell<usize>,
     pub scroll: gtk::ScrolledWindow,
-    messages: gtk::Box,
+    /// The conversation's turns, oldest first.
+    pub messages: gtk::Box,
     pending: gtk::Box,
     placeholder: gtk::Label,
     /// Shown while the agent's last turn is not a reply yet.

@@ -16,6 +16,7 @@ pub(super) fn overlay(scroll: &gtk::ScrolledWindow) -> gtk::Overlay {
     jump.set_valign(gtk::Align::End);
     jump.set_margin_bottom(super::super::super::zoom::px(16));
     jump.set_visible(false);
+    jump.set_widget_name("chat-jump");
     overlay.add_overlay(&jump);
     let adjustment = scroll.vadjustment();
     let held = adjustment.clone();

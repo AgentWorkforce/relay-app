@@ -122,6 +122,12 @@ impl Shell {
         app.connect_sessions_page(&pages.sessions, &root);
         app.connect_messages_page(&pages.messages);
         app.connect_chat_page(&pages.chat);
+        // The selected session's controls sit in Chat's details panel.
+        pages
+            .chat
+            .controls
+            .root
+            .append(&pages.sessions.transcript.sidebar);
         let settings = SettingsPage::build();
         page_stack.add_named(&settings.scroller, Some("settings"));
         main.append(&page_stack);
@@ -186,11 +192,6 @@ impl App {
     // Navigation.
 
     pub fn open_section(&self, section: Section) {
-        if section == Section::Mine {
-            if let Some(shell) = self.shell() {
-                shell.pages.sessions.transcript.back.emit_clicked();
-            }
-        }
         self.go(section.home());
     }
 
@@ -255,19 +256,12 @@ impl App {
             .settings_back
             .set_visible(section == Section::Settings);
 
-        let reading_session = shell.pages.sessions.transcript.root.get_visible();
         if let Some(search) = shell.header_search.first_child() {
-            search.set_visible(section != Section::Settings && !reading_session);
+            search.set_visible(section != Section::Settings);
         }
         shell
-            .pages
-            .sessions
-            .transcript
-            .heading
-            .set_visible(section != Section::Settings && reading_session);
-        shell
             .header_grouping
-            .set_visible(section != Section::Settings && !reading_session);
+            .set_visible(section != Section::Settings);
         self.render_sidebar();
         self.render_topbar();
         self.render_status_bar();

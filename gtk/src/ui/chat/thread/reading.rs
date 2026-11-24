@@ -49,6 +49,7 @@ impl App {
             let page = match result {
                 Ok(page) => page,
                 Err(error) => {
+                    app.chat_read_ended();
                     app.with_chat(|chat| {
                         // A remembered conversation stays; the failure is
                         // noted under the box.
@@ -77,6 +78,7 @@ impl App {
                     app.read_chat_pages(agent, Some(next), generation, pages + 1)
                 }
                 next => {
+                    app.chat_read_ended();
                     app.with_chat(|chat| {
                         chat.thread.finish_loading(&source, &person);
                         *chat.thread.cursor.borrow_mut() = Some(next.or(follow));

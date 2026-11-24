@@ -46,16 +46,14 @@ pub(super) fn ending_spawned_agent(runtime: &tokio::runtime::Runtime) {
                 .find(|session| session.target.id == name)
                 .cloned()
         });
-        case.app.open_local_session(LocalSessionRow {
+        open_in_chat(&case, &LocalSessionRow {
             upload: None,
             relay,
-        });
+            });
     };
     open("worker");
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions.transcript;
-    assert!(!page.details.is_active(), "Session details start closed");
-    page.details.set_active(true);
     assert!(page.join.end.is_visible());
     assert!(page.join.end.is_sensitive());
     assert!(
@@ -73,11 +71,6 @@ pub(super) fn ending_spawned_agent(runtime: &tokio::runtime::Runtime) {
 
     open("other");
     assert!(
-        !page.details.is_active(),
-        "Selecting a session closes Details"
-    );
-    page.details.set_active(true);
-    assert!(
         page.join.end.is_sensitive(),
         "ending one agent must not block another"
     );
@@ -86,7 +79,6 @@ pub(super) fn ending_spawned_agent(runtime: &tokio::runtime::Runtime) {
     assert_eq!(case.called("agents.end")[1], json!({"name": "other"}));
     case.pump(|_| page.join.end.is_sensitive());
     open("worker");
-    page.details.set_active(true);
     assert!(!page.join.end.is_sensitive());
     assert_eq!(page.join.end.label().as_deref(), Some(SPAWN_ENDING));
     release.notify_one();
@@ -145,30 +137,10 @@ pub(super) fn switching_transcripts(runtime: &tokio::runtime::Runtime) {
                 .find(|s| s.target.id == name)
                 .cloned()
         });
-        case.app.open_local_session(LocalSessionRow {
+        open_in_chat(&case, &LocalSessionRow {
             upload: None,
             relay,
-        });
-        assert!(
-            !case
-                .app
-                .shell()
-                .unwrap()
-                .pages
-                .sessions
-                .transcript
-                .details
-                .is_active(),
-            "Opening another conversation resets details"
-        );
-        case.app
-            .shell()
-            .unwrap()
-            .pages
-            .sessions
-            .transcript
-            .details
-            .set_active(true);
+            });
     };
     open("first");
     let shell = case.app.shell().unwrap();

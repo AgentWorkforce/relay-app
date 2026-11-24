@@ -113,9 +113,8 @@ fn cursor_messaging_and_history_share_the_upload_control(runtime: &tokio::runtim
     let open: gtk::Button = named(&page.list, &format!("open-session {key}")).remove(0);
     open.emit_clicked();
     case.pump(|case| !case.called("sessions.transcript").is_empty());
-    page.transcript.details.set_active(true);
     case.settle();
-    assert!(!labels(&page.transcript.root).contains(&"Indexing".into()));
+    assert!(!labels(&page.transcript.sidebar).contains(&"Indexing".into()));
     assert!(page.transcript.save.is_visible());
     assert!(page.transcript.save.is_sensitive());
     assert!(!page.transcript.save.is_active());
@@ -1629,25 +1628,18 @@ fn transcript_sidebar_controls_use_the_selected_session(runtime: &tokio::runtime
     let page = &shell.pages.sessions;
     let open: gtk::Button = named(&page.list, "open-session claude:c-2").remove(0);
     open.emit_clicked();
-    assert!(!page.transcript.details.is_active());
-    assert!(!page.transcript.sidebar.is_visible());
-    page.transcript.details.set_active(true);
+    // The session's controls are in Chat's details panel, shown at once.
+    let chat = &shell.pages.chat.root;
+    assert!(page.transcript.sidebar.is_visible());
+    assert!(page.transcript.sidebar.is_ancestor(chat));
     case.app.window().set_default_size(980, 650);
     case.app.show_window();
     case.settle();
-    let rename_bounds = page
-        .transcript
-        .rename
-        .compute_bounds(&page.transcript.root)
-        .unwrap();
-    let name_bounds = page
-        .transcript
-        .agent_name
-        .compute_bounds(&page.transcript.root)
-        .unwrap();
+    let rename_bounds = page.transcript.rename.compute_bounds(chat).unwrap();
+    let name_bounds = page.transcript.agent_name.compute_bounds(chat).unwrap();
     assert!(rename_bounds.height() > 0.0);
     assert!(
-        rename_bounds.y() + rename_bounds.height() < page.transcript.root.height() as f32,
+        rename_bounds.y() + rename_bounds.height() < chat.height() as f32,
         "Rename must be visible without scrolling at minimum height"
     );
     assert!(
@@ -1694,11 +1686,7 @@ fn transcript_sidebar_controls_use_the_selected_session(runtime: &tokio::runtime
         });
     case.pump(|_| received_name.borrow().is_some());
     assert_eq!(received_name.borrow().as_deref(), Some("web"));
-    let receive_bounds = page
-        .transcript
-        .receive
-        .compute_bounds(&page.transcript.root)
-        .unwrap();
+    let receive_bounds = page.transcript.receive.compute_bounds(chat).unwrap();
     assert!(
         receive_bounds.y() < name_bounds.y(),
         "Receive messages precedes Agent name"
@@ -1710,15 +1698,14 @@ fn transcript_sidebar_controls_use_the_selected_session(runtime: &tokio::runtime
         json!({"name":"web", "new_name":"webby"})
     );
     case.pump(|_| {
-        labels(&page.transcript.root)
+        labels(&page.transcript.sidebar)
             .contains(&"Now @webby. Messages already sent to @web still arrive.".into())
     });
     assert!(
-        labels(&shell.header_search).contains(&"Web".into()),
+        labels(&page.transcript.title_group).contains(&"Web".into()),
         "Renaming the agent preserves the session title"
     );
     assert!(case.called("uploader.sessions.include").is_empty());
-    page.transcript.back.emit_clicked();
     let open: gtk::Button = named(&page.list, "open-session codex:thread-1").remove(0);
     open.emit_clicked();
     assert!(!page.transcript.receive.is_active());
@@ -1732,7 +1719,6 @@ fn transcript_sidebar_controls_use_the_selected_session(runtime: &tokio::runtime
         case.called("agents.register")[0]["target"],
         json!({"kind":"codex", "id":"thread-1"})
     );
-    page.transcript.back.emit_clicked();
     let open: gtk::Button = named(&page.list, "open-session claude:two").remove(0);
     open.emit_clicked();
     assert!(!page.transcript.save.is_active());
@@ -1955,21 +1941,15 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     assert_eq!(page.row_keys(), before);
     let open: gtk::Button = named(&page.list, "open-session codex:one").remove(0);
     open.emit_clicked();
-    case.pump(|_| {
-        labels(&page.transcript.messages).contains(&"Last message".into())
-            || page.transcript.retry.get_visible()
-    });
-    assert!(!page.transcript.retry.get_visible());
-    assert!(labels(&page.transcript.root).contains(&"Upload session".into()));
-    assert!(labels(&page.transcript.root).contains(&"Agent name".into()));
-    assert!(page.transcript.heading.is_ancestor(&shell.header_search));
-    assert!(page.transcript.back.is_ancestor(&shell.header_search));
-    assert!(!page.transcript.back.is_ancestor(&page.transcript.sidebar));
-    assert!(page.transcript.heading.get_visible());
-    assert!(!shell.header_search.first_child().unwrap().get_visible());
-    assert!(!shell.header_grouping.get_visible());
-    assert!(labels(&shell.header_search).contains(&"Fix login".into()));
-    assert!(!labels(&page.transcript.root).contains(&"Fix login".into()));
+    // A row opens Chat on its agent: the conversation, and the session's
+    // controls in the details panel beside it.
+    assert_eq!(case.app.page(), Page::Chat);
+    let messages = &shell.pages.chat.thread.messages;
+    case.pump(|_| labels(messages).contains(&"Last message".into()));
+    assert!(labels(&page.transcript.sidebar).contains(&"Upload session".into()));
+    assert!(labels(&page.transcript.sidebar).contains(&"Agent name".into()));
+    assert!(labels(&page.transcript.title_group).contains(&"Fix login".into()));
+    assert!(page.transcript.title_group.is_ancestor(&page.transcript.sidebar));
     for action in [
         &page.transcript.open,
         &page.transcript.copy_name,
@@ -1977,17 +1957,10 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     ] {
         assert!(action.is_ancestor(&page.transcript.sidebar));
     }
-    assert!(!page.table.get_visible());
-    assert!(page.transcript.root.get_visible());
+    assert!(!page.table.is_mapped());
     assert!(page.transcript.open.get_visible());
     case.app.window().set_default_size(980, 650);
     case.app.show_window();
-    case.settle();
-    assert!(
-        !page.transcript.details.is_active(),
-        "Conversation opens with details collapsed"
-    );
-    page.transcript.details.set_active(true);
     case.settle();
     assert!(page.transcript.open.width() > 0);
     let action_row = page.transcript.open.parent().unwrap();
@@ -2018,9 +1991,8 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
         Some("Open session")
     );
     assert_session_open_action(&page.transcript.open, "codex", "Open session");
-    assert!(labels(&page.transcript.messages).contains(&"Read this locally".into()));
-    let context: gtk::Expander =
-        named(&page.transcript.messages, "transcript-system-prompt").remove(0);
+    assert!(labels(messages).contains(&"Read this locally".into()));
+    let context: gtk::Expander = named(messages, "transcript-system-prompt").remove(0);
     assert!(
         !context.is_expanded(),
         "System context is closed by default"
@@ -2029,12 +2001,12 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     context.set_expanded(true);
     assert!(labels(&context).contains(&"Injected system context".into()));
     context.set_expanded(false);
-    assert!(!labels(&page.transcript.messages).contains(&"Internal reasoning".into()));
-    assert!(labels(&page.transcript.messages).contains(&"Ready".into()));
-    assert!(labels(&page.transcript.messages).contains(&"let x = 1;".into()));
-    assert!(labels(&page.transcript.messages).contains(&"Shared files".into()));
-    assert!(labels(&page.transcript.messages).contains(&"Interruptions".into()));
-    let grids = widgets::<gtk::Grid>(&page.transcript.messages);
+    assert!(!labels(messages).contains(&"Internal reasoning".into()));
+    assert!(labels(messages).contains(&"Ready".into()));
+    assert!(labels(messages).contains(&"let x = 1;".into()));
+    assert!(labels(messages).contains(&"Shared files".into()));
+    assert!(labels(messages).contains(&"Interruptions".into()));
+    let grids = widgets::<gtk::Grid>(messages);
     assert_eq!(
         grids.len(),
         4,
@@ -2050,76 +2022,38 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
         "The rendered conversation must share its budget across tables, entries and pages"
     );
     assert_eq!(
-        labels(&page.transcript.messages)
+        labels(messages)
             .iter()
             .filter(|label| label.starts_with("|h|h|"))
             .count(),
         2,
         "Over-budget tables from both pages stay readable as text"
     );
-    let attachment: gtk::Expander =
-        named(&page.transcript.messages, "transcript-attached-image").remove(0);
-    assert!(!attachment.is_expanded());
-    assert!(
-        attachment.child().is_none(),
-        "Closed attachments do not mount large screenshots"
-    );
-    attachment.set_expanded(true);
+    // Chat shows an attached image open, in the conversation.
+    let attachment: gtk::Expander = named(messages, "transcript-attached-image").remove(0);
+    assert!(attachment.is_expanded());
     let picture = attachment
         .child()
         .unwrap()
         .downcast::<gtk::Picture>()
         .unwrap();
     assert!(picture.paintable().is_some());
-    attachment.set_expanded(false);
-    assert!(attachment.child().is_none());
-    let mut disclosures = Vec::new();
-    walk(page.transcript.messages.upcast_ref(), &mut |widget| {
-        if let Some(expander) = widget.downcast_ref::<gtk::Expander>() {
-            disclosures.push(expander.clone());
-        }
-    });
-    assert_eq!(disclosures.len(), 3);
-    let group = disclosures
-        .iter()
+    let group = widgets::<gtk::Expander>(messages)
+        .into_iter()
         .find(|item| item.label().as_deref() == Some("Activity"))
-        .unwrap()
-        .clone();
+        .unwrap();
     assert!(!group.is_expanded());
     group.set_expanded(true);
-    disclosures.clear();
-    walk(group.child().unwrap().upcast_ref(), &mut |widget| {
-        if let Some(expander) = widget.downcast_ref::<gtk::Expander>() {
-            disclosures.push(expander.clone());
-        }
-    });
-    assert_eq!(disclosures.len(), 2);
-    assert!(disclosures.iter().all(|item| !item.is_expanded()));
-    for disclosure in disclosures {
-        disclosure.set_expanded(true);
-    }
-    let mut avatars = 0;
-    walk(page.transcript.messages.upcast_ref(), &mut |widget| {
-        if widget.has_css_class("avatar-picture") {
-            avatars += 1;
-        }
-    });
-    assert_eq!(
-        avatars, 1,
-        "Only the typed user message has an account avatar"
-    );
-    assert!(labels(&page.transcript.messages).contains(&"All tests passed".into()));
+    assert!(labels(&group).contains(&"All tests passed".into()));
     assert_eq!(case.called("sessions.transcript")[0]["session_id"], "one");
     assert!(case.called("uploader.sessions.include").is_empty());
-    assert!(labels(&page.transcript.messages).contains(&"Last message".into()));
     assert_eq!(
         case.called("sessions.transcript")[1]["cursor"],
         json!({"id":3,"ts_ms":3})
     );
-    page.transcript.back.emit_clicked();
+    shell.sessions_button.emit_clicked();
+    assert_eq!(case.app.page(), Page::Sessions);
     assert!(page.table.get_visible());
-    assert!(!page.transcript.root.get_visible());
-    assert!(!page.transcript.heading.get_visible());
     assert!(shell.header_search.first_child().unwrap().get_visible());
     assert!(shell.header_grouping.get_visible());
     assert_eq!(page.row_keys(), before);
@@ -2128,27 +2062,25 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     active.emit_clicked();
     case.pump(|case| case.called("sessions.transcript").len() >= 3);
     assert!(labels(&page.row("codex:thread-1").unwrap()).contains(&"Indexing".into()));
-    assert!(labels(&page.transcript.root).contains(&"Indexing".into()));
-    assert!(!labels(&page.transcript.root).contains(&"Upload unavailable".into()));
+    assert!(labels(&page.transcript.sidebar).contains(&"Indexing".into()));
+    assert!(!labels(&page.transcript.sidebar).contains(&"Upload unavailable".into()));
     assert!(
         !page.transcript.save.is_sensitive(),
         "Upload selection waits for the catalog"
     );
-    assert!(!labels(&page.transcript.root).contains(&"No transcript".into()));
     assert_eq!(
         case.called("sessions.transcript")[2]["session_id"],
         "thread-1"
     );
     assert!(!shell.topbar.get_visible());
-    case.pump(|_| labels(&page.transcript.messages).contains(&"Last message".into()));
+    case.pump(|_| labels(messages).contains(&"Last message".into()));
     assert_eq!(
-        widgets::<gtk::Grid>(&page.transcript.messages).len(),
+        widgets::<gtk::Grid>(messages).len(),
         4,
         "Selecting a new conversation resets the table budget"
     );
     shell.sessions_button.emit_clicked();
     assert!(page.table.get_visible());
-    assert!(!page.transcript.root.get_visible());
     assert!(!shell.topbar.get_visible());
     assert_eq!(page.row_keys(), before);
     let claude = serde_json::from_value(upload_row(
@@ -2161,7 +2093,7 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     ))
     .unwrap();
     case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
+        .open_session_conversation(&agent_relay_app::models::LocalSessionRow {
             upload: Some(claude),
             relay: None,
         });
@@ -2174,9 +2106,8 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     // The genuine core-plan reply calls render_spawn_join again. That used to
     // replace the composed child with plain text, silently losing its badge.
     assert_session_open_action(&page.transcript.open, "claudecode", "Resume in Terminal");
-    // Opening the provider is independent of the initial transcript read.
-    // Use Refresh only once that genuine read has completed and the action is visible.
-    page.transcript.details.set_active(true);
+    // Opening the provider is independent of the conversation's read.
+    // Use Refresh only once that genuine read has completed.
     case.pump(|_| page.transcript.refresh.is_mapped() && page.transcript.refresh.is_sensitive());
     let reads = case.called("sessions.transcript").len();
     page.transcript.refresh.emit_clicked();
@@ -2188,8 +2119,7 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     assert!(refreshed.get("cursor").is_none_or(Value::is_null));
     assert_eq!(refreshed["following"], false);
     case.pump(|_| page.transcript.refresh.is_sensitive()
-        && labels(&page.transcript.messages).contains(&"Last message".into()));
-    assert!(!page.transcript.retry.get_visible());
+        && labels(messages).contains(&"Last message".into()));
     case.settle();
     assert_session_open_action(&page.transcript.open, "claudecode", "Resume in Terminal");
     let actions = page.transcript.open.parent().unwrap();
@@ -2222,27 +2152,32 @@ fn conversations_follow_latest_and_leave_scrollback_in_place(runtime: &tokio::ru
     named::<gtk::Button>(&page.list, "open-session codex:one")[0].emit_clicked();
     case.app.window().set_default_size(980, 650);
     case.app.show_window();
+    let thread = &shell.pages.chat.thread;
     case.pump(|_| {
-        labels(&page.transcript.messages)
+        labels(&thread.messages)
             .contains(&"Reply 44: this is part of a longer conversation.".into())
     });
-    let adjustment = page.transcript.scroll.vadjustment();
+    let adjustment = thread.scroll.vadjustment();
     // Loading labels does not mean GTK has allocated the next frame. Wait for
     // the fixture's scroll range before exercising following and scrollback.
     case.pump(|_| adjustment.upper() - adjustment.page_size() > 1000.0);
-    assert!(adjustment.upper() - adjustment.page_size() > 1000.0);
-    assert!((adjustment.upper() - adjustment.page_size() - adjustment.value()).abs() < 5.0);
+    case.pump(|_| (adjustment.upper() - adjustment.page_size() - adjustment.value()).abs() < 5.0);
+    let jump: gtk::Button = named(&thread.view, "chat-jump").remove(0);
+    assert!(!jump.get_visible());
     adjustment.set_value(200.0);
-    assert!(page.transcript.latest_row.get_visible());
-    page.transcript.details.set_active(true);
+    assert!(jump.get_visible());
+    // Hiding and showing the details panel leaves scrollback in place.
+    let details: gtk::ToggleButton = named(&shell.pages.chat.root, "chat-details").remove(0);
+    details.set_active(false);
+    details.set_active(true);
     case.settle();
     assert!(
         (adjustment.value() - 200.0).abs() < 5.0,
         "Opening details leaves scrollback in place"
     );
-    page.transcript.latest.emit_clicked();
+    jump.emit_clicked();
     case.settle();
-    assert!(!page.transcript.latest_row.get_visible());
+    assert!(!jump.get_visible());
     assert!((adjustment.upper() - adjustment.page_size() - adjustment.value()).abs() < 5.0);
 }
 
@@ -3800,7 +3735,6 @@ fn hidden_sessions_stop_sharing_and_can_be_shown_without_reenabling(
     case.settle();
     assert!(!page.transcript.save.is_sensitive());
     assert!(!page.transcript.receive.is_sensitive());
-    page.transcript.back.emit_clicked();
     case.app
         .set_sessions_hidden(vec!["codex:one".into()], false);
     case.settle();
@@ -3983,7 +3917,7 @@ fn saved_views_default_on_first_open(runtime: &tokio::runtime::Runtime) {
 fn click_outside_title(case: &Case) {
     let window = case.app.window();
     let shell = case.app.shell().unwrap();
-    let body = &shell.pages.sessions.transcript.root;
+    let body = &shell.pages.chat.thread.view;
     let point = body
         .compute_point(
             window,
@@ -3993,7 +3927,7 @@ fn click_outside_title(case: &Case) {
     let picked = window
         .pick(point.x() as f64, point.y() as f64, gtk::PickFlags::DEFAULT)
         .unwrap();
-    assert!(!picked.is_ancestor(&shell.pages.sessions.transcript.heading));
+    assert!(!picked.is_ancestor(&shell.pages.sessions.transcript.title_group));
     let controllers = window.observe_controllers();
     let clicks: Vec<_> = (0..controllers.n_items())
         .filter_map(|i| controllers.item(i))
@@ -4070,7 +4004,7 @@ fn sessions_title_edits_use_saved_brief_and_rollback(runtime: &tokio::runtime::R
     });
     case.settle();
     let shell = case.app.shell().unwrap();
-    let root = &shell.pages.sessions.transcript.heading;
+    let root = &shell.pages.sessions.transcript.title_group;
     named::<gtk::Button>(root, "rename-session codex:one")
         .remove(0)
         .emit_clicked();
@@ -4186,9 +4120,10 @@ fn sessions_title_edits_use_saved_brief_and_rollback(runtime: &tokio::runtime::R
     case.pump(|case| case.called("sessions.title.set").len() == 3);
     case.settle();
     assert!(!entry.is_mapped());
-    assert!(
-        !shell.pages.sessions.table.is_visible(),
-        "Editor clicks must stay in the transcript"
+    assert_eq!(
+        case.app.page(),
+        Page::Chat,
+        "Editor clicks must stay in the conversation"
     );
 }
 
@@ -4209,7 +4144,7 @@ fn sessions_title_unsupported_never_writes(runtime: &tokio::runtime::Runtime) {
         .emit_clicked();
     case.settle();
     let shell = case.app.shell().unwrap();
-    let root = &shell.pages.sessions.transcript.heading;
+    let root = &shell.pages.sessions.transcript.title_group;
     named::<gtk::Button>(root, "rename-session codex:one")
         .remove(0)
         .emit_clicked();
@@ -4281,7 +4216,7 @@ fn sessions_title_reconnect_retires_pending_work(runtime: &tokio::runtime::Runti
     });
     case.settle();
     let shell = case.app.shell().unwrap();
-    let root = &shell.pages.sessions.transcript.heading;
+    let root = &shell.pages.sessions.transcript.title_group;
     named::<gtk::Button>(root, "rename-session codex:one")[0].emit_clicked();
     let entry = named::<gtk::Entry>(root, "session-title-entry codex:one").remove(0);
     entry.set_text("Uncertain rename");
@@ -4374,7 +4309,7 @@ fn sessions_title_transcript_reopens_with_current_native_title(runtime: &tokio::
     let shell = case.app.shell().unwrap();
     let page = &shell.pages.sessions;
     case.settle();
-    let heading = &page.transcript.heading;
+    let heading = &page.transcript.title_group;
     named::<gtk::Button>(heading, "rename-session codex:one")[0].emit_clicked();
     let entry = named::<gtk::Entry>(heading, "session-title-entry codex:one").remove(0);
     assert_eq!(entry.text(), "Fix login");
@@ -4447,7 +4382,7 @@ fn sessions_title_blur_debounce_and_noop(runtime: &tokio::runtime::Runtime) {
                     .is_some_and(|overview| overview.title == "Fix login")
         })
     });
-    let heading = &page.transcript.heading;
+    let heading = &page.transcript.title_group;
     let rename = named::<gtk::Button>(heading, "rename-session codex:one").remove(0);
     let entry = named::<gtk::Entry>(heading, "session-title-entry codex:one").remove(0);
     let done = named::<gtk::Button>(heading, "save-session-title codex:one").remove(0);
@@ -4487,7 +4422,7 @@ fn sessions_title_blur_debounce_and_noop(runtime: &tokio::runtime::Runtime) {
     let capabilities = case.called("sessions.title.capability").len();
     entry.set_text("Typing");
     entry.set_text("Typing a new title");
-    page.transcript.back.grab_focus();
+    page.transcript.refresh.grab_focus();
     let until = Instant::now() + Duration::from_millis(50);
     while Instant::now() < until {
         dispatch_one();
@@ -4539,18 +4474,18 @@ fn sessions_title_blur_debounce_and_noop(runtime: &tokio::runtime::Runtime) {
     entry.set_text("Committed by leaving");
     entry.grab_focus();
     case.settle();
-    page.transcript.back.grab_focus();
+    page.transcript.refresh.grab_focus();
     case.pump(|case| case.called("sessions.title.set").len() == 1);
     case.settle();
     assert!(
-        page.transcript.back.is_focus(),
+        page.transcript.refresh.is_focus(),
         "Blur save preserves outside focus"
     );
     rename.emit_clicked();
     entry.set_text("Must not save on navigation");
     entry.grab_focus();
     case.settle();
-    page.transcript.back.emit_clicked();
+    case.app.shell().unwrap().sessions_button.emit_clicked();
     case.settle();
     assert_eq!(case.called("sessions.title.set").len(), 1);
     named::<gtk::Button>(&page.list, "open-session codex:one")[0].emit_clicked();
