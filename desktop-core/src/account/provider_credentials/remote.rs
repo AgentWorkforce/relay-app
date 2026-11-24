@@ -11,6 +11,18 @@ pub(super) enum Change {
     /// refreshed mid-request); a repeat means a new app login is needed.
     AppLoginRefused,
     Retry,
+    /// An app-login refusal of a bearer that is no longer the stored one:
+    /// retried at once with the current token.
+    RetryNow,
+}
+
+/// An app-login refusal counts only when the bearer sent is still the
+/// app's stored token; otherwise it is retried with the current one.
+pub(super) fn for_bearer(change: Change, current: bool) -> Change {
+    match change {
+        Change::SignInRequired | Change::AppLoginRefused if !current => Change::RetryNow,
+        other => other,
+    }
 }
 
 fn route(binding: &Binding) -> String {

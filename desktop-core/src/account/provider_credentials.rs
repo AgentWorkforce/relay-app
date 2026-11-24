@@ -125,6 +125,16 @@ impl Account {
             // New grants expire automatically even if their parent cannot be reached.
             return;
         }
+        // A refusal of a bearer that is no longer the stored one (a refresh
+        // or workspace pick landed mid-request) says nothing about the
+        // current login: retry with it instead of asking for a sign-in.
+        let current = self
+            .load_session()
+            .is_some_and(|session| session.access_token == token);
+        let answers = answers
+            .into_iter()
+            .map(|(id, change)| (id, remote::for_bearer(change, current)))
+            .collect();
         saved.apply(answers, agent_relay_node::relay::state::now_ms());
         if saved.save(&path).is_err() {
             installer.clear_provider_credentials();

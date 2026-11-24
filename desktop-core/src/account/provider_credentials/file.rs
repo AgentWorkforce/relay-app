@@ -116,6 +116,11 @@ impl Credentials {
                         }
                     }
                 }
+                remote::Change::RetryNow => {
+                    if let Some(grant) = self.grants.get_mut(&provider) {
+                        grant.retry_after = 0;
+                    }
+                }
                 remote::Change::SignInRequired => {
                     // Kept until a new app login renews it; not served meanwhile.
                     if let Some(grant) = self.grants.get_mut(&provider) {

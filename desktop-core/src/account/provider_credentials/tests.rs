@@ -279,3 +279,53 @@ fn an_unexplained_app_login_refusal_asks_for_sign_in_only_when_it_repeats() {
     saved.apply(vec![("pi".into(), remote::Change::AppLoginRefused)], 30);
     assert!(!saved.grants["pi"].needs_app_login);
 }
+
+#[test]
+fn a_refusal_of_a_superseded_bearer_does_not_ask_for_sign_in() {
+    use remote::{for_bearer, refusal, Change};
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let installer = Installer::new(
+        home.into(),
+        agent_relay_node::relay::codex::CodexConfig::from_env(&|_| None, home),
+        agent_relay_node::relay::claude::ClaudeConfig::resolve(&|_| None, home, &[]),
+        agent_relay_node::relay::opencode::OpenCodeConfig::from_env(&|_| None, home),
+    );
+    let pinned = binding();
+    let selected = BTreeSet::from(["pi".into()]);
+    let message = "An Agent Relay app login is required.";
+    for body in [
+        json!({"error": message, "error_code": "desktop_reauth_required"}),
+        json!({"error": message}),
+    ] {
+        let mut saved = Credentials::load(&home.join("credentials"), &pinned).unwrap();
+        saved.grants.insert("pi".into(), Grant::new().unwrap());
+        // The same refusal twice, each of a bearer a refresh replaced.
+        for now in [10, 20] {
+            let change = for_bearer(refusal(403, &body, false).unwrap(), false);
+            assert!(matches!(change, Change::RetryNow), "{body}");
+            saved.apply(vec![("pi".into(), change)], now);
+        }
+        let grant = &saved.grants["pi"];
+        assert!(!grant.needs_app_login && !grant.app_login_refused, "{body}");
+        // Retried at once with the current token.
+        assert!(saved.needs_network(&selected, 20));
+        saved.publish(&installer, &pinned, &selected, 20);
+        assert!(!installer.provider_login_required(&pinned), "{body}");
+        // Health therefore stays ready.
+        assert_eq!(
+            health_with_provider_sign_in(Some("ready"), None, false),
+            (Some("ready".into()), None)
+        );
+    }
+    // The current bearer's refusal still counts, and other answers pass through.
+    let reauth = json!({"error": message, "error_code": "desktop_reauth_required"});
+    assert!(matches!(
+        for_bearer(refusal(403, &reauth, false).unwrap(), true),
+        Change::SignInRequired
+    ));
+    assert!(matches!(
+        for_bearer(Change::Rejected, false),
+        Change::Rejected
+    ));
+}
