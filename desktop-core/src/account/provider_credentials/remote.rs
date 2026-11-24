@@ -5,7 +5,11 @@ pub(super) enum Change {
     Updated(Grant),
     Remove,
     Rejected,
+    /// Refused as `desktop_reauth_required`: only a new app login fixes it.
     SignInRequired,
+    /// Refused with the app-login message alone (older Cloud, or a token
+    /// refreshed mid-request); a repeat means a new app login is needed.
+    AppLoginRefused,
     Retry,
 }
 
@@ -99,17 +103,18 @@ async fn renew(
         .unwrap_or(Change::Retry)
 }
 
-/// What a refused issue or renewal means. Cloud refuses a login that is
-/// not a verified Desktop sign-in (one made before its consent screen, kept
-/// alive by refreshes) with 403 and `desktop_reauth_required`; older Cloud
-/// sends only the message. Signing in again through the app fixes it.
+/// What a refused issue or renewal means. Cloud refuses a login that
+/// carries no Desktop proof (one made before its consent screen, kept alive
+/// by refreshes) with 403 and `desktop_reauth_required`: signing in again
+/// through the app fixes it. The same message without that code (older
+/// Cloud, or a token refreshed or revoked mid-request) is retried first.
 /// Bodies may echo secret input on an older backend; never expose them.
 pub(super) fn refusal(status: u16, body: &Value, has_id: bool) -> Option<Change> {
-    if status == 403
-        && (body["error_code"].as_str() == Some("desktop_reauth_required")
-            || body["error"].as_str() == Some("An Agent Relay app login is required."))
-    {
+    if status == 403 && body["error_code"].as_str() == Some("desktop_reauth_required") {
         return Some(Change::SignInRequired);
+    }
+    if status == 403 && body["error"].as_str() == Some("An Agent Relay app login is required.") {
+        return Some(Change::AppLoginRefused);
     }
     if has_id && matches!(status, 404 | 410) {
         return Some(Change::Remove);
@@ -146,6 +151,7 @@ pub(super) fn accept(
         lease_expires: expiry,
         retry_after: 0,
         needs_app_login: false,
+        app_login_refused: false,
     })
 }
 

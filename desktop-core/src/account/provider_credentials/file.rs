@@ -25,6 +25,10 @@ pub(super) struct Grant {
     pub retry_after: i64,
     #[serde(default)]
     pub needs_app_login: bool,
+    /// Cloud refused the app login once without saying why: the next pass,
+    /// with a refreshed token, decides whether it needs a new app login.
+    #[serde(default)]
+    pub app_login_refused: bool,
 }
 impl Grant {
     pub fn new() -> io::Result<Self> {
@@ -40,6 +44,7 @@ impl Grant {
             lease_expires: 0,
             retry_after: 0,
             needs_app_login: false,
+            app_login_refused: false,
         })
     }
 }
@@ -93,6 +98,21 @@ impl Credentials {
                             Err(_) => {
                                 self.grants.remove(&provider);
                             }
+                        }
+                    }
+                }
+                remote::Change::AppLoginRefused => {
+                    // Older Cloud names no reason, and the refusal can be a
+                    // token refreshed or revoked mid-request: retry with the
+                    // current token, and ask for a sign-in only if refused again.
+                    if let Some(grant) = self.grants.get_mut(&provider) {
+                        if grant.app_login_refused {
+                            grant.needs_app_login = true;
+                            grant.lease_expires = 0;
+                            grant.retry_after = now + 60_000;
+                        } else {
+                            grant.app_login_refused = true;
+                            grant.retry_after = 0;
                         }
                     }
                 }

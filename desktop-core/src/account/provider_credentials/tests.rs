@@ -176,7 +176,6 @@ fn desktop_reauth_refusals_ask_for_a_new_app_login() {
     use remote::{refusal, Change};
     let message = "An Agent Relay app login is required.";
     for body in [
-        json!({"error": message}),
         json!({"error": message, "error_code": "desktop_reauth_required"}),
         json!({"error": "Sign in again.", "error_code": "desktop_reauth_required"}),
     ] {
@@ -186,6 +185,14 @@ fn desktop_reauth_refusals_ask_for_a_new_app_login() {
                 "{body}"
             );
         }
+    }
+    // The message alone (older Cloud, or a token refreshed mid-request) is
+    // retried before it asks for a sign-in.
+    for has_id in [false, true] {
+        assert!(matches!(
+            refusal(403, &json!({"error": message}), has_id),
+            Some(Change::AppLoginRefused)
+        ));
     }
     // Any other refusal keeps today's meaning.
     for body in [
@@ -245,4 +252,30 @@ fn account_health_asks_for_sign_in_while_providers_need_a_new_app_login() {
         health_with_provider_sign_in(Some("ready"), None, false),
         owned("ready", None)
     );
+}
+
+#[test]
+fn an_unexplained_app_login_refusal_asks_for_sign_in_only_when_it_repeats() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut saved = Credentials::load(&dir.path().join("credentials"), &binding()).unwrap();
+    saved.grants.insert("pi".into(), Grant::new().unwrap());
+    let selected = BTreeSet::from(["pi".into()]);
+    saved.apply(vec![("pi".into(), remote::Change::AppLoginRefused)], 10);
+    // Retried at once with the current token, without asking for a sign-in.
+    assert!(!saved.grants["pi"].needs_app_login);
+    assert!(saved.needs_network(&selected, 10));
+    saved.apply(vec![("pi".into(), remote::Change::AppLoginRefused)], 20);
+    assert!(saved.grants["pi"].needs_app_login);
+    assert!(!saved.needs_network(&selected, 20));
+
+    // A refusal followed by an issued grant starts over.
+    let mut saved = Credentials::load(&dir.path().join("other"), &binding()).unwrap();
+    saved.grants.insert("pi".into(), Grant::new().unwrap());
+    saved.apply(vec![("pi".into(), remote::Change::AppLoginRefused)], 10);
+    let mut issued = saved.grants["pi"].clone();
+    issued.id = Some("grant-pi".into());
+    issued.app_login_refused = false;
+    saved.apply(vec![("pi".into(), remote::Change::Updated(issued))], 20);
+    saved.apply(vec![("pi".into(), remote::Change::AppLoginRefused)], 30);
+    assert!(!saved.grants["pi"].needs_app_login);
 }

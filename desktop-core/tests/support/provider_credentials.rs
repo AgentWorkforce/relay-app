@@ -269,11 +269,23 @@ async fn a_login_refused_provider_credentials_asks_the_account_to_sign_in_again(
         let report = client
             .ok("tools.select", json!({"tool_ids":["grok"]}))
             .await;
+        // `desktop_reauth_required` asks at once; older Cloud's message
+        // alone (possibly a token refreshed mid-request) only once a retry
+        // with the current token is refused again.
+        let issued = harness
+            .cloud
+            .requests(&format!(
+                "/cloud/api/v1/workspaces/{WORKSPACE}/mcp/shared-sessions-tokens"
+            ))
+            .len();
+        assert_eq!(issued, if reauth_code { 1 } else { 2 }, "{reauth_code}");
         assert_eq!(
             tool(&report, "grok")["state"],
             "signed_out",
             "{reauth_code}"
         );
+        // The next report shows it too.
+        let report = client.ok("tools.status", json!({})).await;
         assert_eq!(
             report["account_health"], "sign_in_required",
             "{reauth_code}"
