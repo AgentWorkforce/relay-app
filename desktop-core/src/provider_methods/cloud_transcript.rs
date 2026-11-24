@@ -56,11 +56,26 @@ pub(super) fn page(response: &Value) -> Result<CloudTranscriptPage, RpcError> {
     })
 }
 
+/// What Claude Code adds to a session as the person's turn without the
+/// person writing it: a SessionStart hook's context.
+const HOOK_CONTEXT: &str = "SessionStart hook additional context:";
+
 /// One event as an entry: who wrote it, and whether it is text, thinking
-/// or tool work. An event with nothing to show is left out.
+/// or tool work. An event with nothing to show is left out, and so are
+/// copies: Claude's prompt log (`history`) repeats each prompt the
+/// transcript has, and a hook's context is not something the person wrote.
 fn entry(event: &Value) -> Option<LocalTranscriptEntry> {
     let id = event["eventId"].as_str()?.to_string();
     let kind_of = event["type"].as_str().unwrap_or_default();
+    if kind_of == "history" {
+        return None;
+    }
+    if event["content"]
+        .as_str()
+        .is_some_and(|content| content.trim_start().starts_with(HOOK_CONTEXT))
+    {
+        return None;
+    }
     let tool = event["toolName"].as_str().filter(|name| !name.is_empty());
     let kind = match kind_of {
         "tool_use" | "tool_call" => "tool_use",
@@ -139,6 +154,19 @@ mod tests {
             ]
         );
         assert!(page.entries[0].timestamp_ms > page.entries[2].timestamp_ms);
+    }
+
+    #[test]
+    fn prompt_log_copies_and_hook_context_are_left_out() {
+        let page = page(&json!({"events": [
+            {"eventId": "h1", "type": "history", "actorRole": "user", "content": "ping"},
+            {"eventId": "u1", "type": "user", "actorRole": "user",
+             "content": "SessionStart hook additional context: This session joins"},
+            {"eventId": "u2", "type": "user", "actorRole": "user", "content": "ping"},
+        ]}))
+        .unwrap();
+        let ids: Vec<&str> = page.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["u2"]);
     }
 
     #[test]
