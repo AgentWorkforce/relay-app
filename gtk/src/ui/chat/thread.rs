@@ -37,13 +37,6 @@ const FOLLOW_EVERY: Duration = Duration::from_secs(3);
 const REMEMBERED: usize = 24;
 const KEPT_ENTRIES: usize = 3000;
 
-/// How far apart two records of the same turn can be.
-const SAME_TURN_MS: i64 = 10_000;
-
-/// How far the core's record of a turn can trail the transcript's line for
-/// it, both drawn as one.
-const RECORD_LAG_MS: i64 = 600_000;
-
 /// An agent elsewhere is read every this many follow ticks: each read goes
 /// to Cloud and to your messages over the network.
 const ELSEWHERE_TICKS: u32 = 3;
@@ -97,8 +90,8 @@ pub struct Thread {
     /// Conversations read before, by agent key, drawn at once when one is
     /// opened again while it is read afresh.
     remembered: RefCell<HashMap<String, Vec<LocalTranscriptEntry>>>,
-    /// Text messages drawn, by role and text, with when each was written.
-    drawn_texts: RefCell<HashMap<String, (i64, bool)>>,
+    /// Text messages drawn, to tell a copy from the message.
+    drawn_texts: RefCell<crate::models::ChatCopies>,
     /// Follow ticks since the conversation opened.
     ticks: Cell<u32>,
     /// Whether the conversation is with an agent elsewhere.
@@ -418,21 +411,13 @@ impl Thread {
     /// transcript and the core's own record of the same turn arrive under
     /// different ids, seconds apart.
     fn copied(&self, entry: &LocalTranscriptEntry) -> bool {
-        let key = format!("{}|{}", entry.role, entry.text.trim());
-        // The core's own record (an id with a content hash) can lag the
-        // transcript's line by most of a turn.
-        let record = entry.id.contains(":sha256:");
-        let mut drawn = self.drawn_texts.borrow_mut();
-        let copy = drawn.get(&key).is_some_and(|(at, was_record)| {
-            let window = if record != *was_record {
-                RECORD_LAG_MS
-            } else {
-                SAME_TURN_MS
-            };
-            (entry.timestamp_ms - at).abs() <= window
-        });
-        drawn.insert(key, (entry.timestamp_ms, record));
-        copy
+        // The core's own record has an id with a content hash.
+        self.drawn_texts.borrow_mut().copied(
+            &entry.role,
+            &entry.text,
+            entry.timestamp_ms,
+            entry.id.contains(":sha256:"),
+        )
     }
 
     /// Whether the relay message `key` (direction and text) at `at` is new:

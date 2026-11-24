@@ -63,16 +63,19 @@ const HOOK_CONTEXT: &str = "SessionStart hook additional context:";
 /// One event as an entry: who wrote it, and whether it is text, thinking
 /// or tool work. An event with nothing to show is left out, and so are
 /// copies: Claude's prompt log (`history`) repeats each prompt the
-/// transcript has, and a hook's context is not something the person wrote.
+/// transcript has, and a hook's context in the person's turn is not something they wrote.
 fn entry(event: &Value) -> Option<LocalTranscriptEntry> {
     let id = event["eventId"].as_str()?.to_string();
     let kind_of = event["type"].as_str().unwrap_or_default();
     if kind_of == "history" {
         return None;
     }
-    if event["content"]
-        .as_str()
-        .is_some_and(|content| content.trim_start().starts_with(HOOK_CONTEXT))
+    let persons = matches!(event["actorRole"].as_str(), Some("user" | "human"))
+        || (event["actorRole"].is_null() && kind_of == "user");
+    if persons
+        && event["content"]
+            .as_str()
+            .is_some_and(|content| content.trim_start().starts_with(HOOK_CONTEXT))
     {
         return None;
     }
@@ -167,6 +170,13 @@ mod tests {
         .unwrap();
         let ids: Vec<&str> = page.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["u2"]);
+        // An agent quoting the hook's words is still the agent's text.
+        let quoted = super::page(&json!({"events": [
+            {"eventId": "a1", "type": "assistant", "actorRole": "assistant",
+             "content": "SessionStart hook additional context: is what you saw"},
+        ]}))
+        .unwrap();
+        assert_eq!(quoted.entries.len(), 1);
     }
 
     #[test]

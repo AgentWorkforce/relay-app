@@ -556,11 +556,13 @@ pub fn chat_turn_open(entry: &LocalTranscriptEntry) -> bool {
 }
 
 mod agent;
+mod copies;
 mod inbox;
 mod order;
 mod pasted;
 mod relay_lines;
 pub use agent::chat_row_names;
+pub use copies::ChatCopies;
 pub use inbox::{ChatInbox, ChatNotice, Unread};
 pub use order::{chat_sort_elsewhere, chat_sorts_before};
 pub use pasted::{chat_attached_images, chat_attachment_lines, chat_pasted_images};
