@@ -90,6 +90,50 @@ fn require_matching_name(mismatch: bool, allowed: bool) -> Result<(), OutboundEr
     Err(OutboundError::new(409, "registration_required", "Register this local chat under the requested name through the normal command permission check, then retry the join."))
 }
 
+/// Hands `proof` to Cloud when it takes proofs ahead of the call; whether it
+/// did. A failed or slow handoff is an error, never a fallback.
+async fn hand_off(
+    outbound: &Outbound,
+    account: &agent_relay_node::relay::cloud_session::CloudAccount,
+    tool: &str,
+    proof: &str,
+) -> Result<bool, OutboundError> {
+    if !Identities::new(outbound.core.clone()).claude_attestation_handoff() {
+        return Ok(false);
+    }
+    let path = format!(
+        "/workspaces/{}/{}",
+        agent_relay_node::relay::cloud_session::segment(&account.workspace_id),
+        attestation::HANDOFF_PATH
+    );
+    let sent = tokio::time::timeout(
+        HANDOFF_TIMEOUT,
+        outbound
+            .core
+            .plugins
+            .cloud
+            .request("POST", path, Some(json!({ "attestation": proof }))),
+    )
+    .await;
+    let failure = match sent {
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) => Some(format!("failed: {error}")),
+        Err(_) => Some("timed out".to_string()),
+    };
+    if let Some(failure) = failure {
+        agent_relay_node::relay::diagnostics::write(format_args!(
+            "Claude proof handoff for {tool} {failure}"
+        ));
+        return Err(handoff_failed());
+    }
+    if outbound.core.plugins.cloud.account().as_ref() != Some(account) {
+        return Err(unavailable(
+            "The Agent Relay sign-in changed. Retry the call in this chat.",
+        ));
+    }
+    Ok(true)
+}
+
 /// Signs a proof for the hook in chat `pid`, for a tool on `server`: the
 /// hosted entry this build installed.
 pub(crate) async fn route(
@@ -169,44 +213,7 @@ pub(crate) async fn route(
     let proof = key
         .sign(&claims)
         .ok_or_else(|| unavailable("The proof could not be signed."))?;
-    let identities = Identities::new(outbound.core.clone());
-    let handoff = identities.claude_attestation_handoff();
-    if handoff {
-        let path = format!(
-            "/workspaces/{}/{}",
-            agent_relay_node::relay::cloud_session::segment(&account.workspace_id),
-            attestation::HANDOFF_PATH
-        );
-        let sent = tokio::time::timeout(
-            HANDOFF_TIMEOUT,
-            outbound.core.plugins.cloud.request(
-                "POST",
-                path,
-                Some(json!({ "attestation": proof })),
-            ),
-        )
-        .await;
-        match sent {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                agent_relay_node::relay::diagnostics::write(format_args!(
-                    "Claude proof handoff for {tool} failed: {error}"
-                ));
-                return Err(handoff_failed());
-            }
-            Err(_) => {
-                agent_relay_node::relay::diagnostics::write(format_args!(
-                    "Claude proof handoff for {tool} timed out"
-                ));
-                return Err(handoff_failed());
-            }
-        }
-        if outbound.core.plugins.cloud.account().as_ref() != Some(&account) {
-            return Err(unavailable(
-                "The Agent Relay sign-in changed. Retry the call in this chat.",
-            ));
-        }
-    }
+    let handoff = hand_off(outbound, &account, tool, &proof).await?;
     Ok(json!({ "attestation": proof, "native_join": native_join, "handoff": handoff }))
 }
 

@@ -106,34 +106,8 @@ fn signed_output(
     let request = super::hook_request(input)?;
     let response: Value =
         serde_json::from_slice(&ask(&serde_json::to_vec(&request).ok()?)?).ok()?;
-    let Some(proof) = response["data"]["attestation"].as_str().filter(|proof| {
-        let parts: Vec<_> = proof.split('.').collect();
-        parts.len() == 3
-            && parts.iter().all(|part| {
-                !part.is_empty()
-                    && part
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            })
-    }) else {
-        if !is_join(input) {
-            return None;
-        }
-        let reason = match response["error"]["code"].as_str()? {
-            "not_a_relay_session" | "registration_required" => {
-                let name = input["tool_input"]["name"].as_str().filter(|name| !name.trim().is_empty());
-                if let (Some(socket), Some(name)) = (socket, name) {
-                    let command = registration_command_for(&std::env::current_exe().ok()?, socket, &input["tool_input"])?;
-                    format!("This Claude chat must register locally under the approved name {name:?} before hosted Relay can verify its identity. Run {command} from this chat's own Bash tool, through the normal command permission check; do not bypass that check. This registers only this chat and shares its conversation with the workspace. After it succeeds, retry join_relay without name or description. Do not run the command from a separate terminal, substitute another chat ID, or use a hosted account identity.")
-                } else {
-                    "This Claude chat has not joined Agent Relay Desktop. Ask the person what name to use, then call join_relay with that name to get its local registration command. Do not substitute a hosted account identity.".into()
-                }
-            }
-            "invalid_name" | "name_taken" => "This Claude chat could not join under the requested name. Ask the person to choose an available name using 2–48 lowercase letters, digits and single dashes, then retry join_relay with that name.".into(),
-            "not_allowed" => "This Claude chat cannot register while Let sessions put themselves on the relay is off. Ask the person to enable it in Agent Relay Settings or put this session on the relay in the app, then retry.".into(),
-            _ => return None,
-        };
-        return Some(Outcome::Output(denied(reason)));
+    let Some(proof) = response["data"]["attestation"].as_str().filter(|p| compact_jws(p)) else {
+        return refused_join(input, socket, &response);
     };
     if request.get("registration").is_some() && response["data"]["native_join"] != true {
         return None;
@@ -152,6 +126,41 @@ fn signed_output(
         arguments.remove("description");
     }
     Some(Outcome::Output(output))
+}
+
+/// A compact JWS: three non-empty base64url parts.
+fn compact_jws(proof: &str) -> bool {
+    let parts: Vec<_> = proof.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+/// The denial for a join the core would not sign, or `None` (any other call
+/// goes out unsigned).
+fn refused_join(input: &Value, socket: Option<&Path>, response: &Value) -> Option<Outcome> {
+    if !is_join(input) {
+        return None;
+    }
+    let reason = match response["error"]["code"].as_str()? {
+        "not_a_relay_session" | "registration_required" => {
+            let name = input["tool_input"]["name"].as_str().filter(|name| !name.trim().is_empty());
+            if let (Some(socket), Some(name)) = (socket, name) {
+                let command = registration_command_for(&std::env::current_exe().ok()?, socket, &input["tool_input"])?;
+                format!("This Claude chat must register locally under the approved name {name:?} before hosted Relay can verify its identity. Run {command} from this chat's own Bash tool, through the normal command permission check; do not bypass that check. This registers only this chat and shares its conversation with the workspace. After it succeeds, retry join_relay without name or description. Do not run the command from a separate terminal, substitute another chat ID, or use a hosted account identity.")
+            } else {
+                "This Claude chat has not joined Agent Relay Desktop. Ask the person what name to use, then call join_relay with that name to get its local registration command. Do not substitute a hosted account identity.".into()
+            }
+        }
+        "invalid_name" | "name_taken" => "This Claude chat could not join under the requested name. Ask the person to choose an available name using 2–48 lowercase letters, digits and single dashes, then retry join_relay with that name.".into(),
+        "not_allowed" => "This Claude chat cannot register while Let sessions put themselves on the relay is off. Ask the person to enable it in Agent Relay Settings or put this session on the relay in the app, then retry.".into(),
+        _ => return None,
+    };
+    Some(Outcome::Output(denied(reason)))
 }
 
 pub(super) fn registration_command_for(
