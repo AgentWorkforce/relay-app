@@ -690,7 +690,8 @@ and the app lists them with a Conductor badge on the provider's icon
   writes a PreToolUse hook (`agent-relay-probe claude-attestation-hook`)
   into each shared login's `settings.json`. It asks `POST /claude/attestation`,
   which signs only for a caller running inside the registered Claude Code chat
-  it names, and adds the proof to the tool call's arguments
+  it names, and hands the proof to Cloud ahead of the call, leaving the call
+  unchanged (an older Cloud gets it in the call's arguments)
   ([hosted-mcp-runtime.md](hosted-mcp-runtime.md#claude-code-chat-identity)).
 - Conductor is a Mac app, so the Linux app has no Conductor sessions to badge.
 

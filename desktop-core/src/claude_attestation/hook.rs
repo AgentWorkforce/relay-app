@@ -7,14 +7,18 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(2);
+/// Includes the core's handoff to Cloud (`HANDOFF_TIMEOUT`), within the
+/// hook's own 5 seconds.
+const TIMEOUT: Duration = Duration::from_secs(4);
 /// A registered join waits for its desktop identity to sync before signing.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Adds the current chat's proof. A join without verified desktop identity is
-/// denied with local registration guidance. Registration itself remains a
-/// separate command under Claude's normal permission policy; a PreToolUse hook
-/// must not register a chat before the person can approve the tool call.
+/// Gets the current chat's proof. Once the core has handed it to Cloud the
+/// hook prints nothing, so the call goes out exactly as Claude made it;
+/// against an older Cloud it adds the proof to the arguments. A join without
+/// verified desktop identity is denied with local registration guidance.
+/// Registration itself remains a separate command under Claude's normal
+/// permission policy; a PreToolUse hook must not register a chat before the person can approve the tool call.
 pub fn run(socket: Option<&Path>, development: bool) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
@@ -69,14 +73,36 @@ pub(crate) fn output_at(
     socket: Option<&Path>,
     ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
 ) -> Option<Value> {
-    verified_output(input, socket, ask).or_else(|| is_join(input).then(|| denied(RETRY)))
+    match verified_output(input, socket, ask) {
+        Outcome::HandedOff => None,
+        Outcome::Output(output) => Some(output),
+        Outcome::Unsigned => is_join(input).then(|| denied(RETRY)),
+    }
+}
+
+/// What the hook prints for one call.
+enum Outcome {
+    /// Cloud holds the proof: nothing, so the call is left unchanged.
+    HandedOff,
+    /// A denial, or the arguments with the proof for a Cloud without the handoff.
+    Output(Value),
+    /// No proof: a join is denied, any other call goes out unsigned.
+    Unsigned,
 }
 
 fn verified_output(
     input: &Value,
     socket: Option<&Path>,
     ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
-) -> Option<Value> {
+) -> Outcome {
+    signed_output(input, socket, ask).unwrap_or(Outcome::Unsigned)
+}
+
+fn signed_output(
+    input: &Value,
+    socket: Option<&Path>,
+    ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+) -> Option<Outcome> {
     let request = super::hook_request(input)?;
     let response: Value =
         serde_json::from_slice(&ask(&serde_json::to_vec(&request).ok()?)?).ok()?;
@@ -107,10 +133,15 @@ fn verified_output(
             "not_allowed" => "This Claude chat cannot register while Let sessions put themselves on the relay is off. Ask the person to enable it in Agent Relay Settings or put this session on the relay in the app, then retry.".into(),
             _ => return None,
         };
-        return Some(denied(reason));
+        return Some(Outcome::Output(denied(reason)));
     };
     if request.get("registration").is_some() && response["data"]["native_join"] != true {
         return None;
+    }
+    if response["data"]["handoff"] == true {
+        // Cloud matches the proof by Claude's tool_use_id, and accepts a
+        // native join's own name, so the call needs no change.
+        return Some(Outcome::HandedOff);
     }
     let mut output = super::hook_output(input, proof)?;
     if is_join(input) && response["data"]["native_join"] == true {
@@ -120,7 +151,7 @@ fn verified_output(
         arguments.remove("name");
         arguments.remove("description");
     }
-    Some(output)
+    Some(Outcome::Output(output))
 }
 
 pub(super) fn registration_command_for(

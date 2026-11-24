@@ -16,6 +16,9 @@ pub(super) struct Capability {
     supported: bool,
     provider_supported: bool,
     claude_attestation: bool,
+    /// Cloud takes Claude proofs ahead of the call (`claude_attestation_handoff`),
+    /// so the hook never rewrites a tool call's arguments.
+    claude_handoff: bool,
     copilot_attestation: bool,
     cursor_attestation: bool,
 }
@@ -42,6 +45,20 @@ impl DesktopIdentitySync {
             .as_ref()
             .is_some_and(|c| {
                 c.account == *account && c.generation == generation && c.provider_supported
+            })
+    }
+    /// Cloud verifies Claude chat proofs and takes them ahead of the call
+    /// (`claude_attestation_handoff`).
+    pub(crate) fn claude_handoff_supported(&self, account: &CloudAccount, generation: u64) -> bool {
+        self.native_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|c| {
+                c.account == *account
+                    && c.generation == generation
+                    && c.claude_attestation
+                    && c.claude_handoff
             })
     }
     /// Cloud verifies Claude chat proofs (`claude_session_attestation`).
@@ -119,6 +136,8 @@ impl DesktopIdentitySync {
                 == Some(1),
             claude_attestation: response["capabilities"]["claude_session_attestation"].as_u64()
                 == Some(1),
+            claude_handoff: response["capabilities"]["claude_attestation_handoff"].as_u64()
+                == Some(1),
             cursor_attestation: response["capabilities"]["cursor_session_attestation"].as_u64()
                 == Some(1),
         });
@@ -192,6 +211,16 @@ impl Identities {
         cloud.account().is_some_and(|account| {
             self.state
                 .claude_attestation_supported(&account, cloud.identity_sync_generation())
+        })
+    }
+
+    /// Cloud takes this generation's Claude proofs ahead of the call
+    /// (`claude_attestation_handoff`), not in the tool's arguments.
+    pub fn claude_attestation_handoff(&self) -> bool {
+        let cloud = &self.plugins.cloud;
+        cloud.account().is_some_and(|account| {
+            self.state
+                .claude_handoff_supported(&account, cloud.identity_sync_generation())
         })
     }
 
@@ -322,6 +351,8 @@ mod tests {
             &json!({"capabilities":{"claude_session_attestation":1}}),
         );
         assert!(sync.claude_attestation_supported(&account, 7));
+        // Without the handoff capability the hook keeps the in-argument proof.
+        assert!(!sync.claude_handoff_supported(&account, 7));
         assert!(!sync.copilot_attestation_supported(&account, 7));
         assert!(!sync.claude_attestation_supported(&account, 8));
         assert!(!sync.native_supported(&account, 7));
@@ -388,6 +419,34 @@ mod tests {
             attach(&mut value, &target, support(true, false));
             assert!(value.get("native_session").is_none());
         }
+    }
+
+    #[test]
+    fn claude_handoff_needs_both_capabilities_for_this_generation() {
+        let sync = DesktopIdentitySync::default();
+        let account = CloudAccount {
+            site_url: "https://cloud.test".into(),
+            workspace_id: "workspace".into(),
+            user_id: Some("alice".into()),
+        };
+        sync.record_native_capability(
+            &account,
+            7,
+            &json!({"capabilities":{"claude_attestation_handoff":1}}),
+        );
+        assert!(!sync.claude_handoff_supported(&account, 7));
+        sync.record_native_capability(
+            &account,
+            7,
+            &json!({"capabilities":{"claude_session_attestation":1,"claude_attestation_handoff":1}}),
+        );
+        assert!(sync.claude_handoff_supported(&account, 7));
+        assert!(!sync.claude_handoff_supported(&account, 8));
+        let other = CloudAccount {
+            user_id: Some("bob".into()),
+            ..account.clone()
+        };
+        assert!(!sync.claude_handoff_supported(&other, 7));
     }
 
     #[test]

@@ -3,15 +3,19 @@
 //!
 //! ```text
 //! POST /claude/attestation   {"session_id", "tool_name", "tool_use_id"}
-//! → {"attestation": "<compact JWS>"}
+//! → {"attestation": "<compact JWS>", "native_join", "handoff"}
 //! ```
 //!
 //! A proof is signed only for a hosted Agent Relay tool called from the
 //! Claude Code chat the caller runs inside, when that chat is registered
-//! here and Cloud verifies Claude proofs for the signed-in account.
+//! here and Cloud verifies Claude proofs for the signed-in account. When
+//! Cloud takes proofs ahead of the call (`claude_attestation_handoff`), the
+//! proof is handed to Cloud before this answers, and `handoff` tells the hook
+//! to leave the call unchanged. A failed handoff is an error, never a
+//! fallback to the arguments: Claude's auto mode refuses a rewritten call.
 
-use crate::desktop_identity::Identities;
 use crate::claude_attestation::{self as attestation, Claims};
+use crate::desktop_identity::Identities;
 use agent_relay_node::relay::outbound::{payload, Outbound, OutboundError, Purpose, Request};
 use agent_relay_node::relay::store::{SessionKind, Target};
 use serde_json::{json, Map, Value};
@@ -27,6 +31,17 @@ fn invalid(message: &str) -> OutboundError {
 
 fn unavailable(message: &str) -> OutboundError {
     OutboundError::new(409, "attestation_unavailable", message)
+}
+
+/// The handoff waits at most this long, within the hook's own timeout.
+const HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn handoff_failed() -> OutboundError {
+    OutboundError::new(
+        503,
+        "handoff_failed",
+        "Agent Relay could not hand this chat's proof to the hosted service. Retry the call.",
+    )
 }
 
 fn now_secs() -> u64 {
@@ -136,7 +151,9 @@ pub(crate) async fn route(
     if tool == "join_relay" {
         // Registration happened through a separately approved command or the
         // app. Wait for its identity sync, but never register from PreToolUse.
-        Identities::new(outbound.core.clone()).sync_desktop_identities().await;
+        Identities::new(outbound.core.clone())
+            .sync_desktop_identities()
+            .await;
     }
     if outbound.core.plugins.cloud.account().as_ref() != Some(&account)
         || outbound.core.plugins.cloud.identity_sync_generation() != generation
@@ -152,7 +169,45 @@ pub(crate) async fn route(
     let proof = key
         .sign(&claims)
         .ok_or_else(|| unavailable("The proof could not be signed."))?;
-    Ok(json!({ "attestation": proof, "native_join": native_join }))
+    let identities = Identities::new(outbound.core.clone());
+    let handoff = identities.claude_attestation_handoff();
+    if handoff {
+        let path = format!(
+            "/workspaces/{}/{}",
+            agent_relay_node::relay::cloud_session::segment(&account.workspace_id),
+            attestation::HANDOFF_PATH
+        );
+        let sent = tokio::time::timeout(
+            HANDOFF_TIMEOUT,
+            outbound.core.plugins.cloud.request(
+                "POST",
+                path,
+                Some(json!({ "attestation": proof })),
+            ),
+        )
+        .await;
+        match sent {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                agent_relay_node::relay::diagnostics::write(format_args!(
+                    "Claude proof handoff for {tool} failed: {error}"
+                ));
+                return Err(handoff_failed());
+            }
+            Err(_) => {
+                agent_relay_node::relay::diagnostics::write(format_args!(
+                    "Claude proof handoff for {tool} timed out"
+                ));
+                return Err(handoff_failed());
+            }
+        }
+        if outbound.core.plugins.cloud.account().as_ref() != Some(&account) {
+            return Err(unavailable(
+                "The Agent Relay sign-in changed. Retry the call in this chat.",
+            ));
+        }
+    }
+    Ok(json!({ "attestation": proof, "native_join": native_join, "handoff": handoff }))
 }
 
 #[cfg(test)]
