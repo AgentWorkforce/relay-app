@@ -13,9 +13,10 @@
 //! it. Cloud matches the proof to the call by
 //! `params._meta["claudecode/toolUseId"]`, which Claude Code sets and the
 //! model cannot. Claude Code's auto mode refuses any call whose input a hook
-//! changed, so the hook must not rewrite one.
+//! changed. A join with a supplied description uses inline proof so the
+//! hook can remove the description and keep the registered identity.
 //!
-//! An older Cloud without the handoff gets the proof in the call's arguments
+//! With inline proof, Cloud gets the proof in the call's arguments
 //! as `_agent_relay_attestation` instead, overwriting any value already
 //! there. Either way Cloud verifies it against the key this installation
 //! registered through the desktop identity sync.
@@ -338,6 +339,11 @@ pub fn hook_request(input: &Value) -> Option<Value> {
         "tool_name": input["tool_name"].as_str()?,
         "tool_use_id": input["tool_use_id"].as_str()?,
     });
+    if hook_tool(input["tool_name"].as_str()?) == Some("join_relay")
+        && input["tool_input"].get("description").is_some()
+    {
+        request["has_description"] = Value::Bool(true);
+    }
     // A join's chosen name is checked against the already-registered local
     // identity. The hook never registers a chat; it only provides a command
     // that Claude runs through the normal permission policy when needed.
@@ -357,7 +363,7 @@ pub fn hook_request(input: &Value) -> Option<Value> {
     Some(request)
 }
 
-/// Claude's PreToolUse output for a Cloud without the handoff: the call's
+/// Claude's PreToolUse output for inline proof: the call's
 /// own arguments with the proof added, replacing any value already there.
 /// Permission is left to the person's own settings. Auto mode refuses a call
 /// changed this way, which is why the handoff replaces it.

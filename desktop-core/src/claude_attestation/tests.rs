@@ -340,8 +340,7 @@ fn a_handed_off_proof_leaves_the_call_unchanged() {
     });
     assert!(output.is_none());
 
-    // A native join keeps its own name: Cloud accepts it, so nothing is stripped.
-    let mut input = pre_tool_use(json!({"name":"claude-assistant", "description":"My chat"}));
+    let mut input = pre_tool_use(json!({"name":"claude-assistant"}));
     input["tool_name"] = json!("mcp__agent-relay__join_relay");
     let output = hook::output(&input, |_| {
         Some(
@@ -378,4 +377,26 @@ fn tools_that_never_act_as_the_chat_are_not_signed() {
         input["tool_name"] = json!(tool);
         assert!(hook_request(&input).is_some(), "{tool}");
     }
+}
+
+#[test]
+fn join_description_requires_canonical_inline_arguments() {
+    let mut input = pre_tool_use(json!({"desktop_address":"claude@desktop", "description":null}));
+    input["tool_name"] = json!("mcp__agent-relay__join_relay");
+    let output = hook::output(&input, |body| {
+        let request: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(request["has_description"], true);
+        assert!(request.get("registration").is_none());
+        Some(br#"{"ok":true,"data":{"attestation":"h.p.s","native_join":false,"handoff":false}}"#.to_vec())
+    }).unwrap();
+    assert_eq!(
+        output["hookSpecificOutput"]["updatedInput"],
+        json!({"desktop_address":"claude@desktop", FIELD:"h.p.s"})
+    );
+
+    let output = hook::output(&input, |_| {
+        Some(br#"{"ok":true,"data":{"attestation":"h.p.s","native_join":false,"handoff":true}}"#.to_vec())
+    }).unwrap();
+    assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(output["hookSpecificOutput"].get("updatedInput").is_none());
 }
