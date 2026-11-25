@@ -1889,6 +1889,113 @@ fn receive_messages_retires_reads_before_acknowledgement(runtime: &tokio::runtim
     case.pump(|case| case.app.with_state(|state| state.busy_targets.is_empty()));
 }
 
+/// A screenshot posted over Agent Relay reaches a local agent as a line
+/// naming the file the core saved. Chat draws the picture under the message,
+/// not the line, and the window's pixels show it.
+fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
+    let data = tempfile::tempdir().unwrap();
+    // Put back the caller's data folder even when an assertion fails.
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+    let _restore = Restore(std::env::var_os("XDG_DATA_HOME"));
+    std::env::set_var("XDG_DATA_HOME", data.path());
+    let saved = data
+        .path()
+        .join(agent_relay_node::relay::app_store::APP_ID)
+        .join("attachments/file_1");
+    std::fs::create_dir_all(&saved).unwrap();
+    let shot = saved.join("shot.png");
+    // A solid red square, a colour nothing else in the window uses.
+    let (side, red) = (48usize, [0u8, 0, 255, 255]);
+    let pixels = gtk::glib::Bytes::from_owned(red.repeat(side * side));
+    gtk::gdk::MemoryTexture::new(
+        side as i32,
+        side as i32,
+        gtk::gdk::MemoryFormat::B8g8r8a8,
+        &pixels,
+        side * 4,
+    )
+    .save_to_png(&shot)
+    .unwrap();
+    let posted = format!(
+        "See this\n\nAttachments:\n- shot.png (image/png, 1 KB) saved to {}",
+        shot.display()
+    );
+    let case = Case::new(runtime);
+    let page = json!({"entries": [
+        {"id": "posted", "role": "user", "kind": "text", "text": posted, "timestamp_ms": 1, "truncated": false},
+        {"id": "answer", "role": "assistant", "kind": "text", "text": "Got it", "timestamp_ms": 2, "truncated": false}
+    ], "next_cursor": null});
+    case.answer(
+        "sessions.transcript",
+        Answer::with(move |_| {
+            let page = page.clone();
+            async move { Ok(page) }
+        }),
+    );
+    case.sign_in();
+    let shell = case.app.shell().unwrap();
+    let open: gtk::Button = named(&shell.pages.sessions.list, "open-session codex:one").remove(0);
+    open.emit_clicked();
+    let messages = &shell.pages.chat.thread.messages;
+    case.pump(|_| labels(messages).contains(&"Got it".into()));
+    assert!(labels(messages).contains(&"See this".into()));
+    assert!(
+        !labels(messages)
+            .iter()
+            .any(|label| label.contains("saved to")),
+        "the saved-file line is not shown"
+    );
+    let pictures: Vec<gtk::Picture> = widgets::<gtk::Picture>(messages)
+        .into_iter()
+        .filter(|picture| picture.has_css_class("chat-inline-image"))
+        .collect();
+    assert_eq!(pictures.len(), 1);
+    assert_eq!(
+        pictures[0].file().and_then(|file| file.path()),
+        Some(shot.clone())
+    );
+
+    case.app.window().set_default_size(980, 650);
+    case.app.show_window();
+    case.settle();
+    let window = case.app.window();
+    let snapshot = gtk::Snapshot::new();
+    gtk::WidgetPaintable::new(Some(window)).snapshot(
+        &snapshot,
+        window.width() as f64,
+        window.height() as f64,
+    );
+    let texture = window
+        .renderer()
+        .unwrap()
+        .render_texture(&snapshot.to_node().unwrap(), None);
+    if let Ok(dir) = std::env::var("CHAT_RENDER_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        texture
+            .save_to_png(std::path::Path::new(&dir).join("chat-posted-image.png"))
+            .unwrap();
+    }
+    let (width, height) = (texture.width() as usize, texture.height() as usize);
+    let mut drawn = vec![0u8; width * height * 4];
+    texture.download(&mut drawn, width * 4);
+    let red_pixels = drawn
+        .chunks_exact(4)
+        .filter(|pixel| pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 215)
+        .count();
+    assert!(
+        red_pixels >= side * side / 2,
+        "the posted picture is on screen ({red_pixels} red pixels)"
+    );
+}
+
 fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtime) {
     use base64::Engine;
     let image = tempfile::NamedTempFile::new().unwrap();
@@ -3178,6 +3285,10 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "groups_collapse_and_local_conversations_open",
         groups_collapse_and_local_conversations_open,
+    ),
+    (
+        "chat_draws_an_image_posted_over_relay",
+        chat_draws_an_image_posted_over_relay,
     ),
     (
         "conversations_follow_latest_and_leave_scrollback_in_place",
