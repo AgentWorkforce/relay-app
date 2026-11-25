@@ -63,6 +63,15 @@ public enum ClaudeFolders {
 /// The Claude cloud source's health as Settings words it. Linux and Windows
 /// keep the same labels and sentences in `models::settings`.
 public enum ClaudeCloudHealthCopy {
+    /// The button that opens Claude Code's own sign-in, offered while the
+    /// core says it would resume cloud sessions here.
+    public static let signInLabel = "Sign in to Claude Code"
+    public static let signInHelp = "Opens Claude Code's sign-in (claude auth login) in a terminal window. Agent Relay resumes cloud sessions once it finishes."
+
+    public static func offersSignIn(_ health: ClaudeCloudHealth?) -> Bool {
+        health?.claudeCodeSignIn == true
+    }
+
     public static func label(_ health: ClaudeCloudHealth?) -> String {
         switch health?.state {
         case .working?: return "Working"

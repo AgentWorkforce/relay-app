@@ -24,6 +24,9 @@ mod priority;
 mod progress;
 mod reclaim;
 mod remote_sources;
+pub(crate) use remote_sources::claude_sign_in_helps;
+#[cfg(test)]
+pub(crate) use remote_sources::CLAUDE_SIGN_IN_REASONS;
 mod session_metadata;
 mod session_reset;
 mod start;

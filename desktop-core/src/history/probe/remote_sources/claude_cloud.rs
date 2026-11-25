@@ -59,7 +59,7 @@ pub const NOT_SIGNED_IN: &str =
     "Claude Code is not signed in. Open Claude Code and sign in to resume cloud sessions";
 /// Claude Code has no login here, but Claude's desktop app is signed in.
 /// The desktop app's sign-in is not one Agent Relay may use
-/// ([`claude_desktop`](super::claude_desktop)), so this says how to give
+/// ([`claude_desktop`](crate::claude_desktop)), so this says how to give
 /// Claude Code its own.
 pub const DESKTOP_APP_ONLY: &str = "Claude's desktop app is signed in, but Claude Code cloud sessions need Claude Code's own sign-in, which the desktop app does not share. Run claude auth login in Terminal once (install Claude Code first if there is no claude command) to resume cloud sessions";
 pub const FOLDER_NOT_SHARED: &str = "Claude Code cloud sessions are on, but ~/.claude is not shared. Share that folder in Settings to resume them";
@@ -471,7 +471,7 @@ pub fn choose(home: &Path, keychain: &dyn KeychainSource, now_ms: i64) -> Login 
         _ if keychain_allowed && keychain.present() => Login::Keychain,
         Some(Some(false)) => Login::Expired,
         Some(None) => Login::Unreadable,
-        None if super::claude_desktop::signed_in(&super::claude_desktop::app_dir(home)) => {
+        None if crate::claude_desktop::signed_in(&crate::claude_desktop::app_dir(home)) => {
             Login::DesktopAppOnly
         }
         None => Login::Missing,
@@ -955,7 +955,7 @@ pub(crate) mod tests {
         let _override = EnvGuard::remove(CREDENTIALS_ENV);
         let _xdg = EnvGuard::set("XDG_CONFIG_HOME", home.path().join("config"));
         let _appdata = EnvGuard::set("APPDATA", home.path().join("appdata"));
-        let app = super::super::claude_desktop::app_dir(home.path());
+        let app = crate::claude_desktop::app_dir(home.path());
         std::fs::create_dir_all(&app).unwrap();
         std::fs::write(
             app.join("config.json"),

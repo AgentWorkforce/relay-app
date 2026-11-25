@@ -16,7 +16,6 @@
 //! one or the local pass it rides, and a connector whose last listing failed
 //! is left alone until the next listing is due.
 mod claude_cloud;
-mod claude_desktop;
 mod claude_records;
 #[cfg(test)]
 mod cursor_tests;
@@ -238,6 +237,17 @@ pub fn keychain_not_ready(error: &anyhow::Error) -> bool {
         )
     })
 }
+
+/// Whether Claude Code's own sign-in would resume cloud sessions after a
+/// listing gave `reason`: Claude Code is not signed in here, with or
+/// without Claude's desktop app signed in.
+pub(crate) fn claude_sign_in_helps(reason: &str) -> bool {
+    CLAUDE_SIGN_IN_REASONS.contains(&reason)
+}
+
+/// The listing reasons [`claude_sign_in_helps`] accepts.
+pub(crate) const CLAUDE_SIGN_IN_REASONS: [&str; 2] =
+    [claude_cloud::NOT_SIGNED_IN, claude_cloud::DESKTOP_APP_ONLY];
 
 /// The error a hydration returns while Claude's Keychain read waits.
 #[cfg(test)]
@@ -1872,7 +1882,7 @@ pub(crate) mod tests {
         let api = ClaudeStub::start(false);
         let (home, _env) = bare_home();
         let _base = EnvGuard::set("RELAYHISTORY_CLAUDE_API_BASE_URL", api.url());
-        let app = claude_desktop::app_dir(home.path());
+        let app = crate::claude_desktop::app_dir(home.path());
         std::fs::create_dir_all(&app).unwrap();
         std::fs::write(
             app.join("config.json"),
