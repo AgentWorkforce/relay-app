@@ -437,5 +437,6 @@ fn an_embedded_image_row_is_drawn_as_before() {
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].text, "");
     let image = page.entries[0].image_path.as_deref().unwrap();
-    assert!(Path::new(image).starts_with(f.temp.path().join("images")));
+    let images = f.temp.path().join("images").canonicalize().unwrap();
+    assert!(Path::new(image).canonicalize().unwrap().starts_with(images));
 }
