@@ -418,35 +418,7 @@ impl TranscriptEvent {
             .then(|| attachment_images::pictures(&display, attachments))
             .flatten();
         if let Some(pictures) = saved {
-            let has_text = !pictures.text.is_empty();
-            let mut group = Vec::new();
-            if has_text {
-                group.push(LocalTranscriptEntry {
-                    id: event_uid.clone(),
-                    role: role.clone(),
-                    kind: kind.clone(),
-                    text: pictures.text,
-                    image_path: None,
-                    timestamp_ms: ts_ms,
-                    truncated: false,
-                });
-            }
-            for (index, image) in pictures.images.into_iter().enumerate() {
-                group.push(LocalTranscriptEntry {
-                    id: if index == 0 && !has_text {
-                        event_uid.clone()
-                    } else {
-                        format!("{event_uid}:image:{}", index + 1)
-                    },
-                    role: role.clone(),
-                    kind: kind.clone(),
-                    text: String::new(),
-                    image_path: Some(image),
-                    timestamp_ms: ts_ms,
-                    truncated: false,
-                });
-            }
-            return Ok(group);
+            return Ok(picture_entries(pictures, &event_uid, &role, &kind, ts_ms));
         }
         let text = if image_path.is_some() {
             ""
@@ -471,6 +443,44 @@ impl TranscriptEvent {
             truncated: image_path.is_none() && text_bytes.unwrap_or(0) > 64 * 1024,
         }])
     }
+}
+
+fn picture_entries(
+    pictures: attachment_images::Pictures,
+    event_uid: &str,
+    role: &str,
+    kind: &str,
+    ts_ms: i64,
+) -> Vec<LocalTranscriptEntry> {
+    let has_text = !pictures.text.is_empty();
+    let mut group = Vec::new();
+    if has_text {
+        group.push(LocalTranscriptEntry {
+            id: event_uid.into(),
+            role: role.into(),
+            kind: kind.into(),
+            text: pictures.text,
+            image_path: None,
+            timestamp_ms: ts_ms,
+            truncated: false,
+        });
+    }
+    for (index, image) in pictures.images.into_iter().enumerate() {
+        group.push(LocalTranscriptEntry {
+            id: if index == 0 && !has_text {
+                event_uid.into()
+            } else {
+                format!("{event_uid}:image:{}", index + 1)
+            },
+            role: role.into(),
+            kind: kind.into(),
+            text: String::new(),
+            image_path: Some(image),
+            timestamp_ms: ts_ms,
+            truncated: false,
+        });
+    }
+    group
 }
 
 #[cfg(test)]
