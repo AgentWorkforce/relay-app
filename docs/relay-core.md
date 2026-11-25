@@ -826,7 +826,8 @@ the bridge socket is for UIs, the relay-send socket for sessions
   probe's `send`). `POST /send` uses it only when the caller is unattributed
   because its host holds several sessions, and then names the token's
   session only if that same host holds it. A caller the kernel already
-  names is never renamed by a token.
+  names is never renamed by a token. For a process running under an OpenClaw
+  Gateway, the core never uses a send token to identify the caller.
 - **Person-only bridge methods.** The bridge methods that change the
   person's agents, sessions or delivery choices by name (registering,
   ending, renaming or taking over agents, their webhooks and integrations,
