@@ -61,6 +61,15 @@ enum SessionEventsFixture {
 
     private static func events(for sessionID: String) -> [[String: Any]] {
         if sessionID == "session-reviewer" {
+            if RelayUITestScreenshot.enabled {
+                return [event("r_screenshot", at: "2026-10-08T12:10:00.000Z", kind: "prompt", role: "user",
+                              content: """
+                              Simulator screenshot fixture
+
+                              Attachments:
+                              - inline-fixture.png (image/png, 252 B) saved to /fixture/attachments/ui-test-screenshot/inline-fixture.png
+                              """)]
+            }
             return [event("r1", at: "2026-10-08T11:58:00.000Z", kind: "assistant", role: "assistant",
                           content: "Reading the diff before I leave comments.")]
         }

@@ -44,6 +44,9 @@ enum RelayUITestFixture {
         if let handoff = MobileHandoffFixture.response(path, method: method, body: body) { return handoff }
         if let fork = SessionForkFixture.response(path, method: method, body: body) { return fork }
         if let question = QuestionCardFixture.response(path, method: method, body: body) { return question }
+        if RelayUITestScreenshot.enabled, method == "GET", path == "/files/ui-test-screenshot" {
+            return ["download_url": RelayUITestScreenshot.url.absoluteString]
+        }
         // The server's read state: a read receipt for the newest incoming
         // message makes its conversation read. An unknown ID gets an empty
         // answer here (the server answers 404).
@@ -325,6 +328,36 @@ private final class RelayUITestPhotoProtocol: URLProtocol {
                                        headerFields: ["Content-Type": "image/png"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: png)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+/// Local transport for the inline screenshot fixture. Reject every other URL
+/// in the attachment session so this launch cannot download live files.
+final class RelayUITestScreenshot: URLProtocol {
+    static let enabled = RelayUITestFixture.enabled
+        && ProcessInfo.processInfo.arguments.contains("-RelayUITestInlineScreenshot")
+    static let url = URL(string: "https://relay-screenshot-fixture.invalid/inline-fixture.png")!
+
+    // 128×64 RGB PNG, magenta on the left and green on the right.
+    private static let png = Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAIAAAABACAIAAABdtOgoAAAAw0lEQVR4nO3RUQmEAAAFQRsIZrSRBQ1hgAtxH4+FgU2wc3zXk+5873TH/CCA/UQA4eYHAewnAggHAACAdPODAPYTAYQDAABAuvlBAPuJAMIBAAAg3fwggP1EAOEAAACQbn4QwH4igHAAAABINz8IYD8RQDgAAACkmx8EsJ8IIBwAAADSzQ8C2E8EEA4AAADp5gcB7CcCCAcAAIB084MA9hMBhAMAAEC6+UEA+4kAwgEAACDd/CCA/UQA4QAAAJBufvDPfhRPwrORStljAAAAAElFTkSuQmCC"
+    )!
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard request.url == Self.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+            return
+        }
+        let response = HTTPURLResponse(url: Self.url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "image/png",
+                                                      "Content-Length": String(Self.png.count)])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.png)
         client?.urlProtocolDidFinishLoading(self)
     }
 

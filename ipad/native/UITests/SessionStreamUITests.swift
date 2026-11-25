@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// An agent's chat shows its stored session next to its relay messages.
 /// Everything comes from the synthetic Debug fixture; nothing is signed in.
@@ -195,5 +196,82 @@ final class SessionStreamUITests: XCTestCase {
         let app = loadOlderPage("-RelayUITestSessionOlderNotes") { $0.staticTexts["Picking up the lantern checks."] }
         assertOnScreen(app.staticTexts["Picking up the lantern checks."], in: app)
         attach(app, "older-notes")
+    }
+
+    func testInlineScreenshotRendersPixelsAfterLaunchAndRelaunch() throws {
+        let app = open("reviewer", ["-RelayUITestInlineScreenshot"])
+        try assertInlineScreenshot(in: app, capture: "inline-screenshot-first-launch")
+        app.terminate()
+
+        // A new process has an empty AttachmentImageStore.
+        let relaunched = open("reviewer", ["-RelayUITestInlineScreenshot"])
+        try assertInlineScreenshot(in: relaunched, capture: "inline-screenshot-relaunch")
+    }
+
+    private func assertInlineScreenshot(in app: XCUIApplication, capture: String) throws {
+        var captured: XCUIScreenshot?
+        defer {
+            let attachment = XCTAttachment(screenshot: captured ?? app.screenshot())
+            attachment.name = capture
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+
+        let thread = app.scrollViews["Conversation thread"].firstMatch
+        let caption = thread.staticTexts["Simulator screenshot fixture"].firstMatch
+        let picture = thread.descendants(matching: .any)
+            .matching(identifier: "Attachment picture").firstMatch
+        XCTAssertTrue(caption.waitForExistence(timeout: 15))
+        XCTAssertTrue(picture.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitFor("hittable == true", picture))
+        XCTAssertEqual(picture.label, "inline-fixture.png")
+
+        let pictureFrame = picture.frame
+        let appFrame = app.frame
+        let visibleThread = thread.frame.intersection(appFrame)
+        XCTAssertTrue(visibleThread.contains(pictureFrame), "Picture frame: \(pictureFrame), thread: \(visibleThread)")
+        XCTAssertTrue(visibleThread.contains(caption.frame))
+        XCTAssertLessThanOrEqual(caption.frame.maxY, pictureFrame.minY)
+
+        let screenshot = app.screenshot()
+        captured = screenshot
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        // XCUI frames are in points. Map them to raster pixels using the
+        // app screenshot's dimensions on the full-screen simulator.
+        let scaleX = CGFloat(image.width) / appFrame.width
+        let scaleY = CGFloat(image.height) / appFrame.height
+        // The 2:1 image is leading-aligned in a button that may be wider.
+        let imageWidth = min(pictureFrame.width, pictureFrame.height * 2)
+        XCTAssertGreaterThan(imageWidth, 40)
+        XCTAssertGreaterThan(pictureFrame.height, 20)
+
+        let colors = try [0.25, 0.75].map { (fraction: CGFloat) in
+            let x = pictureFrame.minX + fraction * imageWidth
+            let patch = CGRect(x: (x - 3 - appFrame.minX) * scaleX,
+                               y: (pictureFrame.midY - 3 - appFrame.minY) * scaleY,
+                               width: 6 * scaleX, height: 6 * scaleY).integral
+            return try averageRGB(in: image, patch: patch)
+        }
+        let magenta = colors[0]
+        let green = colors[1]
+        XCTAssertTrue(magenta[0] > 200 && magenta[1] < 70 && magenta[2] > 100,
+                      "Expected magenta on the left, observed RGB \(magenta)")
+        XCTAssertTrue(green[0] < 70 && green[1] > 180 && (60...145).contains(green[2]),
+                      "Expected green on the right, observed RGB \(green)")
+    }
+
+    private func averageRGB(in image: CGImage, patch: CGRect) throws -> [UInt8] {
+        let cropped = try XCTUnwrap(image.cropping(to: patch))
+        let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        try pixel.withUnsafeMutableBytes { bytes in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 1, height: 1,
+                                                 bitsPerComponent: 8, bytesPerRow: 4, space: colorSpace,
+                                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                                     | CGBitmapInfo.byteOrder32Big.rawValue))
+            context.interpolationQuality = .high
+            context.draw(cropped, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return Array(pixel.prefix(3))
     }
 }

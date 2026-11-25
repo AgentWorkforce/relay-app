@@ -178,6 +178,11 @@ final class AttachmentImageStore {
         guard url.scheme?.lowercased() == "https" else { return .refused }
         guard !Task.isCancelled else { return .unavailable }
         let configuration = URLSessionConfiguration.ephemeral
+        #if DEBUG
+        if RelayUITestScreenshot.enabled {
+            configuration.protocolClasses = [RelayUITestScreenshot.self]
+        }
+        #endif
         configuration.httpAdditionalHeaders = nil
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
