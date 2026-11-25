@@ -36,7 +36,8 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 231781a: #2265 (an address is looked for only in conversations that
+# main 70980e4: #2269 (attribute commands to the chat that started them
+# when Codex chats share an app-server), on top of 231781a: #2265 (an address is looked for only in conversations that
 # list its agent) on top of ecc9700: #2253 (kept messages are re-checked
 # against Relaycast after a restart), over 4cfe098: #2258 (Codex installed
 # through mise is found) and b8c5243: #2251 (stricter session caller
