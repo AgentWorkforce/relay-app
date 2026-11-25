@@ -14,19 +14,23 @@ what each step prints.
    release published under a manifest limit too small for them leaves those
    three files out and says so in its run
    ([The signer's manifest limit](workspace-layout.md#the-signers-manifest-limit)).
-   The downloads page (`{site}/cloud/dashboard/downloads`) lists
-   `install-macos.sh` with the command-line install scripts when it was
-   published. It does not list the archives: they are in the release's
-   signed manifest, which the dry run in B7 reads.
-2. Download `install-macos.sh` from that page. The page shows no checksum for
-   a script; the manifest records one, and B3 compares against it.
-3. Get an install token when you are ready to install: it lasts 1 hour and
-   reads your profile's feed only. A first install needs it; a token that has
-   expired or was revoked is refused. The site mints it for a signed-in
-   browser session only. Use the downloads page where it offers one;
-   otherwise send, from that signed-in session, a `POST` to
+   Open Downloads (`{site}/cloud/dashboard/downloads`). On sites with the
+   updated page, look for the macOS install script and the published probe
+   archives under **Client archives for the install scripts**. Each row
+   shows the file size and SHA-256. On older sites, check the release’s
+   signed manifest for archives that the page does not list.
+2. Download `install-macos.sh` from Downloads. If the page omits its
+   checksum, the signed manifest still provides it. Follow B3 to verify
+   the downloaded script against the manifest before running it.
+3. For a first install, create an install token shortly before use. It
+   lasts one hour and reads only your profile’s feed. On sites with token
+   management in Downloads, sign in, select **Create install token**, and
+   copy the token when it appears. Its value is shown once. You can list
+   and revoke your own tokens there. On older sites, send a `POST` from
+   your signed-in browser session to
    `{site}/cloud/api/v1/desktop/feed/install-tokens` with the header
-   `X-Agent-Relay-Profile: <profile id>`. The answer shows the token once.
+   `X-Agent-Relay-Profile: <profile id>`. Copy the token from the response.
+   Expired or revoked tokens cannot be used.
 4. Decide how the Mac signs in: an administrator's enrollment key file, or
    the device code the installer prints.
 5. Find out how the self-built core runs today: under the installer's
