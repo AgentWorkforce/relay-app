@@ -1890,8 +1890,9 @@ fn receive_messages_retires_reads_before_acknowledgement(runtime: &tokio::runtim
 }
 
 /// A screenshot posted over Agent Relay reaches a local agent as a line
-/// naming the file the core saved. Chat draws the picture under the message,
-/// not the line, and the window's pixels show it.
+/// naming the file the core saved, and so does one another agent sends it.
+/// Chat draws each picture under its message, not the line, and the
+/// window's pixels show both.
 fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
     let data = tempfile::tempdir().unwrap();
     // Put back the caller's data folder even when an assertion fails.
@@ -1911,27 +1912,39 @@ fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
         .join(agent_relay_node::relay::app_store::APP_ID)
         .join("attachments/file_1");
     std::fs::create_dir_all(&saved).unwrap();
-    let shot = saved.join("shot.png");
-    // A solid red square, a colour nothing else in the window uses.
-    let (side, red) = (48usize, [0u8, 0, 255, 255]);
-    let pixels = gtk::glib::Bytes::from_owned(red.repeat(side * side));
-    gtk::gdk::MemoryTexture::new(
-        side as i32,
-        side as i32,
-        gtk::gdk::MemoryFormat::B8g8r8a8,
-        &pixels,
-        side * 4,
-    )
-    .save_to_png(&shot)
-    .unwrap();
+    // Solid squares in colours nothing else in the window uses: red for the
+    // screenshot the person posted, blue for the one an agent sent.
+    let side = 48usize;
+    let square = |name: &str, bgra: [u8; 4]| {
+        let path = saved.join(name);
+        let pixels = gtk::glib::Bytes::from_owned(bgra.repeat(side * side));
+        gtk::gdk::MemoryTexture::new(
+            side as i32,
+            side as i32,
+            gtk::gdk::MemoryFormat::B8g8r8a8,
+            &pixels,
+            side * 4,
+        )
+        .save_to_png(&path)
+        .unwrap();
+        path
+    };
+    let shot = square("shot.png", [0, 0, 255, 255]);
+    let sent = square("sent.png", [255, 0, 0, 255]);
     let posted = format!(
         "See this\n\nAttachments:\n- shot.png (image/png, 1 KB) saved to {}",
         shot.display()
     );
+    let incoming = format!(
+        "[via Agent Relay — from @helm-leader (helm-leader@mini) to @codex · message 250563339907735552 · ref 1a]\n\nHere is mine\n\nAttachments:\n- sent.png (image/png, 1 KB) saved to {}\n[end of Agent Relay message · ref 1a]",
+        sent.display()
+    );
     let case = Case::new(runtime);
     let page = json!({"entries": [
         {"id": "posted", "role": "user", "kind": "text", "text": posted, "timestamp_ms": 1, "truncated": false},
-        {"id": "answer", "role": "assistant", "kind": "text", "text": "Got it", "timestamp_ms": 2, "truncated": false}
+        {"id": "answer", "role": "assistant", "kind": "text", "text": "Got it", "timestamp_ms": 2, "truncated": false},
+        {"id": "read", "role": "assistant", "kind": "tool_use", "text": "Read inbox", "timestamp_ms": 3, "truncated": false},
+        {"id": "inbox", "role": "tool_result", "kind": "tool_result", "text": incoming, "timestamp_ms": 3, "truncated": false}
     ], "next_cursor": null});
     case.answer(
         "sessions.transcript",
@@ -1945,7 +1958,7 @@ fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
     let open: gtk::Button = named(&shell.pages.sessions.list, "open-session codex:one").remove(0);
     open.emit_clicked();
     let messages = &shell.pages.chat.thread.messages;
-    case.pump(|_| labels(messages).contains(&"Got it".into()));
+    case.pump(|_| labels(messages).contains(&"Here is mine".into()));
     assert!(labels(messages).contains(&"See this".into()));
     assert!(
         !labels(messages)
@@ -1957,13 +1970,13 @@ fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
         .into_iter()
         .filter(|picture| picture.has_css_class("chat-inline-image"))
         .collect();
-    assert_eq!(pictures.len(), 1);
-    assert_eq!(
-        pictures[0].file().and_then(|file| file.path()),
-        Some(shot.clone())
-    );
+    let drawn: Vec<_> = pictures
+        .iter()
+        .filter_map(|picture| picture.file().and_then(|file| file.path()))
+        .collect();
+    assert_eq!(drawn, vec![shot.clone(), sent.clone()]);
 
-    case.app.window().set_default_size(980, 650);
+    case.app.window().set_default_size(980, 1400);
     case.app.show_window();
     case.settle();
     let window = case.app.window();
@@ -1986,14 +1999,22 @@ fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
     let (width, height) = (texture.width() as usize, texture.height() as usize);
     let mut drawn = vec![0u8; width * height * 4];
     texture.download(&mut drawn, width * 4);
-    let red_pixels = drawn
-        .chunks_exact(4)
-        .filter(|pixel| pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 215)
-        .count();
-    assert!(
-        red_pixels >= side * side / 2,
-        "the posted picture is on screen ({red_pixels} red pixels)"
-    );
+    let count = |red: bool| {
+        drawn
+            .chunks_exact(4)
+            .filter(|p| {
+                let (b, g, r) = (p[0], p[1], p[2]);
+                g < 40 && if red { r > 215 && b < 40 } else { b > 215 && r < 40 }
+            })
+            .count()
+    };
+    for (red, which) in [(true, "posted"), (false, "received")] {
+        let pixels = count(red);
+        assert!(
+            pixels >= side * side / 2,
+            "the {which} picture is on screen ({pixels} pixels)"
+        );
+    }
 }
 
 fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtime) {
