@@ -15,8 +15,8 @@ what each step prints.
    three files out and says so in its run
    ([The signer's manifest limit](workspace-layout.md#the-signers-manifest-limit)).
    Open Downloads (`{site}/cloud/dashboard/downloads`). On sites with the
-   updated page, look for the macOS install script and the published probe
-   archives under **Client archives for the install scripts**. Each row
+   updated page, find `install-macos.sh` under **Install scripts** and the
+   published probe archives under **Client archives for the install scripts**. Each row
    shows the file size and SHA-256. On older sites, check the release’s
    signed manifest for archives that the page does not list.
 2. Download `install-macos.sh` from Downloads. If the page omits its
