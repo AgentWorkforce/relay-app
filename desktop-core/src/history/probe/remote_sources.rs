@@ -16,6 +16,7 @@
 //! one or the local pass it rides, and a connector whose last listing failed
 //! is left alone until the next listing is due.
 mod claude_cloud;
+mod claude_desktop;
 mod claude_records;
 #[cfg(test)]
 mod cursor_tests;
@@ -161,6 +162,9 @@ fn reach(host: &Host, connector: &str) -> Reach {
                 claude_cloud::Login::Expired => Reach::Unusable(claude_cloud::EXPIRED),
                 claude_cloud::Login::Unreadable => Reach::Unusable(claude_cloud::UNREADABLE),
                 claude_cloud::Login::Missing => Reach::Unusable(claude_cloud::NOT_SIGNED_IN),
+                claude_cloud::Login::DesktopAppOnly => {
+                    Reach::Unusable(claude_cloud::DESKTOP_APP_ONLY)
+                }
             }
         }
         _ => {
@@ -765,6 +769,8 @@ pub(crate) mod tests {
             EnvGuard::remove(agent_relay_node::relay::claude_dirs::DIRS_ENV),
             EnvGuard::set("XDG_DATA_HOME", home.path().join("data")),
             EnvGuard::set("XDG_CONFIG_HOME", home.path().join("config")),
+            // Claude's desktop app on Windows keeps its sign-in here.
+            EnvGuard::set("APPDATA", home.path().join("appdata")),
             EnvGuard::remove("AGENT_RELAY_HOME"),
             // The upload consent check reads `$HOME`'s Claude choices.
             EnvGuard::set("HOME", home.path()),
@@ -1855,6 +1861,44 @@ pub(crate) mod tests {
         let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
         assert_eq!((claude.state.as_str(), claude.sessions), ("listed", 1));
         assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+    }
+
+    /// A Mac with only Claude's desktop app signed in says so, without
+    /// touching the desktop app's sign-in, and a Claude Code login made
+    /// afterwards is listed on the next pass.
+    #[test]
+    fn a_desktop_app_only_sign_in_says_how_to_sign_in_to_claude_code() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = ClaudeStub::start(false);
+        let (home, _env) = bare_home();
+        let _base = EnvGuard::set("RELAYHISTORY_CLAUDE_API_BASE_URL", api.url());
+        let app = claude_desktop::app_dir(home.path());
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            app.join("config.json"),
+            r#"{"oauth:tokenCacheV2":"djEwAAAA"}"#,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let keychain = FakeKeychain::holding(None);
+        let host = host(home.path(), &db, &keychain);
+
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!(claude.state, "unavailable");
+        assert_eq!(
+            claude.reason.as_deref(),
+            Some(claude_cloud::DESKTOP_APP_ONLY)
+        );
+        assert_eq!(keychain.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/.credentials.json"), fresh_login()).unwrap();
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!((claude.state.as_str(), claude.sessions), ("listed", 1));
     }
 
     #[test]
