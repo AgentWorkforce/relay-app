@@ -97,9 +97,12 @@ fn signed_output(
     let response: Value = serde_json::from_slice(&body).ok()?;
     match status {
         503 if response["ok"] == false && response["error"]["code"] == "handoff_failed" => {
-            return Some(Outcome::Output(denied(
-                "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.",
-            )));
+            let reason = "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.";
+            let mut reason = reason.to_owned();
+            if is_join(input) {
+                reason.push_str(" Do not substitute another tool or a hosted account identity, or report that this chat has joined.");
+            }
+            return Some(Outcome::Output(denied(reason)));
         }
         200 | 400 | 403 | 409 => {}
         _ => return None,

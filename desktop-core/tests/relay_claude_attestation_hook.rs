@@ -149,6 +149,15 @@ fn handoff_retry_guidance_requires_both_status_and_error_code() {
                     reason.contains(expected),
                     "{tool} {status} {code}: {reason}"
                 );
+                if status == 503 && code == "handoff_failed" {
+                    let retry = "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.";
+                    let guidance = if tool == "join_relay" {
+                        " Do not substitute another tool or a hosted account identity, or report that this chat has joined."
+                    } else {
+                        ""
+                    };
+                    assert_eq!(reason, format!("{retry}{guidance}"), "{tool}");
+                }
             } else {
                 assert!(output.stdout.is_empty(), "{tool} {status} {code}");
             }
