@@ -67,9 +67,12 @@ fn one_saved_image_draws_with_the_text_before_it() {
     );
     insert(&f.conn, 1, "m", "user", &text);
     let page = page(&f);
-    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries.len(), 2);
     assert_eq!(page.entries[0].text, "Here is the screen");
-    assert_eq!(page.entries[0].image_path.as_deref(), path_text(&file));
+    assert_eq!(page.entries[0].image_path, None);
+    assert_eq!(page.entries[1].image_path.as_deref(), path_text(&file));
+    assert_eq!(page.entries[1].text, "");
+    assert_eq!(page.entries[1].id, "m:image:1");
     assert_eq!(page.entries[0].id, "m");
     assert_eq!(page.entries[0].kind, "text");
     assert!(!page.entries[0].truncated);
@@ -99,7 +102,7 @@ fn a_framed_message_keeps_its_frame_and_draws_the_block_after_it() {
     insert(&f.conn, 1, "m", "user", &text);
     let page = page(&f);
     assert_eq!(page.entries[0].text, framed);
-    assert_eq!(page.entries[0].image_path.as_deref(), path_text(&file));
+    assert_eq!(page.entries[1].image_path.as_deref(), path_text(&file));
 }
 
 #[test]
@@ -114,9 +117,9 @@ fn a_block_written_inside_a_body_is_text_and_only_the_real_block_draws() {
     let text = format!("{body}\n\nAttachments:\n{}", line("real.png", "image/png", &real));
     insert(&f.conn, 1, "m", "user", &text);
     let page = page(&f);
-    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries.len(), 2);
     assert_eq!(page.entries[0].text, body);
-    assert_eq!(page.entries[0].image_path.as_deref(), path_text(&real));
+    assert_eq!(page.entries[1].image_path.as_deref(), path_text(&real));
 
     // Without the real block, the one in the body draws nothing.
     let f = fixture();
@@ -131,7 +134,7 @@ fn a_block_written_inside_a_body_is_text_and_only_the_real_block_draws() {
 }
 
 #[test]
-fn several_messages_in_one_turn_draw_nothing_but_a_note_after_the_block_stays() {
+fn several_messages_in_one_turn_draw_nothing() {
     let f = fixture();
     let file = saved(&f.root, "file_1", "a.png");
     untouched(
@@ -141,20 +144,25 @@ fn several_messages_in_one_turn_draw_nothing_but_a_note_after_the_block_stays() 
             line("a.png", "image/png", &file)
         ),
     );
+}
 
+#[test]
+fn removing_an_attachment_block_preserves_the_paragraph_break() {
     let f = fixture();
     let file = saved(&f.root, "file_1", "a.png");
-    let text = format!(
-        "please check\n\nAttachments:\n{}\n\nA note added after the message.",
-        line("a.png", "image/png", &file)
-    );
-    insert(&f.conn, 1, "m", "user", &text);
+    let attachment = line("a.png", "image/png", &file);
+    for (index, separator) in ["\n", "\n\n"].into_iter().enumerate() {
+        let text = format!(
+            "please check\n\nAttachments:\n{attachment}{separator}Sent from my phone"
+        );
+        insert(&f.conn, index as i64 + 1, &format!("m{index}"), "user", &text);
+    }
     let page = page(&f);
-    assert_eq!(
-        page.entries[0].text,
-        "please check\n\nA note added after the message."
-    );
-    assert_eq!(page.entries[0].image_path.as_deref(), path_text(&file));
+    assert_eq!(page.entries.len(), 4);
+    for message in page.entries.chunks_exact(2) {
+        assert_eq!(message[0].text, "please check\n\nSent from my phone");
+        assert_eq!(message[1].image_path.as_deref(), path_text(&file));
+    }
 }
 
 #[test]
@@ -190,7 +198,14 @@ fn two_and_three_images_make_one_group_with_stable_ids() {
     let ids: Vec<&str> = page.entries.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(
         ids,
-        ["two", "two:image:2", "three", "three:image:2", "three:image:3"]
+        [
+            "two",
+            "two:image:1",
+            "two:image:2",
+            "three",
+            "three:image:2",
+            "three:image:3",
+        ]
     );
     let images: Vec<Option<&str>> = page
         .entries
@@ -199,17 +214,24 @@ fn two_and_three_images_make_one_group_with_stable_ids() {
         .collect();
     assert_eq!(
         images,
-        [path_text(&a), path_text(&b), path_text(&a), path_text(&b), path_text(&c)]
+        [
+            None,
+            path_text(&a),
+            path_text(&b),
+            path_text(&a),
+            path_text(&b),
+            path_text(&c),
+        ]
     );
     let texts: Vec<&str> = page.entries.iter().map(|e| e.text.as_str()).collect();
-    assert_eq!(texts, ["two", "", "", "", ""]);
+    assert_eq!(texts, ["two", "", "", "", "", ""]);
     for entry in &page.entries {
         assert_eq!(entry.role, "user");
         assert_eq!(entry.kind, "text");
         assert!(!entry.truncated);
     }
     assert_eq!(page.entries[1].timestamp_ms, 1);
-    assert_eq!(page.entries[4].timestamp_ms, 2);
+    assert_eq!(page.entries[5].timestamp_ms, 2);
 }
 
 #[test]
@@ -243,11 +265,11 @@ fn a_group_that_crosses_the_page_limit_moves_whole_to_the_next_page() {
     };
     write(&lengths);
     let all = page(&f);
-    assert_eq!(all.entries.len(), 12);
+    assert_eq!(all.entries.len(), 13);
     let size = |e: &LocalTranscriptEntry| serde_json::to_vec(e).unwrap().len();
     let fillers: usize = all.entries[..8].iter().map(size).sum();
     let first = size(&all.entries[8]);
-    let group: usize = all.entries[8..11].iter().map(size).sum();
+    let group: usize = all.entries[8..12].iter().map(size).sum();
     // Grow the fillers until the group's first entry would still fit but
     // the whole group would not.
     let delta = 512 * 1024 - first - fillers;
@@ -265,7 +287,10 @@ fn a_group_that_crosses_the_page_limit_moves_whole_to_the_next_page() {
     assert_eq!(cursor.ts_ms, 8);
     let next = read_page(&f.conn, &f.root, "claude", "s", Some(cursor)).unwrap();
     let ids: Vec<&str> = next.entries.iter().map(|e| e.id.as_str()).collect();
-    assert_eq!(ids, ["group", "group:image:2", "group:image:3", "after"]);
+    assert_eq!(
+        ids,
+        ["group", "group:image:1", "group:image:2", "group:image:3", "after"]
+    );
 }
 
 #[test]
@@ -285,7 +310,7 @@ fn a_mixed_block_keeps_the_lines_it_does_not_draw() {
         page.entries[0].text,
         format!("Look\n\nAttachments:\n{pdf}\n{missing}")
     );
-    assert_eq!(page.entries[0].image_path.as_deref(), path_text(&shot));
+    assert_eq!(page.entries[1].image_path.as_deref(), path_text(&shot));
 }
 
 #[test]
@@ -361,7 +386,7 @@ fn a_name_with_spaces_parentheses_and_saved_to_is_read_from_the_right() {
     insert(&f.conn, 1, "m", "user", &text);
     let page = page(&f);
     assert_eq!(page.entries[0].text, "see");
-    assert_eq!(page.entries[0].image_path.as_deref(), path_text(&file));
+    assert_eq!(page.entries[1].image_path.as_deref(), path_text(&file));
 }
 
 #[test]
