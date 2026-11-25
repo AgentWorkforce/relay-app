@@ -1481,11 +1481,11 @@ from the variable the core starts the reader with, else the default folder)
 with no `..`, still inside that folder once links are resolved, naming a
 regular file of at most 25 MiB. It only checks the file; it never reads or
 copies it. Drawn lines leave the text, and the heading too once none is left;
-the first image goes with the message's text and each further one is its own
-entry, `<event id>:image:<n>`, kept on one page with the message. A block
-followed by a framed message's closing line, a turn over 64 KiB, assistant
-turns, context and the channel form (`Attachments of message <id>:`) are left
-as text.
+images have their own entries below the message text and stay on the same page.
+Image entries use `<event id>:image:<n>`, with the original event ID on the
+first image when the message has no text. A block followed by a framed
+message's closing line, a turn over 64 KiB, assistant turns, context and the
+channel form (`Attachments of message <id>:`) are left as text.
 
 Session titles include a compact harness · model · reasoning subtitle on both
 platforms, with the full value in a tooltip. A session on the relay leads that

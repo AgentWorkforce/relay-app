@@ -52,7 +52,7 @@ pub(super) fn pictures(text: &str, root: &Path) -> Option<Pictures> {
     }
     let mut out: Vec<&str> = lines[..heading].to_vec();
     if kept.is_empty() {
-        if heading > 0 {
+        if lines.get(end).map_or(true, |line| line.is_empty()) {
             out.pop();
         }
     } else {

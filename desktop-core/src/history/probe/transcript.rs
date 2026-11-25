@@ -418,20 +418,26 @@ impl TranscriptEvent {
             .then(|| attachment_images::pictures(&display, attachments))
             .flatten();
         if let Some(pictures) = saved {
-            let mut images = pictures.images.into_iter();
-            let first = images.next();
-            let mut group = vec![LocalTranscriptEntry {
-                id: event_uid.clone(),
-                role: role.clone(),
-                kind: kind.clone(),
-                text: pictures.text,
-                image_path: first,
-                timestamp_ms: ts_ms,
-                truncated: false,
-            }];
-            for (n, image) in (2..).zip(images) {
+            let has_text = !pictures.text.is_empty();
+            let mut group = Vec::new();
+            if has_text {
                 group.push(LocalTranscriptEntry {
-                    id: format!("{event_uid}:image:{n}"),
+                    id: event_uid.clone(),
+                    role: role.clone(),
+                    kind: kind.clone(),
+                    text: pictures.text,
+                    image_path: None,
+                    timestamp_ms: ts_ms,
+                    truncated: false,
+                });
+            }
+            for (index, image) in pictures.images.into_iter().enumerate() {
+                group.push(LocalTranscriptEntry {
+                    id: if index == 0 && !has_text {
+                        event_uid.clone()
+                    } else {
+                        format!("{event_uid}:image:{}", index + 1)
+                    },
                     role: role.clone(),
                     kind: kind.clone(),
                     text: String::new(),
