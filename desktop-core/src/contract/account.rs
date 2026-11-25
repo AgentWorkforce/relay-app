@@ -165,6 +165,11 @@ pub struct ClaudeCloudHealth {
     /// The macOS OSStatus from a failed Keychain read, when one caused it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keychain_error_code: Option<i32>,
+    /// Claude Code's own sign-in would resume cloud sessions, and this
+    /// computer can open it (`claude_cloud.sign_in`): Settings offers
+    /// "Sign in to Claude Code".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub claude_code_sign_in: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

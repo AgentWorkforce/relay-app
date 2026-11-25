@@ -73,6 +73,9 @@ methods! {
     UploaderResume = "uploader.resume", NoParams => UploaderPaused;
     UploaderRetry = "uploader.retry", NoParams => UploadsRetried;
     UploaderCompact = "uploader.compact", NoParams => JournalCompacted;
+    // Opens Claude Code's own sign-in (`claude auth login`) where the person
+    // can answer it, while `ClaudeCloudHealth::claude_code_sign_in` offers it.
+    ClaudeCloudSignIn = "claude_cloud.sign_in", NoParams => Done;
     UploaderDisconnect = "uploader.disconnect", NoParams => UploaderDisconnected;
     UploaderSharingSet = "uploader.sharing.set", SharingParams => SharingChanged;
     // What `uploader.sharing.set` would do, changing nothing: refused as it

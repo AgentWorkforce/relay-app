@@ -83,6 +83,7 @@ public enum CoreMethod {
     public static let uploaderResume = "uploader.resume"
     public static let uploaderRetry = "uploader.retry"
     public static let uploaderCompact = "uploader.compact"
+    public static let claudeCloudSignIn = "claude_cloud.sign_in"
     public static let uploaderDisconnect = "uploader.disconnect"
     public static let uploaderSharingSet = "uploader.sharing.set"
     public static let uploaderSharingPreview = "uploader.sharing.preview"
@@ -2202,6 +2203,10 @@ public struct ChatSendParams: Codable, Equatable, Hashable, Sendable {
 public struct ClaudeCloudHealth: Codable, Equatable, Hashable, Sendable {
     /// When this source was last checked, in Unix milliseconds.
     public let atMs: Int64?
+    /// Claude Code's own sign-in would resume cloud sessions, and this
+    /// computer can open it (`claude_cloud.sign_in`): Settings offers
+    /// "Sign in to Claude Code".
+    public let claudeCodeSignIn: Bool?
     /// The macOS OSStatus from a failed Keychain read, when one caused it.
     public let keychainErrorCode: Int?
     /// Its most recent successful listing, retained across later failures.
@@ -2210,8 +2215,9 @@ public struct ClaudeCloudHealth: Codable, Equatable, Hashable, Sendable {
     public let reason: String?
     public let state: ClaudeCloudHealthState
 
-    public init(atMs: Int64? = nil, keychainErrorCode: Int? = nil, lastSuccessMs: Int64? = nil, reason: String? = nil, state: ClaudeCloudHealthState) {
+    public init(atMs: Int64? = nil, claudeCodeSignIn: Bool? = nil, keychainErrorCode: Int? = nil, lastSuccessMs: Int64? = nil, reason: String? = nil, state: ClaudeCloudHealthState) {
         self.atMs = atMs
+        self.claudeCodeSignIn = claudeCodeSignIn
         self.keychainErrorCode = keychainErrorCode
         self.lastSuccessMs = lastSuccessMs
         self.reason = reason
@@ -2220,6 +2226,7 @@ public struct ClaudeCloudHealth: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case atMs = "at_ms"
+        case claudeCodeSignIn = "claude_code_sign_in"
         case keychainErrorCode = "keychain_error_code"
         case lastSuccessMs = "last_success_ms"
         case reason
@@ -2229,6 +2236,7 @@ public struct ClaudeCloudHealth: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.atMs = try c.decodeIfPresent(Int64.self, forKey: .atMs)
+        self.claudeCodeSignIn = try c.decodeIfPresent(Bool.self, forKey: .claudeCodeSignIn)
         self.keychainErrorCode = try c.decodeIfPresent(Int.self, forKey: .keychainErrorCode)
         self.lastSuccessMs = try c.decodeIfPresent(Int64.self, forKey: .lastSuccessMs)
         self.reason = try c.decodeIfPresent(String.self, forKey: .reason)
@@ -2238,6 +2246,7 @@ public struct ClaudeCloudHealth: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(self.atMs, forKey: .atMs)
+        try c.encodeIfPresent(self.claudeCodeSignIn, forKey: .claudeCodeSignIn)
         try c.encodeIfPresent(self.keychainErrorCode, forKey: .keychainErrorCode)
         try c.encodeIfPresent(self.lastSuccessMs, forKey: .lastSuccessMs)
         try c.encodeIfPresent(self.reason, forKey: .reason)
@@ -13743,6 +13752,12 @@ extension CoreClient {
     @discardableResult
     public func uploaderCompact() async throws -> JournalCompacted {
         try await call(CoreMethod.uploaderCompact, NoParams())
+    }
+
+    /// `claude_cloud.sign_in`; only a core built with an account answers it.
+    @discardableResult
+    public func claudeCloudSignIn() async throws -> Done {
+        try await call(CoreMethod.claudeCloudSignIn, NoParams())
     }
 
     /// `uploader.disconnect`; only a core built with an account answers it.
