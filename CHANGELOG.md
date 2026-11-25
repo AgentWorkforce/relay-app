@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Claude Code cloud sessions say what to do when only Claude's desktop app is signed in.** On macOS, Linux and Windows, when Claude Code has no sign-in on this computer but Claude's desktop app does, the Claude Code cloud sessions status in Settings now says that the desktop app does not share its sign-in and that running `claude auth login` once (after installing Claude Code if there is no `claude` command) resumes cloud sessions, instead of only saying Claude Code is not signed in. Agent Relay checks only whether the desktop app holds a sign-in; it never reads or uses the desktop app's sign-in or its Keychain item. Once Claude Code is signed in, cloud sessions are listed on the next pass.
 - **Codex chats receive direct messages in order.** On macOS, Linux and Windows, a later direct message waits while an earlier message is pending delivery to the same chat.
 
 - **One bad session no longer stops all uploads.** On macOS, Linux and Windows, when the secret scrubber fails on a single record of a session, that record is set aside and counted as quarantined, and everything else keeps being stored and uploaded. Before, the failure ended the history collector, which restarted every few seconds and stopped every upload until a fixed version arrived. A set-aside record is never stored or uploaded unscrubbed, and nothing of its content is logged; it is tried again once an Agent Relay update brings a new scrubber.
