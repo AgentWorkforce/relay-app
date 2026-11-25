@@ -111,16 +111,23 @@ fn signed_output(
         return None;
     }
     if response["data"]["handoff"] == true {
+        // A handed-off proof may already be pending in Cloud. Block the call
+        // if the core returned handoff for arguments that require rewriting.
+        if request.get("has_description").is_some() {
+            return None;
+        }
         // Cloud matches the proof by Claude's tool_use_id, and accepts a
         // native join's own name, so the call needs no change.
         return Some(Outcome::HandedOff);
     }
     let mut output = super::hook_output(input, proof)?;
-    if is_join(input) && response["data"]["native_join"] == true {
+    if is_join(input) {
         // The core verified that the requested name is already this chat's
         // local name. Hosted native joins use that identity, never a new name.
         let arguments = output["hookSpecificOutput"]["updatedInput"].as_object_mut()?;
-        arguments.remove("name");
+        if response["data"]["native_join"] == true {
+            arguments.remove("name");
+        }
         arguments.remove("description");
     }
     Some(Outcome::Output(output))

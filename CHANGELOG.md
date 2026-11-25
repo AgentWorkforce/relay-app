@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- On macOS, Linux and Windows, hosted Claude Code joins keep the locally registered chat description. To join in auto mode, omit the description so the hook can hand off the proof without rewriting the call.
+
 - On macOS, Linux and Windows, Claude Code blocks a hosted Relay call and asks you to retry when the desktop service reports that it could not deliver the chat’s proof to Cloud.
 - **Starting a Grok agent on macOS and Linux.** Agent Relay reports Grok as unavailable for new agents unless the executable its launcher resolves to is named `grok` or starts with `grok-`, is owned by the current user or root, and has no group or other write permissions.
 - **Agent Relay's hosted tools work in Claude Code's auto mode.** On macOS, Linux and Windows, Claude Code's auto mode no longer refuses every Agent Relay tool call with "a hook changed this call's input after auto mode reviewed it". Agent Relay's Claude Code hook now hands the chat's proof to Agent Relay Cloud before the call goes out and leaves the call itself unchanged, and tools that only read, such as searching shared sessions or listing agents, are no longer signed at all, so they no longer wait on the hook. A `join_relay` keeps the name you gave it. This needs Agent Relay Cloud's matching update; until it has it, calls are signed as before and auto mode still refuses them.

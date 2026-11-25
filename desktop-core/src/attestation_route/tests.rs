@@ -619,3 +619,28 @@ async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
         .unwrap_err();
     assert_eq!(refused.code, "handoff_failed");
 }
+
+#[tokio::test]
+async fn join_descriptions_use_inline_proof_with_handoff_enabled() {
+    let f = fixture();
+    f.negotiate(json!({"claude_session_attestation": 1, "claude_attestation_handoff": 1}))
+        .await;
+    for (fields, native_join) in [
+        (json!({"registration": {"name": "claude-chat", "description": null}}), true),
+        (json!({"has_description": true}), false),
+    ] {
+        let mut join = call(REGISTERED, "mcp__agent-relay__join_relay");
+        join.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        let answer = f.ask(IN_REGISTERED, join).await.unwrap();
+        assert_eq!(answer["native_join"], native_join);
+        assert_eq!(answer["handoff"], false);
+        assert!(answer["attestation"].is_string());
+    }
+    assert!(f.cloud.calls.lock().unwrap().iter().all(|(method, _, _)| method != "POST"));
+
+    let mut join = call(REGISTERED, "mcp__agent-relay__join_relay");
+    join["registration"] = json!({"name": "claude-chat"});
+    let answer = f.ask(IN_REGISTERED, join).await.unwrap();
+    assert_eq!(answer["native_join"], true);
+    assert_eq!(answer["handoff"], true);
+}

@@ -213,7 +213,18 @@ pub(crate) async fn route(
     let proof = key
         .sign(&claims)
         .ok_or_else(|| unavailable("The proof could not be signed."))?;
-    let handoff = hand_off(outbound, &account, tool, &proof).await?;
+    // A handoff leaves the original tool input intact. Use inline proof so
+    // the hook can remove any description supplied with a join.
+    let has_join_description = tool == "join_relay"
+        && (fields.contains_key("has_description")
+            || fields
+                .get("registration")
+                .is_some_and(|registration| registration.get("description").is_some()));
+    let handoff = if has_join_description {
+        false
+    } else {
+        hand_off(outbound, &account, tool, &proof).await?
+    };
     Ok(json!({ "attestation": proof, "native_join": native_join, "handoff": handoff }))
 }
 

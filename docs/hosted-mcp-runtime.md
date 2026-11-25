@@ -107,12 +107,13 @@ How the proof reaches Cloud depends on Cloud:
   cannot. A native `join_relay` keeps the name the model passed; Cloud accepts
   it when it is the chat's verified desktop name. When the core reports HTTP 503
   with `handoff_failed`, the hook denies the call and asks Claude to retry. Claude
-  Code's auto mode refuses any call whose input a hook changed, so with the
-  handoff every hosted tool works in auto mode.
-- **In the arguments** (an older Cloud without the handoff): the hook returns
+  Code's auto mode accepts unchanged input. Omit the description when joining
+  in auto mode so the core can hand off the proof.
+- **In the arguments** (an older Cloud without the handoff, or a join with a supplied description): the hook returns
   `hookSpecificOutput.updatedInput`, the call's own arguments with
   `_agent_relay_attestation` set to the proof, replacing any value the model
-  supplied; a native join also drops `name` and `description`. Auto mode
+  supplied. A join drops any supplied `description`, and a native join also
+  drops the verified `name`. Auto mode
   refuses these calls.
 
 The hook also denies a join it cannot complete. For other calls, when the core
