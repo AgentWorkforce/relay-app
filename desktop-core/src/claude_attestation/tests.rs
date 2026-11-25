@@ -234,7 +234,7 @@ fn a_named_join_gives_a_quoted_local_command_without_running_it() {
     let mut input = pre_tool_use(json!({"name":"claude-assistant"}));
     input["tool_name"] = json!("mcp__agent-relay__join_relay");
     let output = hook::output_at(&input, Some(Path::new("/tmp/Agent Relay/relay.sock")), |_| {
-        Some(br#"{"ok":false,"error":{"code":"registration_required"}}"#.to_vec())
+        Some((403, br#"{"ok":false,"error":{"code":"registration_required"}}"#.to_vec()))
     }).unwrap();
     assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
     let reason = output["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap();
@@ -350,14 +350,6 @@ fn a_handed_off_proof_leaves_the_call_unchanged() {
         )
     });
     assert!(output.is_none());
-
-    // A failed handoff on a join is denied with retry guidance, not rewritten.
-    let output = hook::output(&input, |_| {
-        Some(br#"{"ok":false,"error":{"code":"handoff_failed"}}"#.to_vec())
-    })
-    .unwrap();
-    assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
-    assert!(output["hookSpecificOutput"].get("updatedInput").is_none());
 }
 
 #[test]

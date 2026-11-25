@@ -35,10 +35,7 @@ pub fn run(socket: Option<&Path>, development: bool) -> Result<()> {
                 TIMEOUT
             };
             output_at(&input, socket.as_deref(), |body| {
-                let socket = socket.as_deref()?;
-                let (status, response) =
-                    socket_response(socket, "POST", super::ROUTE, body, timeout).ok()?;
-                matches!(status, 200 | 400 | 403 | 409).then_some(response)
+                socket_response(socket.as_deref()?, "POST", super::ROUTE, body, timeout).ok()
             })
         });
     if let Some(output) = output {
@@ -65,15 +62,15 @@ const RETRY: &str = "Agent Relay could not verify this chat's desktop identity. 
 
 #[cfg(test)]
 pub(crate) fn output(input: &Value, ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>) -> Option<Value> {
-    output_at(input, None, ask)
+    output_at(input, None, |body| ask(body).map(|reply| (200, reply)))
 }
 
 pub(crate) fn output_at(
     input: &Value,
     socket: Option<&Path>,
-    ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+    ask: impl FnOnce(&[u8]) -> Option<(u16, Vec<u8>)>,
 ) -> Option<Value> {
-    match verified_output(input, socket, ask) {
+    match signed_output(input, socket, ask).unwrap_or(Outcome::Unsigned) {
         Outcome::HandedOff => None,
         Outcome::Output(output) => Some(output),
         Outcome::Unsigned => is_join(input).then(|| denied(RETRY)),
@@ -90,22 +87,23 @@ enum Outcome {
     Unsigned,
 }
 
-fn verified_output(
-    input: &Value,
-    socket: Option<&Path>,
-    ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
-) -> Outcome {
-    signed_output(input, socket, ask).unwrap_or(Outcome::Unsigned)
-}
-
 fn signed_output(
     input: &Value,
     socket: Option<&Path>,
-    ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+    ask: impl FnOnce(&[u8]) -> Option<(u16, Vec<u8>)>,
 ) -> Option<Outcome> {
     let request = super::hook_request(input)?;
-    let response: Value =
-        serde_json::from_slice(&ask(&serde_json::to_vec(&request).ok()?)?).ok()?;
+    let (status, body) = ask(&serde_json::to_vec(&request).ok()?)?;
+    let response: Value = serde_json::from_slice(&body).ok()?;
+    match status {
+        503 if response["ok"] == false && response["error"]["code"] == "handoff_failed" => {
+            return Some(Outcome::Output(denied(
+                "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.",
+            )));
+        }
+        200 | 400 | 403 | 409 => {}
+        _ => return None,
+    }
     let Some(proof) = response["data"]["attestation"].as_str().filter(|p| compact_jws(p)) else {
         return refused_join(input, socket, &response);
     };

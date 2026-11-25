@@ -20,6 +20,10 @@ fn hook_input() -> Value {
 /// Runs the hook against a socket that answers one request with `status`
 /// and `reply`, returning the hook's output and the request body it sent.
 fn run(status: u16, reply: Value) -> (Output, Value) {
+    run_with_input(status, reply, &hook_input())
+}
+
+fn run_with_input(status: u16, reply: Value, input: &Value) -> (Output, Value) {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("relay.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -53,11 +57,11 @@ fn run(status: u16, reply: Value) -> (Output, Value) {
         .unwrap();
         serde_json::from_slice::<Value>(&body).unwrap()
     });
-    let output = invoke(&socket);
+    let output = invoke(&socket, input);
     (output, server.join().unwrap())
 }
 
-fn invoke(socket: &std::path::Path) -> Output {
+fn invoke(socket: &std::path::Path, input: &Value) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_agent-relay-desktop-probe"))
         .args(["claude-attestation-hook", "--socket"])
         .arg(socket)
@@ -70,7 +74,7 @@ fn invoke(socket: &std::path::Path) -> Output {
         .stdin
         .take()
         .unwrap()
-        .write_all(hook_input().to_string().as_bytes())
+        .write_all(input.to_string().as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
 }
@@ -110,8 +114,44 @@ fn a_refusal_prints_nothing_and_exits_cleanly() {
 #[test]
 fn an_unreachable_core_prints_nothing_and_exits_cleanly() {
     let root = tempfile::tempdir().unwrap();
-    let output = invoke(&root.path().join("missing.sock"));
+    let output = invoke(&root.path().join("missing.sock"), &hook_input());
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn handoff_retry_guidance_requires_both_status_and_error_code() {
+    for (tool, fallback) in [
+        ("join_relay", Some("retry this join")),
+        ("send_message", None),
+    ] {
+        let mut input = hook_input();
+        input["tool_name"] = json!(format!("mcp__agent-relay__{tool}"));
+        for (status, code, expected_reason) in [
+            (503, "handoff_failed", Some("retry this tool call")),
+            (503, "registration_required", fallback),
+            (403, "handoff_failed", fallback),
+        ] {
+            let (output, _) = run_with_input(
+                status,
+                json!({"ok": false, "error": {"code": code}}),
+                &input,
+            );
+            assert!(output.status.success());
+            if let Some(expected) = expected_reason {
+                let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+                let decision = &printed["hookSpecificOutput"];
+                assert_eq!(decision["permissionDecision"], "deny");
+                assert!(decision.get("updatedInput").is_none());
+                let reason = decision["permissionDecisionReason"].as_str().unwrap();
+                assert!(
+                    reason.contains(expected),
+                    "{tool} {status} {code}: {reason}"
+                );
+            } else {
+                assert!(output.stdout.is_empty(), "{tool} {status} {code}");
+            }
+        }
+    }
 }

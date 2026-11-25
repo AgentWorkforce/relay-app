@@ -105,19 +105,19 @@ How the proof reaches Cloud depends on Cloud:
   as Claude made it. Cloud matches the stored proof to the call by
   `params._meta["claudecode/toolUseId"]`, which Claude Code sets and the model
   cannot. A native `join_relay` keeps the name the model passed; Cloud accepts
-  it when it is the chat's verified desktop name. A failed or slow handoff is
-  never retried in the arguments: the call goes out unsigned (a join is denied
-  with retry guidance). Claude Code's auto mode refuses any call whose input a
-  hook changed, so with the handoff every hosted tool works in auto mode.
+  it when it is the chat's verified desktop name. When the core reports HTTP 503
+  with `handoff_failed`, the hook denies the call and asks Claude to retry. Claude
+  Code's auto mode refuses any call whose input a hook changed, so with the
+  handoff every hosted tool works in auto mode.
 - **In the arguments** (an older Cloud without the handoff): the hook returns
   `hookSpecificOutput.updatedInput`, the call's own arguments with
   `_agent_relay_attestation` set to the proof, replacing any value the model
   supplied; a native join also drops `name` and `description`. Auto mode
   refuses these calls.
 
-The hook sets `permissionDecision` only to deny a join it cannot complete. When
-the core is unreachable, the chat is not registered, or signing fails, the hook
-prints nothing and exits 0; the call proceeds without a proof and Cloud refuses
+The hook also denies a join it cannot complete. For other calls, when the core
+is unreachable, the chat is unregistered, or signing fails before handoff, the
+hook prints nothing and exits 0; the call proceeds without a proof and Cloud refuses
 actor operations.
 
 Each installation has one Ed25519 key, created by the core in
