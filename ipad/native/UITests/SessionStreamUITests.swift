@@ -219,8 +219,7 @@ final class SessionStreamUITests: XCTestCase {
 
         let thread = app.scrollViews["Conversation thread"].firstMatch
         let caption = thread.staticTexts["Simulator screenshot fixture"].firstMatch
-        let picture = thread.descendants(matching: .any)
-            .matching(identifier: "Attachment picture").firstMatch
+        let picture = thread.buttons.matching(NSPredicate(format: "label == %@", "inline-fixture.png")).firstMatch
         XCTAssertTrue(caption.waitForExistence(timeout: 15))
         XCTAssertTrue(picture.waitForExistence(timeout: 15))
         XCTAssertTrue(waitFor("hittable == true", picture))
