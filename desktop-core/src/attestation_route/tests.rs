@@ -643,4 +643,11 @@ async fn join_descriptions_use_inline_proof_with_handoff_enabled() {
     let answer = f.ask(IN_REGISTERED, join).await.unwrap();
     assert_eq!(answer["native_join"], true);
     assert_eq!(answer["handoff"], true);
+    let path = format!("/workspaces/{WORKSPACE}/messaging/desktop-identities/attestations");
+    let calls = f.cloud.calls.lock().unwrap();
+    let mut posts = calls.iter().filter(|(method, _, _)| method == "POST");
+    let (_, posted_path, body) = posts.next().expect("native join must post its proof");
+    assert_eq!(posted_path, &path);
+    assert_eq!(body.as_ref(), Some(&json!({"attestation": answer["attestation"]})));
+    assert!(posts.next().is_none(), "native join posted more than once");
 }
