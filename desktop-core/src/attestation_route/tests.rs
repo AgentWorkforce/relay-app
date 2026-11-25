@@ -12,6 +12,7 @@ use base64::Engine;
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 pub(crate) const WORKSPACE: &str = "50587328-441d-4acb-b8f3-dbe1b3c5de99";
 pub(crate) const CAST: &str = "https://cast.agentrelay.com";
@@ -26,6 +27,7 @@ const IN_UNREGISTERED: i32 = 4200;
 pub(crate) struct FakeCloud {
     calls: Mutex<Vec<(String, String, Option<Value>)>>,
     capabilities: Mutex<Value>,
+    handoff_gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     account_override: Mutex<Option<CloudAccount>>,
     pub(crate) generation: std::sync::atomic::AtomicU64,
     /// Every request fails while set.
@@ -57,12 +59,22 @@ impl CloudAccess for FakeCloud {
         path: String,
         body: Option<Value>,
     ) -> BoxFuture<'_, Result<Value, CloudError>> {
+        let handoff = method == "POST" && path.ends_with(attestation::HANDOFF_PATH);
         self.calls.lock().unwrap().push((method.into(), path, body));
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Box::pin(async { Err(CloudError::Unreachable) });
         }
         if let Some(error) = self.failure.lock().unwrap().clone() {
             return Box::pin(async move { Err(error) });
+        }
+        if handoff {
+            if let Some((started, resume)) = self.handoff_gate.lock().unwrap().take() {
+                return Box::pin(async move {
+                    started.send(()).unwrap();
+                    resume.await.unwrap();
+                    Ok(json!({}))
+                });
+            }
         }
         let delay = self.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
         let capabilities = self.capabilities.lock().unwrap().clone();
@@ -618,4 +630,50 @@ async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
         .await
         .unwrap_err();
     assert_eq!(refused.code, "handoff_failed");
+}
+
+async fn assert_handoff_rejects_sign_in_change(change: impl FnOnce(&FakeCloud)) {
+    let f = fixture();
+    f.negotiate(json!({"claude_session_attestation": 1, "claude_attestation_handoff": 1}))
+        .await;
+    let (started, posting) = oneshot::channel();
+    let (resume, paused) = oneshot::channel();
+    *f.cloud.handoff_gate.lock().unwrap() = Some((started, paused));
+
+    let request = call(REGISTERED, "mcp__agent-relay__send_relay_message");
+    let (result, ()) = tokio::join!(
+        async {
+            let result = f.ask(IN_REGISTERED, request).await;
+            // Close the channel if the route returned before reaching the POST.
+            f.cloud.handoff_gate.lock().unwrap().take();
+            result
+        },
+        async {
+            posting.await.unwrap();
+            change(&f.cloud);
+            resume.send(()).unwrap();
+        },
+    );
+    let refused = result.unwrap_err();
+    assert_eq!(refused.code, "attestation_unavailable");
+}
+
+#[tokio::test]
+async fn handoff_rejects_an_account_switch_during_the_post() {
+    assert_handoff_rejects_sign_in_change(|cloud| {
+        let mut account = cloud.account().unwrap();
+        account.user_id = Some("user-2".into());
+        *cloud.account_override.lock().unwrap() = Some(account);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn handoff_rejects_a_generation_bump_during_the_post_for_the_same_account() {
+    assert_handoff_rejects_sign_in_change(|cloud| {
+        cloud
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    })
+    .await;
 }

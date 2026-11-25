@@ -95,6 +95,7 @@ fn require_matching_name(mismatch: bool, allowed: bool) -> Result<(), OutboundEr
 async fn hand_off(
     outbound: &Outbound,
     account: &agent_relay_node::relay::cloud_session::CloudAccount,
+    generation: u64,
     tool: &str,
     proof: &str,
 ) -> Result<bool, OutboundError> {
@@ -126,7 +127,9 @@ async fn hand_off(
         ));
         return Err(handoff_failed());
     }
-    if outbound.core.plugins.cloud.account().as_ref() != Some(account) {
+    if outbound.core.plugins.cloud.account().as_ref() != Some(account)
+        || outbound.core.plugins.cloud.identity_sync_generation() != generation
+    {
         return Err(unavailable(
             "The Agent Relay sign-in changed. Retry the call in this chat.",
         ));
@@ -213,7 +216,7 @@ pub(crate) async fn route(
     let proof = key
         .sign(&claims)
         .ok_or_else(|| unavailable("The proof could not be signed."))?;
-    let handoff = hand_off(outbound, &account, tool, &proof).await?;
+    let handoff = hand_off(outbound, &account, generation, tool, &proof).await?;
     Ok(json!({ "attestation": proof, "native_join": native_join, "handoff": handoff }))
 }
 
