@@ -330,3 +330,60 @@ fn a_profile_build_names_its_own_server_and_only_its_tools() {
         Some("join_relay")
     );
 }
+
+#[test]
+fn a_handed_off_proof_leaves_the_call_unchanged() {
+    // Auto mode refuses a call whose input a hook changed, so nothing is printed.
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    let output = hook::output(&input, |_| {
+        Some(br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#.to_vec())
+    });
+    assert!(output.is_none());
+
+    // A native join keeps its own name: Cloud accepts it, so nothing is stripped.
+    let mut input = pre_tool_use(json!({"name":"claude-assistant", "description":"My chat"}));
+    input["tool_name"] = json!("mcp__agent-relay__join_relay");
+    let output = hook::output(&input, |_| {
+        Some(
+            br#"{"ok":true,"data":{"attestation":"h.p.s","native_join":true,"handoff":true}}"#
+                .to_vec(),
+        )
+    });
+    assert!(output.is_none());
+
+    // A failed handoff on a join is denied with retry guidance, not rewritten.
+    let output = hook::output(&input, |_| {
+        Some(br#"{"ok":false,"error":{"code":"handoff_failed"}}"#.to_vec())
+    })
+    .unwrap();
+    assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(output["hookSpecificOutput"].get("updatedInput").is_none());
+}
+
+#[test]
+fn tools_that_never_act_as_the_chat_are_not_signed() {
+    for tool in [
+        "mcp__agent-relay__list_relay_agents",
+        "mcp__agent-relay__get_relay_agent_card",
+        "mcp__agent-relay__search_shared_sessions",
+        "mcp__agent-relay__list_session_summaries",
+        "mcp__plugin_relay_agent-relay__get_shared_session",
+        "mcp__agent-relay__list_team_activity",
+        "mcp__agent-relay__show_ui",
+    ] {
+        let mut input = pre_tool_use(json!({"query": "x"}));
+        input["tool_name"] = json!(tool);
+        assert!(hook_request(&input).is_none(), "{tool}");
+        assert!(hook::output(&input, |_| panic!("the core is not asked for {tool}")).is_none());
+    }
+    for tool in [
+        "mcp__agent-relay__send_relay_message",
+        "mcp__agent-relay__check_relay_inbox",
+        "mcp__agent-relay__describe_capabilities",
+        "mcp__agent-relay__a_tool_cloud_adds_later",
+    ] {
+        let mut input = pre_tool_use(json!({}));
+        input["tool_name"] = json!(tool);
+        assert!(hook_request(&input).is_some(), "{tool}");
+    }
+}

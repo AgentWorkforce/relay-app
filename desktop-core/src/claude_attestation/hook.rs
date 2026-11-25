@@ -7,14 +7,18 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(2);
+/// Includes the core's handoff to Cloud (`HANDOFF_TIMEOUT`), within the
+/// hook's own 5 seconds.
+const TIMEOUT: Duration = Duration::from_secs(4);
 /// A registered join waits for its desktop identity to sync before signing.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Adds the current chat's proof. A join without verified desktop identity is
-/// denied with local registration guidance. Registration itself remains a
-/// separate command under Claude's normal permission policy; a PreToolUse hook
-/// must not register a chat before the person can approve the tool call.
+/// Gets the current chat's proof. Once the core has handed it to Cloud the
+/// hook prints nothing, so the call goes out exactly as Claude made it;
+/// against an older Cloud it adds the proof to the arguments. A join without
+/// verified desktop identity is denied with local registration guidance.
+/// Registration itself remains a separate command under Claude's normal
+/// permission policy; a PreToolUse hook must not register a chat before the person can approve the tool call.
 pub fn run(socket: Option<&Path>, development: bool) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
@@ -69,48 +73,49 @@ pub(crate) fn output_at(
     socket: Option<&Path>,
     ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
 ) -> Option<Value> {
-    verified_output(input, socket, ask).or_else(|| is_join(input).then(|| denied(RETRY)))
+    match verified_output(input, socket, ask) {
+        Outcome::HandedOff => None,
+        Outcome::Output(output) => Some(output),
+        Outcome::Unsigned => is_join(input).then(|| denied(RETRY)),
+    }
+}
+
+/// What the hook prints for one call.
+enum Outcome {
+    /// Cloud holds the proof: nothing, so the call is left unchanged.
+    HandedOff,
+    /// A denial, or the arguments with the proof for a Cloud without the handoff.
+    Output(Value),
+    /// No proof: a join is denied, any other call goes out unsigned.
+    Unsigned,
 }
 
 fn verified_output(
     input: &Value,
     socket: Option<&Path>,
     ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
-) -> Option<Value> {
+) -> Outcome {
+    signed_output(input, socket, ask).unwrap_or(Outcome::Unsigned)
+}
+
+fn signed_output(
+    input: &Value,
+    socket: Option<&Path>,
+    ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+) -> Option<Outcome> {
     let request = super::hook_request(input)?;
     let response: Value =
         serde_json::from_slice(&ask(&serde_json::to_vec(&request).ok()?)?).ok()?;
-    let Some(proof) = response["data"]["attestation"].as_str().filter(|proof| {
-        let parts: Vec<_> = proof.split('.').collect();
-        parts.len() == 3
-            && parts.iter().all(|part| {
-                !part.is_empty()
-                    && part
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            })
-    }) else {
-        if !is_join(input) {
-            return None;
-        }
-        let reason = match response["error"]["code"].as_str()? {
-            "not_a_relay_session" | "registration_required" => {
-                let name = input["tool_input"]["name"].as_str().filter(|name| !name.trim().is_empty());
-                if let (Some(socket), Some(name)) = (socket, name) {
-                    let command = registration_command_for(&std::env::current_exe().ok()?, socket, &input["tool_input"])?;
-                    format!("This Claude chat must register locally under the approved name {name:?} before hosted Relay can verify its identity. Run {command} from this chat's own Bash tool, through the normal command permission check; do not bypass that check. This registers only this chat and shares its conversation with the workspace. After it succeeds, retry join_relay without name or description. Do not run the command from a separate terminal, substitute another chat ID, or use a hosted account identity.")
-                } else {
-                    "This Claude chat has not joined Agent Relay Desktop. Ask the person what name to use, then call join_relay with that name to get its local registration command. Do not substitute a hosted account identity.".into()
-                }
-            }
-            "invalid_name" | "name_taken" => "This Claude chat could not join under the requested name. Ask the person to choose an available name using 2–48 lowercase letters, digits and single dashes, then retry join_relay with that name.".into(),
-            "not_allowed" => "This Claude chat cannot register while Let sessions put themselves on the relay is off. Ask the person to enable it in Agent Relay Settings or put this session on the relay in the app, then retry.".into(),
-            _ => return None,
-        };
-        return Some(denied(reason));
+    let Some(proof) = response["data"]["attestation"].as_str().filter(|p| compact_jws(p)) else {
+        return refused_join(input, socket, &response);
     };
     if request.get("registration").is_some() && response["data"]["native_join"] != true {
         return None;
+    }
+    if response["data"]["handoff"] == true {
+        // Cloud matches the proof by Claude's tool_use_id, and accepts a
+        // native join's own name, so the call needs no change.
+        return Some(Outcome::HandedOff);
     }
     let mut output = super::hook_output(input, proof)?;
     if is_join(input) && response["data"]["native_join"] == true {
@@ -120,7 +125,42 @@ fn verified_output(
         arguments.remove("name");
         arguments.remove("description");
     }
-    Some(output)
+    Some(Outcome::Output(output))
+}
+
+/// A compact JWS: three non-empty base64url parts.
+fn compact_jws(proof: &str) -> bool {
+    let parts: Vec<_> = proof.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+/// The denial for a join the core would not sign, or `None` (any other call
+/// goes out unsigned).
+fn refused_join(input: &Value, socket: Option<&Path>, response: &Value) -> Option<Outcome> {
+    if !is_join(input) {
+        return None;
+    }
+    let reason = match response["error"]["code"].as_str()? {
+        "not_a_relay_session" | "registration_required" => {
+            let name = input["tool_input"]["name"].as_str().filter(|name| !name.trim().is_empty());
+            if let (Some(socket), Some(name)) = (socket, name) {
+                let command = registration_command_for(&std::env::current_exe().ok()?, socket, &input["tool_input"])?;
+                format!("This Claude chat must register locally under the approved name {name:?} before hosted Relay can verify its identity. Run {command} from this chat's own Bash tool, through the normal command permission check; do not bypass that check. This registers only this chat and shares its conversation with the workspace. After it succeeds, retry join_relay without name or description. Do not run the command from a separate terminal, substitute another chat ID, or use a hosted account identity.")
+            } else {
+                "This Claude chat has not joined Agent Relay Desktop. Ask the person what name to use, then call join_relay with that name to get its local registration command. Do not substitute a hosted account identity.".into()
+            }
+        }
+        "invalid_name" | "name_taken" => "This Claude chat could not join under the requested name. Ask the person to choose an available name using 2–48 lowercase letters, digits and single dashes, then retry join_relay with that name.".into(),
+        "not_allowed" => "This Claude chat cannot register while Let sessions put themselves on the relay is off. Ask the person to enable it in Agent Relay Settings or put this session on the relay in the app, then retry.".into(),
+        _ => return None,
+    };
+    Some(Outcome::Output(denied(reason)))
 }
 
 pub(super) fn registration_command_for(

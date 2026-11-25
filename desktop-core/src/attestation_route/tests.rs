@@ -544,3 +544,78 @@ async fn after_resume_the_hook_proves_only_the_chat_its_claude_now_holds() {
 }
 
 pub(crate) mod copilot;
+
+#[tokio::test]
+async fn with_the_handoff_the_proof_reaches_cloud_before_the_hook_answers() {
+    let f = fixture();
+    f.negotiate(json!({"claude_session_attestation": 1})).await;
+    let answer = f
+        .ask(
+            IN_REGISTERED,
+            call(REGISTERED, "mcp__agent-relay__send_relay_message"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        answer["handoff"], false,
+        "an older Cloud gets the proof in the arguments"
+    );
+    assert!(!f
+        .cloud
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(m, _, _)| m == "POST"));
+
+    f.negotiate(json!({"claude_session_attestation": 1, "claude_attestation_handoff": 1}))
+        .await;
+    let answer = f
+        .ask(
+            IN_REGISTERED,
+            call(REGISTERED, "mcp__agent-relay__send_relay_message"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer["handoff"], true);
+    let calls = f.cloud.calls.lock().unwrap().clone();
+    let (_, path, body) = calls.iter().rev().find(|(m, _, _)| m == "POST").unwrap();
+    assert_eq!(
+        path,
+        &format!("/workspaces/{WORKSPACE}/messaging/desktop-identities/attestations")
+    );
+    assert_eq!(
+        body.as_ref().unwrap(),
+        &json!({"attestation": answer["attestation"]})
+    );
+}
+
+#[tokio::test]
+async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
+    let f = fixture();
+    f.negotiate(json!({"claude_session_attestation": 1, "claude_attestation_handoff": 1}))
+        .await;
+    *f.cloud.failure.lock().unwrap() = Some(CloudError::Unreachable);
+    let refused = f
+        .ask(
+            IN_REGISTERED,
+            call(REGISTERED, "mcp__agent-relay__send_relay_message"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "handoff_failed");
+
+    *f.cloud.failure.lock().unwrap() = None;
+    f.cloud
+        .delay_ms
+        .store(5_000, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::pause();
+    let refused = f
+        .ask(
+            IN_REGISTERED,
+            call(REGISTERED, "mcp__agent-relay__send_relay_message"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "handoff_failed");
+}
