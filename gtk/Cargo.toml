@@ -42,7 +42,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 # through mise is found) and b8c5243: #2251 (stricter session caller
 # attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "231781a6cbd1c04b374dd4dafd6cc6233399c47c", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "70980e405f57523132a986b7170ce2d75d16e290", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
