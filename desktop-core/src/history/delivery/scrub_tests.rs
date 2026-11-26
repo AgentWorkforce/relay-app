@@ -609,3 +609,40 @@ fn a_drain_scrubs_with_the_default_engine_unless_told_otherwise() {
         crate::history::scrub::DEFAULT_ENGINE
     );
 }
+
+#[test]
+fn a_scrubber_panic_drops_only_the_failed_record_and_advances_the_cursor() {
+    struct PanicOnFixture;
+    const MARKER: &str = "fixture-only-panic-marker";
+    impl Scrub for PanicOnFixture {
+        fn name(&self) -> &str {
+            "panic-on-fixture"
+        }
+        fn scrub(&self, body: &[u8], _: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
+            if body
+                .windows(MARKER.len())
+                .any(|window| window == MARKER.as_bytes())
+            {
+                panic!("{MARKER}")
+            }
+            Ok(body.to_vec())
+        }
+    }
+    for in_flight in IN_FLIGHT {
+        let (_dir, db, job_id) =
+            fixture_with(&["before", MARKER, "after"], DeliveryLimits::default());
+        let receiver = Echo::default();
+        let engine = ScrubEngine::new(PanicOnFixture);
+        drain_with(&db, &receiver, engine.clone(), in_flight);
+        let sent = receiver.bodies().concat();
+        assert!(sent.contains("before") && sent.contains("after"));
+        assert!(!sent.contains(MARKER));
+        assert!(!stored(&db, &job_id).contains(MARKER));
+        let progress = verdict(&db, &job_id);
+        assert!(progress.2 > 0);
+        assert_eq!(progress.3, 1);
+        drain_with(&db, &receiver, engine, in_flight);
+        assert_eq!(verdict(&db, &job_id), progress);
+        assert_eq!(receiver.bodies().concat(), sent);
+    }
+}

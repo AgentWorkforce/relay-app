@@ -443,9 +443,6 @@ fn next_member(conn: &Connection, job_id: &str, after: &str) -> Result<Option<Ba
 /// relationships naming it as their child.
 const INCOMING_EDGES: i64 = 1;
 
-fn child(record: &HistoryExportRecord) -> Option<&str> {
-    record.payload.get("child_session_id")?.as_str()
-}
 
 /// Which path of a session job sends a relationship.
 #[derive(Debug, PartialEq, Eq)]
@@ -495,7 +492,7 @@ impl Members {
 fn sender(members: &Members, record: &HistoryExportRecord, revision: i64) -> Sender {
     let added = |session: Option<&str>| members.added(&record.source, session);
     let parent = added(record.session_id.as_deref()).unwrap_or((i64::MAX, i64::MAX));
-    let Some(child) = child(record).and_then(|child| added(Some(child))) else {
+    let Some(child) = hold::sessions_child(record).and_then(|child| added(Some(child))) else {
         return if revision > parent.0 {
             Sender::Feed
         } else {
@@ -556,7 +553,9 @@ pub(super) fn prepare(
             suppressed += 1;
             return Ok(true);
         };
-        let Some(record) = unaccounted(&mut held, hold, filling, offered, identity)? else {
+        let Some(record) =
+            unaccounted(&mut held, hold, filling, offered, identity, &mut suppressed)?
+        else {
             return Ok(true);
         };
         let revision_id = record.revision_id.clone();
@@ -620,7 +619,7 @@ pub(super) fn prepare(
             let record = record_from_change(origin, &change)?;
             let wanted = if edges {
                 record.source == member.identity.source
-                    && child(&record) == Some(member.identity.session_id.as_str())
+                    && hold::sessions_child(&record) == Some(member.identity.session_id.as_str())
                     && sender(&members, &record, revision) == Sender::Child
             } else {
                 record.kind != "relationship"

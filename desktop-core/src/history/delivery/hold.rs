@@ -355,7 +355,9 @@ pub(super) fn admit(
         *suppressed += 1;
         return Ok(true);
     }
-    let record = filling.scrubbed(offered)?;
+    let Some(record) = filling.scrubbed(offered, suppressed)? else {
+        return Ok(true);
+    };
     if kept(hold, filling, &record, key)? {
         return Ok(true);
     }
@@ -372,7 +374,7 @@ pub(super) fn admit(
 /// A held copy's revision, its session, and the child session an edge names.
 type HeldRow = (String, String, String, Option<String>, Option<String>);
 
-fn sessions_child(record: &HistoryExportRecord) -> Option<&str> {
+pub(super) fn sessions_child(record: &HistoryExportRecord) -> Option<&str> {
     record.payload.get("child_session_id")?.as_str()
 }
 

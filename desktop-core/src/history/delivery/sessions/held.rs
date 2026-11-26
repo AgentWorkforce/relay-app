@@ -57,11 +57,14 @@ pub(super) fn unaccounted(
     filling: &Filling,
     offered: Offered,
     identity: &[serde_json::Value],
+    suppressed: &mut i64,
 ) -> Result<Option<HistoryExportRecord>> {
     if held.contains(&offered.record().revision_id) {
         return Ok(None);
     }
-    let record = filling.scrubbed(offered)?;
+    let Some(record) = filling.scrubbed(offered, suppressed)? else {
+        return Ok(None);
+    };
     if hold::kept(hold, filling, &record, identity)? {
         held.insert(record.revision_id.clone());
         return Ok(None);

@@ -34,16 +34,21 @@ impl Filling {
     /// [`ScrubRefused`] error: the caller's preparation fails, its
     /// transaction rolls back with the cursor where it was, and [`refused`]
     /// blocks the job so the record is offered again on a retry, never stored
-    /// raw and never counted as suppressed.
-    pub(super) fn scrubbed(&self, offered: Offered) -> Result<HistoryExportRecord> {
+    /// raw and never counted as suppressed. If the engine panics, suppress
+    /// this record alone and advance past it when preparation commits.
+    pub(super) fn scrubbed(
+        &self,
+        offered: Offered,
+        suppressed: &mut i64,
+    ) -> Result<Option<HistoryExportRecord>> {
         let mut record = match offered {
             Offered::Held(record, Some(engine)) if engine == self.scrub.name() => {
-                return Ok(record)
+                return Ok(Some(record))
             }
             Offered::Held(record, _) | Offered::Read(record) => record,
         };
         if record.payload.is_null() {
-            return Ok(record);
+            return Ok(Some(record));
         }
         let context = ScrubContext::new(ScrubSurface::LocalStore)
             .source(&record.source)
@@ -51,14 +56,22 @@ impl Filling {
         match self.scrub.scrub_json(&record.payload, &context) {
             Ok(payload) => {
                 record.payload = payload;
-                Ok(record)
+                Ok(Some(record))
             }
             Err(error) => {
                 eprintln!(
-                    "delivery record not queued batch_ref={} reason={error}",
+                    "delivery record not queued batch_ref={} revision_ref={} reason={error}",
                     hash(self.batch.batch_id.as_bytes()),
+                    hash(record.revision_id.as_bytes()),
                 );
-                Err(ScrubRefused.into())
+                if error.panicked() {
+                    // Committed with the feed cursor. Never retain the input or
+                    // block later records behind a deterministic engine panic.
+                    *suppressed += 1;
+                    Ok(None)
+                } else {
+                    Err(ScrubRefused.into())
+                }
             }
         }
     }

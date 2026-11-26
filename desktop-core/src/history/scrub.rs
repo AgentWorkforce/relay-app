@@ -12,6 +12,8 @@
 //! never sent raw, and never retried with the raw bytes. Scrubbing a body
 //! again before it is sent is allowed, so an engine must accept its own
 //! output.
+mod panic_boundary;
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -61,6 +63,7 @@ impl<'a> ScrubContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScrubError {
     reason: String,
+    panicked: bool,
 }
 
 /// The status code a path records for a body its engine refused, where the
@@ -71,7 +74,12 @@ impl ScrubError {
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            panicked: false,
         }
+    }
+
+    pub(crate) fn panicked(&self) -> bool {
+        self.panicked
     }
 
     pub fn reason(&self) -> &str {
@@ -116,7 +124,7 @@ impl ScrubEngine {
     }
 
     pub fn scrub(&self, body: &[u8], context: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
-        self.0.scrub(body, context)
+        panic_boundary::run(|| self.0.scrub(body, context))
     }
 
     /// [`Self::scrub`] for a UTF-8 body: output that is not UTF-8 is a

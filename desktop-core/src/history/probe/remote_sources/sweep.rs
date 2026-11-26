@@ -349,9 +349,7 @@ impl Run<'_, '_, '_> {
             self.signed_out.insert(source.to_string());
             return false;
         }
-        let failure = error
-            .downcast_ref::<ConnectorFailure>()
-            .map_or(Failure::Transient, |failure| failure.failure);
+        let failure = download_failure(&error);
         let activity = row.last_activity_ms;
         self.pacing.failed(
             connector,
@@ -362,5 +360,55 @@ impl Run<'_, '_, '_> {
             self.now,
         );
         false
+    }
+}
+
+/// Parking keeps the previous complete snapshot intact. The sweep can try
+/// again when the provider reports new activity for this session.
+fn download_failure(error: &anyhow::Error) -> Failure {
+    if error
+        .downcast_ref::<crate::history::scrub::ScrubError>()
+        .is_some_and(|error| error.panicked())
+    {
+        Failure::Permanent
+    } else {
+        error
+            .downcast_ref::<ConnectorFailure>()
+            .map_or(Failure::Transient, |error| error.failure)
+    }
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::*;
+    use crate::history::scrub::{Scrub, ScrubContext, ScrubEngine, ScrubError, ScrubSurface};
+
+    #[test]
+    fn a_scrubber_panic_parks_only_the_unchanged_remote_session() {
+        struct Panics;
+        impl Scrub for Panics {
+            fn name(&self) -> &str {
+                "panic"
+            }
+            fn scrub(&self, _: &[u8], _: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
+                panic!("synthetic remote fixture")
+            }
+        }
+
+        let error = ScrubEngine::new(Panics)
+            .scrub(b"fixture", &ScrubContext::new(ScrubSurface::LocalStore))
+            .unwrap_err();
+        let mut pacing = Pacing::default();
+        pacing.failed(
+            "connector",
+            "provider",
+            "bad",
+            Some(1),
+            download_failure(&error.into()),
+            0,
+        );
+        assert!(!pacing.session_open("provider", "bad", Some(1), i64::MAX));
+        assert!(pacing.session_open("provider", "bad", Some(2), 1));
+        assert!(pacing.session_open("provider", "good", Some(1), 1));
     }
 }
