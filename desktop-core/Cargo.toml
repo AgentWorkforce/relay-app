@@ -36,14 +36,9 @@ service-callers-dev-attest = []
 # advertise relay:spawn-approval-profile:v1, so Cloud and relay-control can
 # refuse an explicit approval profile where a node would ignore it; it grants
 # no approval authority) and f147b2f: #2266 (Windows test only).
-# #2274's trust: forging it means writing another chat's rollout under
-# ~/.codex/sessions, which Codex's workspace-write and read-only sandboxes
-# deny; a full-access chat can, but such same-user code can already send as
-# the person through the bridge (relay person_guard.rs:16-17), name its
-# Claude chat as another through Claude's own sessions/<pid>.json
-# (claude.rs:244-262), and read this app's Claude attestation key
-# (claude_attestation.rs); CLI multi-lock attribution already trusts rollout
-# headers (process.rs:438-519). Line numbers are at relay c818fd3.
+# #2274 assumes transcript integrity: the rollouts under ~/.codex/sessions
+# are written only by Codex. Codex's workspace-write and read-only sandboxes
+# deny chats writes there; full-access same-user code is out of scope.
 # Below that: 70980e4: #2269 (attribute commands to the chat that started
 # them when Codex chats share an app-server), on top of 231781a: #2265 (an address is looked for only in conversations that
 # list its agent) on top of ecc9700: #2253 (kept messages are re-checked
