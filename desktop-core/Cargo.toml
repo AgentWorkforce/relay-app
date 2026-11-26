@@ -36,7 +36,7 @@ service-callers-dev-attest = []
 # through mise is found) and b8c5243: #2251 (stricter session caller
 # attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "70980e405f57523132a986b7170ce2d75d16e290", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "c818fd3f6fbd04b6ba7d5fe17286a25a76023226", default-features = false }
 # relayhistory 0.62.0 from crates.io. `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to
 # the same exact version here to build a single ai-hist.
