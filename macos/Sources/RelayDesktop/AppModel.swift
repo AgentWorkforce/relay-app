@@ -1065,6 +1065,55 @@ final class AppModel {
 
     private var coreRegistrationPending = false
     private var isCheckingCoreService = false
+    /// Rungs of `CoreRegistrationRepair` tried during the current outage.
+    @ObservationIgnored private var selfRepairStep = 0
+    /// Connection attempts at which an outage climbs the next repair rung,
+    /// all before the 15th, when the person is first asked to act.
+    static let selfRepairAttempts: Set<Int> = [4, 8, 11, 13]
+    static let selfRepairExhaustedMessage = "Agent Relay could not start its background service. Quit Agent Relay, keep only the copy in Applications (empty the Trash and eject any Agent Relay disk image), then open it again. If this keeps happening, turn Agent Relay off and on in System Settings › General › Login Items."
+
+    /// Climbs one rung of the registration self-repair: drop a stale fallback,
+    /// register a job launchd never loaded, reset a job pinned to a replaced
+    /// bundle, and only then the absolute-path LaunchAgent. True when it
+    /// submitted something, so the caller gives the new core time to answer.
+    @discardableResult
+    func selfRepairCore() async -> Bool {
+        guard manageSystemServices, !isRecoveringCore, !coreRegistrationPending, !isCheckingCoreService,
+              !stopping, !isCoreConnected else { return false }
+        isRecoveringCore = true
+        coreRegistrationPending = true
+        defer {
+            coreRegistrationPending = false
+            isRecoveringCore = false
+        }
+        let step = selfRepairStep
+        selfRepairStep += 1
+        do {
+            let action = try await service.selfRepairAsync(step: step)
+            switch action {
+            case .none:
+                return false
+            case .waitForApproval:
+                showCoreServiceStatus(.requiresApproval)
+                return false
+            case .moveToApplications:
+                coreProblem = service.installationProblem
+                return false
+            case .exhausted:
+                if coreProblem == nil { coreProblem = Self.selfRepairExhaustedMessage }
+                return false
+            case .register, .resetRegistration, .leaveFallback, .useFallback, .reloadSessionJob, .useLoginJob:
+                countCoreRepair()
+                defaults.set(service.binaryIdentity, forKey: Self.registeredCoreKey)
+                Self.logger.notice("core self-repair submitted \(action.rawValue, privacy: .public)")
+                return true
+            }
+        } catch {
+            Self.logger.error("core self-repair failed: \(error.localizedDescription, privacy: .public)")
+            reportCoreOutage(.repairFailed, error: error)
+            return false
+        }
+    }
 
     private func reregisterCore() async throws {
         coreRegistrationPending = true
@@ -1262,9 +1311,10 @@ final class AppModel {
         isRestartingCore = true
         connectionAttempts = 0
         refusalRepairs = 0
+        selfRepairStep = 0
         coreProblem = nil
         watchStartup()
-        await recoverRefusedCore()
+        if !(await selfRepairCore()) { await recoverRefusedCore() }
         if coreProblem != nil || isCoreConnected || connectTask == nil || Task.isCancelled {
             isRestartingCore = false
         }
@@ -1364,6 +1414,7 @@ final class AppModel {
                 guard !Task.isCancelled, !stopping else { return }
                 coreOutageRecovered(runningVersion: hello.daemonVersion)
                 connectionAttempts = 0
+                selfRepairStep = 0
                 refusalRepairs = 0
                 coreProblem = nil
                 coreNeedsApproval = false
@@ -1424,6 +1475,10 @@ final class AppModel {
                         Self.logger.error("could not start the backup core: \(error.localizedDescription, privacy: .public)")
                         coreProblem = "macOS could not start Agent Relay’s backup background service. Try again, or check the app’s log for details."
                     }
+                }
+                if !recoveredBrokenBundle, Self.selfRepairAttempts.contains(connectionAttempts),
+                   !isRestartingCore, service.installationProblem == nil, await selfRepairCore() {
+                    recoveredBrokenBundle = true
                 }
                 if !recoveredBrokenBundle && connectionAttempts > 0 && connectionAttempts % 15 == 0 {
                     reportCoreOutage(.repeatedRefusal)

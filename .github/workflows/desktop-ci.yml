@@ -327,6 +327,7 @@ jobs:
           python3 scripts/test_release_notes.py
           python3 scripts/test_release_version.py
           python3 scripts/test_release_workflow.py
+          python3 scripts/test_check_telemetry_key.py
           python3 scripts/test_release_candidate.py
           python3 scripts/test_release_workflow_cloud.py
           python3 scripts/test_desktop_feed_publish.py

@@ -406,6 +406,16 @@ jobs:
               exit 1
             fi
           done
+          # A project (capture) token is public by design; a personal API key
+          # (phx_) grants account access and must never be compiled in.
+          if [[ "$POSTHOG_API_KEY" == phx_* ]]; then
+            echo "::error::POSTHOG_API_KEY holds a PostHog personal API key; set the project token (phc_)"
+            exit 1
+          fi
+          if ! [[ "$POSTHOG_API_KEY" =~ ^phc_[A-Za-z0-9_-]{16,251}$ ]]; then
+            echo "::error::POSTHOG_API_KEY is not a PostHog project token (phc_)"
+            exit 1
+          fi
 
   # Desktop CI tests every architecture on main and compares each push with
   # the last commit main passed, so a passing main run for this exact commit

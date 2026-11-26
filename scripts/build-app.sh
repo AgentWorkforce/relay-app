@@ -604,6 +604,13 @@ if [[ "$CONFIGURATION" == release && "$WANT_SITE" == "$DEFAULT_SITE_URL" && "$BU
   plutil -insert AgentRelayOutageProjectKey -string "$OUTAGE_PROJECT_KEY" "$APP_BUNDLE/Contents/Info.plist"
 fi
 printf '%s\n' "$WANT_SCHEME" > "$APP_BUNDLE/Contents/Resources/url-scheme.txt"
+# A signed production release must carry exactly its PostHog project token
+# (phc_) in the helper and never a personal API key (phx_), as 2026.11.19 did.
+if [[ "$CONFIGURATION" == release && "$WANT_SITE" == "$DEFAULT_SITE_URL" && "$BUNDLE_ID" == "$DEFAULT_BUNDLE_ID" &&
+      -n "${CSC_LINK:-}" ]]; then
+  bash "$SCRIPT_DIR/check-telemetry-key.sh" packaged "$APP_BUNDLE/Contents/Helpers/$HELPER_NAME" \
+    || die "the packaged helper's analytics key is wrong; refusing to build a release"
+fi
 printf '%s\n' "$RELEASES_REPOSITORY" > "$APP_BUNDLE/Contents/Resources/releases-repository.txt"
 printf '%s\n' "$ASSET_PREFIX" > "$APP_BUNDLE/Contents/Resources/asset-prefix.txt"
 # The feed and its key are recorded only when they are not the default's,
