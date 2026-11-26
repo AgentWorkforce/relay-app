@@ -1102,6 +1102,8 @@ final class AppModel {
         let step = selfRepairStep
         do {
             let action = try await service.selfRepairAsync(step: step)
+            // Stopped while the rung ran: nothing it saw applies any more.
+            guard !stopping else { return false }
             switch action {
             case .none, .waitForApproval, .moveToApplications:
                 break
@@ -1131,6 +1133,7 @@ final class AppModel {
                 return true
             }
         } catch {
+            guard !stopping, !(error is CancellationError) else { return false }
             selfRepairStep = step + 1
             Self.logger.error("core self-repair failed: \(error.localizedDescription, privacy: .public)")
             reportCoreOutage(.repairFailed, error: error)

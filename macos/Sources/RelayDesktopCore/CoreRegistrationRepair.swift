@@ -179,6 +179,23 @@ public enum BoundedCall {
         }
     }
 
+    /// `run` for async work. The work keeps running past the deadline; the
+    /// caller does not wait for it.
+    @MainActor
+    public static func runAsync<T>(_ operation: String, timeout: TimeInterval,
+                                   _ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        let gate = Gate<T>()
+        return try await withCheckedThrowingContinuation { continuation in
+            gate.install(continuation)
+            Task { @MainActor in
+                do { gate.finish(.success(try await work())) } catch { gate.finish(.failure(error)) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + max(timeout, 0)) {
+                gate.finish(.failure(TimedOut(operation: operation)))
+            }
+        }
+    }
+
     private final class Gate<T>: @unchecked Sendable {
         private let lock = NSLock()
         private var continuation: CheckedContinuation<T, Error>?

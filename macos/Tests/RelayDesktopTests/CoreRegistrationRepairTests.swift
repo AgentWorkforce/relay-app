@@ -484,6 +484,89 @@ extension CoreRegistrationRepairTests {
     }
 }
 
+extension CoreRegistrationRepairTests {
+    @MainActor
+    private func model(for mac: SimulatedMac) -> AppModel {
+        AppModel(client: CoreClient(socketPath: "/tmp/stop-race-\(UUID().uuidString.prefix(8)).sock"),
+                 service: mac.service, bundledCoreVersion: "1.0.0", unregisterSettle: 0,
+                 startupTimeout: 60_000_000_000, manageSystemServices: false, defaults: mac.defaults)
+    }
+
+    /// Stop service while the direct rung waits on launchd, just before it
+    /// would start the core: once launchd answers, the rung starts nothing.
+    @MainActor
+    func testStopDuringADirectRungStartsNoCore() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
+        try await mac.service.registerAsync()
+        let model = model(for: mac)
+        _ = await model.selfRepairCore()                 // step 0: reloads the session job
+        // Step 1 reads the session job for its observation, then again to
+        // boot it out before starting the core: hold that second read.
+        mac.launchd.suspendSessionRead(after: 1)
+        let rung = Task { await model.selfRepairCore() }
+        let held = await eventually(2) { mac.launchd.isSuspended }
+        XCTAssertTrue(held)
+
+        model.stopBackgroundService()
+        let changesAtStop = mac.launchd.calls.filter { $0 != "status" }.count
+        mac.launchd.releaseSuspension()
+        let submitted = await rung.value
+
+        XCTAssertFalse(submitted)
+        XCTAssertTrue(mac.launchd.directStarts.isEmpty, "no core started after Stop")
+        XCTAssertFalse(mac.launchd.directCoreRunning)
+        XCTAssertNil(mac.launchd.fallbackProgram, "no session job left loaded")
+        XCTAssertEqual(mac.launchd.calls.filter { $0 != "status" }.count, changesAtStop, "no change after Stop")
+        XCTAssertEqual(mac.launchd.smStatus, .notRegistered)
+    }
+
+    /// Stop service while a repair's registration is still in flight inside
+    /// macOS: the stop waits for it and unregisters after it, and the
+    /// resumed rung changes nothing more.
+    @MainActor
+    func testStopAfterAnInFlightRegistrationLeavesNothingRegistered() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        let hang = DispatchSemaphore(value: 0)
+        mac.launchd.hangRegister = hang
+        let model = model(for: mac)
+        let rung = Task { await model.selfRepairCore() }  // step 0: reset, its register hangs
+        let inFlight = await eventually(2) { mac.launchd.registerStarted }
+        XCTAssertTrue(inFlight)
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { hang.signal() }
+        model.stopBackgroundService()
+        _ = await rung.value
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(mac.launchd.smStatus, .notRegistered)
+        XCTAssertEqual(mac.launchd.bundled, .missing)
+        XCTAssertEqual(mac.launchd.calls.filter { $0 != "status" }.last, "unregister", "the stop came last")
+        XCTAssertTrue(mac.launchd.directStarts.isEmpty)
+    }
+
+    /// A launchd read that never answers ends at the rung's shared deadline.
+    @MainActor
+    func testTheRungDeadlineCoversLaunchctlReads() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 5, repairBudget: 0.3)
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
+        try await mac.service.registerAsync()
+        mac.launchd.suspendSessionRead(after: 0)          // the observation's read hangs
+        let started = Date()
+        do { _ = try await mac.service.selfRepairAsync(step: 0); XCTFail("must time out") }
+        catch is BoundedCall.TimedOut {}
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        mac.launchd.releaseSuspension()
+    }
+}
+
 /// A launchd and SMAppService that behave as the real ones did.
 private final class SimulatedLaunchd {
     enum Job: Equatable { case missing, running(version: String), spawnFailed(version: String) }
@@ -495,6 +578,28 @@ private final class SimulatedLaunchd {
     var fallbackNeverRuns = false
     var hangUnregister: DispatchSemaphore?
     var unregisterError: Error?
+    var hangRegister: DispatchSemaphore?
+    private(set) var registerStarted = false
+    /// Suspends the Nth session-job read through the async launchctl, so a
+    /// test can act while a rung waits on launchd.
+    private var sessionReadsBeforeSuspend: Int?
+    private var suspended: CheckedContinuation<Void, Never>?
+    var isSuspended: Bool { suspended != nil }
+
+    func suspendSessionRead(after reads: Int) { sessionReadsBeforeSuspend = reads }
+    func releaseSuspension() { let held = suspended; suspended = nil; held?.resume() }
+
+    @MainActor func launchctlAsync(_ arguments: [String]) async -> (success: Bool, output: String) {
+        if arguments.first == "print", arguments[1].hasSuffix(".session"), let remaining = sessionReadsBeforeSuspend {
+            if remaining == 0 {
+                sessionReadsBeforeSuspend = nil
+                await withCheckedContinuation { suspended = $0 }
+            } else {
+                sessionReadsBeforeSuspend = remaining - 1
+            }
+        }
+        return launchctl(arguments)
+    }
     /// Every status, register and unregister call takes this long.
     var callDelay: TimeInterval = 0
     /// After this many status reads, the person has withdrawn approval.
@@ -524,6 +629,8 @@ private final class SimulatedLaunchd {
                   return self.smStatus
               },
               registerBundled: {
+                  self.registerStarted = true
+                  self.hangRegister?.wait()
                   if self.callDelay > 0 { Thread.sleep(forTimeInterval: self.callDelay) }
                   self.record("register")
                   guard !self.registerHasNoEffect else { return }
@@ -625,6 +732,8 @@ private final class SimulatedMac {
         var system = launchd.system
         system.osCallTimeout = osCallTimeout
         system.repairBudget = repairBudget
+        let launchd = launchd
+        system.launchctlAsync = { arguments in await launchd.launchctlAsync(arguments) }
         service = LaunchAgentService(bundleURL: bundle, homeDirectory: home, bundleIdentifier: "com.agentrelay.desktop",
                                      defaults: defaults, system: system)
     }
