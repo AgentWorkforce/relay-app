@@ -813,16 +813,17 @@ mod tests {
         std::fs::remove_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir_all(home.join(".claude/projects/existing")).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !inventory.lost {
+        // A changed child directory can request reconciliation before the
+        // callback reports that the registered root itself was removed.
+        while Arc::ptr_eq(&first, &started(&inventory)) {
             let wait = deadline.saturating_duration_since(Instant::now());
-            let signal = received.recv_timeout(wait).expect("the removal is a loss");
+            assert!(!wait.is_zero(), "the recreated root replaces the watcher");
+            let signal = received
+                .recv_timeout(wait)
+                .expect("root removal notification");
             inventory.signal(signal);
+            inventory.refresh(Instant::now());
         }
-        inventory.refresh(Instant::now());
-        assert!(
-            !Arc::ptr_eq(&first, &started(&inventory)),
-            "a root recreated at the same path restarts the watcher"
-        );
         // And the new watcher follows the recreated root again.
         let written = home.join(".claude/projects/existing/after.jsonl");
         std::fs::write(&written, "{}\n").unwrap();
