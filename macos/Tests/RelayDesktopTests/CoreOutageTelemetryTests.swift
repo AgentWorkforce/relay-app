@@ -110,6 +110,59 @@ final class CoreOutageTelemetryTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: fixture.identity, encoding: .utf8), saved)
     }
 
+    func testContentionKeepsAnOutageOpenAndRetriesRecoveryAfterRelease() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let telemetry = try fixture.telemetry()
+        fixture.failure(telemetry, .startupWatchdog)
+        let lock = try fixture.openIdentityLock()
+        defer { close(lock) }
+
+        XCTAssertEqual(flock(lock, LOCK_EX | LOCK_NB), 0)
+        fixture.failure(telemetry, .repeatedRefusal)
+        XCTAssertEqual(fixture.events, ["desktop_core_unavailable"])
+        XCTAssertEqual(flock(lock, LOCK_UN), 0)
+        fixture.failure(telemetry, .repeatedRefusal)
+        XCTAssertEqual(fixture.reasons, ["startup_watchdog", "repeated_refusal"])
+
+        XCTAssertEqual(flock(lock, LOCK_EX | LOCK_NB), 0)
+        fixture.recovered(telemetry)
+        fixture.recovered(telemetry)
+        XCTAssertEqual(fixture.events.count, 2)
+        XCTAssertEqual(flock(lock, LOCK_UN), 0)
+
+        let recovered = await eventually { fixture.events.count == 3 }
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(fixture.events.last, "desktop_core_recovered")
+        XCTAssertEqual(fixture.captures.last?["distinct_id"] as? String, "desktop:" + Fixture.id)
+    }
+
+    func testRecoveryWaitingOnLockRechecksConsentAndIdentity() async throws {
+        for transition in ["disk opt-out", "rotated identity", "requested opt-out"] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let telemetry = try fixture.telemetry()
+            fixture.failure(telemetry, .startupWatchdog)
+            let lock = try fixture.openIdentityLock()
+            defer { close(lock) }
+
+            XCTAssertEqual(flock(lock, LOCK_EX | LOCK_NB), 0)
+            fixture.recovered(telemetry)
+            switch transition {
+            case "disk opt-out":
+                try fixture.write("preferences.json", #"{"analytics_enabled":false}"#)
+            case "rotated identity":
+                try fixture.write("installation-id", "11111111-1111-4111-8111-111111111111")
+            default:
+                telemetry.optOutRequested()
+            }
+            XCTAssertEqual(flock(lock, LOCK_UN), 0)
+
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(fixture.events, ["desktop_core_unavailable"], transition)
+        }
+    }
+
     func testConsentChangeBeforeTransportSuppressesCapture() throws {
         let fixture = try Fixture(seedIdentity: false)
         defer { fixture.remove() }
@@ -376,6 +429,13 @@ final class CoreOutageTelemetryTests: XCTestCase {
             AppModel(client: CoreClient(socketPath: path), service: service, bundledCoreVersion: "1.0.0",
                      unregisterSettle: 0, startupTimeout: startupTimeout, manageSystemServices: false,
                      defaults: defaults, outageTelemetry: try telemetry(), connectionBackoffLimit: backoff)
+        }
+
+        func openIdentityLock() throws -> Int32 {
+            let path = directory.appendingPathComponent("installation-id.lock").path
+            let lock = open(path, O_RDWR | O_CLOEXEC)
+            guard lock >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            return lock
         }
 
         func failure(_ telemetry: CoreOutageTelemetry, _ reason: CoreOutageTelemetry.Reason, allowed: Bool = true) {

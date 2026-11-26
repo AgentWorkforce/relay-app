@@ -103,21 +103,28 @@ fn default_enabled() -> bool {
 #[cfg(target_os = "macos")]
 pub(super) fn preferences_for_update(
     path: &Path,
-) -> io::Result<serde_json::Map<String, serde_json::Value>> {
-    Ok(read(path, 16 * 1024)?
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default())
+) -> io::Result<(serde_json::Map<String, serde_json::Value>, bool)> {
+    let Some(bytes) = read(path, 16 * 1024)? else {
+        return Ok((serde_json::Map::new(), true));
+    };
+    let consent = parse_consent(&bytes).unwrap_or(false);
+    let preferences = serde_json::from_slice(&bytes).unwrap_or_default();
+    Ok((preferences, consent))
 }
 
 pub(super) fn consent(path: &Path) -> io::Result<bool> {
     let Some(bytes) = read(path, 16 * 1024)? else {
         return Ok(true);
     };
+    parse_consent(&bytes)
+}
+
+fn parse_consent(bytes: &[u8]) -> io::Result<bool> {
     // Require a JSON object. Serde structs can otherwise accept arrays.
     if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
         return Err(unsafe_state());
     }
-    Ok(serde_json::from_slice::<Preferences>(&bytes)?.analytics_enabled)
+    Ok(serde_json::from_slice::<Preferences>(bytes)?.analytics_enabled)
 }
 
 fn existing(path: &Path) -> io::Result<Option<String>> {

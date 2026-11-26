@@ -129,6 +129,7 @@ final class CoreOutageTelemetry {
     private var outageIdentity: String?
     private var reported: Set<Reason> = []
     private var endedConsentOrIdentity = false
+    private var recoveryRetry: Task<Void, Never>?
 
     init(project: Project, dataDirectory: URL, defaults: UserDefaults,
          appVersion: String, bundledCoreVersion: String?, osVersion: OperatingSystemVersion,
@@ -165,32 +166,67 @@ final class CoreOutageTelemetry {
     /// A consent or ID change ends reporting for the current outage.
     func failure(_ reason: Reason, service: @autoclosure () -> CoreServiceDiagnostics,
                  attempts: Int, repairs: Int, lastError: Failure?, runningVersion: String?, allowed: Bool) {
-        guard !reported.contains(reason), let id = identityForOutage(allowed: allowed) else { return }
-        guard send(.unavailable, id: id, reason: reason, service: service(), attempts: attempts,
-                   repairs: repairs, lastError: lastError, runningVersion: runningVersion) else { return }
+        if recoveryRetry != nil { finishRecovery() }
+        guard !reported.contains(reason),
+              let id = try? identityForOutage(allowed: allowed) else { return }
+        guard (try? send(.unavailable, id: id, reason: reason, service: service(), attempts: attempts,
+                         repairs: repairs, lastError: lastError, runningVersion: runningVersion)) == true else { return }
         outageIdentity = id
         reported.insert(reason)
     }
 
     func recovered(service: @autoclosure () -> CoreServiceDiagnostics, attempts: Int, repairs: Int,
                    lastError: Failure?, runningVersion: String, allowed: Bool) {
-        defer {
-            reported.removeAll()
-            outageIdentity = nil
-            endedConsentOrIdentity = false
+        guard recoveryRetry == nil else { return }
+        guard outageIdentity != nil, !endedConsentOrIdentity, allowed else {
+            finishRecovery()
+            return
         }
-        guard outageIdentity != nil, let id = identityForOutage(allowed: allowed) else { return }
-        _ = send(.recovered, id: id, reason: nil, service: service(), attempts: attempts,
-                 repairs: repairs, lastError: lastError, runningVersion: runningVersion)
+        let diagnostics = service()
+        let attempt: @MainActor (CoreOutageTelemetry) throws -> Void = { telemetry in
+            guard let id = try telemetry.identityForOutage(allowed: allowed) else { return }
+            _ = try telemetry.send(.recovered, id: id, reason: nil, service: diagnostics, attempts: attempts,
+                                   repairs: repairs, lastError: lastError, runningVersion: runningVersion)
+        }
+        do {
+            try attempt(self)
+            finishRecovery()
+        } catch {
+            // A healthy subscription may only notify us once. Give the core
+            // time to release the lock without making the main actor wait.
+            recoveryRetry = Task { [weak self] in
+                for _ in 0..<40 {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    guard !Task.isCancelled, let self else { return }
+                    do {
+                        try attempt(self)
+                        self.finishRecovery()
+                        return
+                    } catch {
+                        continue
+                    }
+                }
+                self?.finishRecovery()
+            }
+        }
+    }
+
+    private func finishRecovery() {
+        recoveryRetry?.cancel()
+        recoveryRetry = nil
+        reported.removeAll()
+        outageIdentity = nil
+        endedConsentOrIdentity = false
     }
 
     func optOutRequested() {
+        if recoveryRetry != nil { finishRecovery() }
         if outageIdentity != nil { endedConsentOrIdentity = true }
     }
 
-    private func identityForOutage(allowed: Bool) -> String? {
+    private func identityForOutage(allowed: Bool) throws -> String? {
         guard !endedConsentOrIdentity else { return nil }
-        let id: String? = allowed && legacyConsent() ? withIdentityLock { directory in
+        let id: String? = allowed && legacyConsent() ? try withIdentityLock { directory in
             guard diskConsent() else { return nil }
             return try installationID(create: outageIdentity == nil, directory: directory)
         } : nil
@@ -274,7 +310,9 @@ final class CoreOutageTelemetry {
     }
 
     // Keep this disk protocol in sync with desktop-core's telemetry/macos_identity.rs.
-    private func withIdentityLock<T>(_ body: (Int32) throws -> T?) -> T? {
+    private enum IdentityLockError: Error { case busy }
+
+    private func withIdentityLock<T>(_ body: (Int32) throws -> T?) throws -> T? {
         do {
             try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
@@ -290,8 +328,14 @@ final class CoreOutageTelemetry {
             guard lock >= 0 else { return nil }
             defer { close(lock) }
             // The core can hold this lock while the main actor handles a restart.
-            guard safeFileSize(lock, limit: 0) != nil, flock(lock, LOCK_EX | LOCK_NB) == 0 else { return nil }
+            guard safeFileSize(lock, limit: 0) != nil else { return nil }
+            if flock(lock, LOCK_EX | LOCK_NB) != 0 {
+                if errno == EWOULDBLOCK || errno == EINTR { throw IdentityLockError.busy }
+                return nil
+            }
             return try body(directory)
+        } catch let error as IdentityLockError {
+            throw error
         } catch {
             return nil
         }
@@ -366,7 +410,7 @@ final class CoreOutageTelemetry {
     }
 
     private func send(_ event: Event, id: String, reason: Reason?, service: CoreServiceDiagnostics,
-                      attempts: Int, repairs: Int, lastError: Failure?, runningVersion: String?) -> Bool {
+                      attempts: Int, repairs: Int, lastError: Failure?, runningVersion: String?) throws -> Bool {
         let properties = Properties(reason: reason, appVersion: appVersion, bundledCoreVersion: bundledCoreVersion,
                                     runningCoreVersion: Self.version(runningVersion), osVersion: osVersion,
                                     architecture: architecture, service: service, attempts: min(max(attempts, 0), 255),
@@ -381,10 +425,12 @@ final class CoreOutageTelemetry {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("agentrelay-desktop", forHTTPHeaderField: "User-Agent")
         request.httpBody = body
-        return withIdentityLock { directory in
-            guard diskConsent(), try installationID(create: false, directory: directory) == id else { return false }
+        let sent: Bool? = try withIdentityLock { directory in
+            guard diskConsent(), try installationID(create: false, directory: directory) == id else { return nil }
             return transport(request)
-        } ?? false
+        }
+        if sent == nil, outageIdentity != nil { endedConsentOrIdentity = true }
+        return sent ?? false
     }
 
     private final class HTTPS: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

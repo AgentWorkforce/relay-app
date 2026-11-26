@@ -363,6 +363,9 @@ struct State {
     window_count: u32,
     recent_errors: HashMap<(TelemetryOperation, TelemetryFailure), Instant>,
     identity: Option<String>,
+    /// Invalidates batches already dequeued when the installation ID rotates.
+    #[cfg(target_os = "macos")]
+    identity_generation: u64,
     /// The attached install's account; events belong to it.
     account: Option<TelemetryAccount>,
     /// The user the installation id was merged into, as saved.
@@ -492,20 +495,45 @@ impl Telemetry {
     /// forgets the installation id, so turning it back on starts a new one;
     /// while an install is attached, that one is merged into its user again.
     pub fn set_enabled(&self, enabled: bool) -> std::io::Result<()> {
+        self.set_enabled_inner(
+            enabled,
+            #[cfg(target_os = "macos")]
+            macos_identity::sync_directory,
+        )
+    }
+
+    fn set_enabled_inner(
+        &self,
+        enabled: bool,
+        #[cfg(target_os = "macos")] sync_preferences: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let mut state = self.shared.lock();
         #[cfg(target_os = "macos")]
         let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
         #[cfg(target_os = "macos")]
-        if enabled && (!state.enabled || !macos_identity::consent(&self.preferences)?) {
-            self.rotate_locked(&mut state)?;
-        }
-        #[cfg(target_os = "macos")]
-        let mut preferences = macos_identity::preferences_for_update(&self.preferences)?;
+        let (mut preferences, disk_consent) =
+            macos_identity::preferences_for_update(&self.preferences)?;
         #[cfg(not(target_os = "macos"))]
         let mut preferences = read_preferences(&self.preferences);
+        #[cfg(target_os = "macos")]
+        if enabled && (!state.enabled || !disk_consent) {
+            state.enabled = false;
+            self.rotate_locked(&mut state)?;
+        }
         preferences.insert(SETTING.into(), Value::Bool(enabled));
         let mut bytes = serde_json::to_vec(&Value::Object(preferences)).expect("json");
         bytes.push(b'\n');
+        #[cfg(target_os = "macos")]
+        let durability = {
+            persist_file(&self.preferences, &bytes)?;
+            let result = sync_preferences(&self.config.app_data_dir);
+            if enabled && result.is_err() {
+                return result;
+            }
+            // The opt-out is already visible after rename, even if fsync failed.
+            result
+        };
+        #[cfg(not(target_os = "macos"))]
         write_file(&self.preferences, &bytes)?;
         state.enabled = enabled;
         let result = if enabled {
@@ -523,6 +551,8 @@ impl Telemetry {
             }
         };
         self.shared.changed.notify_all();
+        #[cfg(target_os = "macos")]
+        let result = durability.and(result);
         result
     }
 
@@ -571,6 +601,7 @@ impl Telemetry {
         if let Err(error) = result {
             #[cfg(target_os = "macos")]
             {
+                state.identity_generation = state.identity_generation.wrapping_add(1);
                 state.identity = None;
                 state.queue.clear();
                 state.enabled = false;
@@ -588,7 +619,10 @@ impl Telemetry {
         state.recent_errors.clear();
         state.queue.retain(|queued| queued.merges.is_none());
         #[cfg(target_os = "macos")]
-        state.queue.clear();
+        {
+            state.identity_generation = state.identity_generation.wrapping_add(1);
+            state.queue.clear();
+        }
         let mut result = Ok(());
         for path in [&self.identity, &self.shared.identified] {
             if let Err(error) = std::fs::remove_file(path) {
@@ -863,8 +897,16 @@ fn drain(shared: &Shared, sender: &dyn TelemetrySender) {
         };
         let batch = gateway::batch(&mut state, event, merges.is_none(), sender.batch_limit());
         state.sending = true;
+        #[cfg(target_os = "macos")]
+        let identity_generation = state.identity_generation;
         drop(state);
-        let sent = gateway::deliver(shared, sender, batch);
+        let sent = gateway::deliver(
+            shared,
+            sender,
+            batch,
+            #[cfg(target_os = "macos")]
+            identity_generation,
+        );
         let mut state = shared.lock();
         state.sending = false;
         if let Some(merges) = merges {
@@ -903,6 +945,13 @@ fn read_preferences(path: &Path) -> Map<String, Value> {
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    persist_file(path, bytes)?;
+    #[cfg(target_os = "macos")]
+    macos_identity::sync_directory(path.parent().unwrap_or(Path::new(".")))?;
+    Ok(())
+}
+
+fn persist_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
@@ -910,8 +959,6 @@ fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
-    #[cfg(target_os = "macos")]
-    macos_identity::sync_directory(parent)?;
     Ok(())
 }
 
@@ -927,7 +974,6 @@ fn parse_uuid(text: &str) -> Option<String> {
 }
 
 /// A random (version 4) UUID.
-#[cfg(any(not(target_os = "macos"), test))]
 fn new_uuid() -> String {
     let mut bytes = [0u8; 16];
     if getrandom::getrandom(&mut bytes).is_err() {
@@ -1171,6 +1217,192 @@ mod tests {
         fn events(&self, telemetry: &Telemetry) -> Vec<Value> {
             assert!(telemetry.flush(Duration::from_secs(5)));
             self.sender.events()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn external_opt_out_blocks_record_before_it_consumes_the_budget() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        std::fs::create_dir_all(&telemetry.config.app_data_dir).unwrap();
+        std::fs::write(&telemetry.preferences, br#"{"analytics_enabled":false}"#).unwrap();
+        telemetry.record(TelemetryEvent::new(
+            TelemetryOperation::AppLaunch,
+            TelemetryOutcome::Started,
+        ));
+        let state = telemetry.shared.lock();
+        assert!(state.enabled);
+        assert_eq!(state.window_count, 0);
+        assert!(state.queue.is_empty());
+        assert!(fixture.sender.events().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn explicit_enable_rotates_after_disk_opt_out_or_malformed_preferences() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        for bytes in [
+            r#"{"analytics_enabled":false}"#,
+            r#"{"analytics_enabled":"true","other":42}"#,
+            "[]",
+            "{",
+        ] {
+            let previous = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+            std::fs::write(&telemetry.preferences, bytes).unwrap();
+            assert!(!telemetry.enabled());
+            assert!(telemetry.shared.lock().enabled);
+            telemetry.set_enabled(true).unwrap();
+            assert!(telemetry.enabled());
+            let current = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+            assert_ne!(current, previous);
+            if bytes.contains("other") {
+                assert_eq!(read_preferences(&telemetry.preferences)["other"], 42);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn explicit_enable_refuses_unsafe_preferences_before_rotation() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let previous = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+        let destination = fixture.home.join("untouched");
+        std::fs::write(&destination, b"{}").unwrap();
+        std::os::unix::fs::symlink(&destination, &telemetry.preferences).unwrap();
+        assert!(telemetry.set_enabled(true).is_err());
+        assert!(std::fs::symlink_metadata(&telemetry.preferences)
+            .unwrap()
+            .is_symlink());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"{}");
+        assert_eq!(
+            parse_uuid(std::fs::read_to_string(&telemetry.identity).unwrap().trim()),
+            Some(previous)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn disk_opt_out_clears_state_even_if_directory_sync_fails_after_rename() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let previous = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+        let mut state = telemetry.shared.lock();
+        // Keep the worker from draining the synthetic queue.
+        state.shutdown = true;
+        state.queue.push_back(Queued {
+            event: json!({}),
+            merges: None,
+        });
+        drop(state);
+
+        let error = telemetry
+            .set_enabled_inner(false, |_| {
+                assert!(!macos_identity::consent(&telemetry.preferences).unwrap());
+                Err(std::io::Error::other("synthetic directory sync failure"))
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "synthetic directory sync failure");
+        let state = telemetry.shared.lock();
+        assert!(!state.enabled);
+        assert!(state.queue.is_empty());
+        assert!(state.identity.is_none());
+        assert!(!telemetry.identity.exists());
+        drop(state);
+        telemetry.set_enabled(true).unwrap();
+        assert_ne!(
+            telemetry.identity(&mut telemetry.shared.lock()).unwrap(),
+            previous
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_rotation_disables_telemetry_and_discards_the_old_queue() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let mut state = telemetry.shared.lock();
+        assert!(telemetry.identity(&mut state).is_some());
+        state.queue.push_back(Queued {
+            event: json!({}),
+            merges: None,
+        });
+        std::fs::set_permissions(
+            &telemetry.config.app_data_dir,
+            std::fs::Permissions::from_mode(0o770),
+        )
+        .unwrap();
+        telemetry.rotate(&mut state);
+        assert!(!state.enabled);
+        assert!(state.identity.is_none());
+        assert!(state.queue.is_empty());
+        drop(state);
+        std::fs::set_permissions(
+            &telemetry.config.app_data_dir,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(!telemetry.enabled());
+        assert!(telemetry.identity.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn disk_opt_out_stops_a_batch_between_delivery_attempts() {
+        struct RetryOnce<F> {
+            after_first_attempt: F,
+            attempts: std::sync::atomic::AtomicUsize,
+        }
+
+        impl<F: Fn() + Send + Sync + 'static> TelemetrySender for RetryOnce<F> {
+            fn send(&self, _: Vec<Value>) -> Result<(), String> {
+                unreachable!("gateway delivery uses deliver")
+            }
+
+            fn deliver(&self, _: Vec<Value>) -> Delivery {
+                use std::sync::atomic::Ordering::Relaxed;
+                if self.attempts.fetch_add(1, Relaxed) == 0 {
+                    (self.after_first_attempt)();
+                    Delivery::Retry {
+                        reason: "synthetic retry".into(),
+                        after: Some(Duration::ZERO),
+                    }
+                } else {
+                    Delivery::Sent
+                }
+            }
+        }
+
+        for reenable in [false, true] {
+            let fixture = Fixture::new();
+            let telemetry = fixture.telemetry();
+            std::fs::create_dir_all(&telemetry.config.app_data_dir).unwrap();
+            let during_delivery = telemetry.clone();
+            let sender = RetryOnce {
+                after_first_attempt: move || {
+                    std::fs::write(
+                        &during_delivery.preferences,
+                        br#"{"analytics_enabled":false}"#,
+                    )
+                    .unwrap();
+                    if reenable {
+                        during_delivery.set_enabled(true).unwrap();
+                    }
+                },
+                attempts: Default::default(),
+            };
+            let generation = telemetry.shared.lock().identity_generation;
+            assert!(!gateway::deliver(
+                &telemetry.shared,
+                &sender,
+                vec![json!({})],
+                generation,
+            ));
+            assert!(telemetry.shared.lock().enabled);
+            assert_eq!(sender.attempts.into_inner(), 1);
         }
     }
 
