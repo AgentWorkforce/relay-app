@@ -46,13 +46,18 @@ enum ChatEntryRules {
     /// the desktop does not name) falls back to the kind rules: a prompt
     /// kind is the person, a kind that mentions reasoning or thinking is
     /// thinking, a reply kind is the agent, and anything else is activity.
-    static func role(type: String, kind: String, actorRole: String, toolName: String) -> Role {
+    /// Content that only records a tool call (`isRecordedCall`) is a tool
+    /// call unless a person wrote it.
+    static func role(type: String, kind: String, actorRole: String, toolName: String,
+                     content: String = "") -> Role {
         let names = [type.lowercased(), kind.lowercased()].filter { !$0.isEmpty }
         let actor = actorRole.lowercased()
         // What the event is.
         if names.contains("tool_result") || actor == "tool_result" { return .toolResult }
         if names.contains(where: toolCallKinds.contains) || !toolName.isEmpty || actor == "tool" { return .toolCall }
         if names.contains(where: thinkingKinds.contains) { return .thinking }
+        let person = actor == "user" || actor == "human" || (actor.isEmpty && names.contains(where: personKinds.contains))
+        if !person, isRecordedCall(content) { return .toolCall }
         // Who wrote it.
         switch actor {
         case "user", "human": return .person
@@ -63,6 +68,20 @@ enum ChatEntryRules {
         if names.contains(where: { $0.contains("reason") || $0.contains("think") }) { return .thinking }
         if actor == "assistant" || names.contains(where: agentKinds.contains) { return .agent }
         return .activity
+    }
+
+    /// Whether `content` is a tool call that an upload recorded as the
+    /// agent's text, `<tool> {"<argument>": …}` (Codex's
+    /// `exec {"input": …}`), with no tool name. The name is letters, digits,
+    /// `_` or `.` and does not end with `.` (a sentence's last word does),
+    /// and the brace opens a JSON object on the same line.
+    static func isRecordedCall(_ content: String) -> Bool {
+        guard let space = content.firstIndex(of: " ") else { return false }
+        let name = content[..<space]
+        guard !name.isEmpty, !name.hasSuffix("."),
+              name.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == ".") })
+        else { return false }
+        return content[content.index(after: space)...].hasPrefix("{\"")
     }
 
     /// The text an event shows: its content, or the tool's name when the
@@ -137,7 +156,7 @@ enum ChatEntryRules {
 extension SessionEvent {
     /// The event's role by `ChatEntryRules`.
     var entryRole: ChatEntryRules.Role {
-        ChatEntryRules.role(type: type, kind: kind, actorRole: actorRole, toolName: toolName)
+        ChatEntryRules.role(type: type, kind: kind, actorRole: actorRole, toolName: toolName, content: content)
     }
 
     /// The agent thinking out loud. Drawn as activity; it still says the

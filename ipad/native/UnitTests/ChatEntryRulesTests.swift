@@ -52,6 +52,20 @@ final class ChatEntryRulesTests: XCTestCase {
         XCTAssertEqual(ChatEntryRules.Role.toolResult.sessionRole, .tool)
     }
 
+    func testToolCallRecordedAsAgentTextIsAToolCall() {
+        // Codex's exec call as an upload records it: agent text, no tool name.
+        let call = "exec {\"input\":\"text(await tools.exec_command({cmd:`cat AGENTS.md`}))\n[truncated]"
+        let recorded = event("c", at: 0, type: "assistant", actor: "assistant", content: call)
+        XCTAssertEqual(recorded.entryRole, .toolCall)
+        XCTAssertEqual(recorded.role, .tool)
+        for prose in ["Done. {\"ok\": true} came back", "Here is the config:\n{\"a\": 1}", "exec { not json", "Ready"] {
+            XCTAssertEqual(event("p", at: 0, type: "assistant", actor: "assistant", content: prose).entryRole, .agent, prose)
+        }
+        // A person typing the same shape is still the person.
+        XCTAssertEqual(event("u", at: 0, type: "user", actor: "user", content: call).entryRole, .person)
+        XCTAssertEqual(event("v", at: 0, type: "user", actor: "", content: call).entryRole, .person)
+    }
+
     func testBlankContentTakesToolNameOrIsDropped() {
         XCTAssertEqual(ChatEntryRules.shownText(content: "Done.", toolName: "Bash"), "Done.")
         XCTAssertEqual(ChatEntryRules.shownText(content: "  \n", toolName: "Bash"), "Bash")
