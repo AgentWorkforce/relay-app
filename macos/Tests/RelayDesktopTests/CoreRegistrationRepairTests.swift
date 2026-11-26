@@ -133,10 +133,12 @@ final class CoreRegistrationRepairTests: XCTestCase {
         let stuck = LaunchdJob(loaded: true, jobState: "spawn failed", lastExitCode: 78)
         let o = observe(fallback: true, startsAtLogin: false, registration: .enabled, fallbackJob: stuck)
         XCTAssertEqual(CoreRegistrationRepair.next(o, step: 0), .reloadSessionJob)
-        XCTAssertEqual(CoreRegistrationRepair.next(o, step: 1), .useLoginJob)
-        // Once moved, the login job climbs the usual ladder.
-        let moved = observe(registration: .enabled, bundled: spawnFailedOld)
-        XCTAssertEqual(CoreRegistrationRepair.next(moved, step: 2), .useFallback)
+        XCTAssertEqual(CoreRegistrationRepair.next(o, step: 1), .runCoreDirectly)
+        XCTAssertEqual(CoreRegistrationRepair.next(o, step: 2), .runCoreDirectly, "a direct core that exited is started again")
+        var started = o
+        started.directCoreRunning = true
+        XCTAssertEqual(CoreRegistrationRepair.next(started, step: 2), .none, "one direct core at a time")
+        XCTAssertEqual(CoreRegistrationRepair.next(o, step: CoreRegistrationRepair.stepLimit), .exhausted)
     }
 
     func testSessionOnlyStartupReloadsItsSessionJob() {
@@ -256,26 +258,114 @@ final class CoreRegistrationRepairTests: XCTestCase {
         XCTAssertEqual(mac.launchd.calls.count, calls + 1, "only a status read")
     }
 
+    /// The session branch reads the session job (`<label>.session`), so a
+    /// healthy session core is left alone.
     @MainActor
-    func testStuckSessionJobMovesToTheLoginJobAndRuns() async throws {
+    func testHealthySessionJobIsLeftAlone() async throws {
         let mac = try SimulatedMac()
         defer { mac.remove() }
         mac.defaults.set(false, forKey: mac.startsAtLoginKey)
-        mac.launchd.fallbackNeverRuns = true    // loaded, "Enabled", no process
+        try await mac.service.registerAsync()
+        XCTAssertNotNil(mac.launchd.fallbackProgram)
+        let before = mac.launchd.calls
+        let action = try await mac.service.selfRepairAsync(step: 0)
+        XCTAssertEqual(action, .none)
+        XCTAssertEqual(Array(mac.launchd.calls.dropFirst(before.count)), ["status"])
+        XCTAssertTrue(mac.launchd.printed.contains { $0.hasSuffix(".session") })
+    }
+
+    /// 11.19's default: Start at Login off, and launchd keeps the session job
+    /// loaded ("Enabled") without ever running it. The app reloads it, then
+    /// starts the core itself, and Start at Login stays off with no login job.
+    @MainActor
+    func testStuckSessionJobRunsTheCoreDirectlyAndKeepsStartAtLoginOff() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
         try await mac.service.registerAsync()
         XCTAssertEqual(mac.service.status, .enabled, "what 11.19's About window showed")
 
         let first = try await mac.service.selfRepairAsync(step: 0)
         let second = try await mac.service.selfRepairAsync(step: 1)
-
-        XCTAssertEqual(first, .reloadSessionJob)
-        XCTAssertEqual(second, .useLoginJob)
-        XCTAssertNil(mac.launchd.fallbackProgram, "the session job is retired")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: mac.session.path))
-        XCTAssertEqual(mac.launchd.bundled, .running(version: "150"))
-        XCTAssertEqual(mac.service.status, .enabled)
         let third = try await mac.service.selfRepairAsync(step: 2)
-        XCTAssertEqual(third, .none)
+
+        XCTAssertEqual([first, second, third], [.reloadSessionJob, .runCoreDirectly, .none])
+        XCTAssertEqual(mac.launchd.directStarts.count, 1, "exactly one core")
+        XCTAssertEqual(mac.launchd.directStarts.first?.program, mac.helper.path)
+        XCTAssertEqual(mac.launchd.directStarts.first?.arguments, ["serve"])
+        XCTAssertEqual(mac.defaults.object(forKey: mac.startsAtLoginKey) as? Bool, false, "the saved setting stays off")
+        XCTAssertEqual(mac.launchd.smStatus, .notRegistered, "no SMAppService login job")
+        XCTAssertEqual(mac.launchd.bundled, .missing)
+        XCTAssertFalse(mac.defaults.bool(forKey: mac.fallbackKey))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mac.fallback.path), "no ~/Library/LaunchAgents job")
+        XCTAssertNil(mac.launchd.fallbackProgram, "the stuck session job was booted out")
+        XCTAssertFalse(mac.launchd.calls.contains("register"))
+    }
+
+    /// The direct core runs only the helper inside this app bundle, with the
+    /// arguments the bundled agent gives, never a path the plist escapes to.
+    @MainActor
+    func testDirectCoreRefusesAProgramOutsideTheBundle() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
+        try await mac.service.registerAsync()
+        _ = try await mac.service.selfRepairAsync(step: 0)
+        try PropertyListSerialization.data(fromPropertyList: ["BundleProgram": "Contents/Helpers/../../../../bin/sh",
+                                                              "ProgramArguments": ["sh", "-c", "true"]],
+                                           format: .xml, options: 0).write(to: mac.agentPlist)
+        do { _ = try await mac.service.selfRepairAsync(step: 1); XCTFail("must refuse") } catch {}
+        XCTAssertTrue(mac.launchd.directStarts.isEmpty)
+    }
+
+    @MainActor
+    func testDirectCoreRefusesAHelperSymlinkedOutsideTheBundle() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
+        try await mac.service.registerAsync()
+        _ = try await mac.service.selfRepairAsync(step: 0)
+        let outside = mac.home.appendingPathComponent("outside-helper")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: outside)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: outside.path)
+        try FileManager.default.removeItem(at: mac.helper)
+        try FileManager.default.createSymbolicLink(at: mac.helper, withDestinationURL: outside)
+        do { _ = try await mac.service.selfRepairAsync(step: 1); XCTFail("must refuse") } catch {}
+        XCTAssertTrue(mac.launchd.directStarts.isEmpty)
+    }
+
+    @MainActor
+    func testDirectCoreAcceptsAHelperLinkThatStaysInsideTheBundle() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
+        try await mac.service.registerAsync()
+        _ = try await mac.service.selfRepairAsync(step: 0)
+        let inside = mac.helper.deletingLastPathComponent().appendingPathComponent("real-helper")
+        try FileManager.default.moveItem(at: mac.helper, to: inside)
+        try FileManager.default.createSymbolicLink(at: mac.helper, withDestinationURL: inside)
+        let action = try await mac.service.selfRepairAsync(step: 1)
+        XCTAssertEqual(action, .runCoreDirectly)
+        XCTAssertEqual(mac.launchd.directStarts.count, 1)
+    }
+
+    @MainActor
+    func testStoppingTheServiceStopsADirectCore() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.defaults.set(false, forKey: mac.startsAtLoginKey)
+        mac.launchd.fallbackNeverRuns = true
+        try await mac.service.registerAsync()
+        _ = try await mac.service.selfRepairAsync(step: 0)
+        _ = try await mac.service.selfRepairAsync(step: 1)
+        XCTAssertTrue(mac.launchd.directCoreRunning)
+        try await mac.service.unregisterAsync()
+        XCTAssertFalse(mac.launchd.directCoreRunning)
+        XCTAssertEqual(mac.defaults.object(forKey: mac.startsAtLoginKey) as? Bool, false)
     }
 
     @MainActor
@@ -304,6 +394,96 @@ final class CoreRegistrationRepairTests: XCTestCase {
     }
 }
 
+extension CoreRegistrationRepairTests {
+    /// A timed-out unregister may still be running inside macOS. Until it
+    /// returns, no other change starts, so it cannot undo a later recovery;
+    /// once it has, the repair goes on and the core runs.
+    @MainActor
+    func testALateUnregisterCannotUndoALaterRecovery() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 0.2)
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        let hang = DispatchSemaphore(value: 0)
+        mac.launchd.hangUnregister = hang
+        do { _ = try await mac.service.selfRepairAsync(step: 0); XCTFail("must time out") }
+        catch is BoundedCall.TimedOut {}
+        mac.launchd.hangUnregister = nil
+
+        // While the late call is in flight, every change is refused.
+        do { _ = try await mac.service.selfRepairAsync(step: 1); XCTFail("must refuse while busy") }
+        catch { XCTAssertEqual((error as NSError).code, LaunchAgentService.MutationGate.busyCode) }
+        XCTAssertThrowsError(try mac.service.register())
+        XCTAssertFalse(mac.launchd.calls.contains("register"), "nothing registered under the late unregister")
+
+        hang.signal()                        // macOS finally returns the old call
+        let returned = await eventually(2) { mac.launchd.calls.contains("unregister") }
+        XCTAssertTrue(returned)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let action = try await mac.service.selfRepairAsync(step: 1)
+        XCTAssertEqual(action, .resetRegistration)
+        XCTAssertEqual(mac.launchd.bundled, .running(version: "150"))
+        let changes = mac.launchd.calls.filter { $0 != "status" }
+        XCTAssertEqual(changes.last, "register", "the late unregister came before, never after, the recovery")
+    }
+
+    /// Approval withdrawn between reading the state and changing it: the rung
+    /// changes nothing and leaves the approval to the person.
+    @MainActor
+    func testApprovalIsReadAgainBeforeAnyChange() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        mac.launchd.approvalWithdrawnAfterReads = 1
+        let action = try await mac.service.selfRepairAsync(step: 0)
+        XCTAssertEqual(action, .waitForApproval)
+        XCTAssertFalse(mac.launchd.calls.contains("unregister"))
+        XCTAssertFalse(mac.launchd.calls.contains("register"))
+    }
+
+    @MainActor
+    func testAJobAlreadyGoneIsNotADenial() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        mac.launchd.unregisterError = NSError(domain: "SMAppServiceErrorDomain", code: Int(kSMErrorJobNotFound))
+        let action = try await mac.service.selfRepairAsync(step: 0)
+        XCTAssertEqual(action, .resetRegistration)
+        XCTAssertTrue(mac.launchd.calls.contains("register"), "already gone: register goes on")
+    }
+
+    @MainActor
+    func testADeniedUnregisterStopsTheRungWithoutRegistering() async throws {
+        let mac = try SimulatedMac()
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        mac.launchd.unregisterError = NSError(domain: "SMAppServiceErrorDomain", code: Int(kSMErrorLaunchDeniedByUser))
+        do { _ = try await mac.service.selfRepairAsync(step: 0); XCTFail("a denial must not be read as done") } catch {
+            XCTAssertEqual((error as NSError).code, Int(kSMErrorLaunchDeniedByUser))
+        }
+        XCTAssertFalse(mac.launchd.calls.contains("register"))
+    }
+
+    /// Several calls, each well inside its own timeout, still end the rung
+    /// at its shared budget.
+    @MainActor
+    func testSlowCallsEndTheRungAtItsSharedBudget() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 5, repairBudget: 0.4)
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        mac.launchd.callDelay = 0.15
+        let started = Date()
+        do { _ = try await mac.service.selfRepairAsync(step: 0); XCTFail("must run out of budget") }
+        catch is BoundedCall.TimedOut {}
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+    }
+}
+
 /// A launchd and SMAppService that behave as the real ones did.
 private final class SimulatedLaunchd {
     enum Job: Equatable { case missing, running(version: String), spawnFailed(version: String) }
@@ -314,7 +494,16 @@ private final class SimulatedLaunchd {
     var registerHasNoEffect = false
     var fallbackNeverRuns = false
     var hangUnregister: DispatchSemaphore?
+    var unregisterError: Error?
+    /// Every status, register and unregister call takes this long.
+    var callDelay: TimeInterval = 0
+    /// After this many status reads, the person has withdrawn approval.
+    var approvalWithdrawnAfterReads: Int?
+    private var statusReads = 0
     var calls: [String] = []
+    var printed: [String] = []
+    var directStarts: [(program: String, arguments: [String])] = []
+    var directCoreRunning = false
     private let lock = NSLock()
 
     func record(_ call: String) { lock.lock(); calls.append(call); lock.unlock() }
@@ -327,8 +516,15 @@ private final class SimulatedLaunchd {
     }
 
     var system: LaunchAgentService.System {
-        .init(bundledStatus: { self.record("status"); return self.smStatus },
+        .init(bundledStatus: {
+                  self.record("status")
+                  if self.callDelay > 0 { Thread.sleep(forTimeInterval: self.callDelay) }
+                  self.statusReads += 1
+                  if let after = self.approvalWithdrawnAfterReads, self.statusReads > after { self.smStatus = .requiresApproval }
+                  return self.smStatus
+              },
               registerBundled: {
+                  if self.callDelay > 0 { Thread.sleep(forTimeInterval: self.callDelay) }
                   self.record("register")
                   guard !self.registerHasNoEffect else { return }
                   // A no-op for a job macOS already calls enabled and launchd
@@ -338,19 +534,27 @@ private final class SimulatedLaunchd {
               },
               unregisterBundled: {
                   self.hangUnregister?.wait()
+                  if self.callDelay > 0 { Thread.sleep(forTimeInterval: self.callDelay) }
                   self.record("unregister")
+                  if let error = self.unregisterError { throw error }
                   self.smStatus = .notRegistered
                   self.bundled = .missing
               },
               legacyStatus: { _ in .enabled },
               launchctl: { self.launchctl($0) },
               pause: { _ in },
+              startCore: { program, arguments in
+                  self.directStarts.append((program.path, arguments))
+                  self.directCoreRunning = true
+                  return .init(isRunning: { self.directCoreRunning }, stop: { self.directCoreRunning = false })
+              },
               pauseAsync: { _ in await Task.yield() })
     }
 
     func launchctl(_ arguments: [String]) -> (success: Bool, output: String) {
         switch arguments.first {
         case "print":
+            printed.append(arguments[1])
             if arguments[1].hasSuffix(".local") || arguments[1].hasSuffix(".session") {
                 guard let program = fallbackProgram else { return (false, "Could not find service") }
                 if fallbackNeverRuns {
@@ -388,6 +592,7 @@ private final class SimulatedMac {
     let defaults: UserDefaults
     let launchd = SimulatedLaunchd()
     let service: LaunchAgentService
+    var agentPlist: URL!
     var label: String { LaunchAgentService.plistName.replacingOccurrences(of: ".plist", with: "") }
     var fallbackKey: String { "\(label).usesLocalLaunchAgent" }
     var policyKey: String { "\(label).fallbackPolicyRevision" }
@@ -396,7 +601,7 @@ private final class SimulatedMac {
         home.appendingPathComponent("Library/Application Support/AgentRelay/SessionServices/\(label).session.plist")
     }
 
-    init(osCallTimeout: TimeInterval = 2) throws {
+    init(osCallTimeout: TimeInterval = 2, repairBudget: TimeInterval = 8) throws {
         home = FileManager.default.temporaryDirectory.appendingPathComponent("core-repair-\(UUID())")
         let bundle = home.appendingPathComponent("Applications/Agent Relay.app")
         helper = bundle.appendingPathComponent("Contents/Helpers/Agent Relay Helper")
@@ -407,6 +612,7 @@ private final class SimulatedMac {
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: helper)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
         let agent = bundle.appendingPathComponent("Contents/Library/LaunchAgents/\(LaunchAgentService.plistName)")
+        agentPlist = agent
         try fm.createDirectory(at: agent.deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListSerialization.data(fromPropertyList: ["BundleProgram": "Contents/Helpers/Agent Relay Helper",
                                                               "ProgramArguments": ["Agent Relay Helper", "serve"]],
@@ -418,6 +624,7 @@ private final class SimulatedMac {
             .write(to: bundle.appendingPathComponent("Contents/Info.plist"))
         var system = launchd.system
         system.osCallTimeout = osCallTimeout
+        system.repairBudget = repairBudget
         service = LaunchAgentService(bundleURL: bundle, homeDirectory: home, bundleIdentifier: "com.agentrelay.desktop",
                                      defaults: defaults, system: system)
     }

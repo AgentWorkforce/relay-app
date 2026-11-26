@@ -23,6 +23,10 @@ final class LaunchAgentService: CoreService {
         var launchctlAsync: (@MainActor ([String]) async throws -> (success: Bool, output: String))? = nil
         /// The longest self-repair waits for one SMAppService call.
         var osCallTimeout: TimeInterval = 5
+        /// The longest one self-repair rung may take, all of its calls together.
+        var repairBudget: TimeInterval = 8
+        /// Starts the helper outside launchd.
+        var startCore: (URL, [String]) throws -> DirectCore = LaunchAgentService.startCoreProcess
         // A pending handoff must finish even when its caller is cancelled.
         // The timer suspends the actor without a blocking sleep or detached work.
         var pauseAsync: @MainActor (TimeInterval) async -> Void = { interval in
@@ -61,7 +65,16 @@ final class LaunchAgentService: CoreService {
         self.homeDirectory = homeDirectory
         self.bundleIdentifier = bundleIdentifier
         self.defaults = defaults
-        self.system = system ?? .live()
+        // Every SMAppService change goes through one gate. A call the repair
+        // stopped waiting for can still be running in macOS; until it has
+        // returned, no other change starts, so a late unregister can never
+        // undo a later registration.
+        var gated = system ?? .live()
+        let gate = MutationGate()
+        let register = gated.registerBundled, unregister = gated.unregisterBundled
+        gated.registerBundled = { try gate.run { try register() } }
+        gated.unregisterBundled = { try gate.run { try unregister() } }
+        self.system = gated
     }
 
     private var label: String { Self.plistName.replacingOccurrences(of: ".plist", with: "") }
@@ -289,6 +302,7 @@ final class LaunchAgentService: CoreService {
     }
 
     func unregister() throws {
+        stopDirectCore()
         guard usesFallback else { try system.unregisterBundled(); return }
         if launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success {
             try bootoutFallback()
@@ -389,6 +403,7 @@ final class LaunchAgentService: CoreService {
     }
 
     @MainActor func unregisterAsync() async throws {
+        stopDirectCore()
         guard usesFallback else { try system.unregisterBundled(); return }
         if (try await launchctlAsync("print", fallbackTarget)).success {
             try await bootoutFallbackAsync()
@@ -465,7 +480,11 @@ final class LaunchAgentService: CoreService {
               let arguments = source["ProgramArguments"] as? [String],
               !arguments.isEmpty else { throw fallbackError("The bundled core LaunchAgent is invalid.") }
         let helper = bundleURL.appendingPathComponent(program).standardizedFileURL
+        // Contained lexically and after symlinks resolve: a link inside
+        // Contents/Helpers must not lead to a program outside the bundle.
+        let resolvedBundle = bundleURL.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         guard helper.path.hasPrefix(bundleURL.standardizedFileURL.path + "/"),
+              helper.resolvingSymlinksInPath().path.hasPrefix(resolvedBundle),
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw fallbackError("The bundled core helper is missing.")
         }
@@ -560,12 +579,87 @@ final class LaunchAgentService: CoreService {
 
     // MARK: Self-repair
 
+    /// Admits one SMAppService change at a time, across threads, for as long
+    /// as macOS takes to return it.
+    final class MutationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var inFlight = false
+
+        static let busyCode = 5
+        var isBusy: Bool { lock.lock(); defer { lock.unlock() }; return inFlight }
+
+        func run<T>(_ work: () throws -> T) throws -> T {
+            lock.lock()
+            guard !inFlight else {
+                lock.unlock()
+                throw NSError(domain: LaunchAgentService.errorDomain, code: Self.busyCode, userInfo: [
+                    NSLocalizedDescriptionKey: "macOS is still finishing an earlier background service change. Try again."
+                ])
+            }
+            inFlight = true
+            lock.unlock()
+            defer { lock.lock(); inFlight = false; lock.unlock() }
+            return try work()
+        }
+    }
+
+    /// When the current rung must have finished.
+    private var repairDeadline: Date?
+
+    private func remainingRepairTime() throws -> TimeInterval {
+        guard let repairDeadline else { return system.osCallTimeout }
+        let remaining = repairDeadline.timeIntervalSinceNow
+        guard remaining > 0 else { throw BoundedCall.TimedOut(operation: "the background service repair") }
+        return remaining
+    }
+
+    /// A core this app started itself after its session job would not run.
+    struct DirectCore {
+        var isRunning: () -> Bool
+        var stop: () -> Void
+    }
+    private var directCore: DirectCore?
+
+    /// Stopping the service also stops a core the app started itself.
+    private func stopDirectCore() {
+        directCore?.stop()
+        directCore = nil
+    }
+
+    static func startCoreProcess(_ program: URL, arguments: [String]) throws -> DirectCore {
+        let process = Process()
+        process.executableURL = program
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        return DirectCore(isRunning: { process.isRunning }, stop: { if process.isRunning { process.terminate() } })
+    }
+
     private var appBundleVersion: String? {
         Bundle(url: bundleURL)?.object(forInfoDictionaryKey: "CFBundleVersion") as? String
     }
 
     private func boundedOS<T>(_ operation: String, _ work: @escaping () throws -> T) async throws -> T {
-        try await BoundedCall.run(operation, timeout: system.osCallTimeout, work)
+        try await BoundedCall.run(operation, timeout: min(system.osCallTimeout, try remainingRepairTime()), work)
+    }
+
+    /// Whether the person must allow the service, read again right before a
+    /// rung changes anything: approval can change while the rung runs.
+    @MainActor private func requiresApprovalNow() async throws -> Bool {
+        let status = system.bundledStatus
+        if try await boundedOS("the background service status", { status() }) == .requiresApproval { return true }
+        guard usesFallback else { return false }
+        let legacy = system.legacyStatus, url = fallbackURL
+        return try await boundedOS("the backup service status") { legacy(url) } == .requiresApproval
+    }
+
+    private static func changesRegistration(_ action: CoreRegistrationRepair.Action) -> Bool {
+        switch action {
+        case .none, .waitForApproval, .moveToApplications, .exhausted: return false
+        case .register, .resetRegistration, .leaveFallback, .useFallback, .reloadSessionJob, .runCoreDirectly: return true
+        }
     }
 
     @MainActor func repairObservation() async throws -> CoreRegistrationRepair.Observation {
@@ -584,14 +678,17 @@ final class LaunchAgentService: CoreService {
                      installationProblem: installationProblem != nil, registration: registrationState,
                      bundledJob: LaunchdJob.parse(success: bundled.success, output: bundled.output),
                      fallbackJob: LaunchdJob.parse(success: fallback.success, output: fallback.output),
-                     appBundleVersion: appBundleVersion)
+                     appBundleVersion: appBundleVersion, directCoreRunning: directCore?.isRunning() == true)
     }
 
     /// One rung of `CoreRegistrationRepair` for a core that does not answer.
     /// Every OS call is bounded, so the caller's "Restarting service…" ends.
     @MainActor func selfRepairAsync(step: Int) async throws -> CoreRegistrationRepair.Action {
+        repairDeadline = Date().addingTimeInterval(system.repairBudget)
+        defer { repairDeadline = nil }
         let observation = try await repairObservation()
         let action = CoreRegistrationRepair.next(observation, step: step)
+        if Self.changesRegistration(action), try await requiresApprovalNow() { return .waitForApproval }
         Self.logger.notice("""
             core self-repair step \(step, privacy: .public): \(action.rawValue, privacy: .public) \
             (registration \(observation.registration.rawValue, privacy: .public), \
@@ -630,17 +727,16 @@ final class LaunchAgentService: CoreService {
             }
         case .reloadSessionJob:
             _ = try await registerFallbackAsync(forceReload: true)
-        case .useLoginJob:
-            // Retire the session job, then submit the SMAppService login job:
-            // a different launch path, approved with the app in Login Items.
+        case .runCoreDirectly:
+            // Startup at login stays off: no login job is registered. The
+            // session plist stays for the next launch to try again.
             if (try await launchctlAsync("print", fallbackTarget)).success { try await bootoutFallbackAsync() }
-            if FileManager.default.fileExists(atPath: fallbackURL.path) {
-                try FileManager.default.removeItem(at: fallbackURL)
+            let plist = try fallbackPlist()
+            guard let program = plist["Program"] as? String,
+                  let arguments = plist["ProgramArguments"] as? [String] else {
+                throw fallbackError("The bundled core LaunchAgent is invalid.")
             }
-            defaults.removeObject(forKey: fallbackPolicyKey)
-            defaults.set(true, forKey: startsAtLoginKey)
-            defaults.removeObject(forKey: fallbackKey)
-            try await resetBundledRegistration()
+            directCore = try system.startCore(URL(fileURLWithPath: program), Array(arguments.dropFirst()))
         }
         return action
     }
@@ -649,19 +745,30 @@ final class LaunchAgentService: CoreService {
     /// launchd keeps spawning the replaced bundle's record. Only removing the
     /// registration and submitting it again records the current bundle.
     @MainActor private func resetBundledRegistration() async throws {
-        let unregister = system.unregisterBundled, register = system.registerBundled
-        do { try await boundedOS("removing the background service") { try unregister() } } catch let error as BoundedCall.TimedOut {
-            throw error
-        } catch {
-            // Already unregistered: nothing to remove.
-            Self.logger.notice("unregister before re-registering: \(error.localizedDescription, privacy: .public)")
+        let unregister = system.unregisterBundled, register = system.registerBundled, status = system.bundledStatus
+        // Only a registration macOS reports is removed. A job that is already
+        // gone is not an error; any other refusal (a denial, a busy gate) is.
+        if try await boundedOS("the background service status", { status() }) == .enabled {
+            do { try await boundedOS("removing the background service") { try unregister() } }
+            catch where Self.isAlreadyUnregistered(error) {
+                Self.logger.notice("the background service was already unregistered")
+            }
         }
         let target = "gui/\(getuid())/\(label)"
+        // Bounded by the rung's deadline and, outside one, by a count.
         for _ in 0..<60 {
+            _ = try remainingRepairTime()
             if !(try await launchctlAsync("print", target)).success { break }
             await system.pauseAsync(0.1)
         }
         try await boundedOS("registering the background service") { try register() }
+    }
+
+    static func isAlreadyUnregistered(_ error: Error) -> Bool {
+        guard !(error is BoundedCall.TimedOut) else { return false }
+        let error = error as NSError
+        return error.domain != errorDomain
+            && (error.code == Int(kSMErrorJobNotFound) || error.code == Int(kSMErrorJobPlistNotFound))
     }
 
     func openSystemSettings() { SMAppService.openSystemSettingsLoginItems() }

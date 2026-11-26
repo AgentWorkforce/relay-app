@@ -1067,9 +1067,22 @@ final class AppModel {
     private var isCheckingCoreService = false
     /// Rungs of `CoreRegistrationRepair` tried during the current outage.
     @ObservationIgnored private var selfRepairStep = 0
-    /// Connection attempts at which an outage climbs the next repair rung,
-    /// all before the 15th, when the person is first asked to act.
-    static let selfRepairAttempts: Set<Int> = [4, 8, 11, 13]
+    /// The connection attempt from which an outage may climb each repair
+    /// rung, all before the 15th, when the person is first asked to act. A
+    /// rung that could not start then (another still running) starts at the
+    /// next attempt, at least two attempts after the previous one.
+    static let selfRepairAttempts = [4, 8, 11, 13]
+    @ObservationIgnored private var lastSelfRepairAttempt = 0
+
+    private var selfRepairDue: Bool {
+        guard selfRepairStep < Self.selfRepairAttempts.count,
+              connectionAttempts >= Self.selfRepairAttempts[selfRepairStep] else { return false }
+        return connectionAttempts < lastSelfRepairAttempt || connectionAttempts >= lastSelfRepairAttempt + 2
+    }
+    static let unreachableCoreMessage = "Agent Relay could not connect to its background service. Try restarting the service to continue to sign-in."
+    /// The rung started from the connection loop, which keeps reconnecting
+    /// while it runs.
+    @ObservationIgnored private var selfRepairTask: Task<Void, Never>?
     static let selfRepairExhaustedMessage = "Agent Relay could not start its background service. Quit Agent Relay, keep only the copy in Applications (empty the Trash and eject any Agent Relay disk image), then open it again. If this keeps happening, turn Agent Relay off and on in System Settings › General › Login Items."
 
     /// Climbs one rung of the registration self-repair: drop a stale fallback,
@@ -1078,7 +1091,7 @@ final class AppModel {
     /// submitted something, so the caller gives the new core time to answer.
     @discardableResult
     func selfRepairCore() async -> Bool {
-        guard manageSystemServices, !isRecoveringCore, !coreRegistrationPending, !isCheckingCoreService,
+        guard !isRecoveringCore, !coreRegistrationPending, !isCheckingCoreService,
               !stopping, !isCoreConnected else { return false }
         isRecoveringCore = true
         coreRegistrationPending = true
@@ -1087,9 +1100,16 @@ final class AppModel {
             isRecoveringCore = false
         }
         let step = selfRepairStep
-        selfRepairStep += 1
         do {
             let action = try await service.selfRepairAsync(step: step)
+            switch action {
+            case .none, .waitForApproval, .moveToApplications:
+                break
+            case .register, .resetRegistration, .leaveFallback, .useFallback, .reloadSessionJob, .runCoreDirectly,
+                 .exhausted:
+                // Only a rung that was tried moves the ladder on.
+                selfRepairStep = step + 1
+            }
             switch action {
             case .none:
                 return false
@@ -1100,18 +1120,34 @@ final class AppModel {
                 coreProblem = service.installationProblem
                 return false
             case .exhausted:
-                if coreProblem == nil { coreProblem = Self.selfRepairExhaustedMessage }
+                if coreProblem == nil || coreProblem == Self.unreachableCoreMessage {
+                    coreProblem = Self.selfRepairExhaustedMessage
+                }
                 return false
-            case .register, .resetRegistration, .leaveFallback, .useFallback, .reloadSessionJob, .useLoginJob:
+            case .register, .resetRegistration, .leaveFallback, .useFallback, .reloadSessionJob, .runCoreDirectly:
                 countCoreRepair()
                 defaults.set(service.binaryIdentity, forKey: Self.registeredCoreKey)
                 Self.logger.notice("core self-repair submitted \(action.rawValue, privacy: .public)")
                 return true
             }
         } catch {
+            selfRepairStep = step + 1
             Self.logger.error("core self-repair failed: \(error.localizedDescription, privacy: .public)")
             reportCoreOutage(.repairFailed, error: error)
+            // A refusal can mean the person withdrew approval meanwhile.
+            if (try? await service.statusAsync()) == .requiresApproval { showCoreServiceStatus(.requiresApproval) }
             return false
+        }
+    }
+
+    /// Starts the next rung without holding up reconnection: the loop keeps
+    /// connecting, and answering cancels nothing the rung submitted.
+    private func startSelfRepair() {
+        guard selfRepairTask == nil, !isRecoveringCore, !coreRegistrationPending else { return }
+        lastSelfRepairAttempt = connectionAttempts
+        selfRepairTask = Task { [weak self] in
+            await self?.selfRepairCore()
+            self?.selfRepairTask = nil
         }
     }
 
@@ -1312,6 +1348,7 @@ final class AppModel {
         connectionAttempts = 0
         refusalRepairs = 0
         selfRepairStep = 0
+        lastSelfRepairAttempt = 0
         coreProblem = nil
         watchStartup()
         if !(await selfRepairCore()) { await recoverRefusedCore() }
@@ -1327,6 +1364,7 @@ final class AppModel {
     func stopBackgroundService() {
         guard service.installationProblem == nil else { return }
         stopping = true
+        selfRepairTask?.cancel()
         isRestartingCore = false
         connectTask?.cancel()
         initialRefreshTask?.cancel()
@@ -1415,6 +1453,7 @@ final class AppModel {
                 coreOutageRecovered(runningVersion: hello.daemonVersion)
                 connectionAttempts = 0
                 selfRepairStep = 0
+                lastSelfRepairAttempt = 0
                 refusalRepairs = 0
                 coreProblem = nil
                 coreNeedsApproval = false
@@ -1476,16 +1515,20 @@ final class AppModel {
                         coreProblem = "macOS could not start Agent Relay’s backup background service. Try again, or check the app’s log for details."
                     }
                 }
-                if !recoveredBrokenBundle, Self.selfRepairAttempts.contains(connectionAttempts),
-                   !isRestartingCore, service.installationProblem == nil, await selfRepairCore() {
-                    recoveredBrokenBundle = true
+                if !recoveredBrokenBundle, selfRepairDue, !isRestartingCore, service.installationProblem == nil {
+                    startSelfRepair()
                 }
                 if !recoveredBrokenBundle && connectionAttempts > 0 && connectionAttempts % 15 == 0 {
                     reportCoreOutage(.repeatedRefusal)
                     if !isRestartingCore { await recoverRefusedCore() }
                 }
-                if connectionAttempts >= 15 && !isRestartingCore && !coreNeedsApproval && coreProblem == nil {
-                    coreProblem = "Agent Relay could not connect to its background service. Try restarting the service to continue to sign-in."
+                if connectionAttempts >= 15 && !isRestartingCore && !coreNeedsApproval {
+                    // Once every repair this outage was tried, say what the
+                    // person can do instead of offering the same restart.
+                    let exhausted = selfRepairStep >= CoreRegistrationRepair.stepLimit
+                    if coreProblem == nil || (exhausted && coreProblem == Self.unreachableCoreMessage) {
+                        coreProblem = exhausted ? Self.selfRepairExhaustedMessage : Self.unreachableCoreMessage
+                    }
                 }
                 if coreProblem != nil, !isRecoveringCore { isRestartingCore = false }
             }

@@ -16,7 +16,7 @@ SCRIPT_NAME="$(basename "$0")"
 die() { printf '%s: error: %s\n' "$SCRIPT_NAME" "$*" >&2; exit 1; }
 
 KEY="${AGENT_RELAY_POSTHOG_API_KEY:-}"
-PROJECT_KEY='^phc_[A-Za-z0-9_-]{16,251}$'
+PROJECT_KEY='^phc_[A-Za-z0-9_]{1,251}$'
 # Personal API keys: phx_ followed by the token body.
 PERSONAL_KEY='phx_[A-Za-z0-9_-]{16,}'
 
@@ -28,16 +28,28 @@ check_source() {
   [[ "$KEY" =~ $PROJECT_KEY ]] || die "AGENT_RELAY_POSTHOG_API_KEY is not a PostHog project token (phc_)"
 }
 
+# grep's own answer: 0 found, 1 not found, anything else an error, which
+# fails closed: an unreadable or partly read helper is never accepted.
+scan() {
+  local status=0
+  LC_ALL=C grep -a -q "$@" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) die "could not read $(basename "${!#}") to check its analytics key" ;;
+  esac
+}
+
 check_packaged() {
   [ "$#" -gt 0 ] || die "usage: $SCRIPT_NAME packaged BINARY..."
   check_source
   local binary
   for binary in "$@"; do
-    [ -f "$binary" ] || die "no packaged helper at $binary"
-    if LC_ALL=C grep -a -q -E -- "$PERSONAL_KEY" "$binary"; then
+    [ -f "$binary" ] && [ -r "$binary" ] && [ -s "$binary" ] || die "no readable packaged helper at $binary"
+    if scan -E -- "$PERSONAL_KEY" "$binary"; then
       die "$(basename "$binary") contains a PostHog personal API key (phx_); it must not ship"
     fi
-    LC_ALL=C grep -a -q -F -- "$KEY" "$binary" \
+    scan -F -- "$KEY" "$binary" \
       || die "$(basename "$binary") was not built with this release's PostHog project token"
   done
 }

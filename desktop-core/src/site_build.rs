@@ -22,7 +22,7 @@ pub fn is_site_build_for(built_in: &str) -> bool {
 /// compiled here so its decision is tested.
 #[cfg(test)]
 #[path = "../build_site_telemetry.rs"]
-mod build_site_telemetry;
+pub(crate) mod build_site_telemetry;
 
 #[cfg(test)]
 mod tests {
@@ -34,6 +34,51 @@ mod tests {
         assert!(is_site_build_for("https://relay.example.test"));
         assert!(is_site_build_for("http://localhost:3100"));
         assert_eq!(is_site_build(), built_in_site_url() != DEFAULT_SITE_URL);
+    }
+
+    mod build_posthog_key {
+        use super::super::build_site_telemetry::refused_posthog_key;
+
+        #[test]
+        fn no_key_builds() {
+            assert_eq!(refused_posthog_key(None), None);
+            assert_eq!(refused_posthog_key(Some("")), None);
+        }
+
+        #[test]
+        fn a_project_token_builds_at_every_length() {
+            for key in [
+                "phc_A".to_owned(),
+                "phc_a_b".to_owned(),
+                format!("phc_{}", "A".repeat(251)),
+            ] {
+                assert_eq!(refused_posthog_key(Some(&key)), None, "{}", key.len());
+            }
+        }
+
+        #[test]
+        fn a_personal_key_is_refused_without_its_value() {
+            let key = format!("phx_{}", "S".repeat(39));
+            let error = refused_posthog_key(Some(&key)).unwrap();
+            assert!(error.contains("personal API key"), "{error}");
+            assert!(!error.contains(&key[4..]), "{error}");
+        }
+
+        #[test]
+        fn a_malformed_key_is_refused_without_its_value() {
+            for key in [
+                "phc_".to_owned(),
+                "phc_a-b".to_owned(),
+                "phc_a b".to_owned(),
+                "PHC_abc".to_owned(),
+                "sk_abcdef".to_owned(),
+                format!("phc_{}", "A".repeat(252)),
+            ] {
+                let error = refused_posthog_key(Some(&key)).expect(&key);
+                assert!(error.contains("AGENT_RELAY_POSTHOG_API_KEY"), "{error}");
+                assert!(key.len() < 6 || !error.contains(&key[4..]), "{error}");
+            }
+        }
     }
 
     mod build_site_telemetry {

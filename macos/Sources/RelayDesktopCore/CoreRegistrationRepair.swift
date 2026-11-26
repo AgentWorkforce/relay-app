@@ -63,8 +63,10 @@ public struct LaunchdJob: Equatable, Sendable {
 /// With startup at login off (a fresh install's default) the core runs as a
 /// session job the app bootstraps itself. A session job launchd keeps loaded
 /// but never runs ("Enabled", no process) is reloaded once; when that does not
-/// help, the core moves to the login job SMAppService manages, and from there
-/// climbs the same ladder.
+/// help, the app starts the core itself, outside launchd, for this session.
+/// Startup at login stays off and no login job is left behind. The core
+/// refuses a second instance on its socket, so a late session job cannot
+/// double it.
 public enum CoreRegistrationRepair {
     public enum Action: String, Equatable, Sendable {
         /// The core runs; the connection just has not caught up.
@@ -79,9 +81,9 @@ public enum CoreRegistrationRepair {
         case useFallback
         /// Startup at login is off: the session job is the only job.
         case reloadSessionJob
-        /// The session job does not run even after a reload: start the core
-        /// through the login job instead.
-        case useLoginJob
+        /// The session job does not run even after a reload: the app starts
+        /// the core itself for this session.
+        case runCoreDirectly
         /// Every rung was tried this outage.
         case exhausted
     }
@@ -94,10 +96,13 @@ public enum CoreRegistrationRepair {
         public var bundledJob: LaunchdJob
         public var fallbackJob: LaunchdJob
         public var appBundleVersion: String?
+        /// A core the app started itself is still running.
+        public var directCoreRunning: Bool
 
         public init(usesFallback: Bool, startsAtLogin: Bool = true, installationProblem: Bool = false,
                     registration: CoreServiceStatus, bundledJob: LaunchdJob, fallbackJob: LaunchdJob = .missing,
-                    appBundleVersion: String?) {
+                    appBundleVersion: String?, directCoreRunning: Bool = false) {
+            self.directCoreRunning = directCoreRunning
             self.usesFallback = usesFallback
             self.startsAtLogin = startsAtLogin
             self.installationProblem = installationProblem
@@ -122,8 +127,8 @@ public enum CoreRegistrationRepair {
         if observation.registration == .requiresApproval { return .waitForApproval }
         guard step < stepLimit else { return .exhausted }
         if !observation.startsAtLogin {
-            if observation.fallbackJob.isRunning { return .none }
-            return step == 0 ? .reloadSessionJob : .useLoginJob
+            if observation.fallbackJob.isRunning || observation.directCoreRunning { return .none }
+            return step == 0 ? .reloadSessionJob : .runCoreDirectly
         }
         if observation.usesFallback {
             if observation.fallbackJob.isRunning { return .none }

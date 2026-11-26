@@ -407,13 +407,17 @@ jobs:
             fi
           done
           # A project (capture) token is public by design; a personal API key
-          # (phx_) grants account access and must never be compiled in.
-          if [[ "$POSTHOG_API_KEY" == phx_* ]]; then
-            echo "::error::POSTHOG_API_KEY holds a PostHog personal API key; set the project token (phc_)"
-            exit 1
-          fi
-          if ! [[ "$POSTHOG_API_KEY" =~ ^phc_[A-Za-z0-9_-]{16,251}$ ]]; then
-            echo "::error::POSTHOG_API_KEY is not a PostHog project token (phc_)"
+          # (phx_) grants account access and must never be compiled in. The
+          # checked-out source's own rule decides; a release of a commit made
+          # before that rule existed applies the same one here
+          # (scripts/test_check_telemetry_key.py proves they agree).
+          if [ -f scripts/check-telemetry-key.sh ]; then
+            if ! AGENT_RELAY_POSTHOG_API_KEY="$POSTHOG_API_KEY" bash scripts/check-telemetry-key.sh source; then
+              echo "::error::POSTHOG_API_KEY must be the PostHog project token (phc_), never a personal API key (phx_)"
+              exit 1
+            fi
+          elif [[ "$POSTHOG_API_KEY" == phx_* ]] || ! [[ "$POSTHOG_API_KEY" =~ ^phc_[A-Za-z0-9_]{1,251}$ ]]; then
+            echo "::error::POSTHOG_API_KEY must be the PostHog project token (phc_), never a personal API key (phx_)"
             exit 1
           fi
 
