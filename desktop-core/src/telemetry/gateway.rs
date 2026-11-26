@@ -168,18 +168,44 @@ fn retry_after(text: &str) -> Option<Duration> {
 /// Sends `batch`, trying again as [`Delivery::Retry`] asks, up to
 /// [`MAX_ATTEMPTS`]. True when it was taken. A `desktop.app_started` that was
 /// not taken is queued again at the next attach.
-pub(super) fn deliver(shared: &Shared, sender: &dyn TelemetrySender, batch: Vec<Value>) -> bool {
+pub(super) fn deliver(
+    shared: &Shared,
+    sender: &dyn TelemetrySender,
+    batch: Vec<Value>,
+    #[cfg(target_os = "macos")] identity_generation: u64,
+) -> bool {
     let starts = carries_app_started(&batch);
-    let sent = try_deliver(shared, sender, batch);
+    let sent = try_deliver(
+        shared,
+        sender,
+        batch,
+        #[cfg(target_os = "macos")]
+        identity_generation,
+    );
     if starts && !sent {
         shared.lock().app_started = false;
     }
     sent
 }
 
-fn try_deliver(shared: &Shared, sender: &dyn TelemetrySender, batch: Vec<Value>) -> bool {
+fn try_deliver(
+    shared: &Shared,
+    sender: &dyn TelemetrySender,
+    batch: Vec<Value>,
+    #[cfg(target_os = "macos")] identity_generation: u64,
+) -> bool {
     let mut attempt = 1;
     loop {
+        #[cfg(target_os = "macos")]
+        {
+            let state = shared.lock();
+            if state.shutdown
+                || state.identity_generation != identity_generation
+                || !shared.consent_allows(&state)
+            {
+                return false;
+            }
+        }
         let wait = match sender.deliver(batch.clone()) {
             Delivery::Sent => return true,
             Delivery::Retry { after, .. } if attempt < MAX_ATTEMPTS => {
@@ -191,6 +217,10 @@ fn try_deliver(shared: &Shared, sender: &dyn TelemetrySender, batch: Vec<Value>)
         let (state, _) = shared
             .changed
             .wait_timeout_while(state, wait.min(RETRY_CAP), |state| {
+                #[cfg(target_os = "macos")]
+                if state.identity_generation != identity_generation {
+                    return false;
+                }
                 !state.shutdown && state.enabled
             })
             .unwrap_or_else(|poison| poison.into_inner());
@@ -258,7 +288,7 @@ impl super::Telemetry {
     }
 
     fn may_queue(&self, state: &super::State) -> bool {
-        !state.shutdown && state.enabled && state.account.is_some()
+        !state.shutdown && self.shared.consent_allows(state) && state.account.is_some()
     }
 }
 
