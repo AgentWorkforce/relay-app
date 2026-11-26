@@ -362,11 +362,11 @@ final class CoreOutageTelemetry {
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer {
             try? file.close()
-            temporary.withUnsafeBufferPointer { _ = unlink($0.baseAddress!) }
+            _ = unlink(temporary)
         }
         try file.write(contentsOf: Data((UUID().uuidString.lowercased() + "\n").utf8))
         try file.synchronize()
-        let result = temporary.withUnsafeBufferPointer { renamex_np($0.baseAddress!, destination, UInt32(RENAME_EXCL)) }
+        let result = renamex_np(temporary, destination, UInt32(RENAME_EXCL))
         if result == 0 {
             guard fsync(directory) == 0 else { throw posixError() }
         } else if errno != EEXIST {
