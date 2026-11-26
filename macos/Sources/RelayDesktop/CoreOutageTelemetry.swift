@@ -1,9 +1,10 @@
+import CoreFoundation
 import Darwin
 import Foundation
 import RelayDesktopCore
 
-/// Reports failures the normal telemetry RPC cannot reach. The core owns the
-/// installation ID and its rotation. This sender reads it at capture time.
+/// Reports failures the normal telemetry RPC cannot reach. The app and core
+/// share the installation ID. The core manages rotation.
 @MainActor
 final class CoreOutageTelemetry {
     enum Reason: String, Encodable, Hashable {
@@ -189,7 +190,10 @@ final class CoreOutageTelemetry {
 
     private func identityForOutage(allowed: Bool) -> String? {
         guard !endedConsentOrIdentity else { return nil }
-        let id = allowed && diskConsent() ? installationID() : nil
+        let id: String? = allowed && legacyConsent() ? withIdentityLock { directory in
+            guard diskConsent() else { return nil }
+            return try installationID(create: outageIdentity == nil, directory: directory)
+        } : nil
         if let outageIdentity, id != outageIdentity {
             endedConsentOrIdentity = true
             return nil
@@ -207,11 +211,19 @@ final class CoreOutageTelemetry {
         }
     }
 
+    private func legacyConsent() -> Bool {
+        guard let value = defaults.object(forKey: LegacyMigration.analyticsEnabledKey) else { return true }
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
+        return number.boolValue
+    }
+
     private func diskConsent() -> Bool {
-        guard defaults.object(forKey: LegacyMigration.analyticsEnabledKey) as? Bool != false else { return false }
+        guard legacyConsent() else { return false }
         do {
             let bytes = try read("preferences.json", limit: 16 * 1024)
-            return (try? JSONDecoder().decode(Preferences.self, from: bytes))?.enabled == true
+            guard bytes.first(where: { ![9, 10, 13, 32].contains($0) }) == 0x7b else { return false }
+            return try JSONDecoder().decode(Preferences.self, from: bytes).enabled
+                && Self.hasUnambiguousConsent(bytes)
         } catch let error as POSIXError where error.code == .ENOENT {
             // The core's default when there is no saved preference.
             return true
@@ -220,23 +232,123 @@ final class CoreOutageTelemetry {
         }
     }
 
-    private func installationID() -> String? {
-        guard let bytes = try? read("installation-id", limit: 64),
-              let text = String(data: bytes, encoding: .utf8),
-              let id = UUID(uuidString: text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-        return "desktop:\(id.uuidString.lowercased())"
+    // JSONDecoder can silently pick one of two values for a repeated key.
+    // The document has already been decoded, so only scan for top-level keys here.
+    private static func hasUnambiguousConsent(_ data: Data) -> Bool {
+        var depth = 0
+        var start: Data.Index?
+        var escaped = false
+        var expectingKey = false
+        var found = false
+        for i in data.indices {
+            let byte = data[i]
+            if let beginning = start {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5c { // backslash
+                    escaped = true
+                } else if byte == 0x22 { // quote
+                    if depth == 1 && expectingKey {
+                        let key = try? JSONDecoder().decode(String.self, from: data[beginning...i])
+                        if key == "analytics_enabled" {
+                            if found { return false }
+                            found = true
+                        }
+                        expectingKey = false
+                    }
+                    start = nil
+                }
+                continue
+            }
+            switch byte {
+            case 0x22: start = i
+            case 0x7b, 0x5b: // object or array start
+                depth += 1
+                if depth == 1 { expectingKey = true }
+            case 0x7d, 0x5d: depth -= 1 // object or array end
+            case 0x2c where depth == 1: expectingKey = true // comma
+            default: break
+            }
+        }
+        return true
+    }
+
+    // Keep this disk protocol in sync with desktop-core's telemetry/macos_identity.rs.
+    private func withIdentityLock<T>(_ body: (Int32) throws -> T?) -> T? {
+        do {
+            try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            let directory = open(dataDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard directory >= 0 else { return nil }
+            defer { close(directory) }
+            var info = stat()
+            guard fstat(directory, &info) == 0, info.st_uid == geteuid(), info.st_mode & 0o022 == 0 else {
+                return nil
+            }
+            let lock = open(dataDirectory.appendingPathComponent("installation-id.lock").path,
+                              O_RDWR | O_CREAT | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+            guard lock >= 0 else { return nil }
+            defer { close(lock) }
+            // The core can hold this lock while the main actor handles a restart.
+            guard safeFileSize(lock, limit: 0) != nil, flock(lock, LOCK_EX | LOCK_NB) == 0 else { return nil }
+            return try body(directory)
+        } catch {
+            return nil
+        }
+    }
+
+    private func installationID(create: Bool, directory: Int32) throws -> String? {
+        do {
+            let bytes = try read("installation-id", limit: 64)
+            let whitespace = CharacterSet(charactersIn: " \t\n\r\u{000C}")
+            guard let text = String(data: bytes, encoding: .utf8)?.trimmingCharacters(in: whitespace),
+                  text.utf8.count == 36, let id = UUID(uuidString: text) else { return nil }
+            return "desktop:\(id.uuidString.lowercased())"
+        } catch let error as POSIXError where error.code == .ENOENT && create {
+            try publishIdentity(directory: directory)
+            return try installationID(create: false, directory: directory)
+        }
+    }
+
+    private func publishIdentity(directory: Int32) throws {
+        let destination = dataDirectory.appendingPathComponent("installation-id").path
+        let temporary = dataDirectory.appendingPathComponent(".installation-id-\(UUID())").path
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        guard fd >= 0 else { throw posixError() }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer {
+            try? file.close()
+            temporary.withUnsafeBufferPointer { _ = unlink($0.baseAddress!) }
+        }
+        try file.write(contentsOf: Data((UUID().uuidString.lowercased() + "\n").utf8))
+        try file.synchronize()
+        let result = temporary.withUnsafeBufferPointer { renamex_np($0.baseAddress!, destination, UInt32(RENAME_EXCL)) }
+        if result == 0 {
+            guard fsync(directory) == 0 else { throw posixError() }
+        } else if errno != EEXIST {
+            throw posixError()
+        }
+    }
+
+    private func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    private func safeFileSize(_ fd: Int32, limit: Int) -> Int? {
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_uid == geteuid(), info.st_mode & 0o022 == 0, info.st_nlink == 1,
+              (0...Int64(limit)).contains(info.st_size) else { return nil }
+        return Int(info.st_size)
     }
 
     private func read(_ name: String, limit: Int) throws -> Data {
         let fd = open(dataDirectory.appendingPathComponent(name).path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard fd >= 0 else { throw posixError() }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }
-        var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_size <= Int64(limit) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        guard let bytes = try file.read(upToCount: limit + 1), bytes.count <= limit else {
+        guard let size = safeFileSize(fd, limit: limit),
+              let bytes = try file.read(upToCount: limit + 1), bytes.count == size else {
             throw CocoaError(.fileReadCorruptFile)
         }
         return bytes
@@ -261,14 +373,18 @@ final class CoreOutageTelemetry {
                                     repairs: min(max(repairs, 0), 255), lastError: lastError)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        guard let body = try? encoder.encode(Capture(apiKey: project.key, event: event, distinctId: id, properties: properties)),
-              installationID() == id, diskConsent() else { return false }
+        guard let body = try? encoder.encode(Capture(apiKey: project.key, event: event, distinctId: id, properties: properties)) else {
+            return false
+        }
         var request = URLRequest(url: Project.endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("agentrelay-desktop", forHTTPHeaderField: "User-Agent")
         request.httpBody = body
-        return transport(request)
+        return withIdentityLock { directory in
+            guard diskConsent(), try installationID(create: false, directory: directory) == id else { return false }
+            return transport(request)
+        } ?? false
     }
 
     private final class HTTPS: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

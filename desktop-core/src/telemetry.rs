@@ -44,6 +44,8 @@
 mod envelope;
 mod gateway;
 mod identify;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod macos_identity;
 mod posthog;
 pub use gateway::Delivery;
 pub use posthog::{Answer, PostHogProject, PostHogSender, SessionBearer, SessionSlot, Transport};
@@ -376,9 +378,19 @@ struct Shared {
     changed: Condvar,
     /// Where the merged user is saved.
     identified: PathBuf,
+    #[cfg(target_os = "macos")]
+    preferences: PathBuf,
 }
 
 impl Shared {
+    fn consent_allows(&self, state: &State) -> bool {
+        #[cfg(target_os = "macos")]
+        if !macos_identity::consent(&self.preferences).unwrap_or(false) {
+            return false;
+        }
+        state.enabled
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
@@ -410,6 +422,9 @@ impl Telemetry {
         if cfg!(not(target_os = "macos")) {
             config.import_cached_preferences(&preferences);
         }
+        #[cfg(target_os = "macos")]
+        let enabled = macos_identity::consent(&preferences).unwrap_or(false);
+        #[cfg(not(target_os = "macos"))]
         let enabled = read_preferences(&preferences)
             .get(SETTING)
             .and_then(Value::as_bool)
@@ -426,6 +441,8 @@ impl Telemetry {
             }),
             changed: Condvar::new(),
             identified,
+            #[cfg(target_os = "macos")]
+            preferences: preferences.clone(),
         });
         let worker = shared.clone();
         if let Err(error) = std::thread::Builder::new()
@@ -462,7 +479,7 @@ impl Telemetry {
 
     /// Whether the person allows analytics. On unless they turned it off.
     pub fn enabled(&self) -> bool {
-        self.shared.lock().enabled
+        self.shared.consent_allows(&self.shared.lock())
     }
 
     /// Whether this build may request Cloud profile synchronization. Development
@@ -475,24 +492,38 @@ impl Telemetry {
     /// forgets the installation id, so turning it back on starts a new one;
     /// while an install is attached, that one is merged into its user again.
     pub fn set_enabled(&self, enabled: bool) -> std::io::Result<()> {
+        let mut state = self.shared.lock();
+        #[cfg(target_os = "macos")]
+        let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
+        #[cfg(target_os = "macos")]
+        if enabled && (!state.enabled || !macos_identity::consent(&self.preferences)?) {
+            self.rotate_locked(&mut state)?;
+        }
+        #[cfg(target_os = "macos")]
+        let mut preferences = macos_identity::preferences_for_update(&self.preferences)?;
+        #[cfg(not(target_os = "macos"))]
         let mut preferences = read_preferences(&self.preferences);
         preferences.insert(SETTING.into(), Value::Bool(enabled));
         let mut bytes = serde_json::to_vec(&Value::Object(preferences)).expect("json");
         bytes.push(b'\n');
         write_file(&self.preferences, &bytes)?;
-        {
-            let mut state = self.shared.lock();
-            state.enabled = enabled;
-            if !enabled {
-                state.queue.clear();
+        state.enabled = enabled;
+        let result = if enabled {
+            Ok(())
+        } else {
+            state.queue.clear();
+            #[cfg(target_os = "macos")]
+            {
+                self.rotate_locked(&mut state)
             }
-        }
+            #[cfg(not(target_os = "macos"))]
+            {
+                self.rotate(&mut state);
+                Ok(())
+            }
+        };
         self.shared.changed.notify_all();
-        if !enabled {
-            let mut state = self.shared.lock();
-            self.rotate(&mut state);
-        }
-        Ok(())
+        result
     }
 
     /// Sign-out: forgets the account and the installation id, so the next
@@ -521,7 +552,7 @@ impl Telemetry {
         let queued = if self.on_site() {
             self.app_started(&mut state)
         } else {
-            self.identify_if_needed(&mut state)
+            self.identify_if_needed(&mut state, None)
         };
         if queued {
             drop(state);
@@ -532,26 +563,55 @@ impl Telemetry {
     /// A new installation id, with nothing merged and nothing queued for the
     /// old one.
     fn rotate(&self, state: &mut State) {
+        let result = (|| {
+            #[cfg(target_os = "macos")]
+            let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
+            self.rotate_locked(state)
+        })();
+        if let Err(error) = result {
+            #[cfg(target_os = "macos")]
+            {
+                state.identity = None;
+                state.queue.clear();
+                state.enabled = false;
+            }
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "relay: could not remove a telemetry id: {error}"
+            ));
+        }
+    }
+
+    fn rotate_locked(&self, state: &mut State) -> std::io::Result<()> {
         state.identity = None;
         state.identified = None;
         state.identifying = false;
         state.recent_errors.clear();
         state.queue.retain(|queued| queued.merges.is_none());
+        #[cfg(target_os = "macos")]
+        state.queue.clear();
+        let mut result = Ok(());
         for path in [&self.identity, &self.shared.identified] {
             if let Err(error) = std::fs::remove_file(path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    agent_relay_node::relay::diagnostics::write(format_args!(
-                        "relay: could not remove a telemetry id: {error}"
-                    ));
+                    result = Err(error);
                 }
             }
         }
+        #[cfg(target_os = "macos")]
+        result.and_then(|()| macos_identity::sync_directory(&self.config.app_data_dir))?;
+        #[cfg(not(target_os = "macos"))]
+        result?;
+        Ok(())
     }
 
     /// Queues the `$identify` that merges the installation id into the
     /// attached user, unless it is merged or one is already on its way.
-    fn identify_if_needed(&self, state: &mut State) -> bool {
-        if self.config.project.is_none() || state.shutdown || !state.enabled || state.identifying {
+    fn identify_if_needed(&self, state: &mut State, identity: Option<&str>) -> bool {
+        if self.config.project.is_none()
+            || state.shutdown
+            || !self.shared.consent_allows(state)
+            || state.identifying
+        {
             return false;
         }
         let Some(account) = state.account.clone() else {
@@ -560,7 +620,9 @@ impl Telemetry {
         if state.identified.as_deref() == Some(account.user_id.as_str()) {
             return false;
         }
-        let anonymous = self.identity(state);
+        let Some(anonymous) = identity.map(str::to_owned).or_else(|| self.identity(state)) else {
+            return false;
+        };
         let mut properties = self.base_properties(Some(&account));
         properties.insert(
             "$anon_distinct_id".into(),
@@ -592,7 +654,7 @@ impl Telemetry {
         }
         let date = (self.config.ticks)();
         let mut state = self.shared.lock();
-        if state.shutdown || !state.enabled {
+        if state.shutdown || !self.shared.consent_allows(&state) {
             return;
         }
         let window_open = state
@@ -620,11 +682,19 @@ impl Telemetry {
             }
         }
         state.window_count += 1;
-        self.identify_if_needed(&mut state);
         let account = state.account.clone();
+        let identity = if cfg!(target_os = "macos") || account.is_none() {
+            let Some(identity) = self.identity(&mut state) else {
+                return;
+            };
+            Some(identity)
+        } else {
+            None
+        };
+        self.identify_if_needed(&mut state, identity.as_deref());
         let distinct_id = match &account {
             Some(account) => account.user_id.clone(),
-            None => format!("desktop:{}", self.identity(&mut state)),
+            None => format!("desktop:{}", identity.expect("anonymous identity")),
         };
         let timestamp = self.timestamp();
 
@@ -698,11 +768,21 @@ impl Telemetry {
         !state.sending && state.queue.is_empty()
     }
 
+    #[cfg(target_os = "macos")]
+    fn identity(&self, state: &mut State) -> Option<String> {
+        let identity = macos_identity::identity(&self.config.app_data_dir)
+            .ok()
+            .flatten();
+        state.identity.clone_from(&identity);
+        identity
+    }
+
     /// The installation id, created on first use. An id that cannot be
-    /// saved still serves this run.
-    fn identity(&self, state: &mut State) -> String {
+    /// saved still serves this run on GTK.
+    #[cfg(not(target_os = "macos"))]
+    fn identity(&self, state: &mut State) -> Option<String> {
         if let Some(identity) = &state.identity {
-            return identity.clone();
+            return Some(identity.clone());
         }
         let identity = std::fs::read_to_string(&self.identity)
             .ok()
@@ -717,7 +797,7 @@ impl Telemetry {
                 fresh
             });
         state.identity = Some(identity.clone());
-        identity
+        Some(identity)
     }
 }
 
@@ -827,7 +907,11 @@ fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     std::io::Write::write_all(&mut temporary, bytes)?;
+    #[cfg(target_os = "macos")]
+    temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(target_os = "macos")]
+    macos_identity::sync_directory(parent)?;
     Ok(())
 }
 
@@ -843,6 +927,7 @@ fn parse_uuid(text: &str) -> Option<String> {
 }
 
 /// A random (version 4) UUID.
+#[cfg(any(not(target_os = "macos"), test))]
 fn new_uuid() -> String {
     let mut bytes = [0u8; 16];
     if getrandom::getrandom(&mut bytes).is_err() {
@@ -853,6 +938,10 @@ fn new_uuid() -> String {
             ^ u128::from(std::process::id());
         bytes = nanos.to_le_bytes();
     }
+    format_uuid(bytes)
+}
+
+fn format_uuid(mut bytes: [u8; 16]) -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();

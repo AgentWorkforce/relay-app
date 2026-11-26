@@ -180,6 +180,13 @@ pub(super) fn deliver(shared: &Shared, sender: &dyn TelemetrySender, batch: Vec<
 fn try_deliver(shared: &Shared, sender: &dyn TelemetrySender, batch: Vec<Value>) -> bool {
     let mut attempt = 1;
     loop {
+        #[cfg(target_os = "macos")]
+        {
+            let state = shared.lock();
+            if state.shutdown || !shared.consent_allows(&state) {
+                return false;
+            }
+        }
         let wait = match sender.deliver(batch.clone()) {
             Delivery::Sent => return true,
             Delivery::Retry { after, .. } if attempt < MAX_ATTEMPTS => {
@@ -258,7 +265,7 @@ impl super::Telemetry {
     }
 
     fn may_queue(&self, state: &super::State) -> bool {
-        !state.shutdown && state.enabled && state.account.is_some()
+        !state.shutdown && self.shared.consent_allows(state) && state.account.is_some()
     }
 }
 

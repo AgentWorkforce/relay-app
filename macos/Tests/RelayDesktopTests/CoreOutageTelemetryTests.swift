@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import RelayDesktop
@@ -27,7 +28,7 @@ final class CoreOutageTelemetryTests: XCTestCase {
     }
 
     func testConsentAndIdentityAreReadAtCaptureTime() throws {
-        let fixture = try Fixture()
+        let fixture = try Fixture(seedIdentity: false)
         defer { fixture.remove() }
         let telemetry = try fixture.telemetry()
         try fixture.write("preferences.json", "{\"analytics_enabled\":false}")
@@ -36,23 +37,133 @@ final class CoreOutageTelemetryTests: XCTestCase {
         fixture.failure(telemetry, .startupWatchdog)
         try fixture.write("preferences.json", "{\"analytics_enabled\":null}")
         fixture.failure(telemetry, .startupWatchdog)
+        try fixture.write("preferences.json", #"{"analytics_enabled":true,"analytics_ena\u0062led":false}"#)
+        fixture.failure(telemetry, .startupWatchdog)
         try fixture.write("preferences.json", "{\"analytics_enabled\":true}")
         fixture.defaults.set(false, forKey: LegacyMigration.analyticsEnabledKey)
         fixture.failure(telemetry, .startupWatchdog)
         fixture.defaults.removeObject(forKey: LegacyMigration.analyticsEnabledKey)
         fixture.failure(telemetry, .startupWatchdog, allowed: false)
+        fixture.defaults.set("true", forKey: LegacyMigration.analyticsEnabledKey)
+        fixture.failure(telemetry, .startupWatchdog)
+        fixture.defaults.removeObject(forKey: LegacyMigration.analyticsEnabledKey)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.identity.path))
+
         try fixture.write("installation-id", "not a UUID")
         fixture.failure(telemetry, .startupWatchdog)
-        try FileManager.default.removeItem(at: fixture.directory.appendingPathComponent("installation-id"))
-        fixture.failure(telemetry, .startupWatchdog)
+        XCTAssertEqual(try String(contentsOf: fixture.identity, encoding: .utf8), "not a UUID")
         XCTAssertTrue(fixture.requests.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("installation-id").path))
 
         try fixture.write("installation-id", Fixture.id + "\n")
         fixture.failure(telemetry, .startupWatchdog)
         try fixture.write("preferences.json", "{\"analytics_enabled\":false}")
         fixture.recovered(telemetry)
         XCTAssertEqual(fixture.events, ["desktop_core_unavailable"])
+    }
+
+    func testFirstLaunchPersistsIdentityBeforeCaptureAndReusesItForRecovery() throws {
+        let fixture = try Fixture(seedIdentity: false)
+        defer { fixture.remove() }
+        try FileManager.default.removeItem(at: fixture.directory)
+        let telemetry = try fixture.telemetry()
+        fixture.recovered(telemetry)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.path))
+
+        fixture.failure(telemetry, .startupWatchdog)
+        let saved = try String(contentsOf: fixture.identity, encoding: .utf8)
+        let id = saved.trimmingCharacters(in: .newlines)
+        XCTAssertEqual(UUID(uuidString: id)?.uuidString.lowercased(), id)
+        fixture.recovered(telemetry)
+        let relaunched = try fixture.telemetry()
+        fixture.failure(relaunched, .repeatedRefusal)
+        XCTAssertEqual(fixture.events, ["desktop_core_unavailable", "desktop_core_recovered", "desktop_core_unavailable"])
+        XCTAssertEqual(fixture.captures.compactMap { $0["distinct_id"] as? String }, Array(repeating: "desktop:" + id, count: 3))
+        XCTAssertEqual(try String(contentsOf: fixture.identity, encoding: .utf8), saved)
+    }
+
+    func testFirstLaunchSkipsCaptureWhileCoreHoldsIdentityLockAndRetriesAfterRelease() throws {
+        let fixture = try Fixture(seedIdentity: false)
+        defer { fixture.remove() }
+        let telemetry = try fixture.telemetry()
+        let lockPath = fixture.directory.appendingPathComponent("installation-id.lock").path
+        let coreLock = open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC, mode_t(0o600))
+        guard coreLock >= 0 else { return XCTFail("Could not open the synthetic core lock") }
+        defer { close(coreLock) }
+        guard flock(coreLock, LOCK_EX | LOCK_NB) == 0 else {
+            return XCTFail("Could not acquire the synthetic core lock")
+        }
+
+        fixture.failure(telemetry, .startupWatchdog)
+        XCTAssertTrue(fixture.requests.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.identity.path))
+
+        let saved = Fixture.id + "\n"
+        try fixture.write("installation-id", saved)
+        fixture.failure(telemetry, .startupWatchdog)
+        XCTAssertTrue(fixture.requests.isEmpty)
+        XCTAssertEqual(try String(contentsOf: fixture.identity, encoding: .utf8), saved)
+
+        guard flock(coreLock, LOCK_UN) == 0 else { return XCTFail("Could not release the synthetic core lock") }
+        fixture.failure(telemetry, .startupWatchdog)
+        XCTAssertEqual(fixture.events, ["desktop_core_unavailable"])
+        XCTAssertEqual(fixture.captures.first?["distinct_id"] as? String, "desktop:" + Fixture.id)
+        XCTAssertEqual(try String(contentsOf: fixture.identity, encoding: .utf8), saved)
+    }
+
+    func testConsentChangeBeforeTransportSuppressesCapture() throws {
+        let fixture = try Fixture(seedIdentity: false)
+        defer { fixture.remove() }
+        let telemetry = try fixture.telemetry()
+        func diagnosticsAfterOptOut() -> CoreServiceDiagnostics {
+            do {
+                try fixture.write("preferences.json", #"{"analytics_enabled":false}"#)
+                try FileManager.default.removeItem(at: fixture.identity)
+            } catch {
+                XCTFail("Could not simulate the core opting out: \(error)")
+            }
+            return .init()
+        }
+
+        telemetry.failure(.startupWatchdog, service: diagnosticsAfterOptOut(), attempts: 1,
+                          repairs: 0, lastError: nil, runningVersion: nil, allowed: true)
+        fixture.recovered(telemetry)
+        XCTAssertTrue(fixture.requests.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.identity.path))
+    }
+
+    func testMissingIdentityDuringOutageDoesNotCreateAReplacementForRecovery() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let telemetry = try fixture.telemetry()
+        fixture.failure(telemetry, .startupWatchdog)
+        try FileManager.default.removeItem(at: fixture.identity)
+        fixture.failure(telemetry, .repeatedRefusal)
+        fixture.recovered(telemetry)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.identity.path))
+        XCTAssertEqual(fixture.events, ["desktop_core_unavailable"])
+        fixture.failure(telemetry, .startupWatchdog)
+        XCTAssertEqual(fixture.events.count, 2)
+        XCTAssertNotEqual(fixture.captures.last?["distinct_id"] as? String, "desktop:" + Fixture.id)
+    }
+
+    func testUnsafeDiskStateSuppressesFirstLaunchCapture() throws {
+        let fixture = try Fixture(seedIdentity: false)
+        defer { fixture.remove() }
+        let telemetry = try fixture.telemetry()
+        let files = FileManager.default
+        let preferences = fixture.directory.appendingPathComponent("preferences.json")
+        let missing = fixture.directory.appendingPathComponent("missing")
+        for path in [preferences, fixture.identity, fixture.directory.appendingPathComponent("installation-id.lock")] {
+            try files.createSymbolicLink(at: path, withDestinationURL: missing)
+            fixture.failure(telemetry, .startupWatchdog)
+            XCTAssertTrue(fixture.requests.isEmpty)
+            XCTAssertEqual(try files.destinationOfSymbolicLink(atPath: path.path), missing.path)
+            try files.removeItem(at: path)
+            // Earlier probes may have initialized the lock file.
+            let lock = fixture.directory.appendingPathComponent("installation-id.lock")
+            if files.fileExists(atPath: lock.path) { try files.removeItem(at: lock) }
+        }
+        XCTAssertFalse(files.fileExists(atPath: fixture.identity.path))
     }
 
     func testRotationAndPendingOptOutCannotLinkAnOldOutageToANewIdentity() throws {
@@ -139,7 +250,7 @@ final class CoreOutageTelemetryTests: XCTestCase {
     }
 
     func testAppReportsWatchdogAndRepeatedRefusalThenFirstHealthySubscription() async throws {
-        let fixture = try Fixture()
+        let fixture = try Fixture(seedIdentity: false)
         defer { fixture.remove() }
         let service = FakeService(status: .enabled)
         fixture.defaults.set("build-1", forKey: AppModel.registeredCoreKey)
@@ -157,6 +268,8 @@ final class CoreOutageTelemetryTests: XCTestCase {
         XCTAssertTrue(recovered)
         XCTAssertEqual(fixture.reasons.filter { $0 == "repeated_refusal" }.count, 1)
         XCTAssertEqual(fixture.events.filter { $0 == "desktop_core_recovered" }.count, 1)
+        let id = try String(contentsOf: fixture.identity, encoding: .utf8).trimmingCharacters(in: .newlines)
+        XCTAssertTrue(fixture.captures.allSatisfy { $0["distinct_id"] as? String == "desktop:" + id })
         XCTAssertEqual(fixture.properties.last?["running_core_version"] as? [Int], [1, 0, 0])
     }
 
@@ -228,10 +341,12 @@ final class CoreOutageTelemetryTests: XCTestCase {
         let defaults: UserDefaults
         private(set) var requests: [URLRequest] = []
 
-        init() throws {
+        var identity: URL { directory.appendingPathComponent("installation-id") }
+
+        init(seedIdentity: Bool = true) throws {
             defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try write("installation-id", Self.id.uppercased() + "\n")
+            if seedIdentity { try write("installation-id", Self.id.uppercased() + "\n") }
         }
 
         func remove() {
