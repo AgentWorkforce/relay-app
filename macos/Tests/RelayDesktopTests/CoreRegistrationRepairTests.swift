@@ -410,10 +410,9 @@ extension CoreRegistrationRepairTests {
         catch is BoundedCall.TimedOut {}
         mac.launchd.hangUnregister = nil
 
-        // While the late call is in flight, every change is refused.
+        // While the late call is in flight, every repair change is refused.
         do { _ = try await mac.service.selfRepairAsync(step: 1); XCTFail("must refuse while busy") }
         catch { XCTAssertEqual((error as NSError).code, LaunchAgentService.MutationGate.busyCode) }
-        XCTAssertThrowsError(try mac.service.register())
         XCTAssertFalse(mac.launchd.calls.contains("register"), "nothing registered under the late unregister")
 
         hang.signal()                        // macOS finally returns the old call
@@ -599,7 +598,7 @@ extension CoreRegistrationRepairTests {
         XCTAssertTrue(mac.service.hasPendingStop)
         _ = await rung.value
 
-        XCTAssertThrowsError(try mac.service.register(), "still busy, but the start intent wins")
+        try mac.service.register()          // waits for the change in flight, replacing the stop
         XCTAssertFalse(mac.service.hasPendingStop)
         hang.signal()
         let registered = await eventually(2) { mac.launchd.calls.contains("register") }
@@ -608,6 +607,98 @@ extension CoreRegistrationRepairTests {
         XCTAssertTrue(registered)
         XCTAssertEqual(mac.launchd.smStatus, .enabled)
         XCTAssertEqual(mac.launchd.calls.filter { $0 != "status" }.last, "register", "no stop after the newer start")
+    }
+
+    /// Puts a registration in flight inside macOS (a reset rung whose register
+    /// hangs) and returns the hang to release it.
+    @MainActor
+    private func registrationInFlight(_ mac: SimulatedMac, model: AppModel) async throws -> (DispatchSemaphore, Task<Bool, Never>) {
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        let hang = DispatchSemaphore(value: 0)
+        mac.launchd.hangRegister = hang
+        let rung = Task { await model.selfRepairCore() }
+        let inFlight = await eventually(2) { mac.launchd.registerStarted }
+        XCTAssertTrue(inFlight)
+        mac.launchd.hangRegister = nil
+        return (hang, rung)
+    }
+
+    /// The order is fixed when each is called: Stop then Start ends started,
+    /// Start then Stop ends stopped, whatever macOS is still doing.
+    @MainActor
+    func testTheLatestOfStopAndStartWinsInTheOrderCalled() async throws {
+        for stopFirst in [true, false] {
+            let mac = try SimulatedMac(osCallTimeout: 0.2)
+            defer { mac.remove() }
+            let model = model(for: mac)
+            let (hang, rung) = try await registrationInFlight(mac, model: model)
+            if stopFirst {
+                model.stopBackgroundService()
+                try mac.service.register()
+            } else {
+                try mac.service.register()
+                try mac.service.unregister()
+            }
+            _ = await rung.value
+            hang.signal()
+            let settled = await eventually(2) { !mac.service.isChanging }
+            XCTAssertTrue(settled)
+            XCTAssertEqual(mac.launchd.smStatus, stopFirst ? .enabled : .notRegistered, "stopFirst \(stopFirst)")
+            XCTAssertEqual(mac.launchd.calls.filter { $0 != "status" }.last, stopFirst ? "register" : "unregister")
+        }
+    }
+
+    /// A Start while a delayed Stop is still running in macOS runs after it.
+    @MainActor
+    func testAStartDuringADelayedStopRunsAfterIt() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 0.2)
+        defer { mac.remove() }
+        let model = model(for: mac)
+        let (hang, rung) = try await registrationInFlight(mac, model: model)
+        model.stopBackgroundService()
+        _ = await rung.value
+        let stopHang = DispatchSemaphore(value: 0)
+        mac.launchd.hangUnregister = stopHang
+        mac.launchd.unregisterStarted = false        // only the delayed stop counts from here
+        hang.signal()                                 // the registration returns; the delayed stop begins
+        let stopping = await eventually(2) { mac.launchd.unregisterStarted }
+        XCTAssertTrue(stopping)
+        try mac.service.register()                    // arrives while the delayed stop runs
+        stopHang.signal()
+        let settled = await eventually(2) { !mac.service.isChanging }
+
+        XCTAssertTrue(settled)
+        XCTAssertEqual(mac.launchd.smStatus, .enabled)
+        XCTAssertEqual(mac.launchd.calls.filter { $0 != "status" }.last, "register")
+    }
+
+    /// A second Stop while a delayed Stop is still running is not stranded:
+    /// it runs, and nothing is left waiting.
+    @MainActor
+    func testASecondStopDuringADelayedStopIsNotStranded() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 0.2)
+        defer { mac.remove() }
+        let model = model(for: mac)
+        let (hang, rung) = try await registrationInFlight(mac, model: model)
+        model.stopBackgroundService()
+        _ = await rung.value
+        let stopHang = DispatchSemaphore(value: 0)
+        mac.launchd.hangUnregister = stopHang
+        mac.launchd.unregisterStarted = false        // only the delayed stop counts from here
+        hang.signal()
+        let stopping = await eventually(2) { mac.launchd.unregisterStarted }
+        XCTAssertTrue(stopping)
+        try mac.service.unregister()                  // a second Stop
+        XCTAssertTrue(mac.service.hasPendingStop)
+        mac.launchd.hangUnregister = nil
+        stopHang.signal()
+        let settled = await eventually(2) { !mac.service.isChanging }
+
+        XCTAssertTrue(settled)
+        XCTAssertFalse(mac.service.hasPendingStop)
+        XCTAssertEqual(mac.launchd.smStatus, .notRegistered)
+        XCTAssertEqual(Array(mac.launchd.calls.filter { $0 != "status" }.suffix(2)), ["unregister", "unregister"])
     }
 
     /// A launchd read that never answers ends at the rung's shared deadline.
@@ -640,6 +731,7 @@ private final class SimulatedLaunchd {
     var unregisterError: Error?
     var hangRegister: DispatchSemaphore?
     private(set) var registerStarted = false
+    var unregisterStarted = false
     /// Suspends the Nth session-job read through the async launchctl, so a
     /// test can act while a rung waits on launchd.
     private var sessionReadsBeforeSuspend: Int?
@@ -700,6 +792,7 @@ private final class SimulatedLaunchd {
                   self.register(version: self.currentVersion)
               },
               unregisterBundled: {
+                  self.unregisterStarted = true
                   self.hangUnregister?.wait()
                   if self.callDelay > 0 { Thread.sleep(forTimeInterval: self.callDelay) }
                   self.record("unregister")

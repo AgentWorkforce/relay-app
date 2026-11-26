@@ -56,6 +56,8 @@ final class LaunchAgentService: CoreService {
     private let mutationGate: MutationGate
     /// A Stop is waiting for a change still in flight inside macOS.
     var hasPendingStop: Bool { mutationGate.hasPendingStop }
+    /// A background service change is still in flight inside macOS.
+    var isChanging: Bool { mutationGate.isBusy }
     private let bundleURL: URL
     private let homeDirectory: URL
     private let bundleIdentifier: String
@@ -79,10 +81,10 @@ final class LaunchAgentService: CoreService {
         mutationGate = gate
         let register = gated.registerBundled, unregister = gated.unregisterBundled
         gated.registerBundled = { try gate.start { try register() } }
-        // Stopping waits for a change still in flight, so a registration a
-        // repair started cannot land after the stop.
-        let settle = gated.osCallTimeout
-        gated.unregisterBundled = { try gate.stop(waitingUpTo: settle) { try unregister() } }
+        // A Stop or Start while a change is still in flight waits for it and
+        // then runs, newest intent first, so a registration a repair started
+        // cannot land after a later Stop.
+        gated.unregisterBundled = { try gate.stop { try unregister() } }
         // A repair rung never queues behind another change: it is refused.
         // Its register is not a newer start: it never cancels a pending stop.
         repairUnregister = { try gate.run { try unregister() } }
@@ -618,85 +620,72 @@ final class LaunchAgentService: CoreService {
     // MARK: Self-repair
 
     /// Admits one SMAppService change at a time, across threads, for as long
-    /// as macOS takes to return it.
+    /// as macOS takes to return it, and orders the person's intents.
+    ///
+    /// A Stop or Start takes its place in order the moment it is called. If
+    /// no change is in flight it runs at once. Otherwise it becomes the
+    /// waiting intent, replacing any older one, and runs on the thread of the
+    /// change in flight as soon as that returns, still holding the gate. So
+    /// the latest intent always decides, neither blocks the UI, and none is
+    /// stranded: the gate is released only once no intent waits. A repair
+    /// rung's change is not an intent: it is refused while anything is in
+    /// flight or waiting.
     final class MutationGate: @unchecked Sendable {
         private let lock = NSLock()
         private var inFlight = false
+        private var waiting: (() throws -> Void)?
 
         static let busyCode = 5
         var isBusy: Bool { lock.lock(); defer { lock.unlock() }; return inFlight }
+        var hasPendingStop: Bool { lock.lock(); defer { lock.unlock() }; return waitingIsStop && waiting != nil }
+        private var waitingIsStop = false
 
-        private let released = NSCondition()
-
-        /// Runs `work` once no other change is in flight, waiting up to
-        /// `wait` for one to return (0: refuse at once).
-        func run<T>(waitingUpTo wait: TimeInterval = 0, _ work: () throws -> T) throws -> T {
-            let deadline = Date().addingTimeInterval(wait)
-            released.lock()
-            while isBusy {
-                guard released.wait(until: deadline) || !isBusy else { break }
-            }
+        /// A repair rung's change: refused while another is in flight.
+        func run<T>(_ work: () throws -> T) throws -> T {
             lock.lock()
             guard !inFlight else {
                 lock.unlock()
-                released.unlock()
                 throw NSError(domain: LaunchAgentService.errorDomain, code: Self.busyCode, userInfo: [
                     NSLocalizedDescriptionKey: "macOS is still finishing an earlier background service change. Try again."
                 ])
             }
             inFlight = true
             lock.unlock()
-            released.unlock()
             defer { finish() }
             return try work()
         }
 
-        /// A stop that could not run because another change was still in
-        /// flight. It runs as soon as that change returns, on the thread that
-        /// made it, unless a newer start comes first.
-        private var pendingStop: (() throws -> Void)?
+        func stop(_ work: @escaping () throws -> Void) throws { try intent(isStop: true, work) }
+        func start(_ work: @escaping () throws -> Void) throws { try intent(isStop: false, work) }
 
-        /// Stops now, or once the change in flight has returned: Stop never
-        /// blocks the UI past `wait`, and is never dropped.
-        func stop(waitingUpTo wait: TimeInterval, _ work: @escaping () throws -> Void) throws {
-            do { try run(waitingUpTo: wait, work) } catch let error as NSError where error.code == Self.busyCode
-                && error.domain == LaunchAgentService.errorDomain {
+        private func intent(isStop: Bool, _ work: @escaping () throws -> Void) throws {
+            lock.lock()
+            if inFlight {
+                waiting = work                 // the newest intent replaces any older one
+                waitingIsStop = isStop
+                lock.unlock()
+                return
+            }
+            inFlight = true
+            lock.unlock()
+            defer { finish() }
+            try work()
+        }
+
+        private func finish() {
+            while true {
                 lock.lock()
-                if inFlight {
-                    pendingStop = work
+                guard let next = waiting else {
+                    inFlight = false
                     lock.unlock()
                     return
                 }
+                waiting = nil
                 lock.unlock()
-                try run(work)
-            }
-        }
-
-        /// A newer start replaces a stop still waiting to run.
-        func start<T>(_ work: () throws -> T) throws -> T {
-            lock.lock(); pendingStop = nil; lock.unlock()
-            return try run(work)
-        }
-
-        var hasPendingStop: Bool { lock.lock(); defer { lock.unlock() }; return pendingStop != nil }
-
-        private func finish() {
-            released.lock()
-            lock.lock()
-            let stop = pendingStop
-            pendingStop = nil
-            inFlight = stop != nil      // the stop keeps the gate: nothing slips in between
-            lock.unlock()
-            if let stop {
-                released.unlock()
-                do { try stop() } catch {
-                    LaunchAgentService.logger.error("the delayed stop failed: \(error.localizedDescription, privacy: .public)")
+                do { try next() } catch {
+                    LaunchAgentService.logger.error("a delayed background service change failed: \(error.localizedDescription, privacy: .public)")
                 }
-                released.lock()
-                lock.lock(); inFlight = false; lock.unlock()
             }
-            released.broadcast()
-            released.unlock()
         }
     }
 
