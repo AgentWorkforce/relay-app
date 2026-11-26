@@ -221,7 +221,7 @@ final class CoreOutageTelemetryTests: XCTestCase {
     }
 
     @MainActor
-    private final class Fixture {
+    final class Fixture {
         static let id = "abcdef01-2345-4678-9abc-def012345678"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("core-outage-\(UUID())")
         let suite = "core-outage-test-\(UUID())"
