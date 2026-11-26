@@ -36,14 +36,24 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main 70980e4: #2269 (attribute commands to the chat that started them
-# when Codex chats share an app-server), on top of 231781a: #2265 (an address is looked for only in conversations that
+# main c818fd3: #2274 (a Codex chat under an app-server nothing can ask, such
+# as the ChatGPT desktop app's private stdio one, is named only when it alone
+# has a pending tool call, in the rollouts that app-server holds open, that
+# asked for the running command), on top of ecb29c8: #2270 (spawn nodes
+# advertise relay:spawn-approval-profile:v1, so Cloud and relay-control can
+# refuse an explicit approval profile where a node would ignore it; it grants
+# no approval authority) and f147b2f: #2266 (Windows test only).
+# #2274 assumes transcript integrity: the rollouts under ~/.codex/sessions
+# are written only by Codex. Codex's workspace-write and read-only sandboxes
+# deny chats writes there; full-access same-user code is out of scope.
+# Below that: 70980e4: #2269 (attribute commands to the chat that started
+# them when Codex chats share an app-server), on top of 231781a: #2265 (an address is looked for only in conversations that
 # list its agent) on top of ecc9700: #2253 (kept messages are re-checked
 # against Relaycast after a restart), over 4cfe098: #2258 (Codex installed
 # through mise is found) and b8c5243: #2251 (stricter session caller
 # attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "70980e405f57523132a986b7170ce2d75d16e290", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "c818fd3f6fbd04b6ba7d5fe17286a25a76023226", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:
