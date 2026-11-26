@@ -80,11 +80,13 @@ fn entry(event: &Value) -> Option<LocalTranscriptEntry> {
         return None;
     }
     let tool = event["toolName"].as_str().filter(|name| !name.is_empty());
+    let content = event["content"].as_str().unwrap_or_default();
     let kind = match kind_of {
         "tool_use" | "tool_call" => "tool_use",
         "tool_result" => "tool_result",
         "thinking" | "reasoning" => "thinking",
         _ if tool.is_some() => "tool_use",
+        _ if !persons && recorded_call(content) => "tool_use",
         _ => "text",
     };
     let role = match (event["actorRole"].as_str(), kind_of) {
@@ -93,7 +95,6 @@ fn entry(event: &Value) -> Option<LocalTranscriptEntry> {
         (Some("system" | "developer"), _) => "system",
         _ => "assistant",
     };
-    let content = event["content"].as_str().unwrap_or_default();
     let text = if content.trim().is_empty() {
         tool?.to_string()
     } else {
@@ -112,6 +113,23 @@ fn entry(event: &Value) -> Option<LocalTranscriptEntry> {
         timestamp_ms,
         truncated: event["contentTruncated"].as_bool().unwrap_or(false),
     })
+}
+
+/// Whether an agent's `content` is a tool call some uploads record as its
+/// text, `<tool> {"<argument>": …}` (Codex's `exec {"input": …}`), rather
+/// than as a tool event. A message that happens to open with a word and a
+/// brace is prose, so the brace must open a JSON object on the same line.
+fn recorded_call(content: &str) -> bool {
+    let Some((name, arguments)) = content.split_once(' ') else {
+        return false;
+    };
+    // A sentence's last word ends with its full stop; a tool's name does not.
+    !name.is_empty()
+        && !name.ends_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        && arguments.starts_with("{\"")
 }
 
 #[cfg(test)]
@@ -157,6 +175,36 @@ mod tests {
             ]
         );
         assert!(page.entries[0].timestamp_ms > page.entries[2].timestamp_ms);
+    }
+
+    #[test]
+    fn a_tool_call_recorded_as_agent_text_is_a_tool_call() {
+        let event = |content: &str, role: &str| {
+            json!({"eventId": "e", "type": "assistant", "actorRole": role, "toolName": null,
+                   "content": content, "ts": "2026-11-26T18:29:24Z", "contentTruncated": true})
+        };
+        let call =
+            "exec {\"input\":\"text(await tools.exec_command({cmd:`cat AGENTS.md`}))\n[truncated]";
+        let entry = entry(&event(call, "assistant")).unwrap();
+        assert_eq!(
+            (entry.role.as_str(), entry.kind.as_str()),
+            ("assistant", "tool_use")
+        );
+        assert_eq!(entry.text, call);
+        for prose in [
+            "Done. {\"ok\": true} came back",
+            "Here is the config:\n{\"a\": 1}",
+            "exec { not json",
+            "Ready",
+        ] {
+            assert_eq!(entry_kind(&event(prose, "assistant")), "text", "{prose}");
+        }
+        // A person typing the same shape is still a person's message.
+        assert_eq!(entry_kind(&event(call, "user")), "text");
+    }
+
+    fn entry_kind(event: &Value) -> String {
+        entry(event).unwrap().kind
     }
 
     #[test]
