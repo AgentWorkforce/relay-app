@@ -14,8 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
-- On macOS, Linux and Windows, history delivery skips a record if its redaction engine panics, so the collector can continue delivering later records.
-
+- On macOS, Linux and Windows, history delivery skips a record if its redaction engine panics, so the collector can continue delivering later records. For remote sessions, the collector keeps the previous snapshot and retries when the session shows new activity or the redaction engine changes.
 - **The session reader shows the images a message brought.** On macOS, Linux and Windows, when an agent's session holds a message that came with PNG, JPEG, GIF or WebP files Agent Relay saved, the session reader shows those images under the message instead of the list of saved file paths. Other files stay listed as before.
 - On macOS, Linux and Windows, Claude Code blocks a hosted Relay call and asks you to retry when the desktop service reports that it could not deliver the chat’s proof to Cloud.
 - **Starting a Grok agent on macOS and Linux.** Agent Relay reports Grok as unavailable for new agents unless the executable its launcher resolves to is named `grok` or starts with `grok-`, is owned by the current user or root, and has no group or other write permissions.

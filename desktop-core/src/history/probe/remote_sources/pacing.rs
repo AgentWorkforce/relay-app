@@ -105,6 +105,8 @@ struct SessionWait {
     parked: bool,
     #[serde(default)]
     activity_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scrub_engine: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,15 +309,7 @@ impl Pacing {
                     now_ms + doubled(FIRST_WAIT_MS, wait.strikes, CONNECTOR_WAIT_MAX_MS);
             }
             Failure::Permanent => {
-                self.sessions.insert(
-                    session_key(source, session_id),
-                    SessionWait {
-                        failures: 1,
-                        retry_ms: 0,
-                        parked: true,
-                        activity_ms,
-                    },
-                );
+                self.park_session(source, session_id, activity_ms, None);
             }
             Failure::Transient => {
                 let wait = self
@@ -323,10 +317,38 @@ impl Pacing {
                     .entry(session_key(source, session_id))
                     .or_default();
                 wait.parked = false;
+                wait.scrub_engine = None;
                 wait.failures = wait.failures.saturating_add(1);
                 wait.retry_ms = now_ms + doubled(FIRST_WAIT_MS, wait.failures, SESSION_WAIT_MAX_MS);
             }
         }
+    }
+
+    pub fn park_session(
+        &mut self,
+        source: &str,
+        id: &str,
+        activity_ms: Option<i64>,
+        engine: Option<&str>,
+    ) {
+        self.sessions.insert(
+            session_key(source, id),
+            SessionWait {
+                failures: 1,
+                parked: true,
+                activity_ms,
+                scrub_engine: engine.map(str::to_owned),
+                ..Default::default()
+            },
+        );
+    }
+
+    pub fn reopen_changed_engine(&mut self, engine: &str) {
+        self.sessions.retain(|_, wait| {
+            wait.scrub_engine
+                .as_deref()
+                .is_none_or(|saved| saved == engine)
+        });
     }
 
     /// Note the database's [`stored_bytes`] now. Bytes it gave back since

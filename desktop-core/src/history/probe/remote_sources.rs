@@ -652,6 +652,7 @@ fn key(connector: &str, source: &str, session_id: &str) -> ObservationKey {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    mod scrub_parking;
     use super::*;
     use ai_hist::{SessionRef, ShallowSession, Source};
 

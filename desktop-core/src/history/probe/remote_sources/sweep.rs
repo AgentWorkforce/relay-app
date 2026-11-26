@@ -113,10 +113,19 @@ pub(super) fn sweep_with(
     store: &SessionStore,
     stopped: impl Fn() -> bool,
 ) -> Result<Option<SweepOutcome>> {
+    sweep_pass(&Pass::new(host), db, store, stopped)
+}
+
+pub(super) fn sweep_pass(
+    pass: &Pass,
+    db: &Path,
+    store: &SessionStore,
+    stopped: impl Fn() -> bool,
+) -> Result<Option<SweepOutcome>> {
+    let host = pass.host;
     if stopped() || reaches(host).iter().all(|(_, _, r)| *r == Reach::Absent) {
         return Ok(None);
     }
-    let pass = Pass::new(host);
     let mut outcome = SweepOutcome {
         hydrated: 0,
         failed: 0,
@@ -125,7 +134,7 @@ pub(super) fn sweep_with(
         pacing: Value::Null,
     };
     if due_for(host, db) {
-        let mut report = enumerate_ready(&pass, store)?;
+        let mut report = enumerate_ready(pass, store)?;
         mark_enumerated(db, &mut report)?;
         outcome.enumeration = Some(report);
     }
@@ -135,7 +144,7 @@ pub(super) fn sweep_with(
     }
     let started = Pacing::load(db);
     let mut run = Run {
-        pass: &pass,
+        pass,
         ready: &ready,
         store,
         db,
@@ -145,6 +154,7 @@ pub(super) fn sweep_with(
         attempts: 0,
         signed_out: BTreeSet::new(),
     };
+    run.pacing.reopen_changed_engine(pass.scrub.name());
     run.pacing.measured(pacing::stored_bytes(db));
     run.pacing.held_back = held_back_reason(db, &run.pacing);
     let wanted = Wanted::load(db);
@@ -349,66 +359,29 @@ impl Run<'_, '_, '_> {
             self.signed_out.insert(source.to_string());
             return false;
         }
-        let failure = download_failure(&error);
-        let activity = row.last_activity_ms;
-        self.pacing.failed(
-            connector,
-            source,
-            &row.session_id,
-            activity,
-            failure,
-            self.now,
-        );
-        false
-    }
-}
-
-/// Parking keeps the previous complete snapshot intact. The sweep can try
-/// again when the provider reports new activity for this session.
-fn download_failure(error: &anyhow::Error) -> Failure {
-    if error
-        .downcast_ref::<crate::history::scrub::ScrubError>()
-        .is_some_and(|error| error.panicked())
-    {
-        Failure::Permanent
-    } else {
-        error
-            .downcast_ref::<ConnectorFailure>()
-            .map_or(Failure::Transient, |error| error.failure)
-    }
-}
-
-#[cfg(test)]
-mod scrub_tests {
-    use super::*;
-    use crate::history::scrub::{Scrub, ScrubContext, ScrubEngine, ScrubError, ScrubSurface};
-
-    #[test]
-    fn a_scrubber_panic_parks_only_the_unchanged_remote_session() {
-        struct Panics;
-        impl Scrub for Panics {
-            fn name(&self) -> &str {
-                "panic"
-            }
-            fn scrub(&self, _: &[u8], _: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
-                panic!("synthetic remote fixture")
-            }
+        if error
+            .downcast_ref::<crate::history::scrub::ScrubError>()
+            .is_some_and(|error| error.panicked())
+        {
+            self.pacing.park_session(
+                source,
+                &row.session_id,
+                row.last_activity_ms,
+                Some(self.pass.scrub.name()),
+            );
+        } else {
+            let failure = error
+                .downcast_ref::<ConnectorFailure>()
+                .map_or(Failure::Transient, |error| error.failure);
+            self.pacing.failed(
+                connector,
+                source,
+                &row.session_id,
+                row.last_activity_ms,
+                failure,
+                self.now,
+            );
         }
-
-        let error = ScrubEngine::new(Panics)
-            .scrub(b"fixture", &ScrubContext::new(ScrubSurface::LocalStore))
-            .unwrap_err();
-        let mut pacing = Pacing::default();
-        pacing.failed(
-            "connector",
-            "provider",
-            "bad",
-            Some(1),
-            download_failure(&error.into()),
-            0,
-        );
-        assert!(!pacing.session_open("provider", "bad", Some(1), i64::MAX));
-        assert!(pacing.session_open("provider", "bad", Some(2), 1));
-        assert!(pacing.session_open("provider", "good", Some(1), 1));
+        false
     }
 }
