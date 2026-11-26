@@ -1103,8 +1103,9 @@ final class AppModel {
             return
         }
         let identity = service.binaryIdentity
+        var statusEvidence: CoreServiceStatus?
         do {
-            let status = try await readCoreServiceStatus()
+            let status = try await readCoreServiceStatus(&statusEvidence)
             guard !stopping, !Task.isCancelled else { return }
             switch status {
             case .notRegistered:
@@ -1113,27 +1114,33 @@ final class AppModel {
                 defer { coreRegistrationPending = false }
                 try await service.registerAsync()
                 defaults.set(identity, forKey: Self.registeredCoreKey)
-                try await showCoreServiceStatus()
+                try await showCoreServiceStatus(&statusEvidence)
             case .enabled where identity != nil && defaults.string(forKey: Self.registeredCoreKey) != identity:
                 // launchd admits only the binary the agent was registered
                 // with. The old core must have stopped before the new
                 // registration, or launchd keeps the old one's record.
                 countCoreRepair()
                 try await reregisterCore()
-                try await showCoreServiceStatus()
+                try await showCoreServiceStatus(&statusEvidence)
             case .enabled, .requiresApproval, .notFound:
                 showCoreServiceStatus(status)
             }
         } catch {
             Self.logger.error("could not register the core: \(error.localizedDescription, privacy: .public)")
-            coreProblem = "The background service could not start. Try again, or check Agent Relay in System Settings › General › Login Items."
             reportCoreOutage(.registrationFailed, error: error)
+            showCoreServiceFailure(statusEvidence,
+                "The background service could not start. Try again, or check Agent Relay in System Settings › General › Login Items."
+            )
         }
     }
 
-    @discardableResult
-    private func readCoreServiceStatus() async throws -> CoreServiceStatus {
+    private func readCoreServiceStatus(_ evidence: inout CoreServiceStatus?) async throws -> CoreServiceStatus {
+        guard !stopping, !Task.isCancelled, !isCoreConnected else { throw CancellationError() }
+        // A failed follow-up read invalidates the previous observation.
+        evidence = nil
         let status = try await service.statusAsync()
+        guard !stopping, !Task.isCancelled, !isCoreConnected else { throw CancellationError() }
+        evidence = status
         backgroundServiceStatus = status
         return status
     }
@@ -1145,17 +1152,29 @@ final class AppModel {
         backgroundServiceStatus = status
     }
 
-    private func showCoreServiceStatus() async throws {
-        showCoreServiceStatus(try await readCoreServiceStatus())
+    private func showCoreServiceStatus(_ evidence: inout CoreServiceStatus?) async throws {
+        showCoreServiceStatus(try await readCoreServiceStatus(&evidence))
     }
 
     private func showCoreServiceStatus(_ status: CoreServiceStatus) {
+        guard !stopping, !Task.isCancelled, !isCoreConnected else { return }
         coreNeedsApproval = status == .requiresApproval
         if coreNeedsApproval {
             coreProblem = "Allow Agent Relay in System Settings › General › Login Items so it can keep your agents connected."
         } else if status == .notFound {
             coreProblem = "This build has no background service installed. Open a complete Agent Relay app, or start the core manually when developing with Swift."
             reportCoreOutage(.serviceNotFound)
+        }
+    }
+
+    private func showCoreServiceFailure(_ status: CoreServiceStatus?, _ message: String) {
+        guard !stopping, !Task.isCancelled, !isCoreConnected else { return }
+        backgroundServiceStatus = status
+        if status == .requiresApproval {
+            showCoreServiceStatus(.requiresApproval)
+        } else {
+            coreNeedsApproval = false
+            coreProblem = message
         }
     }
 
@@ -1167,7 +1186,7 @@ final class AppModel {
     /// old requirement for a while after the bundle changes; a registration
     /// made once it lets go records the new hash. So while an enabled core
     /// does not answer, it is registered again, a bounded number of times.
-    private func recoverBrokenBundleProgram() async throws -> Bool {
+    private func recoverBrokenBundleProgram(_ statusEvidence: inout CoreServiceStatus?) async throws -> Bool {
         guard !coreRegistrationPending else { return false }
         coreRegistrationPending = true
         defer { coreRegistrationPending = false }
@@ -1183,7 +1202,7 @@ final class AppModel {
         }
         if recovered { countCoreRepair() }
         if service.spawnFailureEvidence != nil { reportCoreOutage(.knownSpawnFailure) }
-        try await showCoreServiceStatus()
+        try await showCoreServiceStatus(&statusEvidence)
         guard recovered else { return false }
         Self.logger.notice("using an absolute-path LaunchAgent after macOS lost the core bundle path")
         defaults.set(service.binaryIdentity, forKey: Self.registeredCoreKey)
@@ -1196,26 +1215,31 @@ final class AppModel {
         defer { isRecoveringCore = false }
         let identity = service.binaryIdentity
         let neededUpdate = identity != nil && defaults.string(forKey: Self.registeredCoreKey) != identity
+        var statusEvidence: CoreServiceStatus?
         do {
-            guard service.installationProblem == nil, try await readCoreServiceStatus() == .enabled, !neededUpdate else {
+            guard service.installationProblem == nil, try await readCoreServiceStatus(&statusEvidence) == .enabled, !neededUpdate else {
                 await ensureService()
                 return
             }
             guard !stopping, !Task.isCancelled, refusalRepairs < Self.refusalRepairLimit else { return }
             refusalRepairs += 1
             Self.logger.notice("registering the core again: it does not answer")
-            if try await recoverBrokenBundleProgram() { return }
+            if try await recoverBrokenBundleProgram(&statusEvidence) { return }
             guard !coreNeedsApproval, !isCoreConnected, !stopping, !Task.isCancelled else { return }
             countCoreRepair()
             try await reregisterCore()
-            try await showCoreServiceStatus()
+            try await showCoreServiceStatus(&statusEvidence)
         } catch {
             reportCoreOutage(.repairFailed, error: error)
             Self.logger.error("could not register the core: \(error.localizedDescription, privacy: .public)")
             if (error as NSError).domain == LaunchAgentService.errorDomain, (error as NSError).code == 1 {
-                coreProblem = "macOS could not start Agent Relay’s backup background service. Try again, or check the app’s log for details."
+                showCoreServiceFailure(statusEvidence,
+                    "macOS could not start Agent Relay’s backup background service. Try again, or check the app’s log for details."
+                )
             } else {
-                coreProblem = "The background service could not restart. Check Agent Relay in System Settings › General › Login Items, then try again."
+                showCoreServiceFailure(statusEvidence,
+                    "The background service could not restart. Check Agent Relay in System Settings › General › Login Items, then try again."
+                )
             }
         }
     }
@@ -1414,15 +1438,19 @@ final class AppModel {
                 // first failed spawn. Repair it before the normal 15-attempt
                 // re-registration cycle or startup timeout.
                 if connectionAttempts <= 6 && !isRestartingCore && !isRecoveringCore && service.installationProblem == nil {
+                    var statusEvidence: CoreServiceStatus?
                     do {
-                        if try await recoverBrokenBundleProgram() {
+                        if try await recoverBrokenBundleProgram(&statusEvidence) {
                             connectionAttempts = 0
                             recoveredBrokenBundle = true
                         }
                     } catch {
+                        guard !Task.isCancelled, !stopping, !isCoreConnected else { return }
                         reportCoreOutage(.repairFailed, error: error)
                         Self.logger.error("could not start the backup core: \(error.localizedDescription, privacy: .public)")
-                        coreProblem = "macOS could not start Agent Relay’s backup background service. Try again, or check the app’s log for details."
+                        showCoreServiceFailure(statusEvidence,
+                            "macOS could not start Agent Relay’s backup background service. Try again, or check the app’s log for details."
+                        )
                     }
                 }
                 if !recoveredBrokenBundle && connectionAttempts > 0 && connectionAttempts % 15 == 0 {

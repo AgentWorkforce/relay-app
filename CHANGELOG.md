@@ -14,6 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- On macOS, a failed background service start or restart shows the Login Items approval prompt only when macOS confirms that approval is required.
 - **Restarting the background service keeps Agent Relay responsive on macOS.** If the service cannot start, *Try again* shows restart progress until the service answers or Agent Relay can show what to do next. When analytics are enabled, the standard release can report anonymous startup failures and recovery using the existing installation ID.
 - **The session reader shows the images a message brought.** On macOS, Linux and Windows, when an agent's session holds a message that came with PNG, JPEG, GIF or WebP files Agent Relay saved, the session reader shows those images under the message instead of the list of saved file paths. Other files stay listed as before.
 - On macOS, Linux and Windows, Claude Code blocks a hosted Relay call and asks you to retry when the desktop service reports that it could not deliver the chat’s proof to Cloud.
