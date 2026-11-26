@@ -52,6 +52,10 @@ final class LaunchAgentService: CoreService {
 
     private let system: System
     private let repairUnregister: () throws -> Void
+    private let repairRegister: () throws -> Void
+    private let mutationGate: MutationGate
+    /// A Stop is waiting for a change still in flight inside macOS.
+    var hasPendingStop: Bool { mutationGate.hasPendingStop }
     private let bundleURL: URL
     private let homeDirectory: URL
     private let bundleIdentifier: String
@@ -72,14 +76,17 @@ final class LaunchAgentService: CoreService {
         // undo a later registration.
         var gated = system ?? .live()
         let gate = MutationGate()
+        mutationGate = gate
         let register = gated.registerBundled, unregister = gated.unregisterBundled
-        gated.registerBundled = { try gate.run { try register() } }
+        gated.registerBundled = { try gate.start { try register() } }
         // Stopping waits for a change still in flight, so a registration a
         // repair started cannot land after the stop.
         let settle = gated.osCallTimeout
-        gated.unregisterBundled = { try gate.run(waitingUpTo: settle) { try unregister() } }
+        gated.unregisterBundled = { try gate.stop(waitingUpTo: settle) { try unregister() } }
         // A repair rung never queues behind another change: it is refused.
+        // Its register is not a newer start: it never cancels a pending stop.
         repairUnregister = { try gate.run { try unregister() } }
+        repairRegister = { try gate.run { try register() } }
         self.system = gated
     }
 
@@ -640,13 +647,56 @@ final class LaunchAgentService: CoreService {
             inFlight = true
             lock.unlock()
             released.unlock()
-            defer {
+            defer { finish() }
+            return try work()
+        }
+
+        /// A stop that could not run because another change was still in
+        /// flight. It runs as soon as that change returns, on the thread that
+        /// made it, unless a newer start comes first.
+        private var pendingStop: (() throws -> Void)?
+
+        /// Stops now, or once the change in flight has returned: Stop never
+        /// blocks the UI past `wait`, and is never dropped.
+        func stop(waitingUpTo wait: TimeInterval, _ work: @escaping () throws -> Void) throws {
+            do { try run(waitingUpTo: wait, work) } catch let error as NSError where error.code == Self.busyCode
+                && error.domain == LaunchAgentService.errorDomain {
+                lock.lock()
+                if inFlight {
+                    pendingStop = work
+                    lock.unlock()
+                    return
+                }
+                lock.unlock()
+                try run(work)
+            }
+        }
+
+        /// A newer start replaces a stop still waiting to run.
+        func start<T>(_ work: () throws -> T) throws -> T {
+            lock.lock(); pendingStop = nil; lock.unlock()
+            return try run(work)
+        }
+
+        var hasPendingStop: Bool { lock.lock(); defer { lock.unlock() }; return pendingStop != nil }
+
+        private func finish() {
+            released.lock()
+            lock.lock()
+            let stop = pendingStop
+            pendingStop = nil
+            inFlight = stop != nil      // the stop keeps the gate: nothing slips in between
+            lock.unlock()
+            if let stop {
+                released.unlock()
+                do { try stop() } catch {
+                    LaunchAgentService.logger.error("the delayed stop failed: \(error.localizedDescription, privacy: .public)")
+                }
                 released.lock()
                 lock.lock(); inFlight = false; lock.unlock()
-                released.broadcast()
-                released.unlock()
             }
-            return try work()
+            released.broadcast()
+            released.unlock()
         }
     }
 
@@ -768,7 +818,7 @@ final class LaunchAgentService: CoreService {
         case .none, .waitForApproval, .moveToApplications, .exhausted:
             break
         case .register:
-            let register = system.registerBundled
+            let register = repairRegister
             try await boundedOS("registering the background service") { try register() }
         case .resetRegistration:
             try await resetBundledRegistration()
@@ -812,7 +862,7 @@ final class LaunchAgentService: CoreService {
     /// launchd keeps spawning the replaced bundle's record. Only removing the
     /// registration and submitting it again records the current bundle.
     @MainActor private func resetBundledRegistration() async throws {
-        let unregister = repairUnregister, register = system.registerBundled, status = system.bundledStatus
+        let unregister = repairUnregister, register = repairRegister, status = system.bundledStatus
         // Only a registration macOS reports is removed. A job that is already
         // gone is not an error; any other refusal (a denial, a busy gate) is.
         if try await boundedOS("the background service status", { status() }) == .enabled {

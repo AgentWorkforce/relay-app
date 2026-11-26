@@ -550,6 +550,66 @@ extension CoreRegistrationRepairTests {
         XCTAssertTrue(mac.launchd.directStarts.isEmpty)
     }
 
+    /// The registration is still inside macOS after Stop's whole wait. Stop
+    /// returns without blocking, keeps its intent, and the stop runs as soon
+    /// as the registration returns: the service ends unregistered.
+    @MainActor
+    func testStopOutlastedByAnInFlightRegistrationStillEndsUnregistered() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 0.2)
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        let hang = DispatchSemaphore(value: 0)
+        mac.launchd.hangRegister = hang
+        let model = model(for: mac)
+        let rung = Task { await model.selfRepairCore() }
+        let inFlight = await eventually(2) { mac.launchd.registerStarted }
+        XCTAssertTrue(inFlight)
+
+        let started = Date()
+        model.stopBackgroundService()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1, "Stop must not block on macOS")
+        XCTAssertTrue(mac.service.hasPendingStop)
+        _ = await rung.value
+
+        hang.signal()                                     // only now does macOS return the registration
+        let stopped = await eventually(2) { mac.launchd.smStatus == .notRegistered && !mac.service.hasPendingStop }
+
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(mac.launchd.bundled, .missing)
+        let changes = mac.launchd.calls.filter { $0 != "status" }
+        XCTAssertEqual(Array(changes.suffix(2)), ["register", "unregister"], "the late registration, then the stop")
+    }
+
+    /// The ordering control: an explicit start after Stop replaces the stop
+    /// still waiting, so the late registration is not undone.
+    @MainActor
+    func testANewerStartReplacesAStopStillWaiting() async throws {
+        let mac = try SimulatedMac(osCallTimeout: 0.2)
+        defer { mac.remove() }
+        mac.launchd.register(version: "200")
+        mac.launchd.replaceBundle()
+        let hang = DispatchSemaphore(value: 0)
+        mac.launchd.hangRegister = hang
+        let model = model(for: mac)
+        let rung = Task { await model.selfRepairCore() }
+        let inFlight = await eventually(2) { mac.launchd.registerStarted }
+        XCTAssertTrue(inFlight)
+        model.stopBackgroundService()
+        XCTAssertTrue(mac.service.hasPendingStop)
+        _ = await rung.value
+
+        XCTAssertThrowsError(try mac.service.register(), "still busy, but the start intent wins")
+        XCTAssertFalse(mac.service.hasPendingStop)
+        hang.signal()
+        let registered = await eventually(2) { mac.launchd.calls.contains("register") }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(registered)
+        XCTAssertEqual(mac.launchd.smStatus, .enabled)
+        XCTAssertEqual(mac.launchd.calls.filter { $0 != "status" }.last, "register", "no stop after the newer start")
+    }
+
     /// A launchd read that never answers ends at the rung's shared deadline.
     @MainActor
     func testTheRungDeadlineCoversLaunchctlReads() async throws {
