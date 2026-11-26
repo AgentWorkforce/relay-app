@@ -305,7 +305,7 @@ public final class CoreClient: @unchecked Sendable {
     private static let repeatableReads: Set<String> = [
         CoreMethod.diagnosticsRequests, CoreMethod.statusGet, CoreMethod.accountStatus, CoreMethod.toolsStatus, CoreMethod.toolsCheck,
         CoreMethod.uploaderStatus, CoreMethod.uploaderSessionsList, CoreMethod.uploaderSessionsQuery, CoreMethod.uploaderSessionsFacets, CoreMethod.uploaderSessionsPreview,
-        CoreMethod.sessionsTranscript, CoreMethod.sessionsList, CoreMethod.sessionsTitleCapability, CoreMethod.sessionsLocation, CoreMethod.sessionsOpenPlan, CoreMethod.spawnTargets,
+        CoreMethod.sessionsTranscript, CoreMethod.sessionsList, CoreMethod.sessionsTitleCapability, CoreMethod.sessionsLocation, CoreMethod.spawnTargets,
         CoreMethod.spawnStatus, CoreMethod.agentsList, CoreMethod.agentsTranscript,
         CoreMethod.settingsGet, CoreMethod.activityList, CoreMethod.claudeDeliveryStatus,
         CoreMethod.openclawRelayToolsStatus,

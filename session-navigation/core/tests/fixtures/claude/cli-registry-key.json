@@ -1,0 +1,1 @@
+{"_comment":"SYNTHETIC. Path: <config>/sessions/<pid>.<sha256-hex>.key, mode 0600, ~108 bytes. peerToken is a secret: never log it.","peerToken":"0123456789abcdef0123456789abcdef","procStart":"Wed Sep 30 10:00:00 2026","pidDomain":"darwin"}

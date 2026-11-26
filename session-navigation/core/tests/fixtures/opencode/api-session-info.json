@@ -1,0 +1,14 @@
+{
+  "_comment": "Synthetic. Session.Info as returned by GET /api/session/:sessionID ({data: <this>}) and in GET /api/session list items. Schema from binary: id, parentID?, fork?{sessionID,boundary}, projectID, agent?, model?{id,providerID,variant}, cost, tokens, outcome? ('succeeded'|'failed'|'interrupted'), time{created,updated,busy?,idle?,viewed?,archived?} (epoch ms), title?, location{directory,...}, subpath?, metadata?, permissions?, revert?. No client/origin field exists.",
+  "id": "ses_0123456789abAAAAAAAAAAAAAA",
+  "projectID": "0000000000000000000000000000000000000001",
+  "agent": "build",
+  "model": {"id": "example-model", "providerID": "opencode", "variant": "high"},
+  "cost": 0,
+  "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+  "outcome": "succeeded",
+  "time": {"created": 1794200000000, "updated": 1794200100000, "busy": 1794200050000, "idle": 1794200100000, "viewed": 1794200100000},
+  "title": "Synthetic session title",
+  "permissions": [],
+  "location": {"directory": "/Users/example/project"}
+}

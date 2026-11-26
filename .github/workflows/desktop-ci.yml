@@ -419,6 +419,17 @@ jobs:
       - name: Test the desktop core
         run: bash scripts/test-platform-cargo.sh --manifest-path desktop-core/Cargo.toml --locked
 
+      # Open session's rules and adapters (session-navigation/, a path
+      # dependency of the core and the app): the simulator, and every
+      # adapter against FakeSystem, together and one feature at a time.
+      - name: Test session navigation
+        run: |
+          cargo test --locked --manifest-path session-navigation/Cargo.toml --workspace
+          for feature in macos linux windows; do
+            cargo test --locked --manifest-path session-navigation/Cargo.toml \
+              -p session-navigation-native --no-default-features --features "$feature"
+          done
+
       - name: Check the core and app lockfiles agree
         run: |
           python3 scripts/test_lock_parity.py

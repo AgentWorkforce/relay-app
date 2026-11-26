@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Agent Relay selects the terminal tab or pane where your session is already running.</string>
+	<string>Agent Relay selects the terminal tab or pane where your session is already running, or opens a new terminal window to resume it.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>

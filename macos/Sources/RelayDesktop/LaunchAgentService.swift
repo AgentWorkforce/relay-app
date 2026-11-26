@@ -385,6 +385,26 @@ final class LaunchAgentService: CoreService {
             .first { $0.hasPrefix("program = ") }.map { String($0.dropFirst("program = ".count)) }
     }
 
+    /// The helper the bundled LaunchAgent names (`BundleProgram`, inside
+    /// `Contents/Helpers/`), resolved against `bundleURL`; nil when the
+    /// property list is missing or names nothing executable inside the
+    /// bundle. The app also runs it as its own child (`SessionOpenEngine`).
+    static func bundledHelper(in bundleURL: URL, plistName: String = plistName) -> URL? {
+        let bundled = bundleURL.appendingPathComponent("Contents/Library/LaunchAgents/\(plistName)")
+        guard let data = try? Data(contentsOf: bundled),
+              let source = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let program = source["BundleProgram"] as? String else { return nil }
+        return helper(program: program, in: bundleURL)
+    }
+
+    private static func helper(program: String, in bundleURL: URL) -> URL? {
+        guard program.hasPrefix("Contents/Helpers/") else { return nil }
+        let helper = bundleURL.appendingPathComponent(program).standardizedFileURL
+        guard helper.path.hasPrefix(bundleURL.standardizedFileURL.path + "/"),
+              FileManager.default.isExecutableFile(atPath: helper.path) else { return nil }
+        return helper
+    }
+
     private func fallbackPlist() throws -> [String: Any] {
         let bundled = bundleURL
             .appendingPathComponent("Contents/Library/LaunchAgents/\(Self.plistName)")
@@ -394,9 +414,7 @@ final class LaunchAgentService: CoreService {
               program.hasPrefix("Contents/Helpers/"),
               let arguments = source["ProgramArguments"] as? [String],
               !arguments.isEmpty else { throw fallbackError("The bundled core LaunchAgent is invalid.") }
-        let helper = bundleURL.appendingPathComponent(program).standardizedFileURL
-        guard helper.path.hasPrefix(bundleURL.standardizedFileURL.path + "/"),
-              FileManager.default.isExecutableFile(atPath: helper.path) else {
+        guard let helper = Self.helper(program: program, in: bundleURL) else {
             throw fallbackError("The bundled core helper is missing.")
         }
         var plist: [String: Any] = [

@@ -1,0 +1,11 @@
+[
+  {
+    "username": "example",
+    "hostname": "example-mac.local",
+    "pid": 3000,
+    "connection_elapsed": {"secs": 5400, "nanos": 120000000},
+    "idle_time": {"secs": 3, "nanos": 500000000},
+    "workspace": "default",
+    "focused_pane_id": 0
+  }
+]

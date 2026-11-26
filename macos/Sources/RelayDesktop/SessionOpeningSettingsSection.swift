@@ -6,7 +6,7 @@ import RelayDesktopCore
 struct SessionOpeningSettingsSection: View {
     static let title = "Local sessions"
     static let rowTitle = "Open with"
-    static let help = "Automatic opens the desktop app when installed, otherwise Terminal. Applies only to this computer."
+    static let help = "Automatic opens a closed session where it was last used: its desktop app or a terminal. Terminal resumes a closed Codex thread, or an archived Claude Desktop session, in a terminal instead when it can. A running session always opens where it runs. Applies only to this computer."
 
     let source: String
     private let applications = SessionApplications.shared
@@ -17,9 +17,9 @@ struct SessionOpeningSettingsSection: View {
         SettingsSection(title: Self.title) {
             switch source {
             case "claude":
-                row(name: "Claude Code", detail: applications.claudeDesktop ? "Claude Desktop is installed" : "Claude Desktop isn’t installed. Sessions open in Terminal.", preference: $claude)
+                row(name: "Claude Code", detail: applications.claudeDesktop ? "Claude Desktop is installed" : "Claude Desktop isn’t installed. Sessions resume in a terminal.", preference: $claude)
             case "codex":
-                row(name: "Codex", detail: applications.codexDesktop ? "Codex is installed" : "Codex isn’t installed. Sessions open in Terminal.", preference: $codex)
+                row(name: "Codex", detail: applications.codexDesktop ? "Codex is installed" : "Codex isn’t installed. Sessions resume in a terminal.", preference: $codex)
             case "grok":
                 HStack(spacing: 14) {
                     SettingsIcon(systemImage: "terminal")
@@ -58,6 +58,9 @@ struct SessionOpeningSettingsSection: View {
 /// What opening a local session needs, collapsed beside the other diagnostics.
 struct SessionOpeningRequirements: View {
     static let title = "Opening requirements"
+    /// GTK's `provider_preferences.rs` says the same, word for word.
+    static let claudeNote = "Sessions started in Claude Desktop open in Claude, because Claude may reopen them itself. With Terminal, an archived one resumes in a terminal instead."
+    static let note = "Open returns to a verified running app or terminal pane first. Your preference applies when resuming a closed session. A resume opens the terminal the session was last seen in, else your default terminal, and requires the matching CLI and the session’s original folder. Older sessions may have no recorded location."
 
     let source: String
     @Binding var isExpanded: Bool
@@ -67,9 +70,9 @@ struct SessionOpeningRequirements: View {
         DisclosureGroup(Self.title, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 if source == "claude" {
-                    Text("Opening in Claude requires Claude Code 2.1.285 or later and a Claude subscription. If a session is still open elsewhere, close it there first or choose Terminal.")
+                    Text(Self.claudeNote)
                 }
-                Text("Open returns to a verified running app or terminal pane first. Your preference applies when resuming a closed session. Terminal resume requires the matching CLI and the session’s original folder. Older sessions may have no recorded location.")
+                Text(Self.note)
                 HStack(spacing: 12) {
                     if source != "grok" {
                         Button("Check installed apps") { applications.refresh() }

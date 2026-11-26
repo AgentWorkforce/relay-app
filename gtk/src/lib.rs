@@ -23,7 +23,6 @@ pub mod launch;
 pub mod models;
 pub mod prefs;
 pub mod service;
-pub mod session_navigation;
 #[cfg(feature = "gtk")]
 pub mod ui;
 pub mod updates;

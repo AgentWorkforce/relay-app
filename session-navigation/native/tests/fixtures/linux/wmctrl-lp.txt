@@ -1,0 +1,6 @@
+0x01e00003 -1 1630   devbox Desktop
+0x03a00007  0 2470   devbox ~/code/project
+0x03c0000e  0 3100   devbox example@devbox: ~
+0x04200004  1 0      devbox Untitled - no pid
+0x04400002  0 9999   otherhost remote xterm
+0x04600002  0 3500   N/A    Firefox

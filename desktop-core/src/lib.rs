@@ -40,6 +40,7 @@ pub mod teammate_context;
 pub mod workspace_policy;
 pub mod telemetry;
 pub mod session_locations;
+pub mod session_open;
 pub mod site_build;
 pub mod service_callers;
 #[cfg(test)]

@@ -1,0 +1,88 @@
+[
+  {
+    "id": 1,
+    "platform_window_id": 60817415,
+    "is_active": true,
+    "is_focused": true,
+    "last_focused": true,
+    "wm_class": "kitty",
+    "wm_name": "kitty",
+    "background_opacity": 1.0,
+    "tabs": [
+      {
+        "id": 1,
+        "is_focused": true,
+        "is_active": true,
+        "title": "project",
+        "layout": "tall",
+        "layout_state": {},
+        "enabled_layouts": [
+          "tall",
+          "stack"
+        ],
+        "active_window_history": [
+          1,
+          2
+        ],
+        "windows": [
+          {
+            "id": 1,
+            "is_focused": true,
+            "is_active": true,
+            "is_self": false,
+            "title": "grok",
+            "pid": 2481,
+            "cwd": "/home/example/code/project",
+            "cmdline": [
+              "/bin/bash"
+            ],
+            "env": {
+              "KITTY_WINDOW_ID": "1"
+            },
+            "foreground_processes": [
+              {
+                "pid": 2601,
+                "cwd": "/home/example/code/project",
+                "cmdline": [
+                  "grok"
+                ]
+              }
+            ],
+            "at_prompt": false,
+            "lines": 50,
+            "columns": 120,
+            "user_vars": {}
+          },
+          {
+            "id": 2,
+            "is_focused": false,
+            "is_active": false,
+            "is_self": false,
+            "title": "notes",
+            "pid": 2490,
+            "cwd": "/home/example",
+            "cmdline": [
+              "/bin/bash"
+            ],
+            "env": {
+              "KITTY_WINDOW_ID": "2"
+            },
+            "foreground_processes": [
+              {
+                "pid": 2490,
+                "cwd": "/home/example",
+                "cmdline": [
+                  "/bin/bash"
+                ]
+              }
+            ],
+            "at_prompt": true,
+            "lines": 50,
+            "columns": 120,
+            "user_vars": {}
+          }
+        ]
+      }
+    ]
+  }
+]

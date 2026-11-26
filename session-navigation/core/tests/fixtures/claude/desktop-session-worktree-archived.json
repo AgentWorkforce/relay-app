@@ -1,0 +1,13 @@
+{
+  "_comment": "SYNTHETIC. Worktree session: cwd != originCwd; cwd lies under <repo>/.claude/worktrees/<name>. Archived records still exist on disk with isArchived:true and are listed in archived-sessions.idx.",
+  "sessionId": "local_22222222-3333-4444-8555-666666666666",
+  "cliSessionId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+  "lastAssistantCliSessionId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+  "cwd": "/Users/example/code/project/.claude/worktrees/example-wt",
+  "originCwd": "/Users/example/code/project",
+  "folderPlace": {"cwd": "/Users/example/code/project/.claude/worktrees/example-wt", "realPath": "/Users/example/code/project/.claude/worktrees/example-wt", "origin": {"cwd": "/Users/example/code/project", "realPath": "/Users/example/code/project"}},
+  "isArchived": true,
+  "createdAt": 1789000000000,
+  "lastActivityAt": 1789000900000,
+  "title": "Archived example"
+}

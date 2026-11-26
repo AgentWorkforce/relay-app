@@ -1,0 +1,1 @@
+Error: failed to connect to Socket("/Users/example/.local/share/wezterm/gui-sock-3000"): No such file or directory (os error 2)

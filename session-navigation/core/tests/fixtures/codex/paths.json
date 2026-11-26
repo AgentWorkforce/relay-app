@@ -1,0 +1,13 @@
+{
+  "_note": "Synthetic. CODEX_HOME defaults to ~/.codex; CODEX_SQLITE_HOME defaults to CODEX_HOME. Filename timestamp is LOCAL time; payload.timestamp is UTC (Z).",
+  "rollout_active": "/Users/example/.codex/sessions/2026/01/01/rollout-2026-01-01T19-04-05-01900000-0000-7000-8000-000000000001.jsonl",
+  "rollout_archived": "/Users/example/.codex/archived_sessions/rollout-2026-01-01T19-04-05-01900000-0000-7000-8000-000000000004.jsonl",
+  "writer_lock": "/Users/example/.codex/thread-writer-locks/01900000-0000-7000-8000-000000000001.lock",
+  "tui_marker": "/Users/example/.codex/tui-thread-reference-capabilities/01900000-0000-7000-8000-000000000002",
+  "state_db": "/Users/example/.codex/state_5.sqlite",
+  "desktop_db": "/Users/example/.codex/sqlite/codex.db",
+  "desktop_ipc_socket": "/Users/example/.codex/ipc/ipc.sock",
+  "daemon_pid_file": "/Users/example/.codex/app-server-daemon/daemon.pid",
+  "daemon_loaded_threads": "/Users/example/.codex/app-server-daemon/loaded-threads.json",
+  "daemon_control_socket_UNVERIFIED": "/Users/example/.codex/app-server-control/app-server-control.sock"
+}

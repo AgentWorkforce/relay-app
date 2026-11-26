@@ -3,6 +3,10 @@
 //! real desktop (Windows' own in `desktop/windows.rs`); tests stand in their own
 //! [`Desktop`].
 
+use agent_relay_desktop_core::session_open::{
+    self,
+    contract::{OpenResult, PlanView, Request},
+};
 use agent_relay_node::relay::contract::connection::CoreNotification;
 #[cfg(not(windows))]
 use gtk::gio;
@@ -22,6 +26,8 @@ pub struct Confirmation {
     pub destructive: bool,
     /// A second way to go ahead, offered beside the action as the default.
     pub alternative: Option<String>,
+    /// The declining button; "Cancel" unless set.
+    pub cancel: Option<String>,
 }
 
 /// Which button answered a [`Confirmation`].
@@ -40,6 +46,7 @@ impl Confirmation {
             action: action.into(),
             destructive: false,
             alternative: None,
+            cancel: None,
         }
     }
 
@@ -52,28 +59,44 @@ impl Confirmation {
         self.alternative = Some(label.into());
         self
     }
+
+    pub fn cancel(mut self, label: &str) -> Confirmation {
+        self.cancel = Some(label.into());
+        self
+    }
 }
 
 pub type Answer = Pin<Box<dyn Future<Output = bool>>>;
 pub type Asked = Pin<Box<dyn Future<Output = Response>>>;
-pub type SessionOpened =
-    Pin<Box<dyn Future<Output = Result<crate::session_navigation::Outcome, String>>>>;
+/// The engine's answers ([`Desktop::plan_session`], [`Desktop::open_session`],
+/// [`Desktop::release_session`]); `None` when the worker ended without one
+/// (it panicked or was dropped): the app says so in the engine's fixed
+/// words and looks again, and never retries an open.
+pub type SessionPlanned = Pin<Box<dyn Future<Output = Option<PlanView>>>>;
+pub type SessionOpened = Pin<Box<dyn Future<Output = Option<OpenResult>>>>;
+/// The index of the option picked; `None` when declined.
+pub type Picked = Pin<Box<dyn Future<Output = Option<usize>>>>;
 
 pub trait Desktop {
-    /// Executes a shared session plan through this platform host adapter.
-    fn open_session(
-        &self,
-        _plan: agent_relay_desktop_core::session_locations::SessionOpenPlan,
-    ) -> SessionOpened {
-        Box::pin(async { Err("Native session opening is unavailable on this desktop.".into()) })
-    }
+    /// The Open button for `request`: one read-only look, off the main thread.
+    fn plan_session(&self, request: Request) -> SessionPlanned;
+    /// One click on Open (observe, decide, act, verify), off the main thread.
+    fn open_session(&self, request: Request) -> SessionOpened;
+    /// The person said the earlier launch was closed: release its
+    /// reservation and look again, off the main thread. Opens nothing.
+    fn release_session(&self, request: Request) -> SessionPlanned;
+    /// Asks which of `options` over `parent`.
+    fn pick(&self, parent: &gtk::Window, title: &str, detail: &str, options: Vec<String>)
+        -> Picked;
     /// Opens a fixed app link, web link or file URI in its registered handler.
     /// Returns whether the native opening handoff was started.
     fn open_uri(&self, uri: &str) -> bool;
     /// Open a known app handoff, falling back to its web page on launch failure.
     /// System implementations wait for launcher results off the UI thread.
     fn open_app_uri(&self, uri: &str, fallback: &str) {
-        if !self.open_uri(uri) { self.open_uri(fallback); }
+        if !self.open_uri(uri) {
+            self.open_uri(fallback);
+        }
     }
     fn has_uri_handler(&self, scheme: &str) -> bool;
     /// Starts an interactive CLI resume command in a terminal.
@@ -117,16 +140,69 @@ impl System {
     }
 }
 
+/// The engine runs in this process, on a worker thread: it hides the
+/// operating system, so Linux and Windows share this.
 impl Desktop for System {
-    fn open_session(
-        &self,
-        plan: agent_relay_desktop_core::session_locations::SessionOpenPlan,
-    ) -> SessionOpened {
+    fn plan_session(&self, request: Request) -> SessionPlanned {
         Box::pin(async move {
-            gtk::gio::spawn_blocking(move || crate::session_navigation::execute(&plan))
+            gtk::gio::spawn_blocking(move || session_open::plan(&request))
                 .await
-                .map_err(|_| "The native session opening task failed.".to_string())?
+                .ok()
         })
+    }
+
+    fn open_session(&self, request: Request) -> SessionOpened {
+        Box::pin(async move {
+            gtk::gio::spawn_blocking(move || session_open::open(&request))
+                .await
+                .ok()
+        })
+    }
+
+    fn release_session(&self, request: Request) -> SessionPlanned {
+        Box::pin(async move {
+            gtk::gio::spawn_blocking(move || session_open::release_launch(&request))
+                .await
+                .ok()
+        })
+    }
+
+    fn pick(
+        &self,
+        parent: &gtk::Window,
+        title: &str,
+        detail: &str,
+        options: Vec<String>,
+    ) -> Picked {
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(parent)
+            .modal(true)
+            .message_type(gtk::MessageType::Question)
+            .buttons(gtk::ButtonsType::None)
+            .text(title)
+            .secondary_text(detail)
+            .build();
+        // Only Open's choice asks this: its declining button is the engine's.
+        let cancel = session_open::wording::strings().cancel;
+        dialog.add_button(&cancel, gtk::ResponseType::Cancel);
+        for (index, option) in options.iter().enumerate() {
+            let response =
+                u16::try_from(index).map_or(gtk::ResponseType::None, gtk::ResponseType::Other);
+            dialog.add_button(option, response);
+        }
+        let (answer, answered) = tokio::sync::oneshot::channel::<Option<usize>>();
+        let answer = std::cell::Cell::new(Some(answer));
+        dialog.connect_response(move |dialog, response| {
+            if let Some(answer) = answer.take() {
+                let _ = answer.send(match response {
+                    gtk::ResponseType::Other(index) => Some(usize::from(index)),
+                    _ => None,
+                });
+            }
+            dialog.close();
+        });
+        dialog.present();
+        Box::pin(async move { answered.await.ok().flatten() })
     }
     fn has_uri_handler(&self, scheme: &str) -> bool {
         self.platform_has_uri_handler(scheme)
@@ -156,7 +232,10 @@ impl Desktop for System {
             .text(&confirmation.title)
             .secondary_text(&confirmation.detail)
             .build();
-        let cancel = dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        let cancel = dialog.add_button(
+            confirmation.cancel.as_deref().unwrap_or("Cancel"),
+            gtk::ResponseType::Cancel,
+        );
         let confirm = dialog.add_button(&confirmation.action, gtk::ResponseType::Ok);
         confirm.add_css_class(if confirmation.destructive {
             "destructive"
@@ -222,8 +301,14 @@ impl Desktop for System {
 impl System {
     fn platform_open_app_uri(&self, uri: &str, fallback: &str) {
         let (uri, fallback) = (uri.to_string(), fallback.to_string());
-        let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
-        std::thread::spawn(move || { open_app_link(opener.as_ref(), &uri, &fallback); });
+        let opener = if cfg!(target_os = "linux") {
+            "xdg-open"
+        } else {
+            "open"
+        };
+        std::thread::spawn(move || {
+            open_app_link(opener.as_ref(), &uri, &fallback);
+        });
     }
 
     fn platform_has_uri_handler(&self, scheme: &str) -> bool {
@@ -348,7 +433,11 @@ mod app_link_tests {
             std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert!(open_app_link(opener.as_os_str(), native, web));
             let log = opener.with_extension("log");
-            let expected = if fail { format!("{native}\n{web}\n") } else { format!("{native}\n") };
+            let expected = if fail {
+                format!("{native}\n{web}\n")
+            } else {
+                format!("{native}\n")
+            };
             assert_eq!(std::fs::read_to_string(&log).unwrap(), expected);
             std::fs::remove_file(log).unwrap();
         }

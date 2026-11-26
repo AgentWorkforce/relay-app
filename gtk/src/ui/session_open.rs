@@ -1,6 +1,7 @@
-//! Presentation of the shared core's opening decision, never launch authority.
+//! The Open button's look. What it says is the engine's answer
+//! (`models::SessionOpens`, drawn by `spawn_join/location.rs`); it never
+//! decides whether a session may be launched.
 use super::widgets::{self, hbox};
-use agent_relay_desktop_core::session_locations::{SessionOpenAction, SessionOpenPlan};
 use gtk::prelude::*;
 use gtk4 as gtk;
 
@@ -14,67 +15,22 @@ pub(super) fn back_to_sessions_button() -> gtk::Button {
     back
 }
 
-/// Keep the selected session's artwork when a verified plan changes the wording.
-pub(super) fn open_session_label(source: &str, title: &str) -> gtk::Box {
+/// Keep the selected session's artwork when an answer changes the wording.
+/// A click that goes to a terminal shows the terminal icon instead, without
+/// the arrow (the Mac's `SessionOpenActionLabel`).
+pub(super) fn open_session_label(source: &str, title: &str, terminal: bool) -> gtk::Box {
     let label = hbox(6, &[]);
     label.set_halign(gtk::Align::Center);
-    label.append(&widgets::agent_badge(source, 18));
+    if terminal {
+        let icon = widgets::icon("utilities-terminal-symbolic", 18);
+        icon.set_widget_name("session-open-terminal");
+        label.append(&icon);
+    } else {
+        label.append(&widgets::agent_badge(source, 18));
+    }
     label.append(&gtk::Label::new(Some(title)));
-    label.append(&widgets::icon("go-jump-symbolic", 12));
+    if !terminal {
+        label.append(&widgets::icon("go-jump-symbolic", 12));
+    }
     label
-}
-
-/// No ordinary row is described as planned until its own reply has arrived.
-pub(super) fn title_for(
-    key: &str,
-    known: Option<&SessionOpenPlan>,
-    last: &Option<(String, SessionOpenPlan)>,
-) -> String {
-    if let Some(plan) = known {
-        return title(plan);
-    }
-    last.as_ref()
-        .filter(|(row, _)| row == key)
-        .map(|(_, plan)| title(plan))
-        .unwrap_or_else(|| "Open session".into())
-}
-
-/// Word for word the Mac's SessionLocationNavigation.title, from the actual plan.
-fn title(plan: &SessionOpenPlan) -> String {
-    let application = plan
-        .location
-        .as_ref()
-        .map(|location| location.application.as_str());
-    match plan.action {
-        SessionOpenAction::Focus => {
-            format!("Open in {}", application.unwrap_or("original terminal"))
-        }
-        SessionOpenAction::ShowApplication => {
-            format!("Show {}", application.unwrap_or("application"))
-        }
-        SessionOpenAction::OpenLink => {
-            if plan
-                .url
-                .as_deref()
-                .is_some_and(|url| url.starts_with("codex:"))
-            {
-                "Open in Codex".into()
-            } else {
-                "Open in Claude".into()
-            }
-        }
-        SessionOpenAction::Resume => {
-            if plan
-                .command
-                .as_ref()
-                .is_some_and(|command| command.args.iter().any(|arg| arg == "--desktop"))
-            {
-                "Open in Claude".into()
-            } else {
-                format!("Resume in {}", application.unwrap_or("Terminal"))
-            }
-        }
-        SessionOpenAction::Choose => "Open running session".into(),
-        SessionOpenAction::Unavailable => "Session opening unavailable".into(),
-    }
 }

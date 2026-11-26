@@ -6,11 +6,13 @@
 //! the reference.
 
 use super::app::App;
+use super::desktop::Confirmation;
 use super::spawn_end::end_button;
 use super::transcript::{entry_view, is_tool, tool_group_label, TranscriptPage};
 use super::widgets::{self, hbox, text, vbox, LabelStyle};
 use crate::bridge::CoreError;
 use crate::models::*;
+use agent_relay_desktop_core::session_open::contract::Request;
 use agent_relay_node::relay::contract::agents::LocalSession;
 use agent_relay_node::relay::contract::directory::SendParams;
 use agent_relay_node::relay::contract::method;
@@ -56,13 +58,13 @@ pub struct SpawnJoin {
     sending: Cell<bool>,
     pub(super) taking: RefCell<Option<PendingTakeOver>>,
     pub(super) ending: RefCell<HashSet<String>>,
-    pub(super) opening: RefCell<HashSet<String>>,
-    /// Last verified current-row decision, for wording only. Every Open replans.
-    pub(super) open_plan: RefCell<Option<(String, agent_relay_desktop_core::session_locations::SessionOpenPlan)>>,
-    pub(super) pending_resumes: RefCell<PendingSessionResumes>,
-    pub(super) resume_failures: RefCell<HashMap<String, String>>,
-    pub(super) pending_resume_note: gtk::Label,
+    /// The engine's answers for Open and the opens running, per session.
+    /// Every click asks the engine again; nothing here permits a launch.
+    pub(super) opens: RefCell<SessionOpens>,
+    /// The answer's sentence, under Open.
+    pub(super) open_reason: gtk::Label,
     pub(super) resolve_resume: gtk::Button,
+    pub(super) resume_default: gtk::Button,
     /// Failures survive switching transcripts, as on macOS.
     pub(super) take_over_errors: RefCell<HashMap<String, String>>,
     pub(super) end_errors: RefCell<HashMap<String, String>>,
@@ -98,13 +100,20 @@ impl SpawnJoin {
         inner.append(&status);
         composer.set_visible(false);
         let actions = vbox(6, &[]);
-        let pending_resume_note = text(PENDING_RESUME_MESSAGE, &["caption"]).wrapped();
-        pending_resume_note.set_visible(false);
-        actions.append(&pending_resume_note);
-        let resolve_resume = gtk::Button::with_label("Resolve earlier launch…");
+        let open_reason = text("", &["caption"]).wrapped();
+        open_reason.set_visible(false);
+        actions.append(&open_reason);
+        let words = open_strings();
+        let resolve_resume = gtk::Button::with_label(&words.resolve_launch);
         widgets::action_cursor(&resolve_resume);
         resolve_resume.set_visible(false);
         actions.append(&resolve_resume);
+        let resume_default = gtk::Button::with_label(&words.resume_default);
+        widgets::action_cursor(&resume_default);
+        resume_default.add_css_class("session-action");
+        resume_default.set_hexpand(true);
+        resume_default.set_visible(false);
+        actions.append(&resume_default);
         let take_over = gtk::Button::with_label(SPAWN_TAKE_OVER_TITLE);
         widgets::action_cursor(&take_over);
         take_over.add_css_class("session-action");
@@ -141,12 +150,10 @@ impl SpawnJoin {
             sending: Cell::new(false),
             taking: RefCell::default(),
             ending: RefCell::default(),
-            opening: RefCell::default(),
-            open_plan: RefCell::default(),
-            pending_resumes: RefCell::default(),
-            resume_failures: RefCell::default(),
-            pending_resume_note,
+            opens: RefCell::default(),
+            open_reason,
             resolve_resume,
+            resume_default,
             take_over_errors: RefCell::default(),
             end_errors: RefCell::default(),
         }
@@ -205,17 +212,13 @@ impl SpawnJoin {
 
 impl App {
     pub(super) fn connect_spawn_join(&self, page: &TranscriptPage) {
-        *page.join.pending_resumes.borrow_mut() = PendingSessionResumes::load(self.prefs().path());
         let send = self.on(|app| app.send_to_spawned());
         page.join.send.connect_clicked(move |_| send());
         let send = self.on(|app| app.send_to_spawned());
         page.join.entry.connect_activate(move || send());
         self.connect_end_agent(page);
         self.connect_take_over(page);
-        let open = self.on(|app| app.open_transcript_session());
-        page.open.connect_clicked(move |_| open());
-        let resolve = self.on(|app| app.resolve_pending_session_resume());
-        page.join.resolve_resume.connect_clicked(move |_| resolve());
+        self.connect_session_open(page);
         let weak = self.downgrade();
         glib::timeout_add_local(FOLLOW_EVERY, move || match weak.upgrade() {
             Some(app) => {
@@ -398,27 +401,8 @@ impl App {
         let session = self.joined_session(&row);
         let listed = self.listed_session(&row);
         let opening = SessionOpening::for_session(&row, session.as_ref(), listed.as_ref());
-        let spawned_plan = SessionOpening::spawned_live_plan(&row, session.as_ref());
-        let can_open = SessionOpening::may_request_plan(&row, session.as_ref()) || spawned_plan.is_some();
-        page.open.set_visible(can_open);
-        page.open
-            .set_sensitive(!page.join.opening.borrow().contains(&row.key()));
-        if can_open {
-            let title = super::session_open::title_for(&row.key(), spawned_plan.as_ref(), &page.join.open_plan.borrow());
-            page.open.set_child(Some(&super::session_open::open_session_label(&row.icon_source(), &title)));
-            page.open.set_tooltip_text(Some(&title));
-            widgets::name(&page.open, &title);
-        }
+        self.render_session_open(page, &row, session.as_ref());
         let join = &page.join;
-        let pending_resumes = join.pending_resumes.borrow();
-        let resume_pending = pending_resumes.contains(&row.key());
-        join.pending_resume_note
-            .set_text(pending_resumes.error().unwrap_or(PENDING_RESUME_MESSAGE));
-        join.pending_resume_note
-            .set_visible(resume_pending || pending_resumes.error().is_some());
-        join.resolve_resume.set_visible(resume_pending);
-        join.resolve_resume
-            .set_sensitive(!join.opening.borrow().contains(&row.key()));
         let handover = SpawnHandover::of(session.as_ref());
         let headless = handover == Some(SpawnHandover::TakeOver);
         join.take_over.set_visible(headless);

@@ -22,6 +22,8 @@
 //! | `settings` | Sign-in wording, Claude Code direct delivery, the SessionStart hook, workspace labels, diagnostics |
 //! | `spawn` | Spawned agents: the spawn node's status line and each harness's full-access row, from the core's descriptors |
 //! | `spawn_handover` | Joining a spawned agent (its live transcript and message box) and taking it over |
+//! | `session_open` | The Open button over `agent_relay_desktop_core::session_open` answers: what a click sends, one open per session |
+//! | `session_opening` | Spawned-agent handover and held-session notes beside Open |
 
 mod agent_settings;
 mod agents;
@@ -40,13 +42,13 @@ pub use optimistic::ClaudeDeliveryStatusOptimistic;
 mod organization_policy;
 mod overview;
 mod pending;
-mod pending_session_resumes;
 mod plan;
 mod read_backoff;
 mod relaycast_upgrade;
 mod saved_session_views;
 mod session_activity;
 mod session_columns;
+mod session_open;
 mod session_opening;
 mod session_search_cache;
 mod session_titles;
@@ -78,13 +80,13 @@ pub use openclaw_tools::*;
 pub use organization_policy::*;
 pub use overview::*;
 pub use pending::*;
-pub use pending_session_resumes::*;
 pub use plan::*;
 pub use read_backoff::*;
 pub use relaycast_upgrade::*;
 pub use saved_session_views::*;
 pub use session_activity::*;
 pub use session_columns::*;
+pub use session_open::*;
 pub use session_opening::*;
 pub use session_search_cache::*;
 pub use session_titles::*;

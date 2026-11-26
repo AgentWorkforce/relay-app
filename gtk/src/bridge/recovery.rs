@@ -22,7 +22,6 @@ pub(super) fn is_read(method: &str) -> bool {
             | "uploader.sessions.facets"
             | "uploader.sessions.preview"
             | "sessions.transcript"
-            | "sessions.open_plan"
             | "sessions.location"
             | "sessions.list"
             | "spawn.targets"

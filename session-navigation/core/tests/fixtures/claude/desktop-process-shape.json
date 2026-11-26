@@ -1,0 +1,11 @@
+{
+  "_comment": "SYNTHETIC shape of a live desktop-hosted Claude Code process chain (ps -axo pid,ppid,lstart,command). Values redacted/faked.",
+  "chain": [
+    {"pid": 500, "ppid": 1, "exe": "/Applications/Claude.app/Contents/MacOS/Claude"},
+    {"pid": 43209, "ppid": 500, "exe": "/Applications/Claude.app/Contents/Helpers/disclaimer", "argv": ["--pgroup", "--", "<bundled claude path>", "...same args as child..."]},
+    {"pid": 43210, "ppid": 43209, "pgid": 43209, "tty": null, "exe": "/Users/example/Library/Application Support/Claude/claude-code/2.1.321/<12-hex>/claude.app/Contents/MacOS/claude"}
+  ],
+  "argv_resumed": ["--output-format","stream-json","--verbose","--input-format","stream-json","--effort=medium","--model=<model>","--permission-prompt-tool=stdio","--resume=<cliSessionId uuid>","--allowedTools=<csv>","--disallowedTools=<csv>","--permission-mode=<mode>","--setting-sources=user,project,local","--settings","<json>","--include-partial-messages","--await-initialize","--replay-user-messages","--thinking-display","<value>"],
+  "argv_prewarmed_spare_then_claimed": ["...same, but NO --resume and with --await-claim ..."],
+  "env_names_relevant": {"__CFBundleIdentifier":"com.anthropic.claudefordesktop","CLAUDE_CODE_ENTRYPOINT":"claude-desktop","CLAUDE_CODE_HOST_SESSION_ID":"local_<uuid>","CLAUDE_CODE_ACCOUNT_UUID":"<uuid>","CLAUDE_CODE_ORGANIZATION_UUID":"<uuid>","CLAUDE_CODE_DESKTOP_APP_VERSION":"5.1231.2","CLAUDE_CODE_SESSION_NAME":"<text>","CLAUDE_CODE_OAUTH_TOKEN":"<SECRET - never read/log>"}
+}

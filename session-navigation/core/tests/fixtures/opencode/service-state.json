@@ -1,0 +1,8 @@
+{
+  "_comment": "Synthetic. Shape of $XDG_STATE_HOME/opencode/service.json (default ~/.local/state/opencode/service.json), mode 0600. Written by the background service. Basic auth: username 'opencode', password below. Never log the password.",
+  "id": "00000000-0000-4000-8000-000000000001",
+  "version": "2.2.6",
+  "url": "http://127.0.0.1:49374",
+  "pid": 4242,
+  "password": "SYNTHETIC-not-a-real-secret-43-chars-xxxxxx"
+}

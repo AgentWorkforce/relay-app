@@ -1,0 +1,68 @@
+[
+  {
+    "id": 1,
+    "platform_window_id": 4711,
+    "is_active": true,
+    "is_focused": true,
+    "last_focused": true,
+    "wm_class": "kitty",
+    "wm_name": "kitty",
+    "background_opacity": 1.0,
+    "tabs": [
+      {
+        "id": 1,
+        "is_active": true,
+        "is_focused": true,
+        "title": "codex",
+        "layout": "tall",
+        "layout_state": {"num_full_size_windows": 1, "main_bias": [0.5, 0.5]},
+        "layout_opts": {"bias": 50, "full_size": 1, "mirrored": "n"},
+        "enabled_layouts": ["tall", "fat", "stack"],
+        "active_window_history": [2, 1],
+        "groups": [{"id": 1, "windows": [1]}, {"id": 2, "windows": [2]}],
+        "windows": [
+          {
+            "id": 1,
+            "is_active": false,
+            "is_focused": false,
+            "is_self": false,
+            "title": "codex",
+            "pid": 2001,
+            "cwd": "/Users/example/code/project",
+            "cmdline": ["-zsh"],
+            "last_reported_cmdline": "codex resume 01900000-0000-7000-8000-000000000002",
+            "last_cmd_exit_status": 0,
+            "env": {"KITTY_WINDOW_ID": "1", "PWD": "/Users/example/code/project"},
+            "foreground_processes": [
+              {"pid": 2002, "cwd": "/Users/example/code/project", "cmdline": ["codex", "resume", "01900000-0000-7000-8000-000000000002"]}
+            ],
+            "at_prompt": false,
+            "lines": 50,
+            "columns": 180,
+            "user_vars": {},
+            "created_at": 1794293000.25
+          },
+          {
+            "id": 2,
+            "is_active": true,
+            "is_focused": true,
+            "is_self": false,
+            "title": "zsh",
+            "pid": 2010,
+            "cwd": "/Users/example",
+            "cmdline": ["-zsh"],
+            "last_reported_cmdline": "",
+            "last_cmd_exit_status": 0,
+            "env": {"KITTY_WINDOW_ID": "2"},
+            "foreground_processes": [{"pid": 2010, "cwd": "/Users/example", "cmdline": ["-zsh"]}],
+            "at_prompt": true,
+            "lines": 50,
+            "columns": 180,
+            "user_vars": {},
+            "created_at": 1794293100.5
+          }
+        ]
+      }
+    ]
+  }
+]

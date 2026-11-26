@@ -40,6 +40,7 @@ const DESKTOP_COMMANDS: &[(&str, &str)] = &[
     ("teammate-context-hook", "Retired Claude Code SessionStart hook; prints nothing"),
     ("cursor-guide-hook", "Agent Relay's Cursor hook naming a chat's relay commands"),
     ("cursor-mcp", "Agent Relay's attested Cursor MCP transport"),
+    ("session-open", "Plan or open a coding session for the app (JSON on stdin)"),
 ];
 
 /// Every command the helper answers, for `--help`.

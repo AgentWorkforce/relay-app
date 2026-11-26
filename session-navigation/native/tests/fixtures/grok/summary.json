@@ -1,0 +1,9 @@
+{
+  "info": {"id": "0b5a3c1e-1111-4222-8333-444455556666", "cwd": "/Users/example/code/project"},
+  "title": "Fix the flaky test",
+  "created_at": "2026-11-10T07:48:49.512Z",
+  "updated_at": "2026-11-10T08:12:03.004Z",
+  "current_model_id": "grok-code-fast-1",
+  "head_branch": "main",
+  "session_kind": "interactive"
+}

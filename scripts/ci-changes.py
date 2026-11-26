@@ -36,7 +36,8 @@ MACOS_BUILD_INPUTS = frozenset({
 DOCUMENTS = frozenset({
     "README.md", "AGENTS.md", "CLAUDE.md", ".github/README.md",
     "macos/README.md", "linux/README.md", "windows/README.md",
-    "desktop-core/README.md", "integrations/capy/README.md", "integrations/replicas/README.md",
+    "desktop-core/README.md", "session-navigation/README.md",
+    "integrations/capy/README.md", "integrations/replicas/README.md",
     "gtk/resources/windows/icons/README.md", "gtk/resources/windows/icons/dev/README.md",
     "assets/dmg-background.prompt.txt",
     # These existing prose files were reviewed for build/test consumers.
@@ -107,7 +108,12 @@ def path_jobs(path):
         # This module is cfg(feature = "gtk"). Exercise the native GTK app
         # and its real-core hosting without scheduling non-GTK core checks.
         return {"linux", "linux_core", "linux_integration", "windows"}
-    if path.startswith(("gtk/src/", "gtk/tests/", "desktop-core/src/", "desktop-core/tests/")) and path.endswith(".rs"):
+    if path.startswith((
+        "gtk/src/", "gtk/tests/", "desktop-core/src/", "desktop-core/tests/",
+        # Open session's rules and adapters, a path dependency of both.
+        "session-navigation/core/src/", "session-navigation/core/tests/",
+        "session-navigation/native/src/", "session-navigation/native/tests/",
+    )) and path.endswith(".rs"):
         # Ordinary crate modules and test code retain all native test/core
         # coverage. Packaging is deferred until release unless build inputs
         # also change. Do not use a repository-wide .rs exemption:

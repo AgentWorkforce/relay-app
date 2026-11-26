@@ -1,0 +1,4 @@
+{
+  "_comment": "Synthetic. Shape of ~/.config/opencode/service.json (service settings: 'opencode service get|set'). Observed keys on this Mac: password only. Schema in binary also allows: disabled, remote{route}, remoteAccepted, hostname, port (1-65535), cors[], env{}.",
+  "password": "SYNTHETIC-not-a-real-secret-43-chars-xxxxxx"
+}

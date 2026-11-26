@@ -347,24 +347,6 @@ async fn a_session_list_change_starts_an_observation_pass() {
     task.abort();
 }
 
-fn open_request(source: &str) -> SessionOpenRequest {
-    SessionOpenRequest {
-        source: source.into(),
-        session_id: "550e8400-e29b-41d4-a716-446655440000".into(),
-        directory: Some("/projects/space and 'quote'".into()),
-        selected: None,
-        prefer_terminal: false,
-        use_default_terminal: false,
-    }
-}
-fn stopped_report() -> SessionLocationReport {
-    SessionLocationReport {
-        supported: true,
-        owner_state: Some("stopped".into()),
-        reason: None,
-        ..unavailable()
-    }
-}
 fn pane(capability: &str) -> SessionLocation {
     SessionLocation {
         application: "Kitty".into(),
@@ -382,154 +364,6 @@ fn pane(capability: &str) -> SessionLocation {
         executable: Some("/tools with space/codex".into()),
         ..Default::default()
     }
-}
-#[test]
-fn planner_has_one_cross_platform_policy_for_capabilities_and_explicit_limitations() {
-    use planner::{resolve, Platform::*};
-    for (platform, capability, expected) in [
-        (MacOS, "macos-tty", SessionOpenAction::Focus),
-        (Linux, "kitty", SessionOpenAction::Focus),
-        (Linux, "wezterm", SessionOpenAction::Focus),
-        (Linux, "tmux", SessionOpenAction::Focus),
-        (Linux, "x11", SessionOpenAction::ShowApplication),
-        (Windows, "none", SessionOpenAction::ShowApplication),
-    ] {
-        let mut r = stopped_report();
-        r.running = true;
-        r.current = vec![pane(capability)];
-        assert_eq!(
-            resolve(&open_request("codex"), &r, platform).action,
-            expected
-        );
-    }
-    let mut r = stopped_report();
-    r.running = true;
-    r.current = vec![pane("none")];
-    assert_eq!(
-        resolve(&open_request("codex"), &r, Linux).action,
-        SessionOpenAction::Unavailable
-    );
-}
-#[test]
-fn planner_never_reopens_unknown_or_background_owned_sessions() {
-    use planner::{resolve, Platform::*};
-    let mut r = stopped_report();
-    r.owner_state = Some("unknown".into());
-    assert_eq!(
-        resolve(&open_request("claude"), &r, MacOS).action,
-        SessionOpenAction::Unavailable
-    );
-    r.owner_state = Some("running".into());
-    r.running = true;
-    for current in [
-        vec![],
-        vec![SessionLocation {
-            pid: 99,
-            application: "Background process".into(),
-            ..Default::default()
-        }],
-    ] {
-        r.current = current;
-        for platform in [MacOS, Linux, Windows] {
-            let p = resolve(&open_request("claude"), &r, platform);
-            assert_eq!(p.action, SessionOpenAction::Unavailable);
-            assert!(p.command.is_none());
-        }
-    }
-}
-#[test]
-fn planner_choices_revalidate_process_boot_and_pane_identity() {
-    use planner::{resolve, Platform};
-    let mut r = stopped_report();
-    r.running = true;
-    let first = pane("kitty");
-    let mut second = first.clone();
-    second.pid = 40;
-    second.tty = Some("/dev/pts/8".into());
-    r.current = vec![first.clone(), second.clone()];
-    assert_eq!(
-        resolve(&open_request("codex"), &r, Platform::Linux).action,
-        SessionOpenAction::Choose
-    );
-    let mut request = open_request("codex");
-    request.selected = Some(second);
-    assert_eq!(
-        resolve(&request, &r, Platform::Linux).action,
-        SessionOpenAction::Focus
-    );
-    r.current[1].process_start += 1;
-    assert_eq!(
-        resolve(&request, &r, Platform::Linux).action,
-        SessionOpenAction::Unavailable
-    );
-    request.selected = Some(first);
-    r.current[0].boot_id = Some("next boot".into());
-    assert_eq!(
-        resolve(&request, &r, Platform::Linux).action,
-        SessionOpenAction::Unavailable
-    );
-}
-#[test]
-fn planner_prefers_latest_terminal_host_and_preserves_real_argument_boundaries() {
-    use planner::{resolve, Platform};
-    let mut r = stopped_report();
-    let original = pane("kitty");
-    let mut latest = original.clone();
-    latest.cwd = Some("/latest project/'quoted'".into());
-    latest.application = "WezTerm".into();
-    r.original = Some(original);
-    r.latest = Some(latest.clone());
-    r.desktop_link = Some("claude://code/continue?session=local_old".into());
-    let mut request = open_request("claude");
-    request.prefer_terminal = true;
-    let p = resolve(&request, &r, Platform::MacOS);
-    assert_eq!(p.action, SessionOpenAction::Resume);
-    assert_eq!(p.location, Some(latest));
-    let cmd = p.command.unwrap();
-    assert_eq!(cmd.executable, "claude");
-    assert_eq!(cmd.args, vec!["--resume", &request.session_id]);
-    assert_eq!(cmd.cwd, "/latest project/'quoted'");
-}
-#[test]
-fn planner_links_use_provider_identity_and_cannot_focus_stale_processes() {
-    use planner::{resolve, Platform};
-    let mut r = stopped_report();
-    r.desktop_link = Some("claude://code/continue?session=local_exact".into());
-    let p = resolve(&open_request("claude"), &r, Platform::MacOS);
-    assert_eq!(p.url, r.desktop_link);
-    assert!(p.location.is_none());
-    assert!(p.command.is_none());
-    let mut request = open_request("codex");
-    request.session_id = "thread/id ?#".into();
-    assert_eq!(
-        resolve(&request, &r, Platform::MacOS).url.as_deref(),
-        Some("codex://threads/thread%2Fid%20%3F%23")
-    );
-    r.latest = Some(pane("macos-tty"));
-    assert_eq!(
-        resolve(&open_request("claude"), &r, Platform::MacOS).action,
-        SessionOpenAction::Resume
-    );
-}
-#[test]
-fn planner_explains_missing_claude_mapping_while_session_runs() {
-    use planner::{resolve, Platform};
-    let mut r = stopped_report();
-    r.running = true;
-    r.current = vec![SessionLocation {
-        application: "Claude".into(),
-        pid: 40,
-        process_start: 41,
-        ..Default::default()
-    }];
-    let p = resolve(&open_request("claude"), &r, Platform::MacOS);
-    assert_eq!(p.action, SessionOpenAction::Unavailable);
-    assert!(p.reason.unwrap().contains("provider-owned"));
-    r.desktop_link = Some("claude://code/continue?session=local_exact".into());
-    assert_eq!(
-        resolve(&open_request("claude"), &r, Platform::MacOS).action,
-        SessionOpenAction::OpenLink
-    );
 }
 #[test]
 fn original_survives_pruning_and_latest_survives_restart_and_boot_reuse() {
@@ -585,20 +419,9 @@ fn late_observation_cannot_replace_newer_resume_host_directory_or_environment() 
     save(&request_db, "codex", "id", &[older.clone()]).unwrap();
     drop((request_db, observer_db));
     let db = database(dir.path()).unwrap();
-    let (original, latest) = origins(&db, "codex", "id").unwrap();
+    let (_, latest) = origins(&db, "codex", "id").unwrap();
     assert_eq!(latest, Some(newer.clone()));
     assert_eq!(history(&db, "codex", "id").unwrap(), vec![newer.clone(), older]);
-    let mut report = stopped_report();
-    report.original = original;
-    report.latest = latest;
-    let mut request = open_request("codex");
-    request.prefer_terminal = true;
-    let plan = planner::resolve(&request, &report, planner::Platform::Linux);
-    assert_eq!(plan.action, SessionOpenAction::Resume);
-    assert_eq!(plan.location, Some(newer.clone()));
-    let command = plan.command.unwrap();
-    assert_eq!(Some(command.cwd), newer.cwd);
-    assert_eq!(command.environment, newer.provider_environment);
 }
 
 #[test]
@@ -754,7 +577,7 @@ fn protected_system_process_does_not_block_a_positively_exited_recorded_owner() 
 
 #[test]
 fn cross_platform_claude_records_use_native_data_roots_and_canonical_mapping() {
-    for platform in [planner::Platform::Windows, planner::Platform::Linux] {
+    for platform in [providers::Platform::Windows, providers::Platform::Linux] {
         let dir = tempfile::tempdir().unwrap();
         let mut config = LocalConfig::from_env(&|_| None, dir.path());
         config.claude.app_sessions = None;
@@ -799,124 +622,6 @@ fn windows_and_linux_gui_ancestry_does_not_confuse_the_claude_cli_with_desktop()
             .executable = Some(path.into());
         assert_eq!(from_process(&table, 501, 30).unwrap().application, expected);
     }
-}
-#[test]
-fn explicit_default_terminal_retry_cannot_bypass_running_or_unknown_checks() {
-    use planner::{resolve, Platform};
-    let mut request = open_request("claude");
-    request.use_default_terminal = true;
-    let mut r = stopped_report();
-    let mut old = pane("tmux");
-    old.executable = None;
-    r.latest = Some(old);
-    let p = resolve(&request, &r, Platform::Linux);
-    assert_eq!(p.action, SessionOpenAction::Resume);
-    assert!(p.location.is_none());
-    r.running = true;
-    assert_eq!(
-        resolve(&request, &r, Platform::Linux).action,
-        SessionOpenAction::Unavailable
-    );
-    r.running = false;
-    r.owner_state = Some("unknown".into());
-    assert_eq!(
-        resolve(&request, &r, Platform::Linux).action,
-        SessionOpenAction::Unavailable
-    );
-}
-#[test]
-fn relative_or_unknown_directories_cannot_become_resume_commands() {
-    use planner::{resolve, Platform};
-    let mut request = open_request("claude");
-    request.prefer_terminal = true;
-    let r = stopped_report();
-    for path in ["relative/project", "", "bad\0directory"] {
-        request.directory = Some(path.into());
-        assert_eq!(
-            resolve(&request, &r, Platform::Linux).action,
-            SessionOpenAction::Unavailable
-        );
-    }
-    request.directory = Some(r"C:\project with space".into());
-    assert_eq!(
-        resolve(&request, &r, Platform::Windows).action,
-        SessionOpenAction::Resume
-    );
-}
-
-#[tokio::test]
-async fn open_plan_bridge_revalidates_the_choice_against_the_current_process_table() {
-    use agent_relay_node::relay::daemon::Config;
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path();
-    let mut local = LocalConfig::from_env(&|_| None, home);
-    local.uid = 501;
-    let table = Arc::new(processes());
-    let id = "550e8400-e29b-41d4-a716-446655440000";
-    {
-        let mut processes = table.processes.lock().unwrap();
-        let p = processes.get_mut(&30).unwrap();
-        p.executable = Some("/tools/codex".into());
-        p.arguments = vec!["codex".into(), "resume".into(), id.into()];
-    }
-    {
-        let mut processes = table.processes.lock().unwrap();
-        processes.get_mut(&10).unwrap().executable = Some("/usr/bin/kitty".into());
-        let owner = processes.get_mut(&30).unwrap();
-        owner
-            .environment
-            .insert("KITTY_WINDOW_ID".into(), "7".into());
-        owner
-            .environment
-            .insert("KITTY_LISTEN_ON".into(), "unix:/tmp/test-kitty.sock".into());
-    }
-    table.trust("/tools/codex");
-    let config = Config {
-        paths: agent_relay_node::relay::paths::CorePaths::for_socket(home.join("core.sock"))
-            .unwrap(),
-        home: home.into(),
-        app_data_dir: home.join("app-data"),
-        env: Default::default(),
-        version: "test".into(),
-        host_name: "Test Desk.local".into(),
-        rediscover_every: std::time::Duration::from_secs(3600),
-        push_timing: Default::default(),
-        delivery_timing: Default::default(),
-    };
-    let core = core_with_table(
-        SessionLocations::new(Some((local, home.join("origins")))),
-        config,
-        table.clone(),
-    );
-    let mut request = open_request("codex");
-    let first: SessionOpenPlan = serde_json::from_value(
-        call(
-            &core,
-            SessionsOpenPlan::NAME,
-            serde_json::to_value(&request).unwrap(),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(matches!(
-        first.action,
-        SessionOpenAction::Focus | SessionOpenAction::ShowApplication
-    ));
-    request.selected = first.location;
-    table.processes.lock().unwrap().get_mut(&30).unwrap().start += 1;
-    let second: SessionOpenPlan = serde_json::from_value(
-        call(
-            &core,
-            SessionsOpenPlan::NAME,
-            serde_json::to_value(&request).unwrap(),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(second.action, SessionOpenAction::Unavailable);
-    assert!(second.command.is_none());
 }
 #[test]
 fn store_rolls_back_both_origin_and_location_if_any_write_fails() {
@@ -1002,12 +707,11 @@ fn claude_registry_app_owner_maps_cli_id_and_reopens_without_a_stale_pid_target(
     assert!(r.running);
     assert_eq!(r.current[0].application, "Claude");
     assert!(r.current[0].tty.is_none());
-    let plan = planner::resolve(&open_request("claude"), &r, planner::Platform::MacOS);
     assert_eq!(
-        plan.url.as_deref(),
+        r.desktop_link.as_deref(),
         Some("claude://code/continue?session=local_real")
     );
-    assert_eq!(plan.location.unwrap().pid, 30);
+    assert_eq!(r.current[0].pid, 30);
     {
         let mut processes = table.processes.lock().unwrap();
         let p = processes.get_mut(&30).unwrap();
@@ -1016,58 +720,9 @@ fn claude_registry_app_owner_maps_cli_id_and_reopens_without_a_stale_pid_target(
     }
     let ended = report(&config, &dir.path().join("origins"), &table, "claude", id).unwrap();
     assert_eq!(ended.owner_state.as_deref(), Some("stopped"));
-    let plan = planner::resolve(&open_request("claude"), &ended, planner::Platform::MacOS);
-    assert_eq!(plan.action, SessionOpenAction::OpenLink);
-    assert!(plan.location.is_none());
-    assert!(plan.can_resume_default);
+    assert!(ended.current.is_empty());
+    assert_eq!(ended.desktop_link, r.desktop_link);
 }
-#[test]
-fn stopped_unsupported_original_host_advertises_only_a_safe_explicit_alternative() {
-    let mut r = stopped_report();
-    r.latest = Some(pane("tmux"));
-    let request = open_request("claude");
-    let p = planner::resolve(&request, &r, planner::Platform::Linux);
-    assert_eq!(p.action, SessionOpenAction::Unavailable);
-    assert!(p.can_resume_default);
-    assert!(p.command.is_none());
-    r.owner_state = Some("unknown".into());
-    assert!(!planner::resolve(&request, &r, planner::Platform::Linux).can_resume_default);
-    r.owner_state = Some("stopped".into());
-    r.latest.as_mut().unwrap().runtime = Some("wsl".into());
-    assert!(!planner::resolve(&request, &r, planner::Platform::Linux).can_resume_default);
-}
-
-#[test]
-fn missing_claude_mapping_respects_platform_handoff_capability_and_terminal_preference() {
-    use planner::{resolve, Platform::*};
-    let mut r = stopped_report();
-    r.latest = Some(SessionLocation {
-        application: "Claude".into(),
-        cwd: Some("/project".into()),
-        runtime: Some("linux".into()),
-        ..Default::default()
-    });
-    let mut request = open_request("claude");
-    let p = resolve(&request, &r, Linux);
-    assert_eq!(p.action, SessionOpenAction::Unavailable);
-    assert!(p.can_resume_default);
-    request.use_default_terminal = true;
-    let p = resolve(&request, &r, Linux);
-    assert_eq!(p.action, SessionOpenAction::Resume);
-    assert_eq!(p.command.unwrap().args[0], "--resume");
-    assert!(p.location.is_none());
-    request.use_default_terminal = false;
-    r.latest.as_mut().unwrap().runtime = Some("macos".into());
-    let p = resolve(&request, &r, MacOS);
-    assert_eq!(p.action, SessionOpenAction::Resume);
-    assert_eq!(p.command.unwrap().args[0], "--desktop");
-    request.prefer_terminal = true;
-    let p = resolve(&request, &r, MacOS);
-    assert_eq!(p.action, SessionOpenAction::Resume);
-    assert_eq!(p.command.unwrap().args[0], "--resume");
-    assert!(p.location.is_none());
-}
-
 #[test]
 fn tmux_server_is_a_verified_host_for_the_socket_and_pane_adapter() {
     let table = processes();
@@ -1086,16 +741,5 @@ fn tmux_server_is_a_verified_host_for_the_socket_and_pane_adapter() {
     assert_eq!(
         l.environment_identity.as_deref(),
         Some("/tmp/tmux-501/default")
-    );
-    let mut r = stopped_report();
-    r.running = true;
-    r.current = vec![l];
-    assert_eq!(
-        planner::resolve(&open_request("codex"), &r, planner::Platform::Linux).action,
-        SessionOpenAction::Focus
-    );
-    assert_eq!(
-        planner::resolve(&open_request("codex"), &r, planner::Platform::MacOS).action,
-        SessionOpenAction::Unavailable
     );
 }

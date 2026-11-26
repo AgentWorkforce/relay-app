@@ -48,6 +48,18 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(selected("agent/tick.sh", "agent/agent.config.ts", "agent/lead-prompt.md"), {"shell"})
         self.assertEqual(selected("flows/ci.flow.ts", "desktop-core/src/main.rs"), set(CHANGES.JOBS) - CHANGES.PACKAGE_JOBS)
 
+    def test_session_navigation_sources_are_crate_modules(self):
+        for path in ("session-navigation/core/src/decide/mod.rs",
+                     "session-navigation/native/src/macos/observe.rs",
+                     "session-navigation/native/tests/macos_passive.rs"):
+            with self.subTest(path=path):
+                self.assertEqual(selected(path), set(CHANGES.JOBS) - CHANGES.PACKAGE_JOBS)
+        self.assertEqual(selected("session-navigation/README.md"), set())
+        for path in ("session-navigation/Cargo.toml", "session-navigation/native/Cargo.toml",
+                     "session-navigation/native/tests/fixtures/apps-jxa.json"):
+            with self.subTest(path=path):
+                self.assertEqual(selected(path), set(CHANGES.JOBS))
+
     def test_mobile_only(self):
         self.assertEqual(selected("ipad/native/Sources/RelayClient.swift"), set())
 

@@ -912,6 +912,7 @@ other in the same commit:
 | `AppUpdater.swift`, `RelayDesktopCore/AppUpdate.swift` | `gtk/src/updates.rs` and About in `ui/settings_page.rs` |
 | `AppInfo.swift` (site profile: product name, mark), `BrandMark.swift` | `gtk/src/build_profile.rs`, `gtk/src/ui/widgets/assets.rs` (`brand`, `wordmark`, `header_brand`) |
 | `RelayDesktopCore/*` presentation logic (presence, upload states and stages, wording, filters, diagnostics) and `shared/RelaySessionOverview` | `gtk/src/models/`, and the core's `src/session_model/` for what the core's catalog query also uses |
+| `SessionOpenButton.swift` (`SessionOpenControls`, and when it looks: on appearing, on coming to the front, every `SessionOpenModel.pollInterval`), `SessionOpenModel.swift` (which answer leads to which request), and `RelayDesktopCore/SessionOpenEngine.swift`, which runs the bundled helper's `session-open plan`, `open` and `release` as the app's own child, with `SessionOpenContract.swift` and `SessionOpenStrings.swift` (the fixed words' fallback copy, tested against `shared/session-open-strings.json`) | `gtk/src/ui/session_open.rs`, `gtk/src/ui/spawn_join/location.rs` (and `spawn_join.rs`'s `PLAN_EVERY` timer and window-active look), `gtk/src/models/session_open.rs` (what a click sends, one open or release per session), with `session_open::{plan, open, release_launch}` called in process through `Desktop` in `gtk/src/ui/desktop.rs`; both draw `desktop-core/src/session_open` answers, whose `wording.rs` holds every word the Open button shows |
 
 Wording matches the Mac's word for word unless the platform differs (menu bar
 vs tray, LaunchAgent vs systemd user service vs logon task, DMG vs
@@ -1358,6 +1359,11 @@ display (Xvfb on Linux; Windows has its desktop session). The bridge tests use l
 Unix sockets and never require a real account. Inspect both wide and
 minimum-size native windows when modifying these regions.
 
+"Open session" has its own suite, runnable on any OS:
+`bash scripts/test-session-navigation.sh` (the `session-navigation/`
+workspace with each adapter feature alone, `desktop-core`'s `session_open`
+and `session_locations`, and the apps' callers).
+
 The bottom bar shows the full indexed session count for this machine, independent
 of pagination, search filters, and hidden rows. It shows **Counting sessions…**
 until that total is available. **Live Agents on Relay: N** has a green dot when
@@ -1516,7 +1522,7 @@ transcript, refreshing, or loading additional history.
 Desktop destinations use a provider logo, visible action text and open arrow in
 the full-width Details-sidebar action; the tooltip and accessibility label name
 the action (for example, **Open in Claude**). This includes the normal
-`sessions.open_plan` path, not only the separate handover fallback. Terminal
+`session_open` plan, not only the separate handover fallback. Terminal
 resume keeps its terminal label and symbol on macOS. GTK keeps the selected
 session's provider badge and the actual plan's action wording when the core's
 answer or a transcript refresh redraws Open. Until an ordinary row has returned
@@ -2541,8 +2547,9 @@ routes. See [Linux terminal setup](../linux/README.md#finish-setup-over-ssh) and
 | Crate | Owns |
 |---|---|
 | `agent-relay-node` (relay's `crates/relay-node`) | The public core, messaging only: discovery, delivery, spawning, the bridge. It works from a workspace key and runs with no account. It is not in this repository: `desktop-core` and `gtk` pin it by git to a relay commit. |
-| `desktop-core/` | The private layer: `Account`, Cloud sign-in (browser sign-in in `browser_login.rs`; device sign-in comes from the core), auth health, provider credentials, `mcp_settings`, `mcp-headers`, Claude attestation, the terminal setup wizard, and session history (`src/history`: capture, the upload queue and RelayHistory transport, the session catalog and view models, retention, the uploader, session naming, and the Devin Cloud and Claude Code on the web sessions the catalogs list), and session locations (`src/session_locations`: `sessions.location`). Its `agent-relay-desktop-probe` binary ships as `agent-relay-probe` and runs both the core's commands and the collector's. It also holds the build-version helpers `gtk/build.rs` shares and the test fakes (`tests/support/`) both crates' integration tests use. |
+| `desktop-core/` | The private layer: `Account`, Cloud sign-in (browser sign-in in `browser_login.rs`; device sign-in comes from the core), auth health, provider credentials, `mcp_settings`, `mcp-headers`, Claude attestation, the terminal setup wizard, and session history (`src/history`: capture, the upload queue and RelayHistory transport, the session catalog and view models, retention, the uploader, session naming, and the Devin Cloud and Claude Code on the web sessions the catalogs list), session locations (`src/session_locations`: `sessions.location`), and opening a session from the app (`src/session_open`, also the helper's `session-open` command). Its `agent-relay-desktop-probe` binary ships as `agent-relay-probe` and runs both the core's commands and the collector's. It also holds the build-version helpers `gtk/build.rs` shares and the test fakes (`tests/support/`) both crates' integration tests use. |
 | `gtk/` | The Linux and Windows app. It takes the session view models from `desktop-core`. |
+| `session-navigation/` | Its own workspace: `session-navigation` (`core/`, the pure rules and simulator for returning to a session) and `session-navigation-native` (`native/`, the macOS, Linux and Windows adapters). A path dependency of `desktop-core`, which builds only the running OS's adapter. |
 
 `AccountPlugin`, `SessionPolicy`, `MethodExtension`, `SettingsExtension`,
 `PluginBuilder` and `session_sources::SessionSources` are the seam: unsupported
@@ -2593,15 +2600,18 @@ Muse shows a selectable, monospace setup prompt in onboarding and provider setti
 
 ### Native session locations
 
-`sessions.location` reports current and historical local hosts.
-`sessions.open_plan` makes the opening decision in desktop-core for both Swift
-and GTK: focus a verified target, open the exact provider link, resume a stopped
-session in its last host, choose among locations, or explain an unavailable
-capability. Native adapters revalidate process identity before acting and report
-OS dispatch separately from verified selection.
+`sessions.location` reports current and historical local hosts; the core
+observes them in the background. Opening a session runs in the app's own
+process, not the core: `desktop-core/src/session_open` decides and acts for
+both apps (GTK in process, macOS through its bundled helper's `session-open`
+command): focus a verified target, open the exact provider link, resume a
+stopped session in its last host, choose among locations, or explain an
+unavailable capability. Native adapters revalidate process identity before
+acting and report dispatch separately from verified selection.
 
 Origins are stored in `session-locations.sqlite3`, independently of the disposable
 history index. The store preserves the first observation and latest host across
-core restarts. Claude desktop identity mapping, structured resume arguments,
-platform capabilities, regression commands and native acceptance procedures are
-specified in [session-navigation.md](session-navigation.md).
+core restarts, and is the history the opening engine reads. Claude desktop
+identity mapping, terminal choice, reservations, what is verified natively,
+regression commands and native acceptance procedures are specified in
+[session-navigation.md](session-navigation.md).

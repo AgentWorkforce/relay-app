@@ -169,7 +169,9 @@ final class CoreClientTests: XCTestCase {
         XCTAssertFalse(CoreClient.isRead("tools.manage"))
         XCTAssertEqual(CoreClient.timeout(for: "chat.send"), 660)
         XCTAssertTrue(CoreClient.isRead("settings.get"))
-        XCTAssertTrue(CoreClient.isRead("sessions.open_plan"))
+        XCTAssertTrue(CoreClient.isRead(CoreMethod.sessionsLocation))
+        // Opening moved to the app's helper; the core no longer serves it.
+        XCTAssertFalse(CoreClient.isRead("sessions.open_plan"))
         XCTAssertTrue(CoreClient.isRead(CoreMethod.cursorCloudAgentsGet))
         XCTAssertTrue(CoreClient.isRead(CoreMethod.cursorCloudEnvironmentsList))
         XCTAssertTrue(CoreClient.isRead(CoreMethod.cursorCloudRunsList))

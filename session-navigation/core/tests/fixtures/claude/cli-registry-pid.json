@@ -1,0 +1,23 @@
+{
+  "_comment": "SYNTHETIC. Path: <CLAUDE_CONFIG_DIR or ~/.claude>/sessions/<pid>.json. Deleted on normal process exit. Optional fields seen in the CLI reader: nameSource(user|peer|derived|collision|auto|hook), formerNames, tmux, logPath, agent, jobId, parkedJobId, spare, bridgeSessionId, waitingFor, state, detail, tempo, needs. This example is a desktop-hosted one; a terminal CLI one would have entrypoint 'cli' (UNVERIFIED value) and no hostSessionId.",
+  "pid": 43210,
+  "sessionId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "cwd": "/Users/example/code/project",
+  "startedAt": 1790000000403,
+  "procStart": "Wed Sep 30 10:00:00 2026",
+  "version": "2.1.321",
+  "peerProtocol": 1,
+  "peerFeatures": ["notify_idle", "reply_across_default_dirs", "artifact_yield"],
+  "kind": "interactive",
+  "entrypoint": "claude-desktop",
+  "hostSessionId": "local_11111111-2222-4333-8444-555555555555",
+  "pidDomain": "darwin",
+  "asksForConvertedSkills": null,
+  "messagingSocketPath": "/tmp/cc-socks/43210.sock",
+  "name": "Example session name",
+  "nameSource": "user",
+  "nameSince": 1790000000403,
+  "status": "idle",
+  "updatedAt": 1790000300000,
+  "statusUpdatedAt": 1790000300000
+}

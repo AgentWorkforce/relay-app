@@ -1,0 +1,8 @@
+{"_table":"threads (state_5.sqlite) - subset of columns relevant to session-navigation; full column list in facts-codex.md",
+ "id":"01900000-0000-7000-8000-000000000001",
+ "rollout_path":"/Users/example/.codex/sessions/2026/01/01/rollout-2026-01-01T19-04-05-01900000-0000-7000-8000-000000000001.jsonl",
+ "created_at":1767323045,"updated_at":1767326645,"created_at_ms":1767323045678,"updated_at_ms":1767326645000,"recency_at_ms":1767326645000,
+ "source":"vscode","originator":"Codex Desktop","thread_source":"user","cwd":"/Users/example/project",
+ "title":"Example title","name":null,"preview":"<str>","archived":0,"archived_at":null,
+ "cli_version":"0.167.0-alpha.3.2","model_provider":"openai","history_mode":"paginated",
+ "agent_nickname":null,"agent_role":null,"agent_path":null,"attached_thread_parent_id":null,"project_id":null,"is_pinned":0}

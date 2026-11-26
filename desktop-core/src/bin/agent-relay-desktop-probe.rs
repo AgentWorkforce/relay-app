@@ -35,6 +35,10 @@ fn main() {
                 std::process::exit(agent_relay_desktop_core::copilot_dispatch::main(rest))
             }
             "setup" => std::process::exit(agent_relay_desktop_core::onboarding::run(rest)),
+            // The macOS app's "Open session", in its own child process.
+            "session-open" => {
+                std::process::exit(agent_relay_desktop_core::session_open::command::run(rest))
+            }
             "mcp-headers" => std::process::exit(mcp_headers::run(rest)),
             "feed-headers" => std::process::exit(feed_headers::run(rest)),
             "feed" => std::process::exit(feed_verify::run(rest)),

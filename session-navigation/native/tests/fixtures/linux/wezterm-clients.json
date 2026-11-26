@@ -1,0 +1,11 @@
+[
+  {
+    "username": "example",
+    "hostname": "devbox",
+    "pid": 4100,
+    "connection_elapsed": {"secs": 3600, "nanos": 0},
+    "idle_time": {"secs": 2, "nanos": 500000000},
+    "workspace": "default",
+    "focused_pane_id": 1
+  }
+]

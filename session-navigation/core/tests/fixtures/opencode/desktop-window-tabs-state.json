@@ -1,0 +1,7 @@
+{
+  "_comment": "Synthetic. Desktop app persisted tab state: ~/Library/Application Support/ai.opencode.desktop/drafts.sqlite, table state(name,key,value,updated_at), name='opencode.window.<windowUUID>.dat'. Values are JSON (possibly JSON-encoded strings). serverKey 'sidecar' = the background service; route key = serverKey + '\\n' + '/server/' + base64url(serverKey) + '/session/' + sessionID. Persisted, so it survives window close/app quit: shows tabs, not proof of visibility.",
+  "tabs": [{"type": "session", "server": "sidecar", "sessionId": "ses_0123456789abAAAAAAAAAAAAAA"}],
+  "tabs.info": {"sidecar\n/server/c2lkZWNhcg/session/ses_0123456789abAAAAAAAAAAAAAA": {"title": "Synthetic session title", "directory": "/Users/example/project", "prompted": true}},
+  "tabs.panes": {"sidecar\n/server/c2lkZWNhcg/session/ses_0123456789abAAAAAAAAAAAAAA": {"review": false}},
+  "tabs.recent": {"key": "sidecar\n/server/c2lkZWNhcg/session/ses_0123456789abAAAAAAAAAAAAAA"}
+}

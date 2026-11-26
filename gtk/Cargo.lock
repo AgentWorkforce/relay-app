@@ -78,6 +78,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "session-navigation",
+ "session-navigation-native",
  "sha2",
  "signal-hook",
  "sysinfo",
@@ -2890,6 +2892,25 @@ checksum = "15c6d3b776267a75d31bbdfd5d36c0ca051251caafc285827052bc53bcdc8162"
 dependencies = [
  "libc",
  "serial-core",
+]
+
+[[package]]
+name = "session-navigation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "session-navigation-native"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "session-navigation",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

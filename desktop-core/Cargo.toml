@@ -101,6 +101,12 @@ url = "2"
 # Delivery request bodies, when the receiver publishes zstd (src/destination/encoding.rs).
 zstd = { version = "0.13", default-features = false }
 schemars = { version = "1", default-features = false, features = ["derive", "std"] }
+# "Open session" (src/session_open): the pure rules and the platform
+# adapters, run in the app's own process (docs/session-navigation.md). Each
+# OS builds only its own adapter (the target sections below); the tests
+# build all three through the dev-dependency.
+session-navigation = { path = "../session-navigation/core" }
+session-navigation-native = { path = "../session-navigation/native", default-features = false }
 
 
 [target.'cfg(unix)'.dependencies]
@@ -117,10 +123,15 @@ security-framework-sys = "2"
 # Received attachments are quarantined (src/relay/files/store.rs); tar
 # already links it.
 xattr = "1"
+session-navigation-native = { path = "../session-navigation/native", default-features = false, features = ["macos"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+session-navigation-native = { path = "../session-navigation/native", default-features = false, features = ["linux"] }
 
 # Windows platform code in the core: the registry and consoles.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_Registry", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation"] }
+session-navigation-native = { path = "../session-navigation/native", default-features = false, features = ["windows"] }
 
 # The core's Windows platform shims (src/platform, src/relay/process/windows.rs,
 # src/relay/login_item.rs): stopping processes and job objects; the process
@@ -141,6 +152,8 @@ agent-relay-desktop-core = { path = ".", features = ["test-site"] }
 schemars = { version = "1", default-features = false, features = ["derive", "std"] }
 rusqlite = { version = "0.32", features = ["hooks"] }
 tokio = { version = "1", features = ["test-util"] }
+# Every adapter, so each one's end-to-end test runs on any OS (FakeSystem).
+session-navigation-native = { path = "../session-navigation/native", features = ["macos", "linux", "windows"] }
 
 [build-dependencies]
 # build.rs checks DESKTOP_POLICY_DEFAULTS with the core's own policy rules

@@ -159,7 +159,6 @@ public enum CoreMethod {
     public static let spawnCallersChallenge = "spawn_callers.challenge"
     public static let spawnCallersAuthenticate = "spawn_callers.authenticate"
     public static let sessionsLocation = "sessions.location"
-    public static let sessionsOpenPlan = "sessions.open_plan"
 }
 
 /// Free JSON, where the contract carries a value it does not shape.
@@ -9054,151 +9053,6 @@ public struct SessionLocationReport: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public enum SessionOpenAction: RawRepresentable, Codable, CaseIterable, Hashable, Sendable {
-    case focus
-    case showApplication
-    case openLink
-    case resume
-    case choose
-    case unavailable
-    /// A value this build does not know, as the core sent it.
-    case unknown(String)
-
-    public static let allCases: [SessionOpenAction] = [.focus, .showApplication, .openLink, .resume, .choose, .unavailable]
-
-    public init(rawValue: String) {
-        switch rawValue {
-        case "focus": self = .focus
-        case "show_application": self = .showApplication
-        case "open_link": self = .openLink
-        case "resume": self = .resume
-        case "choose": self = .choose
-        case "unavailable": self = .unavailable
-        default: self = .unknown(rawValue)
-        }
-    }
-
-    public var rawValue: String {
-        switch self {
-        case .focus: return "focus"
-        case .showApplication: return "show_application"
-        case .openLink: return "open_link"
-        case .resume: return "resume"
-        case .choose: return "choose"
-        case .unavailable: return "unavailable"
-        case .unknown(let value): return value
-        }
-    }
-
-    public init(from decoder: Decoder) throws {
-        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        try c.encode(rawValue)
-    }
-}
-
-public struct SessionOpenPlan: Codable, Equatable, Hashable, Sendable {
-    public let action: SessionOpenAction
-    public let canResumeDefault: Bool
-    public let choices: [SessionLocation]
-    public let command: SessionResumeCommand?
-    public let location: SessionLocation?
-    public let reason: String?
-    public let url: String?
-
-    public init(action: SessionOpenAction, canResumeDefault: Bool = false, choices: [SessionLocation], command: SessionResumeCommand? = nil, location: SessionLocation? = nil, reason: String? = nil, url: String? = nil) {
-        self.action = action
-        self.canResumeDefault = canResumeDefault
-        self.choices = choices
-        self.command = command
-        self.location = location
-        self.reason = reason
-        self.url = url
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case action
-        case canResumeDefault = "can_resume_default"
-        case choices
-        case command
-        case location
-        case reason
-        case url
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.action = try c.decode(SessionOpenAction.self, forKey: .action)
-        self.canResumeDefault = try c.decodeIfPresent(Bool.self, forKey: .canResumeDefault) ?? false
-        self.choices = try c.decode([SessionLocation].self, forKey: .choices)
-        self.command = try c.decodeIfPresent(SessionResumeCommand.self, forKey: .command)
-        self.location = try c.decodeIfPresent(SessionLocation.self, forKey: .location)
-        self.reason = try c.decodeIfPresent(String.self, forKey: .reason)
-        self.url = try c.decodeIfPresent(String.self, forKey: .url)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.action, forKey: .action)
-        try c.encode(self.canResumeDefault, forKey: .canResumeDefault)
-        try c.encode(self.choices, forKey: .choices)
-        try c.encode(self.command, forKey: .command)
-        try c.encode(self.location, forKey: .location)
-        try c.encode(self.reason, forKey: .reason)
-        try c.encode(self.url, forKey: .url)
-    }
-}
-
-public struct SessionOpenRequest: Codable, Equatable, Hashable, Sendable {
-    public let directory: String?
-    public let preferTerminal: Bool
-    public let selected: SessionLocation?
-    public let sessionId: String
-    public let source: String
-    public let useDefaultTerminal: Bool
-
-    public init(directory: String? = nil, preferTerminal: Bool = false, selected: SessionLocation? = nil, sessionId: String, source: String, useDefaultTerminal: Bool = false) {
-        self.directory = directory
-        self.preferTerminal = preferTerminal
-        self.selected = selected
-        self.sessionId = sessionId
-        self.source = source
-        self.useDefaultTerminal = useDefaultTerminal
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case directory
-        case preferTerminal = "prefer_terminal"
-        case selected
-        case sessionId = "session_id"
-        case source
-        case useDefaultTerminal = "use_default_terminal"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.directory = try c.decodeIfPresent(String.self, forKey: .directory)
-        self.preferTerminal = try c.decodeIfPresent(Bool.self, forKey: .preferTerminal) ?? false
-        self.selected = try c.decodeIfPresent(SessionLocation.self, forKey: .selected)
-        self.sessionId = try c.decode(String.self, forKey: .sessionId)
-        self.source = try c.decode(String.self, forKey: .source)
-        self.useDefaultTerminal = try c.decodeIfPresent(Bool.self, forKey: .useDefaultTerminal) ?? false
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(self.directory, forKey: .directory)
-        try c.encode(self.preferTerminal, forKey: .preferTerminal)
-        try c.encodeIfPresent(self.selected, forKey: .selected)
-        try c.encode(self.sessionId, forKey: .sessionId)
-        try c.encode(self.source, forKey: .source)
-        try c.encode(self.useDefaultTerminal, forKey: .useDefaultTerminal)
-    }
-}
-
 /// One uploaded session whose Cloud summary is read or requested.
 public struct SessionOverviewParams: Codable, Equatable, Hashable, Sendable {
     public let sessionId: String
@@ -9435,45 +9289,6 @@ public struct SessionRegistration: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.name, forKey: .name)
         try c.encode(self.push, forKey: .push)
         try c.encodeIfPresent(self.spawn, forKey: .spawn)
-    }
-}
-
-public struct SessionResumeCommand: Codable, Equatable, Hashable, Sendable {
-    public let args: [String]
-    public let cwd: String
-    /// Some(map), including empty, clears PROVIDER_ENVIRONMENT_KEYS before
-    /// applying these paths. None retains legacy current-configuration behavior.
-    public let environment: [String: String]?
-    public let executable: String
-
-    public init(args: [String], cwd: String, environment: [String: String]? = nil, executable: String) {
-        self.args = args
-        self.cwd = cwd
-        self.environment = environment
-        self.executable = executable
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case args
-        case cwd
-        case environment
-        case executable
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.args = try c.decode([String].self, forKey: .args)
-        self.cwd = try c.decode(String.self, forKey: .cwd)
-        self.environment = try c.decodeIfPresent([String: String].self, forKey: .environment)
-        self.executable = try c.decode(String.self, forKey: .executable)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.args, forKey: .args)
-        try c.encode(self.cwd, forKey: .cwd)
-        try c.encodeIfPresent(self.environment, forKey: .environment)
-        try c.encode(self.executable, forKey: .executable)
     }
 }
 
@@ -14199,11 +14014,5 @@ extension CoreClient {
     @discardableResult
     public func sessionsLocation(_ params: SessionTitleIdentity) async throws -> SessionLocationReport {
         try await call(CoreMethod.sessionsLocation, params)
-    }
-
-    /// `sessions.open_plan`.
-    @discardableResult
-    public func sessionsOpenPlan(_ params: SessionOpenRequest) async throws -> SessionOpenPlan {
-        try await call(CoreMethod.sessionsOpenPlan, params)
     }
 }

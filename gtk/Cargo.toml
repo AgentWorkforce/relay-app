@@ -82,7 +82,7 @@ futures-util = "0.3"
 # registry, ShellExecute and consoles; the notification-area icon; toast
 # notifications; and the release `.zip` the updater unpacks.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation"] }
 # Windows uses native menus. Disable the Linux GTK 3 defaults so the lockfile
 # does not pull in glib 0.18 (RUSTSEC-2024-0429); Linux uses ksni above.
 tray-icon = { version = "0.24.2", default-features = false }

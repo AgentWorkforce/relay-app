@@ -1,0 +1,9 @@
+{
+  "_comment": "Synthetic. GET /api/info (Basic auth). Observed top-level keys: version, pid, hostname, urls, paths, capabilities. Service-discovery code requires version(string)+pid(int) and checks pid==service.json pid.",
+  "version": "2.2.6",
+  "pid": 4242,
+  "hostname": "127.0.0.1",
+  "urls": ["http://127.0.0.1:49374"],
+  "paths": {},
+  "capabilities": {}
+}

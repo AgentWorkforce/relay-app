@@ -1,0 +1,15 @@
+{
+  "_comment": "Command-line shapes observed with `ps -axo pid,ppid,lstart,tty,command` (ids/paths synthetic). TUI shapes are from --help/source, NOT observed (no TUI was running).",
+  "observed": [
+    {"pid": 815, "ppid": 1, "tty": "??", "command": "/Applications/OpenCode.app/Contents/MacOS/OpenCode"},
+    {"pid": 1095, "ppid": 815, "tty": "??", "command": "/Applications/OpenCode.app/Contents/Frameworks/OpenCode Helper (Renderer).app/Contents/MacOS/OpenCode Helper (Renderer) --type=renderer --user-data-dir=<home>/Library/Application Support/ai.opencode.desktop ..."},
+    {"pid": 1111, "ppid": 815, "tty": "??", "command": "<home>/Library/Application Support/ai.opencode.desktop/cli/2.2.6-arm64/opencode-cli serve --service"}
+  ],
+  "expected_unverified": [
+    {"tty": "ttys003", "command": "<home>/.opencode/bin/opencode"},
+    {"tty": "ttys003", "command": "<home>/.opencode/bin/opencode -s ses_0123456789abAAAAAAAAAAAAAA"},
+    {"tty": "ttys003", "command": "<home>/.opencode/bin/opencode --continue"},
+    {"tty": "ttys003", "command": "<home>/.opencode/bin/opencode --standalone"},
+    {"tty": "??", "command": "<home>/.opencode/bin/opencode serve --service", "note": "if the TUI, not the desktop, started the service"}
+  ]
+}

@@ -7,22 +7,20 @@ import XCTest
 
 @MainActor
 final class SessionOpenActionRenderingTests: XCTestCase {
-    func testSharedClaudePlansRenderProviderArtworkAndFillTheActionRow() async throws {
-        let location = SessionLocation(application: "Terminal", bundleId: "com.apple.Terminal",
-            observedAtMs: 1000, pid: 31, processStart: 32, tty: "/dev/ttys001")
-        let otherLocation = SessionLocation(application: "Terminal", bundleId: "com.apple.Terminal",
-            observedAtMs: 1000, pid: 41, processStart: 42, tty: "/dev/ttys002")
+    func testHelperPlansRenderProviderArtworkAndFillTheActionRow() async throws {
         for (plan, title) in [
-            (SessionOpenPlan(action: .openLink, choices: [], url: "claude://code/session/render-plan"), "Open in Claude"),
-            (SessionOpenPlan(action: .choose, choices: [location, otherLocation]), "Open running session")
+            (FakeSessionHelper.plan(action: "open_link", title: "Open in Claude", state: "live"), "Open in Claude"),
+            (FakeSessionHelper.plan(action: "choose", title: "Open running session", state: "live_multiple",
+                                    reasonCode: "several_locations",
+                                    choices: [["id": "a", "label": "Terminal (/dev/ttys001)"], ["id": "b", "label": "Terminal (/dev/ttys002)"]]),
+             "Open running session")
         ] {
-            let action = plan.action.rawValue
-            let answer = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any])
+            let action = try XCTUnwrap(plan["action"] as? String)
+            let helper = FakeSessionHelper(plan: plan)
             let core = FakeCore()
             defer { core.stop() }
             core.on("sessions.list") { _ in ["sessions": []] }
             core.on("sessions.location") { _ in ["current": [], "previous": [], "running": false, "supported": true] }
-            core.on("sessions.open_plan") { _ in answer }
             let suite = "session-open-plan-render-\(UUID())"
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             defer { defaults.removePersistentDomain(forName: suite) }
@@ -37,7 +35,8 @@ final class SessionOpenActionRenderingTests: XCTestCase {
                     Label("Refresh transcript", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
                 }.buttonStyle(CloudControlStyle(height: 38, horizontalPadding: 12))
             }.padding(8).frame(width: 280).background(CloudTheme.background)
-                .environment(app).environment(\.colorScheme, .light).defaultAppStorage(defaults)
+                .environment(app).environment(\.sessionOpenEngine, helper.engine())
+                .environment(\.colorScheme, .light).defaultAppStorage(defaults)
             let host = NSHostingView(rootView: view)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 150),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
@@ -50,10 +49,10 @@ final class SessionOpenActionRenderingTests: XCTestCase {
             var renderedImage: NSBitmapImageRep?
             while clock.now < deadline {
                 host.layoutSubtreeIfNeeded()
-                if core.callCount("sessions.open_plan") > 0 {
+                if !helper.calls("plan").isEmpty {
                     let candidate = try bitmap(host)
                     // This isolated view has provider artwork only after the
-                    // negotiated plan renders. Keep OCR out of the main-actor
+                    // helper's plan renders. Keep OCR out of the main-actor
                     // wait so SwiftUI can process the response between polls.
                     if orangePixels(candidate) > 12 && clock.now < deadline {
                         renderedImage = candidate
@@ -62,10 +61,11 @@ final class SessionOpenActionRenderingTests: XCTestCase {
                 }
                 try await Task.sleep(for: .milliseconds(20))
             }
-            XCTAssertGreaterThan(core.callCount("sessions.open_plan"), 0, "Exercise the actual negotiated core-plan branch")
-            XCTAssertEqual(core.lastParams("sessions.open_plan")?["source"] as? String, "claude")
-            XCTAssertEqual(core.lastParams("sessions.open_plan")?["session_id"] as? String, "render-plan")
-            let image = try XCTUnwrap(renderedImage, "Wait for the negotiated plan's provider artwork to render")
+            XCTAssertFalse(helper.calls("plan").isEmpty, "Exercise the helper's plan branch")
+            XCTAssertTrue(helper.calls("open").isEmpty, "Showing a row never opens it")
+            XCTAssertEqual(helper.calls("plan").last?.request["source"] as? String, "claude")
+            XCTAssertEqual(helper.calls("plan").last?.request["session_id"] as? String, "render-plan")
+            let image = try XCTUnwrap(renderedImage, "Wait for the helper's plan's provider artwork to render")
             if let directory = ProcessInfo.processInfo.environment["SESSION_OPEN_RENDER_DIR"] {
                 let path = URL(fileURLWithPath: directory, isDirectory: true)
                 try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
@@ -75,12 +75,12 @@ final class SessionOpenActionRenderingTests: XCTestCase {
             let open = try textBounds(title, image: image)
             let refresh = try textBounds("Refresh transcript", image: image)
             XCTAssertEqual(open.midX, refresh.midX, accuracy: 0.08,
-                           "The core-plan action is centered across the same full row as Refresh")
+                           "The planned action is centered across the same full row as Refresh")
             XCTAssertGreaterThan(borderWidth(image, around: open), 220,
                                  "The actual planned button border fills the sidebar, not just its text")
             XCTAssertEqual(borderWidth(image, around: open), borderWidth(image, around: refresh), accuracy: 8)
             XCTAssertGreaterThan(orangePixels(image), 12,
-                                 "The actual core-plan button must render Claude's bundled provider artwork")
+                                 "The actual planned button must render Claude's bundled provider artwork")
 
             // Regression control: the former location-plan branch was a plain
             // text button even though the separate handover label had artwork.

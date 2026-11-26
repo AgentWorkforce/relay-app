@@ -1,0 +1,9 @@
+{"_source":"app.asar .vite/build parser (see facts-codex.md B). Synthetic ids.",
+ "open_thread":"codex://threads/01900000-0000-7000-8000-000000000001",
+ "open_thread_on_host":"codex://threads/01900000-0000-7000-8000-000000000001?hostId=local",
+ "open_thread_review":"codex://threads/01900000-0000-7000-8000-000000000001?view=review&diffFilter=branch&path=src%2Fmain.rs",
+ "open_thread_with_prompt":"codex://threads/01900000-0000-7000-8000-000000000001?prompt=hello",
+ "new_thread":"codex://threads/new",
+ "new_thread_in_dir":"codex://threads/new?path=%2FUsers%2Fexample%2Fproject&prompt=hello",
+ "wake_queued_thread":"codex://threads/wake/01900000-0000-7000-8000-000000000001",
+ "launch":"codex://launch"}

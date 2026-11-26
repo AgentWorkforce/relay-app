@@ -1,0 +1,20 @@
+DOCUMENTATION-DERIVED fixtures, NOT captured output.
+
+None of iTerm2, Kitty, WezTerm, Alacritty or tmux was installed on the Mac
+these were written on. Each file follows the tool's documented output shape,
+with sanitized values (home /Users/example, uid 501):
+
+- kitty-ls.json: `kitty @ --to unix:<sock> ls` (Kitty remote-control docs,
+  "ls" command: OS windows -> tabs -> windows with id, pid, cwd, is_focused,
+  foreground_processes, ...).
+- kitty-error-*.txt: stderr of a failed `kitty @` (Kitty source messages).
+- wezterm-list.json: `wezterm cli list --format json` (WezTerm CLI docs:
+  window_id, tab_id, pane_id, workspace, size, title, cwd, cursor_*,
+  is_active, is_zoomed, tty_name).
+- wezterm-list-clients.json: `wezterm cli list-clients --format json`
+  (username, hostname, pid, connection_elapsed, idle_time, workspace,
+  focused_pane_id).
+- tmux-*.txt: tmux FORMATS output for the exact -F strings in
+  src/common/tmux.rs (tab separated), and tmux's own error texts.
+
+Verify on a real machine by capturing the same commands and diffing shapes.

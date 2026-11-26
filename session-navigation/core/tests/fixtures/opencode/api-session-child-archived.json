@@ -1,0 +1,10 @@
+{
+  "_comment": "Synthetic. A child (subagent) session that is also archived. parentID present => child; time.archived present => archived. 'opencode session list' and TUI -c only consider parentID==null, archived==false.",
+  "id": "ses_0123456789acBBBBBBBBBBBBBB",
+  "parentID": "ses_0123456789abAAAAAAAAAAAAAA",
+  "projectID": "0000000000000000000000000000000000000001",
+  "cost": 0,
+  "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+  "time": {"created": 1794200200000, "updated": 1794200300000, "archived": 1794200400000},
+  "location": {"directory": "/Users/example/project"}
+}

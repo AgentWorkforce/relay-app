@@ -1,0 +1,50 @@
+[package]
+name = "session-navigation-native"
+version = "0.1.0"
+edition = "2021"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "Native adapters for session-navigation: the Observe, Execute and Reservations ports over a small, fakeable System seam."
+
+[features]
+default = ["macos", "linux", "windows"]
+macos = []
+linux = []
+windows = []
+
+[dependencies]
+session-navigation = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The Windows adapter's direct Win32 reads and acts (`src/system/win32_real.rs`
+# only): the process table, windows, foreground, focus, registry, the Windows
+# Terminal package and CreateProcessW. Same crate and version as desktop-core.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Wdk_System_SystemInformation",
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Environment",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# The macOS kernel reads (`src/system/kernel_macos.rs` only): sysctl,
+# libproc and KERN_PROCARGS2 instead of ps/sysctl/lsof. Same as desktop-core.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[[example]]
+name = "observe"
+required-features = ["macos"]
+
+[[example]]
+name = "timing"
+required-features = ["macos"]

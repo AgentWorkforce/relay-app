@@ -3,8 +3,11 @@ use super::*;
 
 const OPENING_TITLE: &str = "Local sessions";
 const OPENING_ROW: &str = "Open with";
-const OPENING_HELP: &str =
-    "Automatic opens the desktop app when installed, otherwise Terminal. Applies only to this computer.";
+/// The Mac's `SessionOpeningSettingsSection.help`, word for word.
+const OPENING_HELP: &str = "Automatic opens a closed session where it was last used: its desktop app or a terminal. Terminal resumes a closed Codex thread, or an archived Claude Desktop session, in a terminal instead when it can. A running session always opens where it runs. Applies only to this computer.";
+/// The Mac's `SessionOpeningRequirements.claudeNote` and `.note`.
+const OPENING_CLAUDE_NOTE: &str = "Sessions started in Claude Desktop open in Claude, because Claude may reopen them itself. With Terminal, an archived one resumes in a terminal instead.";
+const OPENING_NOTE: &str = "Open returns to a verified running app or terminal pane first. Your preference applies when resuming a closed session. A resume opens the terminal the session was last seen in, else your default terminal, and requires the matching CLI and the session’s original folder. Older sessions may have no recorded location.";
 const OPENING_REQUIREMENTS: &str = "Opening requirements";
 
 impl App {
@@ -83,8 +86,10 @@ impl App {
         let requirements = gtk::Expander::new(Some(OPENING_REQUIREMENTS));
         let detail = vbox(10, &[]);
         detail.set_margin_top(10);
-        // The shared planner returns to a verified live host before considering resume.
-        detail.append(&text("Open returns to the original session when the host exposes an exact navigation API. Closed sessions resume in the recorded application with the matching CLI and original folder. Unsupported hosts and runtimes show an explanation.", &["settings-row-detail"]).wrapped());
+        if provider == Some("claude") {
+            detail.append(&text(OPENING_CLAUDE_NOTE, &["settings-row-detail"]).wrapped());
+        }
+        detail.append(&text(OPENING_NOTE, &["settings-row-detail"]).wrapped());
         let actions = hbox(12, &[]);
         if provider != Some("grok") {
             actions.append(&button(
@@ -152,12 +157,12 @@ impl App {
                 }
             }
         });
-        let detail = if source == "claude" {
-            "Claude Desktop opens only with a verified provider session link. Terminal sessions return to their recorded host."
-        } else if self.inner.desktop.has_uri_handler("codex") {
-            "Codex is installed"
-        } else {
-            "Codex isn’t installed. Recorded terminal sessions can still resume in their original terminal."
+        // The Mac's rows, word for word.
+        let detail = match (source, self.inner.desktop.has_uri_handler(source)) {
+            ("claude", true) => "Claude Desktop is installed",
+            ("claude", false) => "Claude Desktop isn’t installed. Sessions resume in a terminal.",
+            (_, true) => "Codex is installed",
+            (_, false) => "Codex isn’t installed. Sessions resume in a terminal.",
         };
         settings_row(
             title,

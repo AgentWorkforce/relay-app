@@ -1,0 +1,6 @@
+{
+  "_comment": "Observed shape (HTTP 404) for GET /api/session/<unknown id>; the TUI treats exactly this _tag as 'create a new session with that id'.",
+  "_tag": "SessionNotFoundError",
+  "sessionID": "ses_000000000000000000000000ZZ",
+  "message": "Session not found: ses_000000000000000000000000ZZ"
+}

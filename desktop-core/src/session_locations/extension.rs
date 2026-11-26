@@ -1,10 +1,7 @@
 //! `sessions.location` on the core's bridge, and the observations that let it
 //! name a session's last window after its process has gone.
 
-use super::{
-    observe, planner, report, unavailable, SessionLocationReport, SessionOpenPlan,
-    SessionOpenRequest, SessionsLocation, SessionsOpenPlan,
-};
+use super::{observe, report, unavailable, SessionLocationReport, SessionsLocation};
 use agent_relay_node::relay::contract::agents::SessionTitleIdentity;
 use agent_relay_node::relay::contract::{answer, Availability, Method, MethodSpec};
 use agent_relay_node::relay::daemon::{CallContext, Core, MethodExtension};
@@ -60,35 +57,11 @@ impl SessionLocations {
         .map_err(|_| RpcError::new(ErrorKind::Internal, "Could not locate session."))?
         .map_err(|error| RpcError::new(ErrorKind::Internal, error))
     }
-    async fn open_plan(
-        &self,
-        core: &Core,
-        params: SessionOpenRequest,
-    ) -> Result<SessionOpenPlan, RpcError> {
-        validate_identity(&params.source, &params.session_id)?;
-        let report = self
-            .locate(
-                core,
-                SessionTitleIdentity {
-                    source: params.source.clone(),
-                    session_id: params.session_id.clone(),
-                },
-            )
-            .await?;
-        Ok(planner::resolve(
-            &params,
-            &report,
-            planner::Platform::current(),
-        ))
-    }
 }
 
 impl MethodExtension for SessionLocations {
     fn specs(&self) -> Vec<MethodSpec> {
-        vec![
-            MethodSpec::of::<SessionsLocation>(Availability::Always),
-            MethodSpec::of::<SessionsOpenPlan>(Availability::Always),
-        ]
+        vec![MethodSpec::of::<SessionsLocation>(Availability::Always)]
     }
 
     fn call<'a>(
@@ -103,9 +76,6 @@ impl MethodExtension for SessionLocations {
             match method {
                 SessionsLocation::NAME => Some(
                     answer::<SessionsLocation, _>(raw, |params| self.locate(core, params)).await,
-                ),
-                SessionsOpenPlan::NAME => Some(
-                    answer::<SessionsOpenPlan, _>(raw, |params| self.open_plan(core, params)).await,
                 ),
                 _ => None,
             }

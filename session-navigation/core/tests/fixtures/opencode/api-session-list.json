@@ -1,0 +1,5 @@
+{
+  "_comment": "Synthetic. GET /api/session?limit=&order=&parentID=null&archived=false&directory=&project=&cursor= -> SessionsResponse.",
+  "data": [ {"id": "ses_0123456789abAAAAAAAAAAAAAA", "projectID": "0000000000000000000000000000000000000001", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1794200000000, "updated": 1794200100000}, "location": {"directory": "/Users/example/project"}} ],
+  "cursor": {"previous": "opaque-cursor-string", "next": "opaque-cursor-string"}
+}

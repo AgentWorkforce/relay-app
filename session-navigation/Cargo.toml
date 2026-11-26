@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["core", "native"]
+
+# The simulator suite runs thousands of worlds; optimise test builds so it
+# stays well under a minute.
+[profile.test]
+opt-level = 2

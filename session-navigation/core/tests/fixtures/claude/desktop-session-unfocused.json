@@ -1,0 +1,11 @@
+{
+  "_comment": "SYNTHETIC. A live record the app has never focused: lastFocusedAt is null until the app focuses the session, then an epoch-ms timestamp (native N1, Claude.app 5.1231.2). Only identity/archive/focus fields shown.",
+  "sessionId": "local_33333333-4444-4555-8666-777777777777",
+  "cliSessionId": "cccccccc-dddd-4eee-8fff-000000000000",
+  "cwd": "/Users/example/code/project",
+  "isArchived": false,
+  "createdAt": 1790000000000,
+  "lastActivityAt": 1790000000000,
+  "lastFocusedAt": null,
+  "title": "Never focused"
+}

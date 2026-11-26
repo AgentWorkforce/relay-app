@@ -1,0 +1,4 @@
+[
+  {"session_id": "0b5a3c1e-1111-4222-8333-444455556666", "pid": 4003, "cwd": "/Users/example/code/project", "opened_at": "2026-11-10T07:48:49.512Z"},
+  {"session_id": "0b5a3c1e-1111-4222-8333-000000000000", "pid": 5100, "cwd": "/Users/example/code/other", "opened_at": "2026-11-10T08:00:00+00:00"}
+]

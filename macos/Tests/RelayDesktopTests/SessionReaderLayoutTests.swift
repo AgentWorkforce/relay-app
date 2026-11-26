@@ -95,8 +95,7 @@ final class SessionReaderLayoutTests: XCTestCase {
     func testTitleUsesSharedHeaderAndActionsUseRightPane() async throws {
         let core = FakeCore()
         defer { core.stop() }
-        core.on("sessions.open_plan") { _ in ["action": "open_link", "url": "codex://threads/reader",
-            "choices": [], "can_resume_default": false] as [String: Any] }
+        let helper = FakeSessionHelper(plan: FakeSessionHelper.plan(action: "open_link", title: "Open in Codex", state: "live"))
         core.on("sessions.transcript") { _ in ["entries": [[
             "id": "message", "role": "assistant", "kind": "text", "text": "The session is ready to read.",
             "timestamp_ms": 1, "truncated": false]], "next_cursor": NSNull()] as [String: Any] }
@@ -134,7 +133,8 @@ final class SessionReaderLayoutTests: XCTestCase {
             }
             let host = NSHostingView(rootView: WorkspaceShell(relay: model.relay, updater: updater) {
                 LocalSessionsView(relay: model.relay)
-            }.environment(model).environment(\.colorScheme, dark ? .dark : .light))
+            }.environment(model).environment(\.sessionOpenEngine, helper.engine())
+                .environment(\.colorScheme, dark ? .dark : .light))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 650),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false

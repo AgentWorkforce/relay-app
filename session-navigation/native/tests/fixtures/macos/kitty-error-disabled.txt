@@ -1,0 +1,1 @@
+Error: Remote control is disabled. Add allow_remote_control to your kitty.conf

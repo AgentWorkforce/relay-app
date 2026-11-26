@@ -70,37 +70,6 @@ fn provider_store_paths_survive_persistence_and_both_resume_hosts() {
         .1
         .unwrap();
     assert_eq!(persisted.provider_environment, Some(environment.clone()));
-    let mut report = stopped_report();
-    report.latest = Some(persisted);
-    for source in ["codex", "claude", "grok"] {
-        for default_terminal in [false, true] {
-            let mut request = open_request(source);
-            request.use_default_terminal = default_terminal;
-            let plan = planner::resolve(&request, &report, planner::Platform::MacOS);
-            assert_eq!(plan.action, SessionOpenAction::Resume);
-            assert_eq!(plan.command.unwrap().environment, Some(environment.clone()));
-            assert_eq!(plan.location.is_none(), default_terminal);
-        }
-    }
-}
-
-#[test]
-fn unreadable_original_environment_refuses_resume_even_in_a_different_terminal() {
-    let table = processes();
-    table.unreadable_environment.lock().unwrap().insert(30);
-    let origin = from_process(&table, 501, 30).unwrap();
-    assert_eq!(origin.provider_environment_known, Some(false));
-    assert_eq!(origin.provider_environment, None);
-    let mut report = stopped_report();
-    report.latest = Some(origin);
-    for default_terminal in [false, true] {
-        let mut request = open_request("claude");
-        request.use_default_terminal = default_terminal;
-        let plan = planner::resolve(&request, &report, planner::Platform::MacOS);
-        assert_eq!(plan.action, SessionOpenAction::Unavailable);
-        assert!(!plan.can_resume_default);
-        assert!(plan.reason.unwrap().contains("storage environment"));
-    }
 }
 
 #[test]
@@ -127,62 +96,8 @@ fn known_empty_environment_is_distinct_from_legacy_and_invalid_capture() {
     let empty = captured(&[]);
     assert_eq!(empty.provider_environment, Some(BTreeMap::new()));
     assert_eq!(empty.provider_environment_known, Some(true));
-    let mut report = stopped_report();
-    report.latest = Some(empty);
-    let plan = planner::resolve(&open_request("claude"), &report, planner::Platform::MacOS);
-    assert_eq!(plan.command.unwrap().environment, Some(BTreeMap::new()));
-    report.latest = Some(pane("macos-tty"));
-    let plan = planner::resolve(&open_request("claude"), &report, planner::Platform::MacOS);
-    assert_eq!(plan.command.unwrap().environment, None);
+    assert_eq!(pane("macos-tty").provider_environment, None);
     let invalid = captured(&[("CODEX_HOME", "~/unknown-home")]);
     assert_eq!(invalid.provider_environment_known, Some(false));
-    report.latest = Some(invalid);
-    assert_eq!(
-        planner::resolve(&open_request("claude"), &report, planner::Platform::MacOS).action,
-        SessionOpenAction::Unavailable
-    );
-}
-
-#[test]
-fn stopped_desktop_link_has_an_explicit_alternative_but_live_link_never_does() {
-    let mut origin = captured(&[("CLAUDE_CONFIG_DIR", "/private/claude-work")]);
-    origin.application = "Claude".into();
-    origin.tty = None;
-    origin.resume_capability = Some("desktop".into());
-    let mut report = stopped_report();
-    report.latest = Some(origin.clone());
-    report.desktop_link = Some("claude://code/continue?session=local_exact".into());
-    let mut request = open_request("claude");
-    let plan = planner::resolve(&request, &report, planner::Platform::MacOS);
-    assert_eq!(plan.action, SessionOpenAction::OpenLink);
-    assert!(plan.can_resume_default);
-    assert!(plan.location.is_none());
-    request.use_default_terminal = true;
-    let plan = planner::resolve(&request, &report, planner::Platform::MacOS);
-    assert_eq!(plan.action, SessionOpenAction::Resume);
-    assert_eq!(
-        plan.command.unwrap().environment,
-        origin.provider_environment
-    );
-    report.running = true;
-    report.current = vec![origin];
-    let plan = planner::resolve(&request, &report, planner::Platform::MacOS);
-    assert_eq!(plan.action, SessionOpenAction::OpenLink);
-    assert!(!plan.can_resume_default);
-    assert!(plan.command.is_none());
-}
-
-#[test]
-fn mapped_link_with_unknown_capture_cannot_offer_a_store_changing_fallback() {
-    let mut report = stopped_report();
-    report.latest = Some(SessionLocation {
-        application: "Claude".into(),
-        provider_environment_known: Some(false),
-        cwd: Some("/project".into()),
-        ..Default::default()
-    });
-    report.desktop_link = Some("claude://code/continue?session=local_exact".into());
-    let plan = planner::resolve(&open_request("claude"), &report, planner::Platform::MacOS);
-    assert_eq!(plan.action, SessionOpenAction::OpenLink);
-    assert!(!plan.can_resume_default);
+    assert_eq!(invalid.provider_environment, None);
 }

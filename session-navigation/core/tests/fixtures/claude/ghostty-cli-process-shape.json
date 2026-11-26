@@ -1,0 +1,10 @@
+{
+  "_comment": "SYNTHETIC. Shape of a shell in a Ghostty 1.4.0 surface on macOS. No claude CLI was running in Ghostty on this Mac, so the claude row is UNVERIFIED (expected).",
+  "chain": [
+    {"pid": 800, "ppid": 1, "user": "<user>", "exe": "/Applications/Ghostty.app/Contents/MacOS/ghostty"},
+    {"pid": 900, "ppid": 800, "user": "root", "tty": "ttys000", "command": "/usr/bin/login -flp <user> /bin/bash --noprofile --norc -c exec -l /bin/zsh"},
+    {"pid": 901, "ppid": 900, "user": "<user>", "tty": "ttys000", "command": "-/bin/zsh", "env_readable_via_KERN_PROCARGS2": false},
+    {"pid": 902, "ppid": 901, "user": "<user>", "tty": "ttys000", "command": "claude [--resume <uuid>]", "_unverified": true}
+  ],
+  "applescript_terminal_object": {"id": "<stable text id>", "name": "<title>", "working directory": "/Users/example/code/project", "pid": 902, "tty": "/dev/ttys000"}
+}

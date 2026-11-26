@@ -1,0 +1,13 @@
+    1 Tue Nov 10 07:10:55 2026     /sbin/launchd
+  424 Tue Nov 10 07:11:01 2026     /System/Library/CoreServices/logind
+  811 Tue Nov 10 07:11:06 2026     /Applications/Ghostty.app/Contents/MacOS/ghostty
+  815 Tue Nov 10 07:11:07 2026     /Applications/OpenCode.app/Contents/MacOS/OpenCode
+  819 Tue Nov 10 07:11:07 2026     /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+  995 Tue Nov 10 07:11:14 2026     /usr/bin/login -flp example /bin/bash --noprofile --norc -c exec -l /bin/zsh
+  998 Tue Nov 10 07:11:14 2026     -/bin/zsh
+ 1111 Tue Nov 10 07:11:15 2026     /Users/example/Library/Application Support/ai.opencode.desktop/cli/2.2.6-arm64/opencode-cli serve --service
+ 1447 Tue Nov 10 07:11:21 2026     /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled
+ 1569 Tue Nov 10 07:11:24 2026     /Users/example/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService
+25208 Wed Nov 11 03:40:00 2026     /Applications/Claude.app/Contents/MacOS/Claude
+25353 Wed Nov 11 03:45:11 2026     /Applications/Claude.app/Contents/Helpers/disclaimer --pgroup -- /Users/example/Library/Application Support/Claude/claude-code/2.1.321/abcdef012345/claude.app/Contents/MacOS/claude --output-format stream-json
+25354 Wed Nov 11 03:45:11 2026     /Users/example/Library/Application Support/Claude/claude-code/2.1.321/abcdef012345/claude.app/Contents/MacOS/claude --output-format stream-json --verbose --input-format stream-json --resume=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee

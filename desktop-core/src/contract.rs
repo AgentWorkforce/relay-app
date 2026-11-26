@@ -175,7 +175,6 @@ pub fn all_specs() -> Vec<MethodSpec> {
         }
     }
     specs.push(MethodSpec::of::<crate::session_locations::SessionsLocation>(Availability::Always));
-    specs.push(MethodSpec::of::<crate::session_locations::SessionsOpenPlan>(Availability::Always));
     specs
 }
 

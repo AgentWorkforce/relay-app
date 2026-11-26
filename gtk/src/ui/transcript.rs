@@ -409,7 +409,6 @@ impl App {
         let page = &sessions.transcript;
         page.generation.set(page.generation.get() + 1);
         page.loading.set(false);
-        page.join.open_plan.borrow_mut().take();
         page.details.set_active(false);
         page.details_panel.set_visible(false);
         *page.scroll_position.borrow_mut() = TranscriptScrollState::default();
@@ -422,6 +421,7 @@ impl App {
         self.install_transcript_title(page, &row);
         page.opening_error.set_visible(false);
         *page.selected.borrow_mut() = Some(row);
+        self.reset_session_open();
         clear(&page.messages);
         page.table_cells_remaining.set(2048);
         *page.tool_group.borrow_mut() = None;

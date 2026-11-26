@@ -2160,6 +2160,10 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
         "not_shared",
     ))
     .unwrap();
+    // Before its first answer the button sends nothing; give it one.
+    case.desktop
+        .engine
+        .answer_plans(|_| super::session_open::plan("resume", serde_json::json!({})));
     case.app
         .open_local_session(agent_relay_app::models::LocalSessionRow {
             upload: Some(claude),
@@ -2168,9 +2172,9 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     // A history-only Claude session is Claude Code, not the Claude app.
     assert_session_open_action(&page.transcript.open, "claudecode", "Open session");
     assert!(!page.transcript.copy_name.get_visible());
+    case.pump(|_| page.transcript.open.is_sensitive());
     page.transcript.open.emit_clicked();
-    case.pump(|_| !case.desktop.opened.borrow().is_empty());
-    assert!(!case.called("sessions.open_plan").is_empty());
+    case.pump(|case| !case.desktop.engine.opens.borrow().is_empty());
     // The genuine core-plan reply calls render_spawn_join again. That used to
     // replace the composed child with plain text, silently losing its badge.
     assert_session_open_action(&page.transcript.open, "claudecode", "Resume in Terminal");
@@ -2198,10 +2202,10 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     assert_eq!(open.width(), actions.width() as f32, "Refreshed Claude action still fills its sidebar row");
     assert_eq!(open.width(), refresh.width(), "Open and Refresh have the same full width after a real plan reply");
     assert_eq!(open.height(), refresh.height(), "Open and Refresh retain matching outer height after refresh");
-    assert_eq!(
-        *case.desktop.opened.borrow(),
-        vec!["cd -- '/w/web' && claude --resume 'two'"]
-    );
+    let opens = case.desktop.engine.opens.borrow();
+    assert_eq!(opens.len(), 1, "a transcript refresh never opens the session again");
+    assert_eq!((opens[0].source.as_str(), opens[0].session_id.as_str()), ("claude", "two"));
+    drop(opens);
     assert!(case.called("uploader.sessions.include").is_empty());
     assert!(case.called("agents.register").is_empty());
 }

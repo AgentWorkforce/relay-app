@@ -1,0 +1,19 @@
+{
+  "open_session": "Open session",
+  "checking": "Checking session location…",
+  "opening": "Opening session…",
+  "resume_default": "Resume in default terminal",
+  "resolve_launch": "Resolve earlier launch…",
+  "launch_question": "Did you close or stop the earlier launch?",
+  "launch_detail": "The earlier terminal or application may still be starting the provider. Close or stop that launch before allowing another resume request.",
+  "launch_closed": "I closed or stopped it",
+  "launch_wait": "Keep waiting",
+  "cancel": "Cancel",
+  "take_over_detail": "Agent Relay will stop the background process running this session, check that it exited, then resume the session here.",
+  "helper_missing": "This copy of Agent Relay is missing its session helper, so it cannot open sessions. Reinstall Agent Relay.",
+  "rejected": "The session helper could not read this request. Update Agent Relay.",
+  "plan_failed": "Couldn’t check this session’s location. Try again.",
+  "open_unknown": "Agent Relay did not get an answer, so it is unknown whether the session opened. Check before trying again.",
+  "open_not_started": "Agent Relay could not start opening this session. No new session was started.",
+  "already_opening": "This session is already being opened."
+}

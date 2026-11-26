@@ -1,0 +1,23 @@
+Name:	bash
+Umask:	0022
+State:	S (sleeping)
+Tgid:	2481
+Ngid:	0
+Pid:	2481
+PPid:	2470
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	256
+Groups:	4 24 27 30 46 100 118 1000 
+NStgid:	2481
+NSpid:	2481
+NSpgid:	2481
+NSsid:	2481
+VmPeak:	   10028 kB
+VmSize:	    9896 kB
+Threads:	1
+SigQ:	0/62635
+Cpus_allowed_list:	0-7
+voluntary_ctxt_switches:	190
+nonvoluntary_ctxt_switches:	4

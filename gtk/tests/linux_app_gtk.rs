@@ -28,6 +28,7 @@ use agent_relay_app::ui::tray::{self, Tray, TrayEntry, TrayModel};
 use agent_relay_app::ui::widgets::{buttons, labels, walk};
 use agent_relay_app::ui::{App, Options};
 use agent_relay_desktop_core::contract::account::SharingMode;
+use agent_relay_desktop_core::session_open::contract::Request;
 use agent_relay_node::relay::contract::agents::SettingsChange;
 use agent_relay_node::relay::contract::connection::CoreNotification;
 use agent_relay_node::relay::contract::{method, reader, Method};
@@ -51,6 +52,8 @@ mod cobrand;
 mod native_visibility;
 #[path = "linux_app_gtk/pages.rs"]
 mod pages;
+#[path = "linux_app_gtk/session_open.rs"]
+mod session_open;
 #[path = "linux_app_gtk/session_queries.rs"]
 mod session_queries;
 #[path = "linux_app_gtk/take_over.rs"]
@@ -351,15 +354,6 @@ fn answer(core: &FakeCore) {
     core.answer("uploader.pause", json!({"paused": true}));
     core.answer("uploader.resume", json!({"paused": false}));
     core.answer("sessions.list", check::<method::SessionsList>(local()));
-    core.answer("sessions.open_plan", Answer::with(|params| async move {
-        let source=params["source"].as_str().unwrap();
-        let id=params["session_id"].as_str().unwrap();
-        if source=="codex" && params["prefer_terminal"]!=true {
-            Ok(json!({"action":"open_link","url":format!("codex://threads/{id}"),"choices":[]}))
-        } else {
-            Ok(json!({"action":"resume","command":{"executable":source,"args":if source=="codex" {vec!["resume",id]}else{vec!["--resume",id]},"cwd":params["directory"]},"choices":[]}))
-        }
-    }));
     core.answer("agents.list", check::<method::AgentsList>(agents()));
     core.answer(
         "agents.register",
@@ -555,8 +549,8 @@ struct FakeDesktop {
     cloud_apps_installed: Cell<bool>,
     cloud_app_open_fails: Cell<bool>,
     codex_installed: Cell<bool>,
-    session_plans: RefCell<Vec<agent_relay_desktop_core::session_locations::SessionOpenPlan>>,
-    session_resume_error: RefCell<Option<String>>,
+    /// Stands in for `agent_relay_desktop_core::session_open`.
+    engine: session_open::FakeEngine,
     opened: RefCell<Vec<String>>,
     notified: RefCell<Vec<CoreNotification>>,
     asked: RefCell<Vec<Confirmation>>,
@@ -568,34 +562,26 @@ struct FakeDesktop {
 }
 
 impl Desktop for FakeDesktop {
-    fn open_session(
+    fn plan_session(&self, request: Request) -> agent_relay_app::ui::desktop::SessionPlanned {
+        self.engine.plan_session(request)
+    }
+
+    fn open_session(&self, request: Request) -> agent_relay_app::ui::desktop::SessionOpened {
+        self.engine.open_session(request)
+    }
+
+    fn release_session(&self, request: Request) -> agent_relay_app::ui::desktop::SessionPlanned {
+        self.engine.release_session(request)
+    }
+
+    fn pick(
         &self,
-        plan: agent_relay_desktop_core::session_locations::SessionOpenPlan,
-    ) -> agent_relay_app::ui::desktop::SessionOpened {
-        use agent_relay_desktop_core::session_locations::SessionOpenAction;
-        self.session_plans.borrow_mut().push(plan.clone());
-        let result = match plan.action {
-            SessionOpenAction::OpenLink if !self.codex_installed.get() => {
-                Err("The session application is unavailable.".into())
-            }
-            SessionOpenAction::OpenLink => {
-                self.opened.borrow_mut().push(plan.url.unwrap());
-                Ok(agent_relay_app::session_navigation::Outcome::Dispatched)
-            }
-            SessionOpenAction::Resume if self.session_resume_error.borrow().is_some() => {
-                Err(self.session_resume_error.borrow().clone().unwrap())
-            }
-            SessionOpenAction::Resume => {
-                let command = plan.command.unwrap();
-                self.opened.borrow_mut().push(format!(
-                    "cd -- '{}' && {} {} '{}'",
-                    command.cwd, command.executable, command.args[0], command.args[1]
-                ));
-                Ok(agent_relay_app::session_navigation::Outcome::Dispatched)
-            }
-            _ => Err(plan.reason.unwrap_or_else(|| "Unavailable".into())),
-        };
-        Box::pin(async move { result })
+        _parent: &gtk::Window,
+        title: &str,
+        detail: &str,
+        options: Vec<String>,
+    ) -> agent_relay_app::ui::desktop::Picked {
+        self.engine.pick(title, detail, options)
     }
 
     fn has_uri_handler(&self, scheme: &str) -> bool {
@@ -703,8 +689,7 @@ impl Case {
             cloud_apps_installed: Cell::new(false),
             cloud_app_open_fails: Cell::new(false),
             codex_installed: Cell::new(true),
-            session_plans: RefCell::default(),
-            session_resume_error: RefCell::default(),
+            engine: session_open::FakeEngine::default(),
             opened: RefCell::default(),
             notified: RefCell::default(),
             asked: RefCell::default(),
@@ -2569,9 +2554,8 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     assert_eq!(case.called("agents.take_over")[0]["interrupt"], false);
     let resume = format!("cd -- '/work/api' && claude --resume '{SESSION}'");
     case.pump(|case| case.desktop.opened.borrow().contains(&resume));
-    // A background app-server owner has no ordinary GUI/TTY planner target.
-    case.answer("sessions.open_plan", json!({"action":"unavailable","reason":"Background owner", "choices":[]}));
-    let planned_before_codex = case.called("sessions.open_plan").len();
+    // A spawned thread on Agent Relay's app server is opened past the engine.
+    let engine_before_codex = case.desktop.engine.plans.borrow().len();
     // A spawned Codex thread opens live in Codex, never in Terminal.
     case.app.open_local_session(LocalSessionRow {
         upload: None,
@@ -2602,7 +2586,8 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
         case.desktop.opened.borrow().last().unwrap(),
         "codex://threads/thread-9"
     );
-    assert_eq!(case.called("sessions.open_plan").len(), planned_before_codex);
+    assert_eq!(case.desktop.engine.plans.borrow().len(), engine_before_codex);
+    assert!(case.desktop.engine.opens.borrow().is_empty());
     case.desktop.codex_installed.set(false);
     case.app.open_local_session(LocalSessionRow {
         upload: None,
@@ -2612,6 +2597,7 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
     let opened = case.desktop.opened.borrow().len();
     page.open.emit_clicked();
     assert_eq!(case.desktop.opened.borrow().len(), opened);
+    assert!(labels(&page.root).contains(&agent_relay_app::models::SPAWN_CODEX_MISSING.to_string()));
     assert_eq!(case.app.page(), Page::Sessions);
     // A spawned Grok session has no app to open it live: it is never resumed
     // in Terminal beside the leader that runs it. Another session's draft is
@@ -2637,9 +2623,9 @@ fn session_opening_settings_route_clicks(runtime: &tokio::runtime::Runtime) {
     assert!(case
         .settings_labels()
         .contains(&"Codex is installed".into()));
-    assert!(case.settings_labels().contains(
-        &"Claude Desktop opens only with a verified provider session link. Terminal sessions return to their recorded host.".into()
-    ));
+    assert!(case
+        .settings_labels()
+        .contains(&"Claude Desktop isn’t installed. Sessions resume in a terminal.".into()));
     let choose = |selection| {
         let mut found = None;
         walk(case.app.window().upcast_ref(), &mut |widget| {
@@ -2668,6 +2654,9 @@ fn session_opening_settings_route_clicks(runtime: &tokio::runtime::Runtime) {
         ),
         relay: None,
     };
+    case.desktop
+        .engine
+        .answer_plans(|_| session_open::plan("resume", json!({})));
     case.app.go(Page::Sessions);
     case.app.open_local_session(row.clone());
     let shell = case.app.shell().unwrap();
@@ -2680,315 +2669,22 @@ fn session_opening_settings_route_clicks(runtime: &tokio::runtime::Runtime) {
         case.desktop.opened.borrow().last().map(String::as_str),
         Some("https://agentrelay.com/cloud/dashboard/sessions/one?source=codex&workspace=w-upload")
     );
-    assert_session_open_action(&page.open, "codex", "Open session");
-    let opened_count = case.desktop.opened.borrow().len();
-    page.open.emit_clicked();
-    case.pump(|_| case.desktop.opened.borrow().len() > opened_count);
-    assert_eq!(
-        case.desktop.opened.borrow().last().unwrap(),
-        "cd -- '/w/api' && codex resume 'one'"
-    );
-    assert_eq!(
-        case.called("sessions.open_plan").last().unwrap()["prefer_terminal"],
-        true
-    );
-    assert_session_open_action(&page.open, "codex", "Resume in Terminal");
-    // Rapid repeated clicks cannot launch the same resumed CLI twice.
-    let dispatched = case.desktop.opened.borrow().len();
-    page.open.emit_clicked();
-    page.open.emit_clicked();
-    case.settle();
-    assert_eq!(case.desktop.opened.borrow().len(), dispatched);
-    assert!(case.called("uploader.sessions.include").is_empty());
-}
-
-fn session_opening_drops_a_stale_reply_and_coalesces_rapid_clicks(
-    runtime: &tokio::runtime::Runtime,
-) {
-    let case = Case::new(runtime);
-    case.answer("sessions.open_plan",Answer::with(|_|async {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        Ok(json!({"action":"resume","command":{"executable":"claude","args":["--resume","one"],"cwd":"/w/api"},"choices":[]}))
-    }));
-    case.sign_in();
-    let row = |id: &str| agent_relay_app::models::LocalSessionRow {
-        upload: Some(
-            serde_json::from_value(upload_row(
-                "claude",
-                id,
-                "same title",
-                "/w/api",
-                false,
-                "not_shared",
-            ))
-            .unwrap(),
-        ),
-        relay: None,
-    };
-    case.app.open_local_session(row("one"));
-    let shell = case.app.shell().unwrap();
-    let page = &shell.pages.sessions.transcript;
-    page.open.emit_clicked();
-    page.open.emit_clicked();
-    case.pump(|case| !case.called("sessions.open_plan").is_empty());
-    assert_eq!(case.called("sessions.open_plan").len(), 1);
-    case.app.open_local_session(row("two"));
-    case.settle();
-    std::thread::sleep(Duration::from_millis(180));
-    case.settle();
-    assert!(
-        case.desktop.session_plans.borrow().is_empty(),
-        "Another transcript must never dispatch a stale resume"
-    );
-    assert!(case.desktop.opened.borrow().is_empty());
-    assert_session_open_action(&page.open, "claudecode", "Open session");
-    page.open.emit_clicked();
-    case.pump(|case| !case.desktop.opened.borrow().is_empty());
-    assert_eq!(case.desktop.session_plans.borrow().len(), 1);
     case.pump(|_| page.open.is_sensitive());
-    assert_session_open_action(&page.open, "claudecode", "Resume in Terminal");
-    let requests = case.called("sessions.open_plan").len();
+    assert_session_open_action(&page.open, "codex", "Resume in Terminal");
     page.open.emit_clicked();
-    page.open.emit_clicked();
-    case.settle();
-    case.pump(|case| case.called("sessions.open_plan").len() > requests);
-    std::thread::sleep(Duration::from_millis(180));
-    case.settle();
-    assert_eq!(case.desktop.session_plans.borrow().len(), 1);
-}
-
-fn session_opening_transport_errors_never_dispatch_a_replacement(
-    runtime: &tokio::runtime::Runtime,
-) {
-    let case = Case::new(runtime);
-    case.answer(
-        "sessions.open_plan",
-        Answer::Fail(RpcError::new(
-            ErrorKind::InvalidParams,
-            "observation store unavailable",
-        )),
-    );
-    case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
-            upload: Some(
-                serde_json::from_value(upload_row(
-                    "claude",
-                    "one",
-                    "same title",
-                    "/w/api",
-                    false,
-                    "not_shared",
-                ))
-                .unwrap(),
-            ),
-            relay: None,
-        });
-    let shell = case.app.shell().unwrap();
-    let page = &shell.pages.sessions.transcript;
-    page.open.emit_clicked();
-    case.pump(|_| {
-        labels(&page.root)
-            .iter()
-            .any(|label| label.contains("No replacement session was started"))
-    });
-    assert!(case.desktop.opened.borrow().is_empty());
-    assert!(case.desktop.session_plans.borrow().is_empty());
-    assert!(page.open.is_sensitive());
-}
-
-fn session_opening_explicit_default_retry_replans_before_dispatch(
-    runtime: &tokio::runtime::Runtime,
-) {
-    let case = Case::new(runtime);
-    case.answer("sessions.open_plan",Answer::with(|params|async move {
-        if params["use_default_terminal"]==true {
-            Ok(json!({"action":"unavailable","reason":"The session now has a running owner.","choices":[],"can_resume_default":false}))
-        } else {
-            Ok(json!({"action":"unavailable","reason":"The original host has no resume API.","choices":[],"can_resume_default":true}))
-        }
-    }));
-    case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
-            upload: Some(
-                serde_json::from_value(upload_row(
-                    "claude",
-                    "one",
-                    "same title",
-                    "/w/api",
-                    false,
-                    "not_shared",
-                ))
-                .unwrap(),
-            ),
-            relay: None,
-        });
-    let shell = case.app.shell().unwrap();
-    let page = &shell.pages.sessions.transcript;
-    page.open.emit_clicked();
-    let dialog = Rc::new(RefCell::new(None));
-    let found = dialog.clone();
-    case.pump(|_| {
-        *found.borrow_mut() = gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|w| w.downcast::<gtk::MessageDialog>().ok())
-            .find(|dialog| {
-                dialog.text().as_deref()
-                    == Some("The original application couldn’t resume this session")
-            });
-        found.borrow().is_some()
-    });
-    assert_eq!(case.called("sessions.open_plan").len(), 1);
-    assert!(
-        case.desktop.opened.borrow().is_empty(),
-        "An unsupported original host never falls back automatically"
-    );
-    dialog
-        .borrow()
-        .as_ref()
-        .unwrap()
-        .response(gtk::ResponseType::Accept);
-    case.pump(|case| case.called("sessions.open_plan").len() == 2);
-    case.pump(|_| {
-        labels(&page.root)
-            .iter()
-            .any(|label| label.contains("state changed"))
-    });
-    assert_eq!(
-        case.called("sessions.open_plan")[1]["use_default_terminal"],
-        true
-    );
-    assert!(
-        case.desktop.opened.borrow().is_empty(),
-        "The refreshed running owner prevents the explicit retry"
-    );
-}
-
-fn session_opening_pending_failure_requires_resolution_before_default_retry(runtime: &tokio::runtime::Runtime) {
-    let case = Case::new(runtime);
-    *case.desktop.session_resume_error.borrow_mut() = Some("Launch acknowledgement timed out".into());
-    case.answer("sessions.open_plan", Answer::with(|params| async move {
-        if params["use_default_terminal"] == true {
-            Ok(json!({"action":"unavailable","reason":"The session now has an owner.","choices":[]}))
-        } else {
-            Ok(json!({"action":"resume","command":{"executable":"claude","args":["--resume","one"],"cwd":"/w/api"},"choices":[],"can_resume_default":true}))
-        }
-    }));
-    case.sign_in();
-    case.app.open_local_session(agent_relay_app::models::LocalSessionRow {
-        upload: Some(serde_json::from_value(upload_row("claude","one","Session","/w/api",false,"not_shared")).unwrap()),
-        relay: None,
-    });
-    let shell = case.app.shell().unwrap();
-    let page = &shell.pages.sessions.transcript;
-    page.open.emit_clicked();
-    case.pump(|_| labels(&page.root).iter().any(|label| label.contains("Launch acknowledgement timed out")));
-    assert_eq!(case.desktop.session_plans.borrow().len(), 1);
-    page.open.emit_clicked();
-    case.pump(|_| labels(&page.root).iter().any(|label| label == agent_relay_app::models::PENDING_RESUME_MESSAGE));
-    case.settle();
-    assert_eq!(case.desktop.session_plans.borrow().len(), 1);
-    let dialog_named = |title: &str| gtk::Window::list_toplevels().into_iter()
-        .filter_map(|window| window.downcast::<gtk::MessageDialog>().ok())
-        .find(|dialog| dialog.is_visible() && dialog.text().as_deref() == Some(title));
-    assert!(dialog_named("The original application couldn’t resume this session").is_none());
-    buttons(&page.root,"Resolve earlier launch…")[0].emit_clicked();
-    case.pump(|_| dialog_named("Did you close or stop the earlier launch?").is_some());
-    dialog_named("Did you close or stop the earlier launch?").unwrap().response(gtk::ResponseType::Accept);
-    case.pump(|_| dialog_named("The original application couldn’t resume this session").is_some());
-    assert_eq!(case.desktop.session_plans.borrow().len(), 1);
-    dialog_named("The original application couldn’t resume this session").unwrap().response(gtk::ResponseType::Accept);
-    case.pump(|case| case.called("sessions.open_plan").iter().any(|params|params["use_default_terminal"]==true));
-    case.pump(|_| labels(&page.root).iter().any(|label|label.contains("state changed")));
-    assert_eq!(case.desktop.session_plans.borrow().len(), 1, "Fresh ownership prevents the explicitly requested replacement");
-}
-
-fn session_opening_reloads_pending_launches_and_blocks_corrupt_storage(runtime: &tokio::runtime::Runtime) {
-    use agent_relay_app::models::{LocalSessionRow, PendingSessionResumes};
-    for corrupt in [false, true] {
-        let row = LocalSessionRow {
-            upload: Some(serde_json::from_value(upload_row("claude","one","Session","/w/api",false,"not_shared")).unwrap()),
-            relay: None,
-        };
-        let key = row.key();
-        let case = Case::seeded(runtime, |_| {}, Arc::new(FakeService::default()), |prefs| {
-            if corrupt {
-                std::fs::write(prefs.path().with_file_name("pending-session-resumes.json"), "{broken").unwrap();
-            } else {
-                // The previous desktop reserved this launch, then exited while
-                // its shell was still starting. Drop all in-memory state.
-                let mut previous = PendingSessionResumes::load(prefs.path());
-                let plan = serde_json::from_value(json!({"action":"resume","choices":[]})).unwrap();
-                assert!(previous.begin(&key, &plan).unwrap());
-            }
-        });
-        case.sign_in();
-        case.app.open_local_session(row);
-        let shell = case.app.shell().unwrap();
-        let page = &shell.pages.sessions.transcript;
-        page.open.emit_clicked();
-        case.pump(|case| !case.called("sessions.open_plan").is_empty());
-        case.pump(|_| page.open.is_sensitive());
-        assert!(case.desktop.session_plans.borrow().is_empty(), "No native resume after restart/corrupt storage");
-        assert!(case.desktop.opened.borrow().is_empty());
-        let message = if corrupt { "Resume is blocked." } else { "A resume request was already sent." };
-        assert!(labels(&page.root).iter().any(|label|label.contains(message)));
-    }
-}
-
-fn session_opening_multiple_owners_requires_an_explicit_choice(runtime: &tokio::runtime::Runtime) {
-    let case = Case::new(runtime);
-    case.answer("sessions.open_plan",Answer::with(|params|async move {
-        if params["selected"].is_object() {
-            Ok(json!({"action":"unavailable","reason":"Selected owner changed.","choices":[]}))
-        } else {
-            Ok(json!({"action":"choose","choices":[
-                {"application":"Kitty","bundle_id":"kitty","pid":101,"process_start":500,"tty":"/dev/pts/4","observed_at_ms":1},
-                {"application":"Kitty","bundle_id":"kitty","pid":102,"process_start":501,"tty":"/dev/pts/5","observed_at_ms":1}
-            ]}))
-        }
-    }));
-    case.sign_in();
-    case.app
-        .open_local_session(agent_relay_app::models::LocalSessionRow {
-            upload: Some(
-                serde_json::from_value(upload_row(
-                    "claude",
-                    "one",
-                    "same title",
-                    "/w/api",
-                    false,
-                    "not_shared",
-                ))
-                .unwrap(),
-            ),
-            relay: None,
-        });
-    let shell = case.app.shell().unwrap();
-    let page = &shell.pages.sessions.transcript;
-    page.open.emit_clicked();
-    let dialog = Rc::new(RefCell::new(None));
-    let found = dialog.clone();
-    case.pump(|_| {
-        *found.borrow_mut() = gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|w| w.downcast::<gtk::Dialog>().ok())
-            .find(|dialog| dialog.title().as_deref() == Some("Choose session location"));
-        found.borrow().is_some()
-    });
-    assert_session_open_action(&page.open, "claudecode", "Open running session");
-    assert!(case.desktop.session_plans.borrow().is_empty());
-    dialog
-        .borrow()
-        .as_ref()
-        .unwrap()
-        .response(gtk::ResponseType::Other(1));
-    case.pump(|case| case.called("sessions.open_plan").len() == 2);
-    assert_eq!(case.called("sessions.open_plan")[1]["selected"]["pid"], 102);
-    case.pump(|_| labels(&page.open).contains(&"Session opening unavailable".into()));
-    assert_session_open_action(&page.open, "claudecode", "Session opening unavailable");
-    assert!(case.desktop.opened.borrow().is_empty());
+    case.pump(|case| !case.desktop.engine.opens.borrow().is_empty());
+    // "Terminal" is sent as the engine's preference, never as the default
+    // terminal request, and no terminal is named for it.
+    let look = case.desktop.engine.plans.borrow().last().unwrap().clone();
+    assert!(look.prefer_terminal);
+    let open = case.desktop.engine.opens.borrow()[0].clone();
+    assert_eq!((open.source.as_str(), open.session_id.as_str()), ("codex", "one"));
+    assert!(open.prefer_terminal);
+    assert!(!open.use_default_terminal);
+    assert_eq!(open.default_terminal, None);
+    case.pump(|_| page.open.is_sensitive());
+    assert_session_open_action(&page.open, "codex", "Resume in Terminal");
+    assert!(case.called("uploader.sessions.include").is_empty());
 }
 
 fn capacity_notice_names_the_plan_and_opens_billing(runtime: &tokio::runtime::Runtime) {
@@ -6129,22 +5825,32 @@ const TESTS: &[(&str, Test)] = &[
     ),
     ("appearance_is_remembered", appearance_is_remembered),
     (
-        "session_opening_drops_a_stale_reply_and_coalesces_rapid_clicks",
-        session_opening_drops_a_stale_reply_and_coalesces_rapid_clicks,
+        "session_open_asks_the_engine_and_draws_its_answer",
+        session_open::session_open_asks_the_engine_and_draws_its_answer,
     ),
     (
-        "session_opening_transport_errors_never_dispatch_a_replacement",
-        session_opening_transport_errors_never_dispatch_a_replacement,
+        "session_open_runs_one_open_at_a_time_and_keeps_each_answer_with_its_session",
+        session_open::session_open_runs_one_open_at_a_time_and_keeps_each_answer_with_its_session,
     ),
     (
-        "session_opening_explicit_default_retry_replans_before_dispatch",
-        session_opening_explicit_default_retry_replans_before_dispatch,
+        "session_open_without_an_answer_shows_the_button_again",
+        session_open::session_open_without_an_answer_shows_the_button_again,
     ),
-    ("session_opening_pending_failure_requires_resolution_before_default_retry", session_opening_pending_failure_requires_resolution_before_default_retry),
-    ("session_opening_reloads_pending_launches_and_blocks_corrupt_storage", session_opening_reloads_pending_launches_and_blocks_corrupt_storage),
     (
-        "session_opening_multiple_owners_requires_an_explicit_choice",
-        session_opening_multiple_owners_requires_an_explicit_choice,
+        "session_open_offers_the_default_terminal_only_when_the_engine_does",
+        session_open::session_open_offers_the_default_terminal_only_when_the_engine_does,
+    ),
+    (
+        "session_open_releases_an_earlier_launch_only_when_told_and_opens_nothing",
+        session_open::session_open_releases_an_earlier_launch_only_when_told_and_opens_nothing,
+    ),
+    (
+        "session_open_shows_the_terminal_icon_for_a_terminal_and_sends_the_preference",
+        session_open::session_open_shows_the_terminal_icon_for_a_terminal_and_sends_the_preference,
+    ),
+    (
+        "session_open_asks_the_questions_an_answer_needs",
+        session_open::session_open_asks_the_questions_an_answer_needs,
     ),
     (
         "session_opening_settings_route_clicks",

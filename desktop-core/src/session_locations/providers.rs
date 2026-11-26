@@ -1,5 +1,25 @@
 use super::*;
 
+/// The platform whose provider data roots apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Platform {
+    MacOS,
+    Linux,
+    Windows,
+}
+
+impl Platform {
+    pub(super) fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOS
+        } else if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
 mod ownership;
 pub(super) fn owners(
     config: &LocalConfig,
@@ -71,9 +91,7 @@ pub(super) fn owners(
 /// Claude Desktop's local_* identity differs from its cliSessionId. Only the
 /// provider's record establishes that mapping; titles and cwd never do.
 pub(super) fn claude_link(config: &LocalConfig, id: &str) -> Option<String> {
-    let roots = claude_metadata_roots(config, planner::Platform::current(), &|key| {
-        std::env::var(key).ok()
-    });
+    let roots = claude_metadata_roots(config, Platform::current(), &|key| std::env::var(key).ok());
     let matches: HashSet<_> = roots
         .iter()
         .filter_map(|root| claude_desktop_id(root, id))
@@ -189,21 +207,21 @@ fn process_start_ms(
 /// finding it does not claim that a desktop URL handler is installed.
 pub(super) fn claude_metadata_roots(
     config: &LocalConfig,
-    platform: planner::Platform,
+    platform: Platform,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<std::path::PathBuf> {
     if let Some(root) = config.claude.app_sessions.as_ref().and_then(|p| p.parent()) {
         return vec![root.join("claude-code-sessions")];
     }
     let root = match platform {
-        planner::Platform::Windows => env("APPDATA")
+        Platform::Windows => env("APPDATA")
             .map(std::path::PathBuf::from)
             .map(|p| p.join("Claude")),
-        planner::Platform::Linux => env("XDG_CONFIG_HOME")
+        Platform::Linux => env("XDG_CONFIG_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| env("HOME").map(|p| Path::new(&p).join(".config")))
             .map(|p| p.join("Claude")),
-        planner::Platform::MacOS => None,
+        Platform::MacOS => None,
     };
     root.map(|p| vec![p.join("claude-code-sessions")])
         .unwrap_or_default()

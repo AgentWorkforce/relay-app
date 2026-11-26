@@ -112,17 +112,21 @@ fn a_spawned_codex_thread_opens_only_live_in_codex() {
         &row(codex.clone()),
         Some(&codex)
     ));
-    let plan = SessionOpening::spawned_live_plan(&row(codex.clone()), Some(&codex)).unwrap();
     assert_eq!(
-        plan.action,
-        agent_relay_desktop_core::session_locations::SessionOpenAction::OpenLink
+        SessionOpening::spawned_live_link(&row(codex.clone()), Some(&codex)),
+        Some(format!("codex://threads/{SESSION}"))
     );
+    // Only a spawned thread Agent Relay hosts is opened past the engine.
+    let own = session(SessionKind::Codex, None);
     assert_eq!(
-        plan.url.as_deref(),
-        Some(format!("codex://threads/{SESSION}").as_str())
+        SessionOpening::spawned_live_link(&row(own.clone()), Some(&own)),
+        None
     );
-    assert!(plan.command.is_none());
-    assert!(!plan.can_resume_default);
+    let grok = session(SessionKind::Grok, spawn("grok", false, false));
+    assert_eq!(
+        SessionOpening::spawned_live_link(&row(grok.clone()), Some(&grok)),
+        None
+    );
     let action = SessionOpening::for_row(&row(codex)).unwrap();
     assert!(action.live_only);
     assert_eq!(action.command, None);

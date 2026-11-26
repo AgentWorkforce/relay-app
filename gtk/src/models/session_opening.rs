@@ -3,7 +3,8 @@ use agent_relay_node::relay::contract::agents::{LocalSession, SessionHolder};
 use agent_relay_node::relay::store::SessionKind;
 
 /// Command/link descriptions used by explicit spawned-agent handover and
-/// hosted-session notes. Ordinary Open is planned by `sessions.open_plan`.
+/// hosted-session notes. Ordinary Open is the engine's
+/// (`agent_relay_desktop_core::session_open`, see `SessionOpens`).
 /// Only local CLI identities are resumed. A session Agent Relay spawned is
 /// never resumed beside the process that runs it: a spawned Codex thread
 /// opens only in Codex, whose app server hosts it, a spawned Claude is taken
@@ -17,18 +18,18 @@ pub struct SessionOpening {
     /// preference.
     pub live_only: bool,
     /// What held the session when this handover/notes description was read.
-    /// Current ownership and platform-specific desktop handoff are resolved
-    /// independently by the shared planner immediately before ordinary Open.
+    /// Current ownership is observed again by the engine on every Open.
     pub holder: Option<SessionHolder>,
 }
 
 impl SessionOpening {
-    /// The UI may ask the shared planner for any local provider session,
-    /// including a desktop conversation without a terminal cwd. Only the
-    /// spawned-agent handover and nonlocal scope are decided before that read.
+    /// The UI may ask the engine about any local session of a provider it
+    /// opens (`OPENABLE_SOURCES`), including a desktop conversation without
+    /// a terminal cwd. Only the spawned-agent handover and nonlocal scope are
+    /// decided before that look.
     pub fn may_request_plan(row: &LocalSessionRow, relay: Option<&LocalSession>) -> bool {
         let handover = SpawnHandover::of(relay);
-        matches!(row.source(), "codex" | "claude" | "grok")
+        super::OPENABLE_SOURCES.contains(&row.source())
             && !matches!(
                 handover,
                 Some(SpawnHandover::TakeOver | SpawnHandover::OpenLive)
@@ -39,26 +40,17 @@ impl SessionOpening {
                 .is_some_and(|session| session.target.kind == SessionKind::ClaudeCloud)
     }
 
-    /// A registered app-server thread opens in Codex without acquiring a
-    /// terminal owner. This path cannot construct a resume command.
-    pub fn spawned_live_plan(
+    /// A spawned Codex thread Agent Relay's app server runs opens only live
+    /// in Codex: its exact thread link, never a Terminal resume, and never
+    /// through the engine, which would see the app server as its owner.
+    pub fn spawned_live_link(
         row: &LocalSessionRow,
         relay: Option<&LocalSession>,
-    ) -> Option<agent_relay_desktop_core::session_locations::SessionOpenPlan> {
-        use agent_relay_desktop_core::session_locations::{SessionOpenAction, SessionOpenPlan};
+    ) -> Option<String> {
         if row.source() != "codex" || SpawnHandover::of(relay) != Some(SpawnHandover::OpenLive) {
             return None;
         }
-        let opening = Self::for_session(row, relay, relay)?;
-        Some(SessionOpenPlan {
-            action: SessionOpenAction::OpenLink,
-            location: None,
-            url: opening.deep_link,
-            command: None,
-            choices: Vec::new(),
-            reason: None,
-            can_resume_default: false,
-        })
+        Self::for_session(row, relay, relay).and_then(|opening| opening.deep_link)
     }
 
     pub fn for_row(row: &LocalSessionRow) -> Option<Self> {
@@ -147,8 +139,8 @@ impl SessionOpening {
     }
 
     /// Builds the command description for handover/notes; it does not grant
-    /// permission to launch. Ordinary Open never executes this command and
-    /// always revalidates ownership through the shared planner.
+    /// permission to launch. Ordinary Open never executes this command: the
+    /// engine observes the session again and builds its own.
     pub fn held(source: &str, id: &str, cwd: &str, holder: Option<SessionHolder>) -> Option<Self> {
         let opening = Self::new(source, id, cwd)?;
         let command = match holder {
@@ -199,6 +191,34 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_provider_the_engine_opens_may_ask_it() {
+        let row = |source: &str| LocalSessionRow {
+            upload: Some(
+                serde_json::from_value(serde_json::json!({"source": source, "session_id": "s1",
+                    "title": "Fix", "cwd": "/w", "is_agent": false, "included": false,
+                    "status": "not_shared", "last_activity_ms": 1}))
+                .unwrap(),
+            ),
+            relay: None,
+        };
+        for source in ["claude", "codex", "grok", "opencode"] {
+            assert!(
+                SessionOpening::may_request_plan(&row(source), None),
+                "{source}"
+            );
+        }
+        for source in ["pi", "cursor", "muse"] {
+            assert!(
+                !SessionOpening::may_request_plan(&row(source), None),
+                "{source}"
+            );
+        }
+        // OpenCode has no handover command: only the engine opens it.
+        assert_eq!(SessionOpening::for_row(&row("opencode")), None);
+    }
+
     #[test]
     fn resumes_exact_session_in_its_directory() {
         for (source, cli) in [

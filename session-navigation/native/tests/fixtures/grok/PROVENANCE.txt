@@ -1,0 +1,12 @@
+DOCUMENTATION-DERIVED fixtures, NOT captured output: Grok was not installed.
+
+Shapes follow the reference readers (read-only):
+- active_sessions.json: relay crates/relay-node/src/relay/grok.rs
+  `decode_active_sessions` ([{session_id, pid, cwd, opened_at RFC 3339}]).
+- summary.json: relayhistory crates/ai-hist/src/discover.rs (`info.id`,
+  `info.cwd`, top-level `session_kind`, `created_at`, `updated_at`,
+  `current_model_id`, `head_branch`) and ingest/grok.rs (`summary_model`).
+- summary-subagent.json: the same with `session_kind: "subagent"`
+  (discover.rs, facts-grok 6).
+The session directory is sessions/<percent-encoded cwd>/<id>/ (relay
+`encode_component`): every byte outside A-Za-z0-9-_.!~*'() is %XX.

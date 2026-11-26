@@ -1,6 +1,7 @@
 //! Keep verified session origins locally, independently of disposable history indexes.
-//! Window focusing stays in the UI process so macOS attributes Automation permission
-//! to the app the person clicked, not a background service.
+//! Opening a session is `crate::session_open`, in the app's own process, so
+//! macOS attributes Automation permission to the app the person clicked and
+//! Windows lets it raise windows; this store is its history feed.
 use agent_relay_node::relay::{
     local::LocalConfig,
     process::{ProcessInfo, ProcessTable, MAX_ANCESTRY},
@@ -14,7 +15,6 @@ mod contract;
 mod extension;
 pub use contract::*;
 mod hosts;
-pub mod planner;
 mod providers;
 mod store;
 pub use extension::{watch, SessionLocations};

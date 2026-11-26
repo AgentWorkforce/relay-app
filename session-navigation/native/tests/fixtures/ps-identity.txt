@@ -1,0 +1,13 @@
+    1     0     0     0 ??       Tue Nov 10 07:10:55 2026     launchd
+  424     1     0     0 ??       Tue Nov 10 07:11:01 2026     logind
+  811     1   501   501 ??       Tue Nov 10 07:11:06 2026     ghostty
+  815     1   501   501 ??       Tue Nov 10 07:11:07 2026     OpenCode
+  819     1   501   501 ??       Tue Nov 10 07:11:07 2026     ChatGPT
+  995   811     0   501 ttys000  Tue Nov 10 07:11:14 2026     login
+  998   995   501   501 ttys000  Tue Nov 10 07:11:14 2026     zsh
+ 1111   815   501   501 ??       Tue Nov 10 07:11:15 2026     opencode-cli
+ 1447   819   501   501 ??       Tue Nov 10 07:11:21 2026     codex
+ 1569   819   501   501 ??       Tue Nov 10 07:11:24 2026     SkyComputerUseSe
+25208     1   501   501 ??       Wed Nov 11 03:40:00 2026     Claude
+25353 25208   501   501 ??       Wed Nov 11 03:45:11 2026     disclaimer
+25354 25353   501   501 ??       Wed Nov 11 03:45:11 2026     claude

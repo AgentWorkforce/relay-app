@@ -1,0 +1,4 @@
+{"_source":"relay crates/relay-node/src/relay/codex/ipc.rs (not exercised on this machine). Frame = 4-byte little-endian length + UTF-8 JSON.",
+ "initialize_request":{"type":"request","requestId":"<uuid>","sourceClientId":"initializing-client","version":0,"method":"initialize","params":{"clientType":"example-client"}},
+ "owner_discovery_request":{"type":"request","requestId":"<uuid>","sourceClientId":"<clientId from initialize>","version":1,"method":"thread-owner-discovery","params":{"hostId":"local","conversationId":"01900000-0000-7000-8000-000000000001"}},
+ "owner_discovery_success_shape":"response with result success and handledByClientId=<owning window client id>; no success within 12s => no window owns the thread"}
