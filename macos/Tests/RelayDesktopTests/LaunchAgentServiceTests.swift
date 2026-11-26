@@ -5,6 +5,54 @@ import XCTest
 @testable import RelayDesktopCore
 
 final class LaunchAgentServiceTests: XCTestCase {
+    func testSyncStatusAndReloadDistinguishUncertainPrintFromMissingJob() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.seedOldFallback()
+        let originalPlist = try Data(contentsOf: fixture.fallback)
+        let timeout = NSError(domain: LaunchAgentService.errorDomain, code: 2)
+        fixture.os.printError = timeout
+
+        XCTAssertEqual(fixture.service.status, .unknown)
+        XCTAssertThrowsError(try fixture.service.reloadForUpdate()) { XCTAssertEqual($0 as NSError, timeout) }
+        XCTAssertThrowsError(try fixture.service.unregister()) { XCTAssertEqual($0 as NSError, timeout) }
+        XCTAssertEqual(fixture.os.events, [])
+        XCTAssertEqual(try Data(contentsOf: fixture.fallback), originalPlist)
+
+        fixture.os.printError = nil
+        fixture.os.failedPrintOutput = "Operation not permitted"
+        XCTAssertEqual(fixture.service.status, .unknown)
+        XCTAssertThrowsError(try fixture.service.reloadForUpdate())
+        XCTAssertEqual(fixture.os.events, [])
+        XCTAssertEqual(try Data(contentsOf: fixture.fallback), originalPlist)
+
+        fixture.os.failedPrintOutput = nil
+        fixture.os.loadedProgram = nil
+        XCTAssertEqual(fixture.service.status, .notRegistered)
+        XCTAssertTrue(try fixture.service.reloadForUpdate())
+        XCTAssertEqual(fixture.service.status, .enabled)
+        XCTAssertFalse(fixture.os.events.contains("bootout"))
+    }
+
+    func testSyncUnregisterRequiresConfirmedAbsenceAfterBootout() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.seedOldFallback()
+        fixture.defaults.set(1, forKey: fixture.policyKey)
+        let timeout = NSError(domain: LaunchAgentService.errorDomain, code: 2)
+        fixture.os.retirementPrintError = timeout
+
+        XCTAssertThrowsError(try fixture.service.unregister()) { XCTAssertEqual($0 as NSError, timeout) }
+        XCTAssertEqual(fixture.os.events, ["bootout"])
+        XCTAssertEqual(fixture.appliedPolicyRevision, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.fallback.path))
+
+        fixture.os.retirementPrintError = nil
+        try fixture.service.unregister()
+        XCTAssertNil(fixture.appliedPolicyRevision)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.fallback.path))
+    }
+
     func testStartupOffLoadsOnlyASessionJobAndOnRestoresTheLoginJob() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -489,20 +537,26 @@ final class LaunchAgentServiceTests: XCTestCase {
         var requirePersistentPlist = false
         var events: [String] = []
         var plistPath = ""
+        var printError: NSError?
+        var failedPrintOutput: String?
+        var retirementPrintError: NSError?
 
         var operations: LaunchAgentService.System {
             .init(bundledStatus: { self.bundledStatus }, registerBundled: { self.bundledStatus = .enabled },
                   unregisterBundled: {
                       self.events.append("unregisterBundled")
                       self.bundledStatus = .notRegistered
-                  }, legacyStatus: { _ in self.legacyStatus }, launchctl: { self.run($0) },
+                  }, legacyStatus: { _ in self.legacyStatus }, launchctl: { try self.run($0) },
                   pause: { _ in self.pauses += 1 },
                   pauseAsync: { _ in self.pauses += 1; await Task.yield() })
         }
 
-        func run(_ arguments: [String]) -> (success: Bool, output: String) {
+        func run(_ arguments: [String]) throws -> (success: Bool, output: String) {
             switch arguments.first {
             case "print":
+                if let printError { throw printError }
+                if let failedPrintOutput { return (false, failedPrintOutput) }
+                if remainingPrints != nil, let retirementPrintError { throw retirementPrintError }
                 guard arguments[1].hasSuffix(".local") || arguments[1].hasSuffix(".session") else {
                     return (bundledStatus == .enabled, "job state = spawn failed\nlast exit code = 78: EX_CONFIG\nprogram identifier = Contents/Helpers/Agent Relay Helper")
                 }
@@ -510,7 +564,7 @@ final class LaunchAgentServiceTests: XCTestCase {
                     if remaining == 0 { loadedProgram = nil; loadedProcessType = nil; remainingPrints = nil }
                     else { remainingPrints = remaining - 1 }
                 }
-                return (loadedProgram != nil, loadedProgram.map { "job = {\n\tprogram = \($0)\n}" } ?? "not found")
+                return (loadedProgram != nil, loadedProgram.map { "job = {\n\tprogram = \($0)\n}" } ?? "Could not find service \(arguments[1]) in domain")
             case "bootout":
                 if requirePersistentPlist { XCTAssertTrue(FileManager.default.fileExists(atPath: plistPath)) }
                 events.append("bootout")

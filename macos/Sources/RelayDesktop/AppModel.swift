@@ -1121,7 +1121,7 @@ final class AppModel {
                 countCoreRepair()
                 try await reregisterCore()
                 try await showCoreServiceStatus()
-            case .enabled, .requiresApproval, .notFound:
+            case .enabled, .requiresApproval, .notFound, .unknown:
                 showCoreServiceStatus(status)
             }
         } catch {

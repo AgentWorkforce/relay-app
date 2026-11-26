@@ -71,7 +71,7 @@ struct ProductTakeover {
 
     /// OS calls are replaceable so tests never stop, quit or trash anything real.
     struct System {
-        var launchctl: ([String]) -> (success: Bool, output: String)
+        var launchctl: ([String]) throws -> (success: Bool, output: String)
         var runningApplications: () -> [RunningApp]
         /// Every copy of an app LaunchServices knows by bundle id.
         var applicationURLs: (String) -> [URL]
@@ -483,7 +483,14 @@ struct ProductTakeover {
         var settled: [String] = []
         var unsettled: [String] = []
         for id in ids {
-            let outcome = replace(id, found[id] ?? Found())
+            let outcome: (acted: Bool, coreUnloaded: Bool, survived: Bool)
+            do {
+                outcome = try replace(id, found[id] ?? Found())
+            } catch {
+                Self.logger.error("deferring replacement of \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                unsettled.append(id)
+                continue
+            }
             if outcome.acted { acted.append(id) }
             if outcome.survived {
                 Self.logger.notice("\(id, privacy: .public) stays installed or running; its data and settings stay its own")
@@ -523,8 +530,9 @@ struct ProductTakeover {
     /// core's labels is loaded afterwards; `survived` when a bundle of it
     /// could not be moved to the Trash, an app of it was left running, or
     /// an app of it made to quit had not exited `exitSteps` pauses later.
-    private func replace(_ id: String, _ found: Found) -> (acted: Bool, coreUnloaded: Bool, survived: Bool) {
-        let first = bootOut(id)
+    private func replace(_ id: String, _ found: Found) throws -> (acted: Bool, coreUnloaded: Bool, survived: Bool) {
+        let first = try bootOut(id)
+        let coreStopped = try !isAnyLoaded(id)
         var acted = first.attempted
         // Where the running apps are, taken before their bundles move.
         let runningPaths = found.running.map { $0.bundleURL.map(canonicalPath) }
@@ -543,7 +551,6 @@ struct ProductTakeover {
                 Self.logger.error("could not move \(bundle.path, privacy: .public) to the Trash: \(error.localizedDescription, privacy: .public)")
             }
         }
-        let coreStopped = !isAnyLoaded(id)
         for (app, path) in zip(found.running, runningPaths) where app.isRunning() {
             // An app whose bundle stays where it was is a product that
             // survives this takeover: quitting it would only start it and
@@ -566,9 +573,9 @@ struct ProductTakeover {
         // Quitting can register its core again; stop that one too, and wait
         // for launchd to let it go (it gives a job five seconds), but only
         // when a core was stopped in this run: nothing loaded costs no wait.
-        let second = bootOut(id)
+        let second = try bootOut(id)
         if second.attempted { acted = true }
-        let coreUnloaded = (first.unloaded || second.unloaded) ? waitForCore(id) : !isAnyLoaded(id)
+        let coreUnloaded = try (first.unloaded || second.unloaded) ? waitForCore(id) : !isAnyLoaded(id)
         for plist in found.plists {
             acted = true
             do {
@@ -621,23 +628,23 @@ struct ProductTakeover {
         }
     }
 
-    private func isLoaded(_ label: String) -> Bool {
-        system.launchctl(["print", "gui/\(getuid())/\(label)"]).success
+    private func isLoaded(_ label: String) throws -> Bool {
+        try LaunchAgentService.checkedPrint(system.launchctl(["print", "gui/\(getuid())/\(label)"])).success
     }
 
-    private func isAnyLoaded(_ id: String) -> Bool {
-        Self.labels(of: id).contains(where: isLoaded)
+    private func isAnyLoaded(_ id: String) throws -> Bool {
+        try Self.labels(of: id).filter(isLoaded).isEmpty == false
     }
 
     /// Unloads the other product's core jobs that launchd has loaded. Only
     /// its labels: this product's core is never touched. `attempted` when a
     /// label was loaded, `unloaded` when launchd accepted a bootout.
-    private func bootOut(_ id: String) -> (attempted: Bool, unloaded: Bool) {
+    private func bootOut(_ id: String) throws -> (attempted: Bool, unloaded: Bool) {
         var attempted = false
         var unloaded = false
-        for label in Self.labels(of: id) where isLoaded(label) {
+        for label in try Self.labels(of: id).filter(isLoaded) {
             attempted = true
-            let result = system.launchctl(["bootout", "gui/\(getuid())/\(label)"])
+            let result = try system.launchctl(["bootout", "gui/\(getuid())/\(label)"])
             if result.success {
                 unloaded = true
                 Self.logger.notice("unloaded the core of another Agent Relay product, \(label, privacy: .public)")
@@ -649,12 +656,12 @@ struct ProductTakeover {
     }
 
     /// True once none of the product's core labels is loaded.
-    private func waitForCore(_ id: String) -> Bool {
+    private func waitForCore(_ id: String) throws -> Bool {
         for _ in 0..<120 {
-            guard isAnyLoaded(id) else { return true }
+            guard try isAnyLoaded(id) else { return true }
             system.pause(0.05)
         }
-        guard isAnyLoaded(id) else { return true }
+        guard try isAnyLoaded(id) else { return true }
         Self.logger.error("the core of \(id, privacy: .public) has not stopped yet")
         return false
     }
@@ -710,7 +717,7 @@ struct ProductTakeover {
                 Self.logger.error("ignoring the pending settings of \(source, privacy: .public): not a product this one replaced")
                 continue
             }
-            guard !unsettled.contains(source), !isAnyLoaded(source) else {
+            guard !unsettled.contains(source), (try? isAnyLoaded(source)) == false else {
                 Self.logger.notice("the settings of \(source, privacy: .public) follow at a later launch")
                 deferred.insert(source)
                 continue

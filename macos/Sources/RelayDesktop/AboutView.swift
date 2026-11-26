@@ -78,7 +78,7 @@ struct DesktopDiagnostics {
         case .requiresApproval?: service = "Needs approval in Login Items"
         case .notRegistered?: service = "Not registered"
         case .notFound?: service = "Not installed"
-        case nil: service = "Unavailable"
+        case .unknown?, nil: service = "Unavailable"
         }
         return [
             Section(title: "Build", rows: buildRows(snapshot, crates: AppInfo.coreCrates)),

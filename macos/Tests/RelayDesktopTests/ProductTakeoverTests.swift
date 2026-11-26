@@ -91,6 +91,23 @@ final class ProductTakeoverTests: XCTestCase {
         XCTAssertEqual(found[Self.other]?.bundles.map(\.path), [copy.path])
     }
 
+    func testTakeoverDefersWhenCoreStatusTimesOut() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let plist = try fixture.agent(id: Self.other, suffix: ".local", in: fixture.launchAgents)
+        let bundle = try fixture.app(named: "Example", id: Self.other)
+        fixture.os.timedOutLabel = "\(Self.other).core.local"
+
+        XCTAssertTrue(fixture.takeover.run().isEmpty)
+        XCTAssertEqual(fixture.os.events, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: plist.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bundle.path))
+
+        fixture.os.timedOutLabel = nil
+        XCTAssertEqual(fixture.takeover.run(), [Self.other])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
+    }
+
     func testTakeoverStopsTrashesQuitsRemovesThenCarriesData() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -832,6 +849,7 @@ final class ProductTakeoverTests: XCTestCase {
         var pausedFor: TimeInterval = 0
         /// Labels launchd refuses to unload.
         var stuck: Set<String> = []
+        var timedOutLabel: String?
         /// Bundle names the Trash refuses.
         var trashFailures: Set<String> = []
         /// Another process holds the takeover lock.
@@ -854,7 +872,7 @@ final class ProductTakeoverTests: XCTestCase {
 
         var system: ProductTakeover.System {
             ProductTakeover.System(
-                launchctl: { self.launchctl($0) },
+                launchctl: { try self.launchctl($0) },
                 runningApplications: {
                     self.running.map { app in
                         ProductTakeover.RunningApp(
@@ -905,13 +923,14 @@ final class ProductTakeoverTests: XCTestCase {
                 })
         }
 
-        func launchctl(_ arguments: [String]) -> (success: Bool, output: String) {
+        func launchctl(_ arguments: [String]) throws -> (success: Bool, output: String) {
             guard arguments.count == 2, let label = arguments[1].split(separator: "/").last.map(String.init) else {
                 return (false, "unexpected command")
             }
             switch arguments[0] {
             case "print":
-                return (loaded.contains(label), "")
+                if label == timedOutLabel { throw NSError(domain: LaunchAgentService.errorDomain, code: 2) }
+                return loaded.contains(label) ? (true, "") : (false, "Could not find service \(label) in domain")
             case "bootout":
                 events.append("bootout \(label)")
                 guard !stuck.contains(label) else { return (false, "Boot-out failed: 5: Input/output error") }

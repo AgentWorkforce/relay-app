@@ -13,6 +13,7 @@ that reached `## Unreleased` after the released commit stay there. A release
 whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
+- On macOS, Agent Relay reports an unavailable registration status when it cannot check the background service, and pauses service replacement until it can confirm the previous job is gone.
 
 - **Restarting the background service keeps Agent Relay responsive on macOS.** If the service cannot start, *Try again* shows restart progress until the service answers or Agent Relay can show what to do next. When analytics are enabled, the standard release can report anonymous startup failures and recovery using the existing installation ID.
 - **The session reader shows the images a message brought.** On macOS, Linux and Windows, when an agent's session holds a message that came with PNG, JPEG, GIF or WebP files Agent Relay saved, the session reader shows those images under the message instead of the list of saved file paths. Other files stay listed as before.

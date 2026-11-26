@@ -57,6 +57,8 @@ public enum CoreServiceStatus: String, Equatable, Sendable, Encodable {
     case enabled
     /// Registered, but the person must allow it in Login Items.
     case requiresApproval = "requires_approval"
+    /// Registration could not be determined.
+    case unknown
     case notRegistered = "not_registered"
     /// This build carries no LaunchAgent (`swift run`): a core started by
     /// hand serves it.

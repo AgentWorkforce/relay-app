@@ -18,7 +18,7 @@ final class LaunchAgentService: CoreService {
         var registerBundled: () throws -> Void
         var unregisterBundled: () throws -> Void
         var legacyStatus: (URL) -> SMAppService.Status
-        var launchctl: ([String]) -> (success: Bool, output: String)
+        var launchctl: ([String]) throws -> (success: Bool, output: String)
         var pause: (TimeInterval) -> Void
         var launchctlAsync: (@MainActor ([String]) async throws -> (success: Bool, output: String))? = nil
         // A pending handoff must finish even when its caller is cancelled.
@@ -120,7 +120,7 @@ final class LaunchAgentService: CoreService {
     var status: CoreServiceStatus {
         if usesFallback {
             if system.legacyStatus(fallbackURL) == .requiresApproval { return .requiresApproval }
-            let loaded = launchctl("print", "gui/\(getuid())/\(fallbackLabel)")
+            guard let loaded = try? printJob(fallbackTarget) else { return .unknown }
             return fallbackStatus(loaded)
         }
         return bundledStatus
@@ -195,6 +195,11 @@ final class LaunchAgentService: CoreService {
         do {
             try register()
         } catch {
+            if Self.isUncertainLaunchctlError(error) {
+                // A submitted command may still take effect after we time out.
+                defaults.set(previous, forKey: startsAtLoginKey)
+                throw error
+            }
             try? unregister()
             defaults.set(previous, forKey: startsAtLoginKey)
             try? register()
@@ -228,9 +233,11 @@ final class LaunchAgentService: CoreService {
     }
 
     private func prepareFallback(forceReload: Bool) throws -> (submit: Bool, bootout: Bool) {
+        let approved = system.legacyStatus(fallbackURL) != .requiresApproval
+        let loaded = approved ? try printJob(fallbackTarget) : nil
         let plist = try writeFallbackPlist()
-        guard system.legacyStatus(fallbackURL) != .requiresApproval else { return (false, false) }
-        return fallbackPreparation(plist, loaded: launchctl("print", fallbackTarget), forceReload: forceReload)
+        guard let loaded, system.legacyStatus(fallbackURL) != .requiresApproval else { return (false, false) }
+        return fallbackPreparation(plist, loaded: loaded, forceReload: forceReload)
     }
 
     private func writeFallbackPlist() throws -> [String: Any] {
@@ -250,7 +257,7 @@ final class LaunchAgentService: CoreService {
 
     private func bootstrapFallback(attempts: Int) throws -> Bool {
         for attempt in 0..<attempts {
-            let result = launchctl("bootstrap", "gui/\(getuid())", fallbackURL.path)
+            let result = try launchctl("bootstrap", "gui/\(getuid())", fallbackURL.path)
             if result.success {
                 // A rewritten plist is not the loaded job. Only successful
                 // submission completes migration, even with the same binary.
@@ -261,7 +268,7 @@ final class LaunchAgentService: CoreService {
             // or replace a label another registration has already submitted.
             guard system.legacyStatus(fallbackURL) != .requiresApproval else { return false }
             guard attempt + 1 < attempts,
-                  !launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success else {
+                  !(try printJob(fallbackTarget)).success else {
                 throw fallbackError(result.output)
             }
             system.pause(0.25)
@@ -270,7 +277,7 @@ final class LaunchAgentService: CoreService {
     }
 
     private func bootoutFallback() throws {
-        let result = launchctl("bootout", "gui/\(getuid())/\(fallbackLabel)")
+        let result = try launchctl("bootout", "gui/\(getuid())/\(fallbackLabel)")
         // bootout can return before the old label disappears. Never treat a
         // lingering job as the newly submitted one, even with the same path.
         // launchd gives an exiting job five seconds before forcing it down.
@@ -278,7 +285,7 @@ final class LaunchAgentService: CoreService {
         // still retiring, leaving no replacement once it finally exits.
         let deadline = DispatchTime.now() + 6
         for _ in 0..<120 {
-            if !launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success { return }
+            if !(try printJob(fallbackTarget)).success { return }
             guard result.success else { throw fallbackError(result.output) }
             guard DispatchTime.now() < deadline else { break }
             system.pause(0.05)
@@ -288,7 +295,7 @@ final class LaunchAgentService: CoreService {
 
     func unregister() throws {
         guard usesFallback else { try system.unregisterBundled(); return }
-        if launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success {
+        if try printJob(fallbackTarget).success {
             try bootoutFallback()
         }
         try finishUnregisterFallback()
@@ -318,7 +325,7 @@ final class LaunchAgentService: CoreService {
             return recovered
         }
         guard system.bundledStatus() == .enabled else { return false }
-        let result = launchctl("print", "gui/\(getuid())/\(label)")
+        let result = try printJob("gui/\(getuid())/\(label)")
         guard result.success, Self.hasBrokenBundleProgram(result.output) else { return false }
         spawnFailureEvidence = .brokenBundleProgram
         // Persist the selected recovery method, not a claim that it started.
@@ -327,6 +334,7 @@ final class LaunchAgentService: CoreService {
         defaults.set(true, forKey: fallbackKey)
         // Keep the broken job registered until the fallback is submitted.
         do { try registerFallback(forceReload: true) } catch {
+            if Self.isUncertainLaunchctlError(error) { throw error }
             throw fallbackError("The backup background service could not start: \(error.localizedDescription)")
         }
         retireBundledJob()
@@ -482,18 +490,46 @@ final class LaunchAgentService: CoreService {
         return plist
     }
 
-    private func launchctl(_ arguments: String...) -> (success: Bool, output: String) {
-        system.launchctl(arguments)
+    private func launchctl(_ arguments: String...) throws -> (success: Bool, output: String) {
+        do { return try system.launchctl(arguments) }
+        catch {
+            if Self.isUncertainLaunchctlError(error) { throw error }
+            throw Self.uncertainLaunchctlError(error.localizedDescription)
+        }
     }
 
     @MainActor private func launchctlAsync(_ arguments: String...) async throws -> (success: Bool, output: String) {
         if let run = system.launchctlAsync { return try await run(arguments) }
-        return system.launchctl(arguments)
+        return try system.launchctl(arguments)
     }
 
-    static func runLaunchctl(_ arguments: [String]) -> (success: Bool, output: String) {
-        do { return try commandQueue.sync { try runCommand(launchctlExecutable, arguments: arguments, timeout: 2) } }
-        catch { return (false, error.localizedDescription) }
+    private func printJob(_ target: String) throws -> (success: Bool, output: String) {
+        try Self.checkedPrint(launchctl("print", target))
+    }
+
+    static func checkedPrint(_ result: (success: Bool, output: String)) throws -> (success: Bool, output: String) {
+        // launchctl also exits unsuccessfully for permission and domain errors.
+        if result.success || result.output.split(whereSeparator: \.isNewline).contains(where: {
+            $0.hasPrefix("Could not find service ")
+        }) {
+            return result
+        }
+        throw uncertainLaunchctlError(result.output)
+    }
+
+    private static func uncertainLaunchctlError(_ detail: String) -> NSError {
+        NSError(domain: errorDomain, code: 4, userInfo: [
+            NSLocalizedDescriptionKey: "Could not determine the background service status. \(detail)"
+        ])
+    }
+
+    private static func isUncertainLaunchctlError(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == errorDomain && (2...4).contains(error.code)
+    }
+
+    static func runLaunchctl(_ arguments: [String]) throws -> (success: Bool, output: String) {
+        try commandQueue.sync { try runCommand(launchctlExecutable, arguments: arguments, timeout: 2) }
     }
 
     private static let launchctlExecutable = URL(fileURLWithPath: "/bin/launchctl")
