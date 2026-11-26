@@ -74,10 +74,11 @@ struct DesktopDiagnostics {
         let snapshot = model.core
         let service: String
         switch model.backgroundServiceStatus {
-        case .enabled: service = "Enabled"
-        case .requiresApproval: service = "Needs approval in Login Items"
-        case .notRegistered: service = "Not registered"
-        case .notFound: service = "Not installed"
+        case .enabled?: service = "Enabled"
+        case .requiresApproval?: service = "Needs approval in Login Items"
+        case .notRegistered?: service = "Not registered"
+        case .notFound?: service = "Not installed"
+        case nil: service = "Unavailable"
         }
         return [
             Section(title: "Build", rows: buildRows(snapshot, crates: AppInfo.coreCrates)),
@@ -203,5 +204,6 @@ struct AboutDiagnosticsView: View {
             Text("Includes workspace and account IDs. No credentials, session content, or logs are copied.")
                 .zoomFont(.footnote).foregroundStyle(CloudTheme.secondary)
         }
+        .task { await model.refreshBackgroundServiceStatus() }
     }
 }

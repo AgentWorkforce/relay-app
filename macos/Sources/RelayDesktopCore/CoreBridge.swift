@@ -10,19 +10,23 @@ public struct CoreError: Error, LocalizedError, Equatable, Sendable {
     /// With `plan_limit_exceeded`: which cap was reached and how full it is,
     /// when the core's answer said.
     public let planLimit: PlanLimitExceeded?
+    public let socketErrorCode: Int32?
 
-    public init(kind: String, message: String, retryable: Bool = false, planLimit: PlanLimitExceeded? = nil) {
+    public init(kind: String, message: String, retryable: Bool = false, planLimit: PlanLimitExceeded? = nil,
+                socketErrorCode: Int32? = nil) {
         self.kind = kind
         self.message = message
         self.retryable = retryable
         self.planLimit = planLimit
+        self.socketErrorCode = socketErrorCode
     }
 
     public var errorDescription: String? { message }
 
     /// The core could not be reached at all.
-    public static func unreachable(_ detail: String) -> CoreError {
-        CoreError(kind: "core_unreachable", message: "Agent Relay's background service is not running. \(detail)", retryable: true)
+    public static func unreachable(_ detail: String, socketErrorCode: Int32? = nil) -> CoreError {
+        CoreError(kind: "core_unreachable", message: "Agent Relay's background service is not running. \(detail)",
+                  retryable: true, socketErrorCode: socketErrorCode)
     }
 
     public static let closed = CoreError(kind: "core_unreachable", message: "Agent Relay's background service stopped.", retryable: true)
@@ -69,7 +73,7 @@ final class CoreConnection: @unchecked Sendable {
 
     init(path: String) throws {
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw CoreError.unreachable("No socket could be created.") }
+        guard fd >= 0 else { throw CoreError.unreachable("No socket could be created.", socketErrorCode: errno) }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
@@ -86,8 +90,9 @@ final class CoreConnection: @unchecked Sendable {
         // connection not ready immediately is retried by the connect loop.
         let flags = fcntl(fd, F_GETFL)
         guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            let code = errno
             abandon()
-            throw CoreError.unreachable("The socket could not be configured.")
+            throw CoreError.unreachable("The socket could not be configured.", socketErrorCode: code)
         }
         let result = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -95,8 +100,9 @@ final class CoreConnection: @unchecked Sendable {
             }
         }
         guard result == 0, fcntl(fd, F_SETFL, flags) == 0 else {
+            let code = errno
             abandon()
-            throw CoreError.unreachable("Nothing is listening yet.")
+            throw CoreError.unreachable("Nothing is listening yet.", socketErrorCode: code)
         }
         let thread = Thread { self.readLoop() }
         thread.name = "relay-core-reader"

@@ -426,7 +426,7 @@ enum AppInfo {
 
     /// The text of Resources/<name>.txt, which `build-app.sh` writes; nil
     /// when the bundle has none.
-    private static func resource(_ name: String) -> String? {
+    static func resource(_ name: String) -> String? {
         guard let url = Bundle.main.url(forResource: name, withExtension: "txt") else { return nil }
         return try? String(contentsOf: url, encoding: .utf8)
     }

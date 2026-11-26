@@ -7,6 +7,10 @@ import Foundation
 /// when it exits. Behind a protocol so tests never touch launchd.
 public protocol CoreService: AnyObject {
     var status: CoreServiceStatus { get }
+    @MainActor func statusAsync() async throws -> CoreServiceStatus
+    var diagnostics: CoreServiceDiagnostics { get }
+    var spawnFailureEvidence: CoreServiceDiagnostics.SpawnFailure? { get }
+    func clearSpawnFailureEvidence()
     /// Why this copy of the app must be moved before registering its agent.
     var installationProblem: String? { get }
     /// Identifies the core binary this bundle carries. launchd admits only
@@ -34,6 +38,10 @@ public protocol CoreService: AnyObject {
 }
 
 public extension CoreService {
+    @MainActor func statusAsync() async throws -> CoreServiceStatus { status }
+    var diagnostics: CoreServiceDiagnostics { .init() }
+    var spawnFailureEvidence: CoreServiceDiagnostics.SpawnFailure? { nil }
+    func clearSpawnFailureEvidence() {}
     @MainActor func setStartsAtLoginAsync(_ enabled: Bool) async throws { try setStartsAtLogin(enabled) }
     @MainActor func registerAsync() async throws { try register() }
     @MainActor func unregisterAsync() async throws { try unregister() }
@@ -44,13 +52,42 @@ public extension CoreService {
     func reloadForUpdate() throws -> Bool { false }
 }
 
-public enum CoreServiceStatus: Equatable, Sendable {
+public enum CoreServiceStatus: String, Equatable, Sendable, Encodable {
     /// Registered and allowed to run.
     case enabled
     /// Registered, but the person must allow it in Login Items.
-    case requiresApproval
-    case notRegistered
+    case requiresApproval = "requires_approval"
+    case notRegistered = "not_registered"
     /// This build carries no LaunchAgent (`swift run`): a core started by
     /// hand serves it.
-    case notFound
+    case notFound = "not_found"
+}
+
+public struct CoreServiceDiagnostics: Encodable, Sendable {
+    public enum InstallState: String, Encodable, Sendable {
+        case installed, outsideApplications = "outside_applications", noAgent = "no_agent", unknown
+    }
+    public enum BackupAgent: String, Encodable, Sendable { case bundled, local, session, unknown }
+    public enum Quarantine: String, Encodable, Sendable { case present, absent, unknown }
+    public enum SpawnFailure: Int, Encodable, Sendable { case brokenBundleProgram = 78 }
+
+    public let smAppServiceStatus: CoreServiceStatus?
+    public let installState: InstallState
+    public let inApplications: Bool?
+    public let translocated: Bool?
+    public let quarantine: Quarantine
+    public let backupAgent: BackupAgent
+    public let spawnFailure: SpawnFailure?
+
+    public init(smAppServiceStatus: CoreServiceStatus? = nil, installState: InstallState = .unknown,
+                inApplications: Bool? = nil, translocated: Bool? = nil, quarantine: Quarantine = .unknown,
+                backupAgent: BackupAgent = .unknown, spawnFailure: SpawnFailure? = nil) {
+        self.smAppServiceStatus = smAppServiceStatus
+        self.installState = installState
+        self.inApplications = inApplications
+        self.translocated = translocated
+        self.quarantine = quarantine
+        self.backupAgent = backupAgent
+        self.spawnFailure = spawnFailure
+    }
 }

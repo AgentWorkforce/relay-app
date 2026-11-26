@@ -593,6 +593,16 @@ else
   PRODUCT_MARKER=""
 fi
 printf '%s\n' "$WANT_SITE" > "$APP_BUNDLE/Contents/Resources/site-url.txt"
+# Only a signed production release can carry the outage reporter's project.
+# Verify the bundled helper was built with the same first-party project.
+OUTAGE_PROJECT_KEY="${AGENT_RELAY_POSTHOG_API_KEY:-}"
+OUTAGE_PROJECT_FINGERPRINT="$PROBE_DIR/probe-outage-project.sha256"
+if [[ "$CONFIGURATION" == release && "$WANT_SITE" == "$DEFAULT_SITE_URL" && "$BUNDLE_ID" == "$DEFAULT_BUNDLE_ID" &&
+      -n "${CSC_LINK:-}" && -n "${CSC_KEY_PASSWORD:-}" && -f "$OUTAGE_PROJECT_FINGERPRINT" &&
+      "$OUTAGE_PROJECT_KEY" =~ ^phc_[A-Za-z0-9_]{1,251}$ ]] &&
+   [ "$(printf '%s' "$OUTAGE_PROJECT_KEY" | shasum -a 256 | cut -d ' ' -f 1)" = "$(cat "$OUTAGE_PROJECT_FINGERPRINT")" ]; then
+  plutil -insert AgentRelayOutageProjectKey -string "$OUTAGE_PROJECT_KEY" "$APP_BUNDLE/Contents/Info.plist"
+fi
 printf '%s\n' "$WANT_SCHEME" > "$APP_BUNDLE/Contents/Resources/url-scheme.txt"
 printf '%s\n' "$RELEASES_REPOSITORY" > "$APP_BUNDLE/Contents/Resources/releases-repository.txt"
 printf '%s\n' "$ASSET_PREFIX" > "$APP_BUNDLE/Contents/Resources/asset-prefix.txt"

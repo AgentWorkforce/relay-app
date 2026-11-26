@@ -8,6 +8,7 @@
 #   probe-version.txt          the version the binary reports
 #   probe-site.txt             the Agent Relay site built in (--site-url)
 #   probe-url-scheme.txt       the link scheme built in (--url-scheme)
+#   probe-outage-project.sha256  macOS only, fingerprint of the first-party ingestion key
 #
 # The binary reports --version, which build-app.sh and build-linux.sh bundle
 # alongside it. A probe built for this host is also run through the bridge
@@ -138,6 +139,16 @@ printf '%s\n' "$VERSION" > "$OUT_DIR/probe-version.txt"
 # scripts to check against: the core prints its site (`cloud install
 # --help`) but not its scheme, and may not run on the host.
 record_built_in "$OUT_DIR" probe
+
+# Bind the app's offline reporter to the project used by this helper. A
+# missing or non-first-party project leaves the app reporter unconfigured.
+rm -f "$OUT_DIR/probe-outage-project.sha256"
+OUTAGE_PROJECT_KEY="${AGENT_RELAY_POSTHOG_API_KEY:-}"
+if [[ "$TARGET" == *-apple-darwin && "$BUILT_IN_SITE" == "$DEFAULT_SITE_URL" &&
+      "${AGENT_RELAY_POSTHOG_HOST-https://i.agentrelay.com}" == "https://i.agentrelay.com" &&
+      "$OUTAGE_PROJECT_KEY" =~ ^phc_[A-Za-z0-9_]{1,251}$ ]]; then
+  printf '%s' "$OUTAGE_PROJECT_KEY" | shasum -a 256 | cut -d ' ' -f 1 > "$OUT_DIR/probe-outage-project.sha256"
+fi
 
 HOST="$(rustc -vV | sed -n 's/^host: //p')"
 if [ "$HOST" = "$TARGET" ]; then

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import OSLog
 import RelayDesktopCore
@@ -19,6 +20,7 @@ final class LaunchAgentService: CoreService {
         var legacyStatus: (URL) -> SMAppService.Status
         var launchctl: ([String]) -> (success: Bool, output: String)
         var pause: (TimeInterval) -> Void
+        var launchctlAsync: (@MainActor ([String]) async throws -> (success: Bool, output: String))? = nil
         // A pending handoff must finish even when its caller is cancelled.
         // The timer suspends the actor without a blocking sleep or detached work.
         var pauseAsync: @MainActor (TimeInterval) async -> Void = { interval in
@@ -34,7 +36,11 @@ final class LaunchAgentService: CoreService {
                         unregisterBundled: { try service.unregister() },
                         legacyStatus: { SMAppService.statusForLegacyPlist(at: $0) },
                         launchctl: LaunchAgentService.runLaunchctl,
-                        pause: { Thread.sleep(forTimeInterval: $0) })
+                        pause: { Thread.sleep(forTimeInterval: $0) },
+                        launchctlAsync: { arguments in
+                            try await LaunchAgentService.runCommandAsync(LaunchAgentService.launchctlExecutable,
+                                                                         arguments: arguments, timeout: 2)
+                        })
         }
     }
 
@@ -43,6 +49,7 @@ final class LaunchAgentService: CoreService {
     private let homeDirectory: URL
     private let bundleIdentifier: String
     private let defaults: UserDefaults
+    private(set) var spawnFailureEvidence: CoreServiceDiagnostics.SpawnFailure?
 
     init(bundleURL: URL = Bundle.main.bundleURL,
          homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -87,25 +94,67 @@ final class LaunchAgentService: CoreService {
         return parent == applications || parent == userApplications
     }
 
+    var diagnostics: CoreServiceDiagnostics {
+        let inApplications = Self.isInstalledInApplications(bundleURL, homeDirectory: homeDirectory)
+        let path = bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+        let components = path.pathComponents
+        let translocated = components.indices.dropLast(3).contains { index in
+            components[index] == "AppTranslocation" && UUID(uuidString: components[index + 1]) != nil &&
+                components[index + 2] == "d"
+        }
+        let quarantine: CoreServiceDiagnostics.Quarantine
+        if getxattr(path.path, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) >= 0 {
+            quarantine = .present
+        } else {
+            quarantine = errno == ENOATTR ? .absent : .unknown
+        }
+        return .init(smAppServiceStatus: Self.bundledRegistration(system.bundledStatus()),
+                     installState: bundlesPlist ? (inApplications ? .installed : .outsideApplications) : .noAgent,
+                     inApplications: inApplications, translocated: translocated,
+                     quarantine: quarantine, backupAgent: usesFallback ? (startsAtLogin ? .local : .session) : .bundled,
+                     spawnFailure: spawnFailureEvidence)
+    }
+
+    func clearSpawnFailureEvidence() { spawnFailureEvidence = nil }
+
     var status: CoreServiceStatus {
         if usesFallback {
             if system.legacyStatus(fallbackURL) == .requiresApproval { return .requiresApproval }
             let loaded = launchctl("print", "gui/\(getuid())/\(fallbackLabel)")
-            guard loaded.success,
-                  let expected = try? fallbackPlist()["Program"] as? String,
-                  Self.loadedProgram(loaded.output) == expected,
-                  hasCurrentFallbackPolicy else { return .notRegistered }
-            return .enabled
+            return fallbackStatus(loaded)
         }
-        switch system.bundledStatus() {
+        return bundledStatus
+    }
+
+    @MainActor func statusAsync() async throws -> CoreServiceStatus {
+        guard usesFallback else { return bundledStatus }
+        if system.legacyStatus(fallbackURL) == .requiresApproval { return .requiresApproval }
+        return fallbackStatus(try await launchctlAsync("print", fallbackTarget))
+    }
+
+    private var fallbackTarget: String { "gui/\(getuid())/\(fallbackLabel)" }
+
+    private func fallbackStatus(_ loaded: (success: Bool, output: String)) -> CoreServiceStatus {
+        guard loaded.success,
+              let expected = try? fallbackPlist()["Program"] as? String,
+              Self.loadedProgram(loaded.output) == expected,
+              hasCurrentFallbackPolicy else { return .notRegistered }
+        return .enabled
+    }
+
+    private var bundledStatus: CoreServiceStatus {
+        let status = Self.bundledRegistration(system.bundledStatus()) ?? .notFound
+        // A bundled plist can be registered even when launchd has no record yet.
+        return status == .notFound && bundlesPlist ? .notRegistered : status
+    }
+
+    private static func bundledRegistration(_ status: SMAppService.Status) -> CoreServiceStatus? {
+        switch status {
         case .enabled: return .enabled
         case .requiresApproval: return .requiresApproval
         case .notRegistered: return .notRegistered
-        // Before its first registration launchd has no record of the agent
-        // and reports it not found; only a bundle without the property list
-        // (`swift run`) really has none.
-        case .notFound: return bundlesPlist ? .notRegistered : .notFound
-        @unknown default: return .notFound
+        case .notFound: return .notFound
+        @unknown default: return nil
         }
     }
 
@@ -179,17 +228,23 @@ final class LaunchAgentService: CoreService {
     }
 
     private func prepareFallback(forceReload: Bool) throws -> (submit: Bool, bootout: Bool) {
+        let plist = try writeFallbackPlist()
+        guard system.legacyStatus(fallbackURL) != .requiresApproval else { return (false, false) }
+        return fallbackPreparation(plist, loaded: launchctl("print", fallbackTarget), forceReload: forceReload)
+    }
+
+    private func writeFallbackPlist() throws -> [String: Any] {
         let plist = try fallbackPlist()
         let contents = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try FileManager.default.createDirectory(at: fallbackURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try contents.write(to: fallbackURL, options: .atomic)
-        // Respect revoked consent even if launchd still has the job loaded.
-        guard system.legacyStatus(fallbackURL) != .requiresApproval else { return (false, false) }
-        let loaded = launchctl("print", "gui/\(getuid())/\(fallbackLabel)")
-        if loaded.success {
-            if !forceReload, hasCurrentFallbackPolicy,
-               Self.loadedProgram(loaded.output) == plist["Program"] as? String { return (false, false) }
-        }
+        return plist
+    }
+
+    private func fallbackPreparation(_ plist: [String: Any], loaded: (success: Bool, output: String),
+                                     forceReload: Bool) -> (submit: Bool, bootout: Bool) {
+        if loaded.success, !forceReload, hasCurrentFallbackPolicy,
+           Self.loadedProgram(loaded.output) == plist["Program"] as? String { return (false, false) }
         return (true, loaded.success)
     }
 
@@ -221,9 +276,11 @@ final class LaunchAgentService: CoreService {
         // launchd gives an exiting job five seconds before forcing it down.
         // A one-second poll budget abandons the handoff while that job is
         // still retiring, leaving no replacement once it finally exits.
+        let deadline = DispatchTime.now() + 6
         for _ in 0..<120 {
             if !launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success { return }
             guard result.success else { throw fallbackError(result.output) }
+            guard DispatchTime.now() < deadline else { break }
             system.pause(0.05)
         }
         throw fallbackError("The previous background service has not stopped yet. Try again.")
@@ -263,6 +320,7 @@ final class LaunchAgentService: CoreService {
         guard system.bundledStatus() == .enabled else { return false }
         let result = launchctl("print", "gui/\(getuid())/\(label)")
         guard result.success, Self.hasBrokenBundleProgram(result.output) else { return false }
+        spawnFailureEvidence = .brokenBundleProgram
         // Persist the selected recovery method, not a claim that it started.
         // status and the usesFallback branch above handle failed submissions
         // immediately, including after relaunch or an original job disappearing.
@@ -294,18 +352,21 @@ final class LaunchAgentService: CoreService {
     }
 
     @MainActor private func registerFallbackAsync(forceReload: Bool, bootstrapAttempts: Int = 1) async throws -> Bool {
-        let preparation = try prepareFallback(forceReload: forceReload)
+        let plist = try writeFallbackPlist()
+        guard system.legacyStatus(fallbackURL) != .requiresApproval else { return false }
+        let loaded = try await launchctlAsync("print", fallbackTarget)
+        let preparation = fallbackPreparation(plist, loaded: loaded, forceReload: forceReload)
         guard preparation.submit else { return false }
         if preparation.bootout { try await bootoutFallbackAsync() }
         for attempt in 0..<bootstrapAttempts {
-            let result = launchctl("bootstrap", "gui/\(getuid())", fallbackURL.path)
+            let result = try await launchctlAsync("bootstrap", "gui/\(getuid())", fallbackURL.path)
             if result.success {
                 defaults.set(Self.fallbackPolicyRevision, forKey: fallbackPolicyKey)
                 return true
             }
             guard system.legacyStatus(fallbackURL) != .requiresApproval else { return false }
             guard attempt + 1 < bootstrapAttempts,
-                  !launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success else {
+                  !(try await launchctlAsync("print", fallbackTarget)).success else {
                 throw fallbackError(result.output)
             }
             await system.pauseAsync(0.25)
@@ -314,10 +375,12 @@ final class LaunchAgentService: CoreService {
     }
 
     @MainActor private func bootoutFallbackAsync() async throws {
-        let result = launchctl("bootout", "gui/\(getuid())/\(fallbackLabel)")
+        let result = try await launchctlAsync("bootout", fallbackTarget)
+        let deadline = DispatchTime.now() + 6
         for _ in 0..<120 {
-            if !launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success { return }
+            if !(try await launchctlAsync("print", fallbackTarget)).success { return }
             guard result.success else { throw fallbackError(result.output) }
+            guard DispatchTime.now() < deadline else { break }
             await system.pauseAsync(0.05)
         }
         throw fallbackError("The previous background service has not stopped yet. Try again.")
@@ -325,7 +388,7 @@ final class LaunchAgentService: CoreService {
 
     @MainActor func unregisterAsync() async throws {
         guard usesFallback else { try system.unregisterBundled(); return }
-        if launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success {
+        if (try await launchctlAsync("print", fallbackTarget)).success {
             try await bootoutFallbackAsync()
         }
         try finishUnregisterFallback()
@@ -356,11 +419,15 @@ final class LaunchAgentService: CoreService {
             return recovered
         }
         guard system.bundledStatus() == .enabled else { return false }
-        let result = launchctl("print", "gui/\(getuid())/\(label)")
+        let result = try await launchctlAsync("print", "gui/\(getuid())/\(label)")
         guard result.success, Self.hasBrokenBundleProgram(result.output) else { return false }
+        spawnFailureEvidence = .brokenBundleProgram
         defaults.set(true, forKey: fallbackKey)
         do { _ = try await registerFallbackAsync(forceReload: true) }
-        catch { throw fallbackError("The backup background service could not start: \(error.localizedDescription)") }
+        catch {
+            if (error as NSError).domain == Self.errorDomain { throw error }
+            throw fallbackError("The backup background service could not start: \(error.localizedDescription)")
+        }
         retireBundledJob()
         return true
     }
@@ -375,9 +442,10 @@ final class LaunchAgentService: CoreService {
     }
 
     static func hasBrokenBundleProgram(_ output: String) -> Bool {
-        output.contains("job state = spawn failed")
-            && output.range(of: #"last exit code = 78(?:\D|$)"#, options: .regularExpression) != nil
-            && output.contains("program identifier = Contents/Helpers/")
+        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        return lines.contains("job state = spawn failed")
+            && lines.contains { $0.range(of: #"^last exit code = 78(?::|\s|$)"#, options: .regularExpression) != nil }
+            && lines.contains { $0.hasPrefix("program identifier = Contents/Helpers/") }
     }
 
     static func loadedProgram(_ output: String) -> String? {
@@ -418,21 +486,73 @@ final class LaunchAgentService: CoreService {
         system.launchctl(arguments)
     }
 
+    @MainActor private func launchctlAsync(_ arguments: String...) async throws -> (success: Bool, output: String) {
+        if let run = system.launchctlAsync { return try await run(arguments) }
+        return system.launchctl(arguments)
+    }
+
     static func runLaunchctl(_ arguments: [String]) -> (success: Bool, output: String) {
+        do { return try commandQueue.sync { try runCommand(launchctlExecutable, arguments: arguments, timeout: 2) } }
+        catch { return (false, error.localizedDescription) }
+    }
+
+    private static let launchctlExecutable = URL(fileURLWithPath: "/bin/launchctl")
+    private static let commandQueue = DispatchQueue(label: "com.agentrelay.desktop.launchctl", qos: .userInitiated)
+
+    static func runCommandAsync(_ executable: URL, arguments: [String],
+                                timeout: TimeInterval) async throws -> (success: Bool, output: String) {
+        try await withCheckedThrowingContinuation { continuation in
+            commandQueue.async {
+                continuation.resume(with: Result { try runCommand(executable, arguments: arguments, timeout: timeout) })
+            }
+        }
+    }
+
+    static let errorDomain = "com.agentrelay.desktop.launch-agent"
+
+    private static func runCommand(_ executable: URL, arguments: [String], timeout: TimeInterval) throws -> (success: Bool, output: String) {
+        let deadline = DispatchTime.now() + timeout
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.executableURL = executable
         process.arguments = arguments
         let pipe = Pipe()
+        let reader = pipe.fileHandleForReading
+        let fd = reader.fileDescriptor
+        guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
         process.standardError = pipe
-        do { try process.run() } catch { return (false, error.localizedDescription) }
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        process.waitUntilExit()
-        return (process.terminationStatus == 0, output)
+        try process.run()
+        defer {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            try? reader.close()
+        }
+        var output = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while DispatchTime.now() < deadline {
+            // Sample exit before reading so a child that writes and exits
+            // between the two observations still gets one final drain.
+            let running = process.isRunning
+            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            if count > 0 {
+                guard output.count + count <= 64 * 1024 else {
+                    throw NSError(domain: errorDomain, code: 3, userInfo: [NSLocalizedDescriptionKey: "launchctl returned too much output."])
+                }
+                output.append(contentsOf: buffer.prefix(count))
+                continue
+            }
+            if count < 0, errno == EINTR { continue }
+            if count < 0, errno != EAGAIN { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            if !running {
+                return (process.terminationStatus == 0, String(decoding: output, as: UTF8.self))
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        throw NSError(domain: errorDomain, code: 2, userInfo: [NSLocalizedDescriptionKey: "launchctl did not finish in time."])
     }
 
     private func fallbackError(_ message: String) -> NSError {
-        NSError(domain: "com.agentrelay.desktop.launch-agent", code: 1,
+        NSError(domain: Self.errorDomain, code: 1,
                 userInfo: [NSLocalizedDescriptionKey: message])
     }
 

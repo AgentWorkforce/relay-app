@@ -132,10 +132,43 @@ esac
         # refuses one). Every build job gives the repository's key to the
         # default profile only, and no profile key is read at all.
         guarded = "AGENT_RELAY_POSTHOG_API_KEY: ${{ (inputs.profile == '' && secrets.POSTHOG_API_KEY) || '' }}"
-        self.assertEqual(self.workflow.count(guarded), 5)
+        self.assertEqual(self.workflow.count(guarded), 6)
+        macos_packaging = self.workflow.split('- name: Assemble and sign the app bundle', 1)[1].split('run: |', 1)[0]
+        self.assertIn(guarded, macos_packaging)
         self.assertNotIn('secrets.DESKTOP_POSTHOG_API_KEY', self.workflow)
         self.assertNotIn('AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}', self.workflow)
         self.assertNotIn('AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.DESKTOP_POSTHOG_API_KEY }}', self.workflow)
+
+    def test_macos_outage_project_packaging_fails_closed(self):
+        scripts = Path(__file__).resolve().parent
+        probe = (scripts / 'build-probe.sh').read_text().split('# Bind the app\'s offline reporter', 1)[1]
+        probe = probe[probe.index('rm -f '):probe.index('HOST="$(rustc')]
+        bundle = (scripts / 'build-app.sh').read_text().split('# Verify the bundled helper', 1)[1]
+        bundle = bundle[bundle.index('OUTAGE_PROJECT_KEY='):bundle.index('printf \'%s\\n\' "$WANT_SCHEME"')]
+        defaults = dict(TARGET='aarch64-apple-darwin', BUILT_IN_SITE='https://agentrelay.com',
+                        DEFAULT_SITE_URL='https://agentrelay.com', WANT_SITE='https://agentrelay.com',
+                        BUNDLE_ID='com.agentrelay.desktop', DEFAULT_BUNDLE_ID='com.agentrelay.desktop',
+                        CONFIGURATION='release', CSC_LINK='synthetic', CSC_KEY_PASSWORD='synthetic',
+                        AGENT_RELAY_POSTHOG_API_KEY='phc_test')
+        cases = [({}, {}, True),
+                 ({'AGENT_RELAY_POSTHOG_HOST': 'https://collector.example.test'}, {}, False),
+                 ({'BUILT_IN_SITE': 'https://site.example.test'}, {}, False),
+                 ({}, {'WANT_SITE': 'https://site.example.test'}, False),
+                 ({}, {'AGENT_RELAY_POSTHOG_API_KEY': 'phc_other'}, False),
+                 ({}, {'AGENT_RELAY_POSTHOG_API_KEY': ''}, False),
+                 ({}, {'BUNDLE_ID': 'com.agentrelay.desktop.dev'}, False),
+                 ({}, {'CONFIGURATION': 'debug'}, False),
+                 ({}, {'CSC_LINK': ''}, False)]
+        with tempfile.TemporaryDirectory() as directory:
+            env = {'PATH': os.environ['PATH'], 'OUT_DIR': directory, 'PROBE_DIR': directory,
+                   'APP_BUNDLE': directory, **defaults}
+            for probe_overrides, app_overrides, configured in cases:
+                with self.subTest(probe=probe_overrides, app=app_overrides):
+                    subprocess.run(['bash', '-eu', '-o', 'pipefail', '-c', probe], env=env | probe_overrides, check=True)
+                    result = subprocess.run(['bash', '-eu', '-o', 'pipefail', '-c',
+                                             'plutil() { test "$2" = AgentRelayOutageProjectKey && echo configured; }\n' + bundle],
+                                            env=env | app_overrides, capture_output=True, text=True, check=True)
+                    self.assertEqual(result.stdout.strip(), 'configured' if configured else '')
 
     def test_releases_app_pair_is_selected_by_profile_in_publish_and_promote(self):
         # An environment secret shadows a repository secret of the same name

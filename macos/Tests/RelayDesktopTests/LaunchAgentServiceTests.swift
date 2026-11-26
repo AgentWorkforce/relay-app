@@ -262,6 +262,53 @@ final class LaunchAgentServiceTests: XCTestCase {
         await other.value
     }
 
+    @MainActor
+    func testStalledStatusCommandTimesOutWithoutBlockingTheMainActor() async throws {
+        var started = false
+        var finished = false
+        let fixture = try Fixture(launchctlAsync: { arguments in
+            XCTAssertEqual(arguments.first, "print")
+            started = true
+            return try await LaunchAgentService.runCommandAsync(URL(fileURLWithPath: "/bin/sleep"),
+                                                               arguments: ["30"], timeout: 0.3)
+        })
+        defer { fixture.remove() }
+        fixture.selectFallback()
+        let status = Task {
+            defer { finished = true }
+            return try await fixture.service.statusAsync()
+        }
+        let otherMainActorWorkRan = await eventually { started && !finished }
+        do {
+            _ = try await status.value
+            XCTFail("A stalled print must not be interpreted as a missing job")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, LaunchAgentService.errorDomain)
+            XCTAssertEqual((error as NSError).code, 2)
+        }
+        XCTAssertTrue(otherMainActorWorkRan)
+        XCTAssertTrue(fixture.os.events.isEmpty)
+
+        let result = try await LaunchAgentService.runCommandAsync(URL(fileURLWithPath: "/bin/sh"),
+                                                                  arguments: ["-c", "printf out; printf err >&2"], timeout: 2)
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.output, "outerr")
+    }
+
+    @MainActor
+    func testBackupAgentKeepsOnlyKnownSpawnEvidenceUntilRecovery() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repaired = try await fixture.service.recoverSpawnFailureAsync()
+        XCTAssertTrue(repaired)
+        XCTAssertEqual(fixture.service.diagnostics.backupAgent, .local)
+        XCTAssertEqual(fixture.service.diagnostics.inApplications, true)
+        XCTAssertEqual(fixture.service.diagnostics.translocated, false)
+        XCTAssertEqual(fixture.service.diagnostics.spawnFailure, .brokenBundleProgram)
+        fixture.service.clearSpawnFailureEvidence()
+        XCTAssertNil(fixture.service.diagnostics.spawnFailure)
+    }
+
     func testFailedBootstrapKeepsBundledJobEligibleForTheNextEarlyRetry() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -389,7 +436,7 @@ final class LaunchAgentServiceTests: XCTestCase {
         var policyKey: String { "\(FakeSystem.label).fallbackPolicyRevision" }
         var appliedPolicyRevision: Int? { defaults.object(forKey: policyKey) as? Int }
 
-        init(marked: Bool = true) throws {
+        init(marked: Bool = true, launchctlAsync: (@MainActor ([String]) async throws -> (success: Bool, output: String))? = nil) throws {
             home = FileManager.default.temporaryDirectory.appendingPathComponent("launch-agent-\(UUID())")
             let bundle = home.appendingPathComponent("Applications/Agent Relay.app")
             helper = bundle.appendingPathComponent("Contents/Helpers/Agent Relay Helper")
@@ -405,9 +452,11 @@ final class LaunchAgentServiceTests: XCTestCase {
             if marked { plist[ProductTakeover.markerKey] = AppInfo.bundleIdentifier }
             try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
             os.plistPath = fallback.path
+            var system = os.operations
+            system.launchctlAsync = launchctlAsync
             service = LaunchAgentService(bundleURL: bundle, homeDirectory: home,
                                          bundleIdentifier: "com.agentrelay.desktop", defaults: defaults,
-                                         system: os.operations)
+                                         system: system)
         }
 
         func selectFallback() { defaults.set(true, forKey: fallbackKey) }

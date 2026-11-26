@@ -659,6 +659,32 @@ and [exception schema](https://github.com/PostHog/posthog-js/blob/main/packages/
 The core's telemetry and account tests inspect requests with a recording
 sender; they never send test events to PostHog.
 
+The macOS app can report a background-service outage before its socket answers.
+It reports each observed failure reason once until the first successful
+subscription, then reports one recovery if it captured a failure for the same
+installation ID. The app reads the core's current `installation-id` and
+`preferences.json` at capture time and also honors the legacy macOS opt-out.
+The core creates and rotates the ID. An install with no readable ID cannot
+report an outage. Events are best effort and held only in memory.
+
+The signed standard macOS release uses the bundled core's first-party PostHog
+project at `https://i.agentrelay.com/i/v0/e/`. Packaging checks the ingestion
+key against the helper's build fingerprint. Site, debug and unconfigured
+bundles leave the reporter disabled. The events use `desktop:<installation-id>`
+and disable GeoIP and person processing. They carry no account or group
+properties. The macOS launchd diagnostics have no GTK equivalent.
+
+`desktop_core_unavailable` carries a reason of `startup_watchdog`,
+`repeated_refusal`, `registration_failed`, `repair_failed`,
+`installation_required`, `service_not_found`, or `known_spawn_failure`.
+`desktop_core_recovered` carries the same version 1 properties without a reason.
+The properties include numeric app, bundled core, running core and macOS
+version components when available, the app architecture, saturated attempt and
+repair counts, and the allowlisted last error domain and numeric code. Service
+properties record SMAppService registration, install and backup agent state,
+Applications placement, translocation and quarantine. Spawn code `78` is sent
+only with launchd's broken relative bundle-program evidence.
+
 ### Desktop build identity
 
 The probe is an internal component of the desktop release, not a separately

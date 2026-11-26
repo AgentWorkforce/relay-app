@@ -219,7 +219,7 @@ struct SignInView: View {
     private var startup: some View {
         VStack(alignment: .leading, spacing: 24) {
             Group {
-                if model.coreProblem != nil {
+                if model.coreProblem != nil || model.isRestartingCore {
                     Image(systemName: model.coreNeedsInstallation ? "folder" :
                           model.coreNeedsApproval ? "lock.shield" : "arrow.triangle.2.circlepath")
                         .zoomFont(size: 25, weight: .medium)
@@ -232,16 +232,18 @@ struct SignInView: View {
                 HStack(spacing: 12) {
                     Text(model.coreNeedsInstallation ? "Finish installation." :
                             model.coreNeedsApproval ? "One quick permission." :
-                            model.coreProblem != nil ? "Let’s get you connected." : StartupPresentation.title)
+                            model.coreProblem != nil || model.isRestartingCore ? "Let’s get you connected." : StartupPresentation.title)
                         .zoomFont(size: 28, weight: .semibold).tracking(-0.6)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
-                    if model.coreProblem == nil {
+                    if model.coreProblem == nil && !model.isRestartingCore {
                         Spacer(minLength: 0)
                         RelayLoadingBars(label: "Starting Agent Relay", scale: 0.5)
                     }
                 }
-                if let problem = model.coreProblem {
+                if model.isRestartingCore {
+                    startupText("Waiting for the background service to respond.")
+                } else if let problem = model.coreProblem {
                     startupText(problem)
                 } else if reduceMotion || !windowIsVisible {
                     startupText(StartupPresentation.messages[startupMessage])
@@ -255,7 +257,7 @@ struct SignInView: View {
                     }
                 }
             }
-            if model.coreProblem != nil {
+            if model.coreProblem != nil || model.isRestartingCore {
                 VStack(spacing: 10) {
                     if model.coreNeedsInstallation {
                         Button("Open Applications") {
@@ -270,11 +272,11 @@ struct SignInView: View {
                         Button {
                             Task { await model.retryBackgroundService() }
                         } label: {
-                            Label(model.isRecoveringCore ? "Restarting service…" : "Try again", systemImage: "arrow.clockwise")
+                            Label(model.isRestartingCore || model.isRecoveringCore ? "Restarting service…" : "Try again", systemImage: "arrow.clockwise")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(MenuPanelButtonStyle(kind: model.coreNeedsApproval ? .secondary : .primary, controlHeight: 44))
-                        .disabled(model.isRecoveringCore)
+                        .disabled(!model.canRetryBackgroundService)
                     }
                     if !model.coreNeedsInstallation && !model.coreNeedsApproval {
                         Button("Open Login Items") { model.openLoginItemsSettings() }
