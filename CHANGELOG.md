@@ -14,7 +14,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
-- **Restarting the background service keeps Agent Relay responsive on macOS.** If the service cannot start, *Try again* shows restart progress until the service answers or Agent Relay can show what to do next. When analytics are enabled, the standard release can report anonymous startup failures and recovery using the existing installation ID.
+- **Restarting the background service keeps Agent Relay responsive on macOS.** If the service cannot start, *Try again* shows restart progress until the service answers or Agent Relay can show what to do next. When analytics are enabled, the standard release can report anonymous startup failures and recovery using a shared anonymous installation ID, even when the background service has never started. Recovery reporting retries briefly if the service is updating that ID, and rechecks consent before sending.
 - **The session reader shows the images a message brought.** On macOS, Linux and Windows, when an agent's session holds a message that came with PNG, JPEG, GIF or WebP files Agent Relay saved, the session reader shows those images under the message instead of the list of saved file paths. Other files stay listed as before.
 - On macOS, Linux and Windows, Claude Code blocks a hosted Relay call and asks you to retry when the desktop service reports that it could not deliver the chat’s proof to Cloud.
 - **Starting a Grok agent on macOS and Linux.** Agent Relay reports Grok as unavailable for new agents unless the executable its launcher resolves to is named `grok` or starts with `grok-`, is owned by the current user or root, and has no group or other write permissions.

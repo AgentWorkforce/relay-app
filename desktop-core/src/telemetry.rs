@@ -44,6 +44,8 @@
 mod envelope;
 mod gateway;
 mod identify;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod macos_identity;
 mod posthog;
 pub use gateway::Delivery;
 pub use posthog::{Answer, PostHogProject, PostHogSender, SessionBearer, SessionSlot, Transport};
@@ -361,6 +363,9 @@ struct State {
     window_count: u32,
     recent_errors: HashMap<(TelemetryOperation, TelemetryFailure), Instant>,
     identity: Option<String>,
+    /// Invalidates batches already dequeued when the installation ID rotates.
+    #[cfg(target_os = "macos")]
+    identity_generation: u64,
     /// The attached install's account; events belong to it.
     account: Option<TelemetryAccount>,
     /// The user the installation id was merged into, as saved.
@@ -376,9 +381,19 @@ struct Shared {
     changed: Condvar,
     /// Where the merged user is saved.
     identified: PathBuf,
+    #[cfg(target_os = "macos")]
+    preferences: PathBuf,
 }
 
 impl Shared {
+    fn consent_allows(&self, state: &State) -> bool {
+        #[cfg(target_os = "macos")]
+        if !macos_identity::consent(&self.preferences).unwrap_or(false) {
+            return false;
+        }
+        state.enabled
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
@@ -410,6 +425,9 @@ impl Telemetry {
         if cfg!(not(target_os = "macos")) {
             config.import_cached_preferences(&preferences);
         }
+        #[cfg(target_os = "macos")]
+        let enabled = macos_identity::consent(&preferences).unwrap_or(false);
+        #[cfg(not(target_os = "macos"))]
         let enabled = read_preferences(&preferences)
             .get(SETTING)
             .and_then(Value::as_bool)
@@ -426,6 +444,8 @@ impl Telemetry {
             }),
             changed: Condvar::new(),
             identified,
+            #[cfg(target_os = "macos")]
+            preferences: preferences.clone(),
         });
         let worker = shared.clone();
         if let Err(error) = std::thread::Builder::new()
@@ -462,7 +482,7 @@ impl Telemetry {
 
     /// Whether the person allows analytics. On unless they turned it off.
     pub fn enabled(&self) -> bool {
-        self.shared.lock().enabled
+        self.shared.consent_allows(&self.shared.lock())
     }
 
     /// Whether this build may request Cloud profile synchronization. Development
@@ -475,24 +495,65 @@ impl Telemetry {
     /// forgets the installation id, so turning it back on starts a new one;
     /// while an install is attached, that one is merged into its user again.
     pub fn set_enabled(&self, enabled: bool) -> std::io::Result<()> {
+        self.set_enabled_inner(
+            enabled,
+            #[cfg(target_os = "macos")]
+            macos_identity::sync_directory,
+        )
+    }
+
+    fn set_enabled_inner(
+        &self,
+        enabled: bool,
+        #[cfg(target_os = "macos")] sync_preferences: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let mut state = self.shared.lock();
+        #[cfg(target_os = "macos")]
+        let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
+        #[cfg(target_os = "macos")]
+        let (mut preferences, disk_consent) =
+            macos_identity::preferences_for_update(&self.preferences)?;
+        #[cfg(not(target_os = "macos"))]
         let mut preferences = read_preferences(&self.preferences);
+        #[cfg(target_os = "macos")]
+        if enabled && (!state.enabled || !disk_consent) {
+            state.enabled = false;
+            self.rotate_locked(&mut state)?;
+        }
         preferences.insert(SETTING.into(), Value::Bool(enabled));
         let mut bytes = serde_json::to_vec(&Value::Object(preferences)).expect("json");
         bytes.push(b'\n');
-        write_file(&self.preferences, &bytes)?;
-        {
-            let mut state = self.shared.lock();
-            state.enabled = enabled;
-            if !enabled {
-                state.queue.clear();
+        #[cfg(target_os = "macos")]
+        let durability = {
+            persist_file(&self.preferences, &bytes)?;
+            let result = sync_preferences(&self.config.app_data_dir);
+            if enabled && result.is_err() {
+                return result;
             }
-        }
+            // The opt-out is already visible after rename, even if fsync failed.
+            result
+        };
+        #[cfg(not(target_os = "macos"))]
+        write_file(&self.preferences, &bytes)?;
+        state.enabled = enabled;
+        let result = if enabled {
+            Ok(())
+        } else {
+            state.queue.clear();
+            #[cfg(target_os = "macos")]
+            {
+                self.rotate_locked(&mut state)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                self.rotate(&mut state);
+                Ok(())
+            }
+        };
         self.shared.changed.notify_all();
-        if !enabled {
-            let mut state = self.shared.lock();
-            self.rotate(&mut state);
-        }
-        Ok(())
+        #[cfg(target_os = "macos")]
+        let result = durability.and(result);
+        result
     }
 
     /// Sign-out: forgets the account and the installation id, so the next
@@ -521,7 +582,7 @@ impl Telemetry {
         let queued = if self.on_site() {
             self.app_started(&mut state)
         } else {
-            self.identify_if_needed(&mut state)
+            self.identify_if_needed(&mut state, None)
         };
         if queued {
             drop(state);
@@ -532,26 +593,59 @@ impl Telemetry {
     /// A new installation id, with nothing merged and nothing queued for the
     /// old one.
     fn rotate(&self, state: &mut State) {
+        let result = (|| {
+            #[cfg(target_os = "macos")]
+            let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
+            self.rotate_locked(state)
+        })();
+        if let Err(error) = result {
+            #[cfg(target_os = "macos")]
+            {
+                state.identity_generation = state.identity_generation.wrapping_add(1);
+                state.identity = None;
+                state.queue.clear();
+                state.enabled = false;
+            }
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "relay: could not remove a telemetry id: {error}"
+            ));
+        }
+    }
+
+    fn rotate_locked(&self, state: &mut State) -> std::io::Result<()> {
         state.identity = None;
         state.identified = None;
         state.identifying = false;
         state.recent_errors.clear();
         state.queue.retain(|queued| queued.merges.is_none());
+        #[cfg(target_os = "macos")]
+        {
+            state.identity_generation = state.identity_generation.wrapping_add(1);
+            state.queue.clear();
+        }
+        let mut result = Ok(());
         for path in [&self.identity, &self.shared.identified] {
             if let Err(error) = std::fs::remove_file(path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    agent_relay_node::relay::diagnostics::write(format_args!(
-                        "relay: could not remove a telemetry id: {error}"
-                    ));
+                    result = Err(error);
                 }
             }
         }
+        #[cfg(target_os = "macos")]
+        result.and_then(|()| macos_identity::sync_directory(&self.config.app_data_dir))?;
+        #[cfg(not(target_os = "macos"))]
+        result?;
+        Ok(())
     }
 
     /// Queues the `$identify` that merges the installation id into the
     /// attached user, unless it is merged or one is already on its way.
-    fn identify_if_needed(&self, state: &mut State) -> bool {
-        if self.config.project.is_none() || state.shutdown || !state.enabled || state.identifying {
+    fn identify_if_needed(&self, state: &mut State, identity: Option<&str>) -> bool {
+        if self.config.project.is_none()
+            || state.shutdown
+            || !self.shared.consent_allows(state)
+            || state.identifying
+        {
             return false;
         }
         let Some(account) = state.account.clone() else {
@@ -560,7 +654,9 @@ impl Telemetry {
         if state.identified.as_deref() == Some(account.user_id.as_str()) {
             return false;
         }
-        let anonymous = self.identity(state);
+        let Some(anonymous) = identity.map(str::to_owned).or_else(|| self.identity(state)) else {
+            return false;
+        };
         let mut properties = self.base_properties(Some(&account));
         properties.insert(
             "$anon_distinct_id".into(),
@@ -592,7 +688,7 @@ impl Telemetry {
         }
         let date = (self.config.ticks)();
         let mut state = self.shared.lock();
-        if state.shutdown || !state.enabled {
+        if state.shutdown || !self.shared.consent_allows(&state) {
             return;
         }
         let window_open = state
@@ -620,11 +716,19 @@ impl Telemetry {
             }
         }
         state.window_count += 1;
-        self.identify_if_needed(&mut state);
         let account = state.account.clone();
+        let identity = if cfg!(target_os = "macos") || account.is_none() {
+            let Some(identity) = self.identity(&mut state) else {
+                return;
+            };
+            Some(identity)
+        } else {
+            None
+        };
+        self.identify_if_needed(&mut state, identity.as_deref());
         let distinct_id = match &account {
             Some(account) => account.user_id.clone(),
-            None => format!("desktop:{}", self.identity(&mut state)),
+            None => format!("desktop:{}", identity.expect("anonymous identity")),
         };
         let timestamp = self.timestamp();
 
@@ -698,11 +802,21 @@ impl Telemetry {
         !state.sending && state.queue.is_empty()
     }
 
+    #[cfg(target_os = "macos")]
+    fn identity(&self, state: &mut State) -> Option<String> {
+        let identity = macos_identity::identity(&self.config.app_data_dir)
+            .ok()
+            .flatten();
+        state.identity.clone_from(&identity);
+        identity
+    }
+
     /// The installation id, created on first use. An id that cannot be
-    /// saved still serves this run.
-    fn identity(&self, state: &mut State) -> String {
+    /// saved still serves this run on GTK.
+    #[cfg(not(target_os = "macos"))]
+    fn identity(&self, state: &mut State) -> Option<String> {
         if let Some(identity) = &state.identity {
-            return identity.clone();
+            return Some(identity.clone());
         }
         let identity = std::fs::read_to_string(&self.identity)
             .ok()
@@ -717,7 +831,7 @@ impl Telemetry {
                 fresh
             });
         state.identity = Some(identity.clone());
-        identity
+        Some(identity)
     }
 }
 
@@ -783,8 +897,16 @@ fn drain(shared: &Shared, sender: &dyn TelemetrySender) {
         };
         let batch = gateway::batch(&mut state, event, merges.is_none(), sender.batch_limit());
         state.sending = true;
+        #[cfg(target_os = "macos")]
+        let identity_generation = state.identity_generation;
         drop(state);
-        let sent = gateway::deliver(shared, sender, batch);
+        let sent = gateway::deliver(
+            shared,
+            sender,
+            batch,
+            #[cfg(target_os = "macos")]
+            identity_generation,
+        );
         let mut state = shared.lock();
         state.sending = false;
         if let Some(merges) = merges {
@@ -823,10 +945,19 @@ fn read_preferences(path: &Path) -> Map<String, Value> {
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    persist_file(path, bytes)?;
+    #[cfg(target_os = "macos")]
+    macos_identity::sync_directory(path.parent().unwrap_or(Path::new(".")))?;
+    Ok(())
+}
+
+fn persist_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     std::io::Write::write_all(&mut temporary, bytes)?;
+    #[cfg(target_os = "macos")]
+    temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
@@ -853,6 +984,10 @@ fn new_uuid() -> String {
             ^ u128::from(std::process::id());
         bytes = nanos.to_le_bytes();
     }
+    format_uuid(bytes)
+}
+
+fn format_uuid(mut bytes: [u8; 16]) -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -1082,6 +1217,192 @@ mod tests {
         fn events(&self, telemetry: &Telemetry) -> Vec<Value> {
             assert!(telemetry.flush(Duration::from_secs(5)));
             self.sender.events()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn external_opt_out_blocks_record_before_it_consumes_the_budget() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        std::fs::create_dir_all(&telemetry.config.app_data_dir).unwrap();
+        std::fs::write(&telemetry.preferences, br#"{"analytics_enabled":false}"#).unwrap();
+        telemetry.record(TelemetryEvent::new(
+            TelemetryOperation::AppLaunch,
+            TelemetryOutcome::Started,
+        ));
+        let state = telemetry.shared.lock();
+        assert!(state.enabled);
+        assert_eq!(state.window_count, 0);
+        assert!(state.queue.is_empty());
+        assert!(fixture.sender.events().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn explicit_enable_rotates_after_disk_opt_out_or_malformed_preferences() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        for bytes in [
+            r#"{"analytics_enabled":false}"#,
+            r#"{"analytics_enabled":"true","other":42}"#,
+            "[]",
+            "{",
+        ] {
+            let previous = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+            std::fs::write(&telemetry.preferences, bytes).unwrap();
+            assert!(!telemetry.enabled());
+            assert!(telemetry.shared.lock().enabled);
+            telemetry.set_enabled(true).unwrap();
+            assert!(telemetry.enabled());
+            let current = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+            assert_ne!(current, previous);
+            if bytes.contains("other") {
+                assert_eq!(read_preferences(&telemetry.preferences)["other"], 42);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn explicit_enable_refuses_unsafe_preferences_before_rotation() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let previous = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+        let destination = fixture.home.join("untouched");
+        std::fs::write(&destination, b"{}").unwrap();
+        std::os::unix::fs::symlink(&destination, &telemetry.preferences).unwrap();
+        assert!(telemetry.set_enabled(true).is_err());
+        assert!(std::fs::symlink_metadata(&telemetry.preferences)
+            .unwrap()
+            .is_symlink());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"{}");
+        assert_eq!(
+            parse_uuid(std::fs::read_to_string(&telemetry.identity).unwrap().trim()),
+            Some(previous)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn disk_opt_out_clears_state_even_if_directory_sync_fails_after_rename() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let previous = telemetry.identity(&mut telemetry.shared.lock()).unwrap();
+        let mut state = telemetry.shared.lock();
+        // Keep the worker from draining the synthetic queue.
+        state.shutdown = true;
+        state.queue.push_back(Queued {
+            event: json!({}),
+            merges: None,
+        });
+        drop(state);
+
+        let error = telemetry
+            .set_enabled_inner(false, |_| {
+                assert!(!macos_identity::consent(&telemetry.preferences).unwrap());
+                Err(std::io::Error::other("synthetic directory sync failure"))
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "synthetic directory sync failure");
+        let state = telemetry.shared.lock();
+        assert!(!state.enabled);
+        assert!(state.queue.is_empty());
+        assert!(state.identity.is_none());
+        assert!(!telemetry.identity.exists());
+        drop(state);
+        telemetry.set_enabled(true).unwrap();
+        assert_ne!(
+            telemetry.identity(&mut telemetry.shared.lock()).unwrap(),
+            previous
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_rotation_disables_telemetry_and_discards_the_old_queue() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let mut state = telemetry.shared.lock();
+        assert!(telemetry.identity(&mut state).is_some());
+        state.queue.push_back(Queued {
+            event: json!({}),
+            merges: None,
+        });
+        std::fs::set_permissions(
+            &telemetry.config.app_data_dir,
+            std::fs::Permissions::from_mode(0o770),
+        )
+        .unwrap();
+        telemetry.rotate(&mut state);
+        assert!(!state.enabled);
+        assert!(state.identity.is_none());
+        assert!(state.queue.is_empty());
+        drop(state);
+        std::fs::set_permissions(
+            &telemetry.config.app_data_dir,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(!telemetry.enabled());
+        assert!(telemetry.identity.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn disk_opt_out_stops_a_batch_between_delivery_attempts() {
+        struct RetryOnce<F> {
+            after_first_attempt: F,
+            attempts: std::sync::atomic::AtomicUsize,
+        }
+
+        impl<F: Fn() + Send + Sync + 'static> TelemetrySender for RetryOnce<F> {
+            fn send(&self, _: Vec<Value>) -> Result<(), String> {
+                unreachable!("gateway delivery uses deliver")
+            }
+
+            fn deliver(&self, _: Vec<Value>) -> Delivery {
+                use std::sync::atomic::Ordering::Relaxed;
+                if self.attempts.fetch_add(1, Relaxed) == 0 {
+                    (self.after_first_attempt)();
+                    Delivery::Retry {
+                        reason: "synthetic retry".into(),
+                        after: Some(Duration::ZERO),
+                    }
+                } else {
+                    Delivery::Sent
+                }
+            }
+        }
+
+        for reenable in [false, true] {
+            let fixture = Fixture::new();
+            let telemetry = fixture.telemetry();
+            std::fs::create_dir_all(&telemetry.config.app_data_dir).unwrap();
+            let during_delivery = telemetry.clone();
+            let sender = RetryOnce {
+                after_first_attempt: move || {
+                    std::fs::write(
+                        &during_delivery.preferences,
+                        br#"{"analytics_enabled":false}"#,
+                    )
+                    .unwrap();
+                    if reenable {
+                        during_delivery.set_enabled(true).unwrap();
+                    }
+                },
+                attempts: Default::default(),
+            };
+            let generation = telemetry.shared.lock().identity_generation;
+            assert!(!gateway::deliver(
+                &telemetry.shared,
+                &sender,
+                vec![json!({})],
+                generation,
+            ));
+            assert!(telemetry.shared.lock().enabled);
+            assert_eq!(sender.attempts.into_inner(), 1);
         }
     }
 

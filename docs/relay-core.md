@@ -694,9 +694,13 @@ Cloud `users.id`, and later events carry the user and `$groups
 and the merged user live in `preferences.json`, `installation-id` and
 `analytics-identified` (`$XDG_CONFIG_HOME`/`$XDG_CACHE_HOME`
 `com.agentrelay.desktop` on Linux, as the GTK app kept them; the app data
-directory on macOS). A build made for its own site never reports to the
-public host: by default it follows the site's analytics client gateway
-(`telemetry::gateway`). It posts `{"schema":"agent-relay.analytics.client-batch/v1",
+directory on macOS). On macOS the app and core use the same file lock and
+atomic publication to establish the first installation ID. The core also
+holds that lock when changing consent or rotating the ID. Capture behavior
+is described in the [macOS outage reporter documentation](repository-guide.md#desktop-analytics-and-error-tracking).
+
+By default, a build made for its own site reports through the site's
+analytics client gateway (`telemetry::gateway`). It posts `{"schema":"agent-relay.analytics.client-batch/v1",
 "client":"desktop","events":[…]}` to `<site>/api/v1/analytics/events` with the
 signed-in session as the bearer, never following a redirect, and sends only
 two events, each `{event, occurred_at, client_event_id, properties}`:

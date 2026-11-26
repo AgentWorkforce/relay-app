@@ -662,10 +662,16 @@ sender; they never send test events to PostHog.
 The macOS app can report a background-service outage before its socket answers.
 It reports each observed failure reason once until the first successful
 subscription, then reports one recovery if it captured a failure for the same
-installation ID. The app reads the core's current `installation-id` and
-`preferences.json` at capture time and also honors the legacy macOS opt-out.
-The core creates and rotates the ID. An install with no readable ID cannot
-report an outage. Events are best effort and held only in memory.
+installation ID. Before capture the app checks its current settings, the legacy
+macOS preference and the shared `preferences.json`. With analytics enabled,
+the app or core can create `installation-id` in the app data directory on
+first use. Both take the same `installation-id.lock` and publish a complete UUID
+with an atomic rename that refuses to overwrite an existing file. Both reuse
+the saved UUID. An absent analytics preference defaults to enabled. Invalid
+preferences, unreadable files, and unsafe state suppress capture. The core
+rotates the ID on opt-out, sign-out and account changes. An outage whose ID
+was removed or rotated ends without a recovery event. Events are best effort
+and held only in memory.
 
 The signed standard macOS release uses the bundled core's first-party PostHog
 project at `https://i.agentrelay.com/i/v0/e/`. Packaging checks the ingestion
