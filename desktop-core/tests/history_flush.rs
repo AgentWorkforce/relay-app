@@ -960,6 +960,38 @@ fn an_append_after_capture_is_read_by_the_next_flush(n: usize) {
         "the append is in the flush's own store"
     );
     assert!(receiver.received(&appended), "and it was delivered");
+    assert!(
+        second["acknowledged_records"].as_i64().unwrap()
+            > first["acknowledged_records"].as_i64().unwrap(),
+        "the receiver acknowledged the new records: {first} then {second}"
+    );
+    let records: Vec<Value> = receiver
+        .batches()
+        .iter()
+        .filter_map(|batch| serde_json::from_str::<Value>(&batch.body).ok())
+        .flat_map(|body| {
+            body["batch"]["records"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|record| record["payload"].to_string().contains(&appended))
+        .collect();
+    let rows: Vec<(i64, i64, String)> = {
+        let conn = rusqlite::Connection::open(sandbox.state().join("history.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, revision, session_id FROM session_events WHERE source='codex' AND text=?1")
+            .unwrap();
+        stmt.query_map([&appended], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    eprintln!(
+        "RECEIPT n={n}: local session_events rows (id, revision, session) = {rows:?}; receiver records carrying the append = {} ({} session_event); flush summary = {second}",
+        records.len(),
+        records.iter().filter(|r| r["kind"] == "session_event").count(),
+    );
 }
 
 /// More threads than one sweep reads (50): the append sorts above the
@@ -974,9 +1006,10 @@ fn an_append_within_one_sweep_page_is_read_by_the_next_flush() {
     an_append_after_capture_is_read_by_the_next_flush(25);
 }
 
-/// A transcript written to throughout the flush keeps every sweep walking,
-/// so capture never settles: at the deadline the flush says capture is
-/// incomplete instead of reporting a drained queue.
+/// A transcript whose modification time moves throughout the flush keeps
+/// every sweep walking, so capture never settles. Capture still leaves time
+/// for delivery: what it stored is acknowledged, and the flush says capture
+/// is incomplete instead of reporting a drained queue.
 #[test]
 fn capture_that_never_settles_reports_incomplete_at_the_deadline() {
     let receiver = FakeHistory::start(Behaviour::default());
@@ -984,31 +1017,34 @@ fn capture_that_never_settles_reports_incomplete_at_the_deadline() {
     sandbox.claude_session("busy", 1);
     let busy = sandbox.claude().join("projects/flush/busy.jsonl");
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let writer = {
+    let toucher = {
         let (stop, busy) = (stop.clone(), busy.clone());
         std::thread::spawn(move || {
-            let mut n = 1;
+            let file = fs::OpenOptions::new().append(true).open(&busy).unwrap();
+            let mut at = std::time::SystemTime::now();
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                let line = json!({"sessionId":"busy","uuid":format!("busy-{n}"),"type":"user",
-                    "cwd":"/work/flush","message":{"role":"user","content":format!("synthetic busy-{n}")},
-                    "timestamp":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)});
-                fs::OpenOptions::new()
-                    .append(true)
-                    .open(&busy)
-                    .unwrap()
-                    .write_all(format!("{line}\n").as_bytes())
-                    .unwrap();
-                n += 1;
-                std::thread::sleep(Duration::from_millis(20));
+                at += Duration::from_millis(1);
+                file.set_modified(at).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
             }
         })
     };
     let output = run_stdin(sandbox.command(4), &session(&receiver.base_url));
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    writer.join().unwrap();
+    toucher.join().unwrap();
     assert_eq!(output.status.code(), Some(3), "{}", diagnose(&output));
     let summary = summary(&output);
     assert_eq!(summary["ok"], false);
     assert_eq!(summary["capture"], "incomplete", "{summary}");
     assert_eq!(summary["exit_reason"], "capture_incomplete", "{summary}");
+    // Capture kept time for delivery: what it stored was delivered.
+    assert_eq!(summary["pending_records"], 0, "{summary}");
+    assert!(
+        summary["acknowledged_records"].as_i64().unwrap() > 0,
+        "{summary}"
+    );
+    assert!(
+        receiver.received("synthetic busy-0"),
+        "the seed turn was delivered"
+    );
 }

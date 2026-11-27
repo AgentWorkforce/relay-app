@@ -9,6 +9,7 @@ mod kept;
 mod recent_paths;
 mod roots;
 mod safety_paths;
+mod settle;
 pub mod wsl;
 mod wsl_capture;
 mod extra_claude;
@@ -22,6 +23,7 @@ use kept::kept_with;
 pub use recent_paths::{admitted as path_admitted, RecentPaths};
 pub use roots::RootSettings;
 pub use safety_paths::SafetyPaths;
+pub use settle::{sync_until_settled, CaptureContinuation};
 
 #[cfg(test)]
 pub use incremental::{discover_paths, sweep_once, sweep_paths_once, sweep_sources_once};
@@ -242,54 +244,6 @@ pub fn sync(
     }
     phase("complete");
     Ok(swept)
-}
-
-/// What [`sync_until_settled`] can say about capture continuation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CaptureContinuation {
-    /// `expired` came while every sweep still walked its sources: a sweep
-    /// may have left a page for the next one.
-    Incomplete,
-    /// A sweep found its stat-only source fingerprint unchanged since a
-    /// sealed sweep. The SDK seals that fingerprint only after a sweep that
-    /// read every source, so this is as settled as its report can show, but
-    /// `SyncReport` has no explicit continuation field to confirm it.
-    Unknown,
-}
-impl CaptureContinuation {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Incomplete => "incomplete",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-/// Repeat `db`'s local sweep until it stops walking, or `expired`. One sweep
-/// is bounded: Codex's SQLite threads are read 50 at a time behind a cursor
-/// the next sweep continues, and a thread updated meanwhile sorts above that
-/// cursor, so it is read only by the traversal after. A sweep that left such
-/// a page does not seal the source fingerprint, so the next sweep walks
-/// again; the loop ends at the first sweep that reports `swept == false`.
-pub fn sync_until_settled(
-    db: &Path,
-    expired: impl Fn() -> bool + Clone + Send + 'static,
-) -> Result<CaptureContinuation> {
-    let store = open(db)?;
-    loop {
-        if expired() {
-            return Ok(CaptureContinuation::Incomplete);
-        }
-        let stop = Stop::follow(expired.clone());
-        let mut options = SyncOptions::default();
-        options.stop = Some(stop.token());
-        match store.sync(options) {
-            Ok(report) if !report.swept => return Ok(CaptureContinuation::Unknown),
-            Ok(_) => {}
-            Err(_) if expired() => return Ok(CaptureContinuation::Incomplete),
-            Err(error) => return Err(error.into()),
-        }
-    }
 }
 
 /// Hydrate using one retained consent snapshot, including related sessions.
