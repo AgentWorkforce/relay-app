@@ -36,7 +36,8 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main dec7f8bc: #2273 (Windows Claude discovery and trusted Codex hook
+# main b7a15c4d: #2290 (ordered Codex direct message delivery), over
+# dec7f8bc: #2273 (Windows Claude discovery and trusted Codex hook
 # delivery, including idle-turn and restart-safe claim recovery), over
 # caac5fb: #2276 (chats open in the ChatGPT desktop app are seen running
 # through that app's own stdio app-server, which drains their queued
@@ -59,7 +60,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 # through mise is found) and b8c5243: #2251 (stricter session caller
 # attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "dec7f8bc708acbd5e17b00c001aab3ce62a17475", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "b7a15c4d4b2ca38000fba59753f3aff62b61cf82", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:

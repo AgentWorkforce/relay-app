@@ -5569,7 +5569,7 @@ public struct LocalAgent: Codable, Equatable, Hashable, Sendable {
     /// ISO-8601, seconds precision.
     public let registeredAt: String
     /// `true` always answers, `false` never, `null` only when the session
-    /// cannot answer itself.
+    /// cannot answer itself; for Pi and Oh My Pi sessions `null` never.
     public let replyWithFinalAnswer: Bool?
     /// The repository (`owner/name`) the agent's session is in, when
     /// `auto_join_repositories` named it at registration.
@@ -7844,7 +7844,8 @@ public struct ReplicasSpawnParams: Codable, Equatable, Hashable, Sendable {
 
 public struct ReplySettingParams: Codable, Equatable, Hashable, Sendable {
     /// `true` always answers, `false` never, `null` only when the session
-    /// cannot answer itself. Required.
+    /// cannot answer itself; for Pi and Oh My Pi sessions `null` never.
+    /// Required.
     public let enabled: Bool?
     public let name: String
 
@@ -8802,10 +8803,14 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     /// A Hermes Agent home whose gateway serves its API on loopback. Each
     /// relay sender gets a Hermes session of its own (`relay::hermes`).
     case hermes
+    /// An Antigravity desktop conversation held by Antigravity's local
+    /// `language_server`, reached through lifecycle hooks in
+    /// `~/.gemini/config/hooks.json` (`relay::antigravity`).
+    case antigravity
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [SessionKind] = [.droid, .pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .copilot, .openclaw, .hermes]
+    public static let allCases: [SessionKind] = [.droid, .pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .copilot, .openclaw, .hermes, .antigravity]
 
     public init(rawValue: String) {
         switch rawValue {
@@ -8825,6 +8830,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
         case "copilot": self = .copilot
         case "openclaw": self = .openclaw
         case "hermes": self = .hermes
+        case "antigravity": self = .antigravity
         default: self = .unknown(rawValue)
         }
     }
@@ -8847,6 +8853,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
         case .copilot: return "copilot"
         case .openclaw: return "openclaw"
         case .hermes: return "hermes"
+        case .antigravity: return "antigravity"
         case .unknown(let value): return value
         }
     }
@@ -9680,6 +9687,9 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     public let acceptSpawns: Bool?
     public let allowSelfRegistration: Bool?
     public let analyticsEnabled: Bool?
+    /// Adds or removes Agent Relay's lifecycle hooks in Antigravity's
+    /// `~/.gemini/config/hooks.json`.
+    public let antigravityDirectDelivery: Bool?
     public let autoActivate: Bool?
     /// Whether agents registered from now on join #general.
     public let autoJoinGeneral: Bool?
@@ -9788,10 +9798,11 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Replaces the relay senders trusted like the person.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, delegatedApprovalsFrom: String? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationInbox: String? = nil, sessionSendTokens: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnDelegateApprovals: Bool? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, antigravityDirectDelivery: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, delegatedApprovalsFrom: String? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationInbox: String? = nil, sessionSendTokens: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnDelegateApprovals: Bool? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
+        self.antigravityDirectDelivery = antigravityDirectDelivery
         self.autoActivate = autoActivate
         self.autoJoinGeneral = autoJoinGeneral
         self.autoJoinRepositories = autoJoinRepositories
@@ -9842,6 +9853,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case acceptSpawns = "accept_spawns"
         case allowSelfRegistration = "allow_self_registration"
         case analyticsEnabled = "analytics_enabled"
+        case antigravityDirectDelivery = "antigravity_direct_delivery"
         case autoActivate = "auto_activate"
         case autoJoinGeneral = "auto_join_general"
         case autoJoinRepositories = "auto_join_repositories"
@@ -9893,6 +9905,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.acceptSpawns = try c.decodeIfPresent(Bool.self, forKey: .acceptSpawns)
         self.allowSelfRegistration = try c.decodeIfPresent(Bool.self, forKey: .allowSelfRegistration)
         self.analyticsEnabled = try c.decodeIfPresent(Bool.self, forKey: .analyticsEnabled)
+        self.antigravityDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .antigravityDirectDelivery)
         self.autoActivate = try c.decodeIfPresent(Bool.self, forKey: .autoActivate)
         self.autoJoinGeneral = try c.decodeIfPresent(Bool.self, forKey: .autoJoinGeneral)
         self.autoJoinRepositories = try c.decodeIfPresent([String].self, forKey: .autoJoinRepositories)
@@ -9944,6 +9957,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.acceptSpawns, forKey: .acceptSpawns)
         try c.encodeIfPresent(self.allowSelfRegistration, forKey: .allowSelfRegistration)
         try c.encodeIfPresent(self.analyticsEnabled, forKey: .analyticsEnabled)
+        try c.encodeIfPresent(self.antigravityDirectDelivery, forKey: .antigravityDirectDelivery)
         try c.encodeIfPresent(self.autoActivate, forKey: .autoActivate)
         try c.encodeIfPresent(self.autoJoinGeneral, forKey: .autoJoinGeneral)
         try c.encodeIfPresent(self.autoJoinRepositories, forKey: .autoJoinRepositories)
@@ -10006,6 +10020,11 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// Whether Agent Relay sends usage analytics (`telemetry`). On unless
     /// turned off.
     public let analyticsEnabled: Bool?
+    /// Whether Agent Relay's lifecycle hooks are in Antigravity's
+    /// `~/.gemini/config/hooks.json`, so an Antigravity conversation gets its
+    /// messages between invocations or when its turn ends. Off unless turned
+    /// on. Absent where Antigravity has never run.
+    public let antigravityDirectDelivery: Bool?
     /// Newly found live sessions are registered.
     public let autoActivate: Bool
     /// Whether agents registered from now on join #general, so its posts
@@ -10244,11 +10263,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, delegatedApprovalsFrom: String? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationCoverage: [String: QuestionCoverage]? = nil, questionEscalationInbox: String? = nil, questionEscalationStatus: String? = nil, sessionSendTokens: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnDelegateApprovals: Bool? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, antigravityDirectDelivery: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, delegatedApprovalsFrom: String? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationCoverage: [String: QuestionCoverage]? = nil, questionEscalationInbox: String? = nil, questionEscalationStatus: String? = nil, sessionSendTokens: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnDelegateApprovals: Bool? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
+        self.antigravityDirectDelivery = antigravityDirectDelivery
         self.autoActivate = autoActivate
         self.autoJoinGeneral = autoJoinGeneral
         self.autoJoinRepositories = autoJoinRepositories
@@ -10308,6 +10328,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case agentChanges = "agent_changes"
         case allowSelfRegistration = "allow_self_registration"
         case analyticsEnabled = "analytics_enabled"
+        case antigravityDirectDelivery = "antigravity_direct_delivery"
         case autoActivate = "auto_activate"
         case autoJoinGeneral = "auto_join_general"
         case autoJoinRepositories = "auto_join_repositories"
@@ -10368,6 +10389,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.agentChanges = try c.decodeIfPresent([AgentSettingsChange].self, forKey: .agentChanges)
         self.allowSelfRegistration = try c.decode(Bool.self, forKey: .allowSelfRegistration)
         self.analyticsEnabled = try c.decodeIfPresent(Bool.self, forKey: .analyticsEnabled)
+        self.antigravityDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .antigravityDirectDelivery)
         self.autoActivate = try c.decode(Bool.self, forKey: .autoActivate)
         self.autoJoinGeneral = try c.decodeIfPresent(Bool.self, forKey: .autoJoinGeneral)
         self.autoJoinRepositories = try c.decodeIfPresent([String].self, forKey: .autoJoinRepositories)
@@ -10428,6 +10450,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.agentChanges, forKey: .agentChanges)
         try c.encode(self.allowSelfRegistration, forKey: .allowSelfRegistration)
         try c.encodeIfPresent(self.analyticsEnabled, forKey: .analyticsEnabled)
+        try c.encodeIfPresent(self.antigravityDirectDelivery, forKey: .antigravityDirectDelivery)
         try c.encode(self.autoActivate, forKey: .autoActivate)
         try c.encodeIfPresent(self.autoJoinGeneral, forKey: .autoJoinGeneral)
         try c.encodeIfPresent(self.autoJoinRepositories, forKey: .autoJoinRepositories)

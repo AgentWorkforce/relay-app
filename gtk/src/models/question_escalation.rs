@@ -319,6 +319,7 @@ mod tests {
                 ("muse-open", "Muse Code", None),
                 ("openclaw", "OpenClaw", None),
                 ("hermes", "Hermes", None),
+                ("antigravity", "Antigravity", None),
             ]
         );
     }

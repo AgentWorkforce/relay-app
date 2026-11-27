@@ -17,6 +17,7 @@ pub fn kind_label(kind: SessionKind) -> &'static str {
         SessionKind::Droid => "Factory Droid",
         SessionKind::Pi => "Pi",
         SessionKind::Omp => "Oh My Pi",
+        SessionKind::Antigravity => "Antigravity",
     }
 }
 
