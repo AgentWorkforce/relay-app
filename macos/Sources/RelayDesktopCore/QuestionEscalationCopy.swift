@@ -84,7 +84,7 @@ public enum QuestionCoverageList {
     /// The core's `KINDS` order (relay `question/coverage.rs`).
     public static let order: [SessionKind] = [
         .claudeTerminal, .claudeCloud, .codex, .cursorCli, .copilot, .opencode, .opencodeOpen,
-        .grok, .grokOpen, .devin, .droid, .pi, .omp, .museOpen, .openclaw, .hermes,
+        .grok, .grokOpen, .devin, .droid, .pi, .omp, .museOpen, .openclaw, .hermes, .antigravity,
     ]
 
     private static let states: [QuestionCoverageState] = [.covered, .partial, .notCovered, .notApplicable]

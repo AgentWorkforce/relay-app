@@ -60,6 +60,7 @@ final class QuestionEscalationCopyTests: XCTestCase {
             ["muse-open", "Muse Code", ""],
             ["openclaw", "OpenClaw", ""],
             ["hermes", "Hermes", ""],
+            ["antigravity", "Antigravity", ""],
         ])
     }
 
