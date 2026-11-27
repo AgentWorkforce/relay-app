@@ -9,6 +9,7 @@ mod kept;
 mod recent_paths;
 mod roots;
 mod safety_paths;
+mod settle;
 pub mod wsl;
 mod wsl_capture;
 mod extra_claude;
@@ -22,6 +23,7 @@ use kept::kept_with;
 pub use recent_paths::{admitted as path_admitted, RecentPaths};
 pub use roots::RootSettings;
 pub use safety_paths::SafetyPaths;
+pub use settle::{sync_until_settled, CaptureContinuation};
 
 #[cfg(test)]
 pub use incremental::{discover_paths, sweep_once, sweep_paths_once, sweep_sources_once};

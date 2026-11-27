@@ -6,10 +6,22 @@
 //! the deadline passes. It makes no Agent Relay Cloud request, inspects no
 //! legacy scheduler, and never stores a refresh token.
 //!
+//! Capture repeats bounded sweeps until one stops walking (see
+//! [`history::sync_until_settled`]) before delivery starts, so an update a
+//! sweep's cursor passed over is still read by this flush; those sweeps take
+//! at most half the time left, so delivery keeps the rest.
+//!
 //! stdout carries exactly one JSON summary line, with no paths, tokens or
-//! content. Exit codes: 0 every record acknowledged; 3 records still queued at
-//! the deadline; 2 a session refused locally or by the receiver; 4 the
-//! generation is blocked or conflicts; 64 invalid arguments; 1 anything else.
+//! content. Delivery (`exit_reason`, `pending_records`) and capture
+//! continuation (`capture`: `incomplete`, or `unknown` while the SDK reports
+//! no explicit continuation) are reported apart. Exit codes: 0 every record
+//! acknowledged; 3 records still queued at the deadline, or every record
+//! acknowledged while capture did not settle (`capture_incomplete`); 2 a
+//! session refused locally or by the receiver; 4 the generation is blocked
+//! or conflicts; 64 invalid arguments; 1 anything else.
+mod capture;
+mod deliver;
+
 use super::{collector, history, private_directory};
 use crate::history::{
     cloud,
@@ -76,6 +88,7 @@ struct PushedSession {
 enum Exit {
     Drained,
     Deadline,
+    CaptureIncomplete,
     InvalidArguments,
     InvalidSession,
     Unauthorized,
@@ -88,7 +101,7 @@ impl Exit {
             Exit::Drained => 0,
             Exit::Failed => 1,
             Exit::InvalidSession | Exit::Unauthorized => 2,
-            Exit::Deadline => 3,
+            Exit::Deadline | Exit::CaptureIncomplete => 3,
             Exit::Blocked => 4,
             Exit::InvalidArguments => 64,
         }
@@ -97,6 +110,7 @@ impl Exit {
         match self {
             Exit::Drained => "drained",
             Exit::Deadline => "deadline",
+            Exit::CaptureIncomplete => "capture_incomplete",
             Exit::InvalidArguments => "invalid_arguments",
             Exit::InvalidSession => "invalid_session",
             Exit::Unauthorized => "unauthorized",
@@ -111,8 +125,16 @@ struct Counts {
     acknowledged_records: AtomicI64,
     pending_records: AtomicI64,
     sessions_captured: AtomicI64,
+    /// `incomplete` from the start of capture until a sweep settles.
+    capture: std::sync::Mutex<Option<&'static str>>,
 }
 impl Counts {
+    fn set_capture(&self, capture: &'static str) {
+        *self
+            .capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(capture);
+    }
     fn of(&self, status: &delivery::DeliveryStatus) {
         self.acknowledged_records
             .store(status.acknowledged_records, Ordering::SeqCst);
@@ -136,6 +158,7 @@ fn emit(exit: Exit, counts: &Counts, started: Instant) {
         "acknowledged_records": counts.acknowledged_records.load(Ordering::SeqCst),
         "pending_records": counts.pending_records.load(Ordering::SeqCst),
         "sessions_captured": counts.sessions_captured.load(Ordering::SeqCst),
+        "capture": counts.capture.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unwrap_or("unknown"),
         "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "exit_reason": exit.reason(),
     })
@@ -336,20 +359,6 @@ fn validate(session: PushedSession) -> Result<(PushedSession, String)> {
     Ok((session, base_url))
 }
 
-/// Wall time of one delivery pass. Debug builds take an override, so a test
-/// can span several passes without waiting out the release budget.
-fn pass_budget() -> Duration {
-    #[cfg(debug_assertions)]
-    if let Some(ms) = std::env::var("AGENT_RELAY_PROBE_FLUSH_PASS_MS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|ms| *ms > 0)
-    {
-        return Duration::from_millis(ms);
-    }
-    collector::DRAIN_TIME_BUDGET
-}
-
 /// Claim a fresh private directory for this command, or resume one bearing
 /// the exact marker this command created. Never chmod, traverse or overwrite
 /// an arbitrary existing directory supplied by the caller.
@@ -455,14 +464,6 @@ fn lock_state_directory(state: &Path) -> Result<StateLock> {
     }
 }
 
-fn update_counts(db: &Path, job_id: &str, counts: &Counts) -> Result<()> {
-    counts
-        .sessions_captured
-        .store(history::captured_sessions(db)?, Ordering::SeqCst);
-    counts.of(&delivery::status(&delivery::open_db(db)?, job_id)?);
-    Ok(())
-}
-
 fn flush(options: &Flush, deadline: Instant, counts: &Counts) -> Result<Exit> {
     let session = read_session(options, deadline)?;
     if Instant::now() >= deadline {
@@ -526,132 +527,17 @@ fn flush(options: &Flush, deadline: Instant, counts: &Counts) -> Result<Exit> {
     // Create/adopt the generation before capture. If the deadline interrupts
     // a sweep after some records commit, its status can then count those
     // unqueued records instead of publishing a false zero summary.
-    let job_id = job(&db, &account)?;
-    let expired = move || Instant::now() >= deadline;
-    match history::sync(
-        &db,
-        deadline.saturating_duration_since(Instant::now()),
-        false,
-        |_| {},
-        expired,
-    ) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(refused(
-                Exit::Failed,
-                "Another capture holds the state directory.",
-            ))
-        }
-        Err(_) if expired() => {
-            update_counts(&db, &job_id, counts)?;
-            return Ok(Exit::Deadline);
-        }
-        Err(error) => return Err(error),
-    }
-    update_counts(&db, &job_id, counts)?;
-
+    let job_id = deliver::job(&db, &account)?;
+    let Some(continuation) = capture::run(&db, &job_id, deadline, counts)? else {
+        return Ok(Exit::Deadline);
+    };
     let receiver = destination::RelayHistoryReceiver {
         base_url: Some(base_url.clone()),
         expected_account: Some(account),
         instance_id: Some(collector::INSTANCE.into()),
-        state: destination::ReceiverState::hosted_with_session(base_url.clone(), pushed_auth),
+        state: destination::ReceiverState::hosted_with_session(base_url, pushed_auth),
         ..Default::default()
     };
-    let receivers =
-        worker::SingleReceiver::new(collector::DESTINATION, collector::INSTANCE, &receiver);
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(Exit::Deadline);
-        }
-        let result = worker::drain(
-            &db,
-            &receivers,
-            &collector::deadline_options(
-                job_id.clone(),
-                worker_id.clone(),
-                pass_budget(),
-                deadline,
-            ),
-            &worker::system_clock,
-            &expired,
-        )?;
-        let status = result
-            .statuses
-            .iter()
-            .find(|status| status.job_id == job_id)
-            .context("delivery job missing")?;
-        counts.of(status);
-        match status.state.as_str() {
-            "active" => {}
-            "blocked" if status.failure.as_deref() == Some("authentication_required") => {
-                return Err(refused(
-                    Exit::Unauthorized,
-                    "RelayHistory refused the session.",
-                ));
-            }
-            _ => {
-                return Err(refused(
-                    Exit::Blocked,
-                    "Delivery is blocked. No unacknowledged data was discarded.",
-                ))
-            }
-        }
-        if let Some(failure) = result.failure {
-            return Err(failure.into_error());
-        }
-        if !result.issues.is_empty() {
-            return Err(refused(
-                Exit::Failed,
-                "Session delivery needs attention. No unacknowledged data was discarded.",
-            ));
-        }
-        if status.bootstrap_complete && status.pending_records == 0 && status.unqueued_changes == 0
-        {
-            return Ok(Exit::Drained);
-        }
-        // A pass that moved nothing waits for the worker's retry deadline,
-        // never past the flush's own.
-        let wait = if status.next_attempt_ms > collector::now() {
-            Duration::from_millis((status.next_attempt_ms - collector::now()) as u64)
-        } else if result.metrics.batches_sent == 0 {
-            Duration::from_millis(100)
-        } else {
-            Duration::ZERO
-        };
-        std::thread::sleep(wait.min(deadline.saturating_duration_since(Instant::now())));
-    }
-}
-
-/// The flush's delivery generation, sharing everything: an earlier flush's
-/// in the same state directory is resumed, one for another destination is a
-/// conflict.
-fn job(db: &Path, account: &str) -> Result<String> {
-    let conn = delivery::open_db(db)?;
-    let config = delivery::DeliveryJobConfig {
-        destination_id: collector::DESTINATION.into(),
-        instance_id: collector::INSTANCE.into(),
-        account_id: account.into(),
-        mapping_version: destination::MAPPING_VERSION.into(),
-        selection: collector::selection(true),
-        limits: Default::default(),
-    };
-    let jobs: Vec<_> = delivery::list_jobs(&conn)?
-        .into_iter()
-        .filter(|job| job.state != "cancelled")
-        .collect();
-    if let Some(job) = jobs.iter().find(|job| job.config == config) {
-        if job.state == "blocked" {
-            delivery::retry_job(&conn, &job.job_id)?;
-        }
-        return Ok(job.job_id.clone());
-    }
-    if !jobs.is_empty() {
-        return Err(refused(
-            Exit::Blocked,
-            "The state directory holds another destination's delivery.",
-        ));
-    }
-    collector::record_baseline(&conn, true)?;
-    Ok(delivery::create_job(&conn, &config, collector::now())?.job_id)
+    let delivered = deliver::drain(&db, &receiver, &job_id, &worker_id, deadline, counts)?;
+    Ok(capture::outcome(delivered, continuation))
 }

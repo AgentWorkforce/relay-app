@@ -183,6 +183,7 @@ fn summary(output: &Output) -> Value {
         keys,
         [
             "acknowledged_records",
+            "capture",
             "elapsed_ms",
             "exit_reason",
             "ok",
@@ -817,4 +818,233 @@ fn a_fresh_state_reflush_preserves_cross_origin_record_identity() {
     assert_eq!(matching[0].2, matching[1].2, "source revision is stable");
     assert_ne!(matching[0].3, matching[1].3, "revision ids bind origin");
     assert_eq!(matching[0].4, matching[1].4, "payload is stable");
+}
+
+/// `n` Codex threads that live only in Codex's SQLite stores (paginated, no
+/// rollout file), in WAL mode as Codex opens them. Thread 0 is the oldest.
+fn codex_db_threads(codex: &Path, n: usize) {
+    use rusqlite::{params, Connection};
+    fs::create_dir_all(codex).unwrap();
+    let state = Connection::open(codex.join("state_5.sqlite")).unwrap();
+    let history = Connection::open(codex.join("thread_history_1.sqlite")).unwrap();
+    for db in [&state, &history] {
+        db.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))
+            .unwrap();
+    }
+    state.execute_batch(
+        "CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, source TEXT, cwd TEXT, git_branch TEXT, git_origin_url TEXT, title TEXT, name TEXT, first_user_message TEXT, originator TEXT, cli_version TEXT, model TEXT, tokens_used INTEGER, archived INTEGER, agent_nickname TEXT, agent_role TEXT, history_mode TEXT, thread_source TEXT);
+         CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT,status TEXT);",
+    ).unwrap();
+    history.execute_batch(
+        "CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY,next_rollout_ordinal INTEGER,next_rollout_byte_offset INTEGER);
+         CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,item_type TEXT,item_json TEXT);
+         CREATE TABLE thread_turns(thread_id TEXT,turn_id TEXT,rollout_ordinal INTEGER,started_at INTEGER,error_json TEXT);",
+    ).unwrap();
+    let base = chrono::Utc::now().timestamp_millis() - 3_600_000;
+    for i in 0..n {
+        let (id, t) = (codex_db_id(i), base + i as i64 * 1000);
+        let prompt = format!("seed {id}");
+        state.execute(
+            "INSERT INTO threads VALUES (?1,NULL,?2,?2,'vscode','/work/flush','main',NULL,?3,?3,?3,'codex_desktop','0.151.0','gpt-synthetic',1,0,NULL,NULL,'paginated',NULL)",
+            params![id, t, prompt],
+        ).unwrap();
+        history
+            .execute(
+                "INSERT INTO thread_history_projection_state VALUES (?1,1,0)",
+                [&id],
+            )
+            .unwrap();
+        let item = json!({"type":"userMessage","id":format!("{id}-0"),"content":[{"type":"text","text":prompt}]});
+        history
+            .execute(
+                "INSERT INTO thread_items VALUES (?1,'turn-1',?2,0,?3,'userMessage',?4)",
+                params![id, format!("{id}-0"), t, item.to_string()],
+            )
+            .unwrap();
+        history
+            .execute(
+                "INSERT INTO thread_turns VALUES (?1,'turn-1',0,?2,NULL)",
+                params![id, t],
+            )
+            .unwrap();
+    }
+}
+
+fn codex_db_id(i: usize) -> String {
+    format!("019a0000-0000-7000-8000-{i:012}")
+}
+
+/// Append a turn to the oldest thread as Codex does: a turn and an item at
+/// the next ordinal, the projection advanced, and `updated_at_ms` moved to
+/// now, so the thread now sorts first.
+fn codex_db_append_oldest(codex: &Path, text: &str) {
+    use rusqlite::{params, Connection};
+    let id = codex_db_id(0);
+    let history = Connection::open(codex.join("thread_history_1.sqlite")).unwrap();
+    let next: i64 = history
+        .query_row(
+            "SELECT next_rollout_ordinal FROM thread_history_projection_state WHERE thread_id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let t = chrono::Utc::now().timestamp_millis();
+    let item = json!({"type":"userMessage","id":format!("{id}-{next}"),"content":[{"type":"text","text":text}]});
+    history
+        .execute(
+            "INSERT INTO thread_turns VALUES (?1,'turn-2',?2,?3,NULL)",
+            params![id, next, t],
+        )
+        .unwrap();
+    history
+        .execute(
+            "INSERT INTO thread_items VALUES (?1,'turn-2',?2,?3,?4,'userMessage',?5)",
+            params![id, format!("{id}-{next}"), next, t, item.to_string()],
+        )
+        .unwrap();
+    history
+        .execute(
+            "UPDATE thread_history_projection_state SET next_rollout_ordinal=?2 WHERE thread_id=?1",
+            params![id, next + 1],
+        )
+        .unwrap();
+    Connection::open(codex.join("state_5.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE threads SET updated_at_ms=?2 WHERE id=?1",
+            params![id, t],
+        )
+        .unwrap();
+}
+
+/// The flush store's Codex user events carrying `text`.
+fn stored_codex_prompts(state: &Path, text: &str) -> i64 {
+    rusqlite::Connection::open(state.join("history.db"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM session_events WHERE source='codex' AND role='user' AND text=?1",
+            [text],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Capture first, then an append to the oldest of `n` database-only Codex
+/// threads; one more flush into the same state stores and delivers it.
+fn an_append_after_capture_is_read_by_the_next_flush(n: usize) {
+    let receiver = FakeHistory::start(Behaviour::default());
+    let sandbox = Sandbox::new();
+    codex_db_threads(&sandbox.codex(), n);
+    let first = run_stdin(sandbox.command(120), &session(&receiver.base_url));
+    assert_eq!(first.status.code(), Some(0), "{}", diagnose(&first));
+    let first = summary(&first);
+    assert_eq!(first["capture"], "unknown", "{first}");
+    assert_eq!(first["sessions_captured"].as_i64().unwrap(), n as i64);
+    for i in [0, n - 1] {
+        let seed = format!("seed {}", codex_db_id(i));
+        assert_eq!(stored_codex_prompts(&sandbox.state(), &seed), 1, "{seed}");
+        assert!(receiver.received(&seed), "{seed}");
+    }
+
+    let appended = format!("appended after capture n={n}");
+    codex_db_append_oldest(&sandbox.codex(), &appended);
+    let second = run_stdin(sandbox.command(120), &session(&receiver.base_url));
+    assert_eq!(second.status.code(), Some(0), "{}", diagnose(&second));
+    let second = summary(&second);
+    assert_eq!(second["exit_reason"], "drained", "{second}");
+    assert_eq!(second["pending_records"], 0, "{second}");
+    assert_eq!(second["capture"], "unknown", "{second}");
+    assert_eq!(
+        stored_codex_prompts(&sandbox.state(), &appended),
+        1,
+        "the append is in the flush's own store"
+    );
+    assert!(receiver.received(&appended), "and it was delivered");
+    assert!(
+        second["acknowledged_records"].as_i64().unwrap()
+            > first["acknowledged_records"].as_i64().unwrap(),
+        "the receiver acknowledged the new records: {first} then {second}"
+    );
+    let records: Vec<Value> = receiver
+        .batches()
+        .iter()
+        .filter_map(|batch| serde_json::from_str::<Value>(&batch.body).ok())
+        .flat_map(|body| {
+            body["batch"]["records"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|record| record["payload"].to_string().contains(&appended))
+        .collect();
+    let rows: Vec<(i64, i64, String)> = {
+        let conn = rusqlite::Connection::open(sandbox.state().join("history.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, revision, session_id FROM session_events WHERE source='codex' AND text=?1")
+            .unwrap();
+        stmt.query_map([&appended], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    eprintln!(
+        "RECEIPT n={n}: local session_events rows (id, revision, session) = {rows:?}; receiver records carrying the append = {} ({} session_event); flush summary = {second}",
+        records.len(),
+        records.iter().filter(|r| r["kind"] == "session_event").count(),
+    );
+}
+
+/// More threads than one sweep reads (50): the append sorts above the
+/// cursor the first flush left.
+#[test]
+fn an_append_beyond_one_sweep_page_is_read_by_the_next_flush() {
+    an_append_after_capture_is_read_by_the_next_flush(60);
+}
+
+#[test]
+fn an_append_within_one_sweep_page_is_read_by_the_next_flush() {
+    an_append_after_capture_is_read_by_the_next_flush(25);
+}
+
+/// A transcript whose modification time moves throughout the flush keeps
+/// every sweep walking, so capture never settles. Capture still leaves time
+/// for delivery: what it stored is acknowledged, and the flush says capture
+/// is incomplete instead of reporting a drained queue.
+#[test]
+fn capture_that_never_settles_reports_incomplete_at_the_deadline() {
+    let receiver = FakeHistory::start(Behaviour::default());
+    let sandbox = Sandbox::new();
+    sandbox.claude_session("busy", 1);
+    let busy = sandbox.claude().join("projects/flush/busy.jsonl");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let toucher = {
+        let (stop, busy) = (stop.clone(), busy.clone());
+        std::thread::spawn(move || {
+            let file = fs::OpenOptions::new().append(true).open(&busy).unwrap();
+            let mut at = std::time::SystemTime::now();
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                at += Duration::from_millis(1);
+                file.set_modified(at).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    let output = run_stdin(sandbox.command(4), &session(&receiver.base_url));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    toucher.join().unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", diagnose(&output));
+    let summary = summary(&output);
+    assert_eq!(summary["ok"], false);
+    assert_eq!(summary["capture"], "incomplete", "{summary}");
+    assert_eq!(summary["exit_reason"], "capture_incomplete", "{summary}");
+    // Capture kept time for delivery: what it stored was delivered.
+    assert_eq!(summary["pending_records"], 0, "{summary}");
+    assert!(
+        summary["acknowledged_records"].as_i64().unwrap() > 0,
+        "{summary}"
+    );
+    assert!(
+        receiver.received("synthetic busy-0"),
+        "the seed turn was delivered"
+    );
 }
