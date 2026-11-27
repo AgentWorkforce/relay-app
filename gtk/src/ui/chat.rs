@@ -232,6 +232,7 @@ impl App {
         page.thread.earlier.connect_clicked(move |_| earlier());
         self.follow_chat_thread();
         self.follow_chat_inbox();
+        self.read_chats_when_active();
     }
 
     pub(super) fn with_chat<T>(&self, read: impl FnOnce(&ChatPage) -> T) -> Option<T> {

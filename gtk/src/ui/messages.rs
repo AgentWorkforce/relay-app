@@ -20,7 +20,9 @@ use crate::models::{
     delivery_note, endpoint_label, queues, recipient_params, recipient_warning, reply_note,
     DeliveryTone, ReadBackoff,
 };
-use agent_relay_node::relay::contract::directory::{History, HistoryParams, Recipient, SendParams};
+use agent_relay_node::relay::contract::directory::{
+    History, HistoryParams, MarkReadParams, Recipient, SendParams,
+};
 use agent_relay_node::relay::contract::method;
 use agent_relay_node::relay::messaging::DirectMessage;
 use agent_relay_node::relay::people::MessageState;
@@ -79,6 +81,8 @@ pub struct ChatState {
     echo_token: u64,
     /// Who the last history read said you message as.
     identity: String,
+    /// The newest message from the other side this window marked read.
+    marked_read: Option<String>,
     /// Failed reads in a row; while `backoff_until` is ahead, only the
     /// user's own asking reads the conversation. `backoff_by` is the read
     /// whose failure is still unanswered.
@@ -523,6 +527,17 @@ impl App {
         self.refresh_chat(key);
     }
 
+    /// The open conversations are read when the window comes to the front:
+    /// behind, they are not read (`read_chat`).
+    pub(super) fn read_chats_when_active(&self) {
+        let refresh = self.on(App::refresh_chats);
+        self.window().connect_is_active_notify(move |window| {
+            if window.is_active() {
+                refresh();
+            }
+        });
+    }
+
     /// The core said conversations changed: each open one is read.
     pub(super) fn refresh_chats(&self) {
         for key in self.open_chats() {
@@ -633,6 +648,13 @@ impl App {
             if !asked && state.backing_off() {
                 return;
             }
+            // The core marks a conversation it reads read on every device:
+            // unasked, it is read only while the window is in front, so
+            // your phone still shows it unread. Coming to the front reads
+            // it (`read_chats_when_active`).
+            if !asked && !self.window().is_active() {
+                return;
+            }
             if state.loading {
                 // A reply that arrives while a read is in flight may be
                 // newer than what that read returns: read once more when it
@@ -684,6 +706,7 @@ impl App {
         // A message the core took and this read lists is no longer on its
         // way, whether or not the listing changed.
         chat.retire_echoes(&ids);
+        self.mark_chat_seen(chat, &history);
         if ids == chat.state.borrow().shown {
             chat.show_echoes(false);
             return;
@@ -716,6 +739,51 @@ impl App {
         chat.show_echoes(false);
         let adjustment = chat.scroll.vadjustment();
         glib::idle_add_local_once(move || adjustment.set_value(adjustment.upper()));
+    }
+}
+
+impl App {
+    /// Marks the conversation read on every device when you can see it: it
+    /// is the one shown, on the Messages page, in the window in front.
+    /// Reading the history does not mark it read, so your phone keeps
+    /// showing what you have not seen here.
+    fn mark_chat_seen(&self, chat: &Rc<Chat>, history: &History) {
+        if !self.window().is_active()
+            || self.page() != Page::Messages
+            || self.shown_chat().as_deref() != Some(chat.key.as_str())
+        {
+            return;
+        }
+        // Relaycast's message ids are increasing integers in decimal.
+        let Some(newest) = history
+            .messages
+            .iter()
+            .filter(|message| !message.mine)
+            .map(|message| message.id.clone())
+            .max_by(|a, b| (a.len(), a).cmp(&(b.len(), b)))
+        else {
+            return;
+        };
+        {
+            let mut state = chat.state.borrow_mut();
+            if state.marked_read.as_ref() == Some(&newest) {
+                return;
+            }
+            state.marked_read = Some(newest.clone());
+        }
+        if !self.bridge().offers(method::MessagesMarkRead::NAME) {
+            return;
+        }
+        let chat = Rc::downgrade(chat);
+        self.call::<method::MessagesMarkRead>(
+            MarkReadParams { message_id: newest },
+            move |_, result| {
+                // Not marked: the next read tries again.
+                if let (Err(_), Some(chat)) = (result, chat.upgrade()) {
+                    chat.state.borrow_mut().marked_read = None;
+                }
+            },
+        );
     }
 }
 

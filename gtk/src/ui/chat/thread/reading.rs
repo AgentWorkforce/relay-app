@@ -112,7 +112,12 @@ impl App {
                 let cursor = page.thread.cursor.borrow().clone()?;
                 let tick = page.thread.ticks.get().wrapping_add(1);
                 page.thread.ticks.set(tick);
-                if page.thread.elsewhere.get() && tick % ELSEWHERE_TICKS != 0 {
+                // Reading an agent elsewhere reads your messages with it,
+                // and the core marks them read on every device: only while
+                // the window is in front, so your phone still shows them.
+                if page.thread.elsewhere.get()
+                    && (tick % ELSEWHERE_TICKS != 0 || !self.window().is_active())
+                {
                     return None;
                 }
                 if page.thread.following.replace(true) {

@@ -151,6 +151,9 @@ final class RelayModel {
     /// settles, then again every 10 s while the window shows it.
     @ObservationIgnored private var composerRefresh: Task<Void, Never>?
     @ObservationIgnored private var windowVisible = false
+    /// The newest message from the other side this Mac marked read, by
+    /// conversation.
+    @ObservationIgnored private var markedRead: [String: String] = [:]
     /// After a read of the conversation with `endpoint` failed: the failures
     /// so far, when the next read may run, and whether the last failure was
     /// its recipient's look-up alone. Until then nothing but the person
@@ -170,8 +173,19 @@ final class RelayModel {
     /// account's roster or messages is dropped.
     @ObservationIgnored private var account = UUID()
 
+    /// Reads the conversation shown when Agent Relay comes to the front.
+    @ObservationIgnored private var activation: NSObjectProtocol?
+
     init(client: CoreClient) {
         self.client = client
+        activation = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { await self.refresh(.messages) }
+            }
+        }
     }
 
     // MARK: Snapshot
@@ -327,7 +341,12 @@ final class RelayModel {
                 // Any other failure keeps the last roster.
             }
         case .messages:
-            if let endpoint = conversation?.endpoint, !backingOff(endpoint) { await loadConversation(endpoint) }
+            // The core marks a conversation it reads read on every device:
+            // it is read only while Agent Relay is in front, so the phone
+            // still shows it unread, and again when Agent Relay comes to the front.
+            if NSApp?.isActive == true, let endpoint = conversation?.endpoint, !backingOff(endpoint) {
+                await loadConversation(endpoint)
+            }
         default:
             break
         }
@@ -785,11 +804,34 @@ final class RelayModel {
             conversation = (endpoint, history)
             conversationError = nil
             retirePendingMessages(endpoint, listed: history)
+            markSeen(endpoint, history)
             return .read
         } catch {
             guard read == conversationReads else { return .dropped }
             conversationError = error.localizedDescription
             return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Marks the conversation read on every device when the person can see
+    /// it: the composer shows it, in the window on screen, with Agent Relay
+    /// in front. Reading the history does not mark it read, so the phone
+    /// keeps showing what was not seen here.
+    private func markSeen(_ endpoint: String, _ history: History) {
+        guard NSApp?.isActive == true, windowVisible, endpoint == composerEndpoint,
+              client.offers(CoreMethod.messagesMarkRead) else { return }
+        // Relaycast's message ids are increasing integers in decimal.
+        guard let newest = history.messages.filter({ !$0.mine }).map(\.id)
+            .max(by: { ($0.count, $0) < ($1.count, $1) }),
+            markedRead[endpoint] != newest else { return }
+        markedRead[endpoint] = newest
+        Task { [weak self] in
+            do {
+                _ = try await self?.client.messagesMarkRead(MarkReadParams(messageId: newest))
+            } catch {
+                // Not marked: the next read tries again.
+                if self?.markedRead[endpoint] == newest { self?.markedRead[endpoint] = nil }
+            }
         }
     }
 
