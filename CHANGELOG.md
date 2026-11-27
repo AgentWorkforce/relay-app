@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Providers distinguish session preparation from sign-in.** On macOS, Linux and Windows, after a verified sign-in, providers show *Preparing sessions* while the initial local history preparation finishes instead of asking you to sign in again. Setup still waits for preparation to finish, and actual account or provider sign-in failures remain visible.
+
 - **Renamed Claude Code chats keep their Relay identity.** On macOS, Linux and Windows, with a compatible Agent Relay Cloud, hosted Relay tools use the chat’s current name and replies to its original address still reach it. The hook asks you to retry if Desktop cannot confirm the current identity. A failed background refresh leaves a chat’s current confirmation valid until it expires. Older Cloud versions can still confirm Claude chats using their original proof format.
 
 ## v2026.11.21

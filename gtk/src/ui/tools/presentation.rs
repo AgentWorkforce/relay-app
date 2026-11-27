@@ -42,6 +42,14 @@ impl Presentation {
         health: Option<&str>,
         workspace_error: Option<&str>,
     ) -> Self {
+        if tool.state == "preparing" && matches!(health, None | Some("ready")) {
+            return Self {
+                status: tool.status_label.clone(),
+                summary: Some(tool.detail.clone()),
+                action: None,
+                label: None,
+            };
+        }
         if let Some(presentation) = Self::connection_override(tool, health) {
             return presentation;
         }
@@ -557,3 +565,6 @@ mod tests {
         assert_eq!(configured.summary.as_deref(), Some(tool.detail.as_str()));
     }
 }
+
+#[cfg(test)]
+mod preparing_tests;
