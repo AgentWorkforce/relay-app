@@ -52,7 +52,7 @@ service-callers-dev-attest = []
 # through mise is found) and b8c5243: #2251 (stricter session caller
 # attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "dec7f8bc708acbd5e17b00c001aab3ce62a17475", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "b7a15c4d4b2ca38000fba59753f3aff62b61cf82", default-features = false }
 # relayhistory 0.63.1 from crates.io (Codex chats kept only in a separate
 # CODEX_SQLITE_HOME are found). `history-provider-sources` pins ai-hist
 # exactly (its helper surface carries ai-hist types), so ai-hist is pinned to

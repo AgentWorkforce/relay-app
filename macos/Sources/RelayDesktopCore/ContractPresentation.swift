@@ -139,6 +139,7 @@ extension SessionKind {
         case .droid: return "Factory Droid"
         case .pi: return "Pi"
         case .omp: return "Oh My Pi"
+        case .antigravity: return "Antigravity"
         case .unknown(let kind): return kind
         }
     }
@@ -168,6 +169,7 @@ extension SessionKind {
         case .droid: return "droid"
         case .pi: return "pi"
         case .omp: return "omp"
+        case .antigravity: return "antigravity"
         case .unknown(let kind): return kind
         }
     }

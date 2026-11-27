@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Codex chats receive direct messages in order.** On macOS, Linux and Windows, a later direct message waits while an earlier message is pending delivery to the same chat.
+
 - **Codex chats kept in a separate database folder are uploaded.** On macOS, Linux and Windows, when `CODEX_SQLITE_HOME` points somewhere other than `CODEX_HOME`, Codex chats that live only in Codex's database there, such as chats from the Codex or ChatGPT desktop app, are now found, listed and uploaded with their prompts. Before, they were not listed at all. Agent Relay reads that setting from its own environment, so a value set only in a shell startup file is not seen yet. Codex in WSL on Windows does not have this yet.
 
 - **Providers distinguish session preparation from sign-in.** On macOS, Linux and Windows, after a verified sign-in, providers show *Preparing sessions* while the initial local history preparation finishes instead of asking you to sign in again. Setup still waits for preparation to finish, and actual account or provider sign-in failures remain visible.
