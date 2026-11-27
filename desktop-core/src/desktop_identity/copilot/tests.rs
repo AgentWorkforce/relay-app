@@ -1,5 +1,7 @@
 //! Exercise native hooks against failed refreshes and contended sync work.
 use super::*;
+use agent_relay_node::relay::workspace::Secret;
+use serde_json::{json, Value};
 use crate::attestation_route::tests::{
     copilot::{hook_request, registered_copilot, rename::rename},
     Fixture, IN_REGISTERED, REGISTERED,

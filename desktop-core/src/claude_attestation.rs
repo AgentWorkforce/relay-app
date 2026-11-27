@@ -41,6 +41,9 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// The proof version that binds the actor credential at hosted dispatch.
+pub(crate) const BOUND_PROOF_VERSION: u8 = 2;
+
 /// The private key's file in the app data directory.
 pub const KEY_FILE: &str = "claude-attestation-key.json";
 /// The tool argument that carries the proof.
@@ -165,6 +168,28 @@ impl Key {
         self.sign_payload(claims)
     }
 
+    /// A Cloud that opts into active aliases checks the selected credential
+    /// again at dispatch. The proof carries a per-call digest, never the token.
+    pub(crate) fn sign_for_sender(
+        &self,
+        mut claims: Claims<'_>,
+        sender: ProofSender<'_>,
+    ) -> Option<String> {
+        claims.v = BOUND_PROOF_VERSION;
+        let mut digest = Sha256::new();
+        digest.update(claims.tuid.as_bytes());
+        digest.update([0]);
+        digest.update(sender.token.as_bytes());
+        self.sign_payload(&BoundClaims {
+            claims,
+            agent_id: sender.agent_id,
+            link_address: sender.link_address,
+            workspace_id: sender.workspace_id,
+            user_id: sender.user_id,
+            credential_sha256: URL_SAFE_NO_PAD.encode(digest.finalize()),
+        })
+    }
+
     /// Signs another native provider's versioned payload with this installation key.
     pub(crate) fn sign_payload(&self, claims: &impl Serialize) -> Option<String> {
         let header = json!({"alg": "EdDSA", "kid": self.kid, "typ": TYPE});
@@ -197,6 +222,25 @@ pub struct Claims<'a> {
     pub tool: &'a str,
     pub iat: u64,
     pub exp: u64,
+}
+
+pub(crate) struct ProofSender<'a> {
+    pub(crate) agent_id: &'a str,
+    pub(crate) token: &'a str,
+    pub(crate) link_address: &'a str,
+    pub(crate) workspace_id: &'a str,
+    pub(crate) user_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct BoundClaims<'a> {
+    #[serde(flatten)]
+    claims: Claims<'a>,
+    agent_id: &'a str,
+    link_address: &'a str,
+    workspace_id: &'a str,
+    user_id: &'a str,
+    credential_sha256: String,
 }
 
 impl<'a> Claims<'a> {
@@ -341,18 +385,20 @@ pub fn hook_request(input: &Value) -> Option<Value> {
     // A join's chosen name is checked against the already-registered local
     // identity. The hook never registers a chat; it only provides a command
     // that Claude runs through the normal permission policy when needed.
-    if hook_tool(input["tool_name"].as_str()?) == Some("join_relay")
-        && input["tool_input"].get("desktop_address").is_none()
-        && input["tool_input"]["name"]
+    if hook_tool(input["tool_name"].as_str()?) == Some("join_relay") {
+        if let Some(address) = input["tool_input"].get("desktop_address") {
+            request["desktop_address"] = address.clone();
+        } else if input["tool_input"]["name"]
             .as_str()
             .is_some_and(|name| !name.trim().is_empty())
-    {
-        let mut registration = serde_json::Map::new();
-        registration.insert("name".into(), input["tool_input"]["name"].clone());
-        if let Some(description) = input["tool_input"].get("description") {
-            registration.insert("description".into(), description.clone());
+        {
+            let mut registration = serde_json::Map::new();
+            registration.insert("name".into(), input["tool_input"]["name"].clone());
+            if let Some(description) = input["tool_input"].get("description") {
+                registration.insert("description".into(), description.clone());
+            }
+            request["registration"] = Value::Object(registration);
         }
-        request["registration"] = Value::Object(registration);
     }
     Some(request)
 }
