@@ -108,11 +108,13 @@ where
 }
 
 /// Whether a member of the job still owns `record`: its session is a member,
-/// or it is a relationship whose child session is one. A child's
-/// incoming-edges phase sends an edge from a parent that is not a member, so
-/// asking only after the record's own session would drop that edge for good:
-/// the backfill has moved past it, and the feed never sends a non-member's
-/// records.
+/// or it is a relationship whose child session is one. This only decides
+/// whether the record is offered again. A session job sends an edge only
+/// while both of its ends are members, so consent, in `admit`, still decides
+/// whether it is sent: an edge whose parent left after it was quarantined
+/// reaches consent through its member child and is counted as suppressed,
+/// as it would have been without the panic, instead of leaving the
+/// quarantine uncounted.
 fn owned(members: &Members, record: &HistoryExportRecord) -> bool {
     let own = members.added(&record.source, record.session_id.as_deref());
     let edge = (record.kind == "relationship")
