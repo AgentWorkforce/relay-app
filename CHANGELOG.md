@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Signing in can finish when a background history helper keeps an output pipe open.** On macOS, Linux and Windows, Agent Relay closes the completed install helper's event reader after a bounded drain, so local-session preparation can finish or report its actual error instead of waiting indefinitely. Final setup events remain ordered, and cancelling sign-in still reports cancellation.
+
 - **Renamed Claude Code chats keep their Relay identity.** On macOS, Linux and Windows, with a compatible Agent Relay Cloud, hosted Relay tools use the chat’s current name and replies to its original address still reach it. The hook asks you to retry if Desktop cannot confirm the current identity. A failed background refresh leaves a chat’s current confirmation valid until it expires. Older Cloud versions can still confirm Claude chats using their original proof format.
 
 ## v2026.11.21
