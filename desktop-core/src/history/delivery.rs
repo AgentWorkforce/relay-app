@@ -1171,8 +1171,9 @@ fn prepare(
     let mut suppressed = 0;
     // Copies whose sessions have finished go first, so a session's records
     // leave in order; a batch they fill leaves the feed for the next one.
-    let (mut hold, mut released_full) = hold::release_to_feed(
-        &tx,
+    // Records an earlier engine panicked on are offered to this one next.
+    let (mut hold, released_full) = hold::release_to_feed(
+        (&tx, store, &origin),
         job_id,
         &job.config,
         (oops_window_ms, now_ms),
@@ -1180,29 +1181,6 @@ fn prepare(
         &mut consent,
         &mut suppressed,
     )?;
-    // Records an earlier engine panicked on are offered to this one next.
-    if !released_full {
-        released_full = filling::retry_quarantined(
-            &tx,
-            store,
-            &origin,
-            job_id,
-            &job.config.selection,
-            limits.max_batch_records,
-            &mut filling,
-            |filling, offered, key| {
-                hold::admit(
-                    filling,
-                    offered,
-                    key,
-                    &job.config,
-                    &mut consent,
-                    &mut hold,
-                    &mut suppressed,
-                )
-            },
-        )?;
-    }
     let mut changes = store.changes_since(
         origin.position(job.cursor),
         feed::query(&job.config.selection)?.batch(limits.max_scan_records),
@@ -1233,15 +1211,8 @@ fn prepare(
     }
     drop(consent);
     drop(hold);
-    filling::quarantine(&tx, job_id, &origin, &filling, now_ms)?;
-    let batch = filling.batch;
     tx.execute("UPDATE delivery_jobs SET journal_cursor=?,bootstrap_done=?,suppressed_records=suppressed_records+? WHERE id=?",params![job.cursor,job.caught_up,suppressed,job_id])?;
-    let batch_id = if batch.records.is_empty() {
-        None
-    } else {
-        insert_batch(&tx, &batch, job.cursor, now_ms)?;
-        Some(batch.batch_id)
-    };
+    let batch_id = filling::seal(&tx, job_id, &origin, filling, job.cursor, now_ms)?;
     tx.commit()?;
     Ok(PrepareResult {
         batch_id,

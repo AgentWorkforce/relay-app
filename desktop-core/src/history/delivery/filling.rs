@@ -182,76 +182,108 @@ pub(super) fn quarantine(
     Ok(())
 }
 
+/// The most quarantined records one preparation reads and offers again. A
+/// record that panics the engine again, or that is passed over, still costs
+/// its read, so a long quarantine is worked through a slice per preparation
+/// and never holds one up; each slice leaves the records it offered marked
+/// with this engine or gone, so the next preparation reads the next slice.
+pub(super) const RETRY_BUDGET: usize = 16;
+
 /// Offers job `job_id`'s records quarantined under an engine other than
-/// `filling`'s to `admit` again, read afresh from `store`'s feed: whether
-/// the batch filled. A record `admit` takes (into the batch, the hold, or as
-/// suppressed) leaves the quarantine; one that panics the engine again is
-/// quarantined anew under this engine. One whose feed position no longer
-/// holds it — the feed was renumbered, or a later revision superseded it and
-/// reaches the job through the feed — is dropped from the quarantine, since
-/// nothing of it remains to send.
+/// `filling`'s to `admit` again, at most [`RETRY_BUDGET`] of them, read afresh
+/// from `store`'s feed: whether the batch filled. A record `admit` takes
+/// (into the batch, the hold, as suppressed or as not this job's) leaves the
+/// quarantine; one that panics the engine again is quarantined anew under
+/// this engine. One whose feed position no longer holds it — the feed was
+/// renumbered, or a later revision superseded it and reaches the job through
+/// the feed — is dropped from the quarantine, since nothing of it remains to
+/// send.
 pub(super) fn retry_quarantined(
-    conn: &Connection,
-    store: &ai_hist::SessionStore,
-    origin: &feed::Origin,
+    (conn, store, origin): (&Connection, &ai_hist::SessionStore, &feed::Origin),
     job_id: &str,
     selection: &ExportSelection,
     max_batch_records: usize,
     filling: &mut Filling,
     mut admit: impl FnMut(&mut Filling, Offered, &[serde_json::Value]) -> Result<bool>,
 ) -> Result<bool> {
-    // The epoch is not compared: a feed the origin adopted keeps its
-    // numbering, and a replaced one restarts every job from the start, which
-    // reads the record afresh. The revision id check below tells them apart.
-    #[derive(Deserialize)]
-    struct Marker {
-        feed_revision: i64,
-    }
     let key = quarantine_key(job_id);
     let rows = conn
-        .prepare("SELECT revision_id,record_json FROM delivery_quarantine WHERE parent_batch_id=? AND submitted_digest<>? ORDER BY created_ms,revision_id")?
-        .query_map(params![key, filling.engine()], |row| {
+        .prepare("SELECT revision_id,record_json FROM delivery_quarantine WHERE parent_batch_id=? AND submitted_digest<>? ORDER BY created_ms,revision_id LIMIT ?")?
+        .query_map(params![key, filling.engine(), RETRY_BUDGET as i64], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let forget = |revision_id: &str| {
-        conn.execute(
-            "DELETE FROM delivery_quarantine WHERE parent_batch_id=? AND revision_id=?",
-            params![key, revision_id],
-        )
-    };
     for (revision_id, marker) in rows {
         if filling.batch.records.len() >= max_batch_records {
             return Ok(true);
         }
-        let change = match serde_json::from_str::<Marker>(&marker) {
-            Ok(marker) if marker.feed_revision > 0 => store
-                .changes_since(
-                    origin.position(marker.feed_revision - 1),
-                    feed::query(selection)?.batch(1),
-                )?
-                .next()
-                .transpose()?
-                .filter(|change| {
-                    feed::revision(change.revision).ok() == Some(marker.feed_revision)
-                }),
-            _ => None,
-        };
-        let record = change
-            .as_ref()
-            .map(|change| feed::record_from_change(origin, change))
-            .transpose()?
-            .filter(|record| record.revision_id == revision_id);
-        let (Some(change), Some(record)) = (change, record) else {
-            forget(&revision_id)?;
-            continue;
-        };
-        if !admit(filling, Offered::Read(record), &change.key)? {
-            return Ok(true);
+        if let Some((record, key)) = reread(store, origin, selection, &revision_id, &marker)? {
+            if !admit(filling, Offered::Read(record), &key)? {
+                return Ok(true);
+            }
         }
-        forget(&revision_id)?;
+        conn.execute(
+            "DELETE FROM delivery_quarantine WHERE parent_batch_id=? AND revision_id=?",
+            params![quarantine_key(job_id), revision_id],
+        )?;
     }
     Ok(false)
+}
+
+/// The quarantined record `revision_id` with its feed key, read again from
+/// the feed position its `marker` names, or `None` when that position no
+/// longer holds that revision.
+fn reread(
+    store: &ai_hist::SessionStore,
+    origin: &feed::Origin,
+    selection: &ExportSelection,
+    revision_id: &str,
+    marker: &str,
+) -> Result<Option<(HistoryExportRecord, Vec<serde_json::Value>)>> {
+    // The epoch is not compared: a feed the origin adopted keeps its
+    // numbering, and a replaced one restarts every job from the start, which
+    // reads the record afresh. The revision id check tells them apart.
+    #[derive(Deserialize)]
+    struct Marker {
+        feed_revision: i64,
+    }
+    let Ok(Marker { feed_revision }) = serde_json::from_str::<Marker>(marker) else {
+        return Ok(None);
+    };
+    if feed_revision <= 0 {
+        return Ok(None);
+    }
+    let query = feed::query(selection)?.batch(1);
+    let mut changes = store.changes_since(origin.position(feed_revision - 1), query)?;
+    let Some(change) = changes.next().transpose()? else {
+        return Ok(None);
+    };
+    if feed::revision(change.revision)? != feed_revision {
+        return Ok(None);
+    }
+    let record = feed::record_from_change(origin, &change)?;
+    Ok((record.revision_id == revision_id).then_some((record, change.key)))
+}
+
+/// Ends a preparation of job `job_id` in its transaction `conn`: records what
+/// `filling`'s engine panicked on ([`quarantine`]), then queues the batch
+/// ending at feed position `cursor` when it holds any record. The batch's id
+/// when it was queued.
+pub(super) fn seal(
+    conn: &Connection,
+    job_id: &str,
+    origin: &feed::Origin,
+    filling: Filling,
+    cursor: i64,
+    now_ms: i64,
+) -> Result<Option<String>> {
+    quarantine(conn, job_id, origin, &filling, now_ms)?;
+    let batch = filling.batch;
+    if batch.records.is_empty() {
+        return Ok(None);
+    }
+    insert_batch(conn, &batch, cursor, now_ms)?;
+    Ok(Some(batch.batch_id))
 }
 
 /// The scrub engine refused a record a preparation read. It carries no
