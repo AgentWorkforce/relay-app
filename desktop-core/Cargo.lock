@@ -135,9 +135,9 @@ dependencies = [
 
 [[package]]
 name = "ai-hist"
-version = "0.62.0"
+version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7644ac4265006ee7e0119df05f2280b2ad643d3b67f0129dc89163dd6ae1f85"
+checksum = "cade26794a11826eaada203cfb2e7de9b87178213443ae92ccde1ba131759669"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -800,9 +800,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "history-provider-sources"
-version = "0.62.0"
+version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bd3ab1b8a55ba57f45cdef959199ed34c868eb743686585a4d8a00874c8600b"
+checksum = "77f5f15c77f09fec3c1f45e1df54a1410a0fd6c6c8c3b5426b36e3c38397fe20"
 dependencies = [
  "ai-hist",
  "anyhow",
