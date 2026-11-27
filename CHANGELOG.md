@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Codex chats kept in a separate database folder are uploaded.** On macOS, Linux and Windows, when `CODEX_SQLITE_HOME` points somewhere other than `CODEX_HOME`, Codex chats that live only in Codex's database there, such as chats from the Codex or ChatGPT desktop app, are now found, listed and uploaded with their prompts. Before, they were not listed at all. Agent Relay reads that setting from its own environment, so a value set only in a shell startup file is not seen yet. Codex in WSL on Windows does not have this yet.
+
 - **Renamed Claude Code chats keep their Relay identity.** On macOS, Linux and Windows, with a compatible Agent Relay Cloud, hosted Relay tools use the chat’s current name and replies to its original address still reach it. The hook asks you to retry if Desktop cannot confirm the current identity. A failed background refresh leaves a chat’s current confirmation valid until it expires. Older Cloud versions can still confirm Claude chats using their original proof format.
 
 ## v2026.11.21
