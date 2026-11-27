@@ -250,7 +250,10 @@ fn reread(
     let Ok(Marker { feed_revision }) = serde_json::from_str::<Marker>(marker) else {
         return Ok(None);
     };
-    if feed_revision <= 0 {
+    // A position past the store's head (a replaced, renumbered store) holds
+    // nothing; reading from it is an error that would fail every preparation.
+    let head = store.head_revision()?.revision;
+    if feed_revision <= 0 || u64::try_from(feed_revision).is_ok_and(|at| at > head) {
         return Ok(None);
     }
     let query = feed::query(selection)?.batch(1);

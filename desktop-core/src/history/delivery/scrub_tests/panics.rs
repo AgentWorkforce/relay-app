@@ -6,6 +6,8 @@
 use super::*;
 use crate::history::scrub::testing::panic_on;
 use anyhow::Context;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 /// The synthetic text the stand-in engine panics on. Fixture content only.
 const POISON: &str = "poison-synthetic-marker";
@@ -139,6 +141,125 @@ fn a_record_that_panics_a_later_engine_too_stays_quarantined_under_it() -> Resul
     let job = status(&open_db(&db)?, &job_id)?;
     assert_eq!(job.quarantined_records, 1);
     assert_eq!(job.state, "active");
+    Ok(())
+}
+
+/// `engine`, counting every body it is asked to scrub, under its own name.
+struct Counting {
+    engine: ScrubEngine,
+    calls: Arc<AtomicUsize>,
+}
+
+impl Scrub for Counting {
+    fn name(&self) -> &str {
+        self.engine.name()
+    }
+    fn scrub(&self, body: &[u8], context: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.engine.scrub(body, context)
+    }
+}
+
+fn counting(engine: ScrubEngine) -> (ScrubEngine, Arc<AtomicUsize>) {
+    let calls = Arc::default();
+    let counted = Counting {
+        engine,
+        calls: Arc::clone(&calls),
+    };
+    (ScrubEngine::new(counted), calls)
+}
+
+/// The engine a record was quarantined under is never asked about it again:
+/// a drain with nothing new calls it not once. An engine of another name is
+/// asked again.
+#[test]
+fn the_engine_a_record_was_quarantined_under_is_not_called_on_it_again() -> Result<()> {
+    let (_dir, db, job_id) = fixture_with(&texts(), DeliveryLimits::default());
+    let receiver = Echo::default();
+    let (engine, calls) = counting(panicking());
+    drain_with(&db, &receiver, engine.clone(), 1);
+    assert!(calls.load(Ordering::SeqCst) > 0);
+    assert_eq!(status(&open_db(&db)?, &job_id)?.quarantined_records, 1);
+
+    calls.store(0, Ordering::SeqCst);
+    drain_with(&db, &receiver, engine, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "the same engine retried");
+    assert_eq!(quarantined_under(&db, &job_id, "panicking-engine-1")?, 1);
+
+    let (later, later_calls) = counting(still_panicking());
+    drain_with(&db, &receiver, later, 1);
+    assert_eq!(
+        later_calls.load(Ordering::SeqCst),
+        1,
+        "a later engine is asked once"
+    );
+    assert_eq!(
+        quarantined_under(&db, &job_id, "still-panicking-engine-2")?,
+        1
+    );
+    Ok(())
+}
+
+/// Sets the feed position job `job_id`'s one quarantine row names.
+fn point_marker_at(db: &std::path::Path, job_id: &str, feed_revision: i64) -> Result<()> {
+    let changed = open_db(db)?.execute(
+        "UPDATE delivery_quarantine SET record_json=json_set(record_json,'$.feed_revision',?) WHERE job_id=?",
+        params![feed_revision, job_id],
+    )?;
+    anyhow::ensure!(changed == 1, "expected one quarantine row, found {changed}");
+    Ok(())
+}
+
+/// A quarantined record the store replaced before the retry: its feed
+/// position no longer holds it, so the retry drops the marker without
+/// sending anything, and the replacement reaches the receiver through the
+/// feed like any other change. The old content is never sent.
+#[test]
+fn a_quarantined_record_superseded_before_its_retry_is_dropped_for_its_replacement() -> Result<()> {
+    let (_dir, db, job_id) = fixture_with(&texts(), DeliveryLimits::default());
+    let receiver = Echo::default();
+    drain_with(&db, &receiver, panicking(), 1);
+    assert_eq!(status(&open_db(&db)?, &job_id)?.quarantined_records, 1);
+    let conn = open_db(&db)?;
+    let replaced = test_evidence(&conn).execute(
+        "UPDATE session_events SET text='oops replaced' WHERE event_uid='e-1'",
+        [],
+    )?;
+    assert_eq!(replaced, 1);
+    drop(conn);
+
+    drain_with(&db, &receiver, fixed(), 1);
+    assert_eq!(sent(&receiver)?, ["clean", "clean", "clean replaced"]);
+    let job = status(&open_db(&db)?, &job_id)?;
+    assert_eq!(job.quarantined_records, 0);
+    assert_eq!(job.acknowledged_records, 3);
+    Ok(())
+}
+
+/// A marker whose feed position now holds another record, as after the feed
+/// was renumbered, one that names no position, or one past the store's head,
+/// as after the store was replaced by a shorter one: the retry finds no
+/// record of the quarantined revision there, so it drops the marker and
+/// sends nothing, never the record now at that position a second time, and
+/// the preparation still succeeds.
+#[test]
+fn a_quarantine_marker_pointing_at_another_record_or_nowhere_is_dropped_unsent() -> Result<()> {
+    for feed_revision in [1, 0, 1_000_000] {
+        let (_dir, db, job_id) = fixture_with(&texts(), DeliveryLimits::default());
+        let receiver = Echo::default();
+        drain_with(&db, &receiver, panicking(), 1);
+        point_marker_at(&db, &job_id, feed_revision)?;
+
+        drain_with(&db, &receiver, fixed(), 1);
+        assert_eq!(
+            sent(&receiver)?,
+            ["clean", "clean"],
+            "feed_revision={feed_revision}"
+        );
+        let job = status(&open_db(&db)?, &job_id)?;
+        assert_eq!(job.quarantined_records, 0, "feed_revision={feed_revision}");
+        assert_eq!(job.acknowledged_records, 2, "feed_revision={feed_revision}");
+    }
     Ok(())
 }
 
