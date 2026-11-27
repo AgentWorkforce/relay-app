@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Codex chats kept in a separate database folder are uploaded.** On macOS, Linux and Windows, when `CODEX_SQLITE_HOME` points somewhere other than `CODEX_HOME`, Codex chats that live only in Codex's database there, such as chats from the Codex or ChatGPT desktop app, are now found, listed and uploaded with their prompts. Before, they were not listed at all. Agent Relay reads that setting from its own environment, so a value set only in a shell startup file is not seen yet. Codex in WSL on Windows does not have this yet.
+
 - **Windows finds Claude Code installed with WinGet.** Agent Relay detects WinGet's per-user installation even when its background service has an older PATH, so the computer can accept agent spawns. On macOS, Linux and Windows, Claude detection also searches absolute PATH directories after standard install locations.
 
 - **Open Codex chats can receive through Agent Relay's trusted hook.** On macOS, Linux and Windows, a chat whose running Codex holds its verified writer lock can receive even without an app window-router connection, when the hook is enabled and trusted. Messages enter a running turn through the hook; an idle chat without another delivery route waits for its next turn. Messages waiting for that turn can recover after a transient claim-release error and helper restart.
