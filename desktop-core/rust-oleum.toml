@@ -42,7 +42,7 @@ rust_roots = ["src"]
 "src/history/probe/flush.rs" = 570
 "src/history/probe/live.rs" = 758
 "src/history/uploader.rs" = 900
-"src/telemetry.rs" = 781
+"src/telemetry.rs" = 755
 
 [baseline.cyclomatic]
 "src/account.rs::Account::connect" = 46
@@ -209,8 +209,6 @@ rust_roots = ["src"]
 "src/history/uploader/process_io.rs::Capture::finish" = 1
 "src/history/uploader/process_io.rs::Capture::start" = 1
 "src/login_item.rs::apply" = 1
-"src/telemetry.rs::Telemetry::record" = 1
-"src/telemetry.rs::Telemetry::set_enabled" = 1
 
 [baseline.allow]
 

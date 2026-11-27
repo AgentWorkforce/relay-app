@@ -47,8 +47,10 @@ mod identify;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod macos_identity;
 mod posthog;
+mod storage;
 pub use gateway::Delivery;
 pub use posthog::{Answer, PostHogProject, PostHogSender, SessionBearer, SessionSlot, Transport};
+use storage::{read_preferences, write_file};
 
 use agent_relay_node::relay::agents::SettingsExtension;
 use agent_relay_node::relay::app_store::APP_ID;
@@ -385,6 +387,25 @@ struct Shared {
     preferences: PathBuf,
 }
 
+impl State {
+    fn capture_exception(&mut self, event: &TelemetryEvent, date: Instant) -> Option<bool> {
+        let Some(failure) = event.failure else {
+            return Some(false);
+        };
+        let fingerprint = (event.operation, failure);
+        let capture = self
+            .recent_errors
+            .get(&fingerprint)
+            .is_none_or(|last| elapsed(*last, date) >= EXCEPTION_DEDUPE);
+        if capture {
+            self.recent_errors.insert(fingerprint, date);
+        } else if event.operation.is_polling() {
+            return None;
+        }
+        Some(capture)
+    }
+}
+
 impl Shared {
     fn consent_allows(&self, state: &State) -> bool {
         #[cfg(target_os = "macos")]
@@ -491,71 +512,6 @@ impl Telemetry {
         self.config.project.is_some() && self.enabled()
     }
 
-    /// Persists the choice. Turning analytics off discards queued events and
-    /// forgets the installation id, so turning it back on starts a new one;
-    /// while an install is attached, that one is merged into its user again.
-    pub fn set_enabled(&self, enabled: bool) -> std::io::Result<()> {
-        self.set_enabled_inner(
-            enabled,
-            #[cfg(target_os = "macos")]
-            macos_identity::sync_directory,
-        )
-    }
-
-    fn set_enabled_inner(
-        &self,
-        enabled: bool,
-        #[cfg(target_os = "macos")] sync_preferences: impl FnOnce(&Path) -> std::io::Result<()>,
-    ) -> std::io::Result<()> {
-        let mut state = self.shared.lock();
-        #[cfg(target_os = "macos")]
-        let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
-        #[cfg(target_os = "macos")]
-        let (mut preferences, disk_consent) =
-            macos_identity::preferences_for_update(&self.preferences)?;
-        #[cfg(not(target_os = "macos"))]
-        let mut preferences = read_preferences(&self.preferences);
-        #[cfg(target_os = "macos")]
-        if enabled && (!state.enabled || !disk_consent) {
-            state.enabled = false;
-            self.rotate_locked(&mut state)?;
-        }
-        preferences.insert(SETTING.into(), Value::Bool(enabled));
-        let mut bytes = serde_json::to_vec(&Value::Object(preferences)).expect("json");
-        bytes.push(b'\n');
-        #[cfg(target_os = "macos")]
-        let durability = {
-            persist_file(&self.preferences, &bytes)?;
-            let result = sync_preferences(&self.config.app_data_dir);
-            if enabled && result.is_err() {
-                return result;
-            }
-            // The opt-out is already visible after rename, even if fsync failed.
-            result
-        };
-        #[cfg(not(target_os = "macos"))]
-        write_file(&self.preferences, &bytes)?;
-        state.enabled = enabled;
-        let result = if enabled {
-            Ok(())
-        } else {
-            state.queue.clear();
-            #[cfg(target_os = "macos")]
-            {
-                self.rotate_locked(&mut state)
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                self.rotate(&mut state);
-                Ok(())
-            }
-        };
-        self.shared.changed.notify_all();
-        #[cfg(target_os = "macos")]
-        let result = durability.and(result);
-        result
-    }
-
     /// Sign-out: forgets the account and the installation id, so the next
     /// event starts a new anonymous identity.
     pub fn reset_identity(&self) {
@@ -588,54 +544,6 @@ impl Telemetry {
             drop(state);
             self.shared.changed.notify_all();
         }
-    }
-
-    /// A new installation id, with nothing merged and nothing queued for the
-    /// old one.
-    fn rotate(&self, state: &mut State) {
-        let result = (|| {
-            #[cfg(target_os = "macos")]
-            let _disk_lock = macos_identity::lock(&self.config.app_data_dir)?;
-            self.rotate_locked(state)
-        })();
-        if let Err(error) = result {
-            #[cfg(target_os = "macos")]
-            {
-                state.identity_generation = state.identity_generation.wrapping_add(1);
-                state.identity = None;
-                state.queue.clear();
-                state.enabled = false;
-            }
-            agent_relay_node::relay::diagnostics::write(format_args!(
-                "relay: could not remove a telemetry id: {error}"
-            ));
-        }
-    }
-
-    fn rotate_locked(&self, state: &mut State) -> std::io::Result<()> {
-        state.identity = None;
-        state.identified = None;
-        state.identifying = false;
-        state.recent_errors.clear();
-        state.queue.retain(|queued| queued.merges.is_none());
-        #[cfg(target_os = "macos")]
-        {
-            state.identity_generation = state.identity_generation.wrapping_add(1);
-            state.queue.clear();
-        }
-        let mut result = Ok(());
-        for path in [&self.identity, &self.shared.identified] {
-            if let Err(error) = std::fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    result = Err(error);
-                }
-            }
-        }
-        #[cfg(target_os = "macos")]
-        result.and_then(|()| macos_identity::sync_directory(&self.config.app_data_dir))?;
-        #[cfg(not(target_os = "macos"))]
-        result?;
-        Ok(())
     }
 
     /// Queues the `$identify` that merges the installation id into the
@@ -701,20 +609,9 @@ impl Telemetry {
         if state.window_count >= EVENTS_PER_WINDOW {
             return;
         }
-        let mut capture_exception = false;
-        if let Some(failure) = event.failure {
-            let fingerprint = (event.operation, failure);
-            capture_exception = state
-                .recent_errors
-                .get(&fingerprint)
-                .is_none_or(|last| elapsed(*last, date) >= EXCEPTION_DEDUPE);
-            if !capture_exception && event.operation.is_polling() {
-                return;
-            }
-            if capture_exception {
-                state.recent_errors.insert(fingerprint, date);
-            }
-        }
+        let Some(capture_exception) = state.capture_exception(&event, date) else {
+            return;
+        };
         state.window_count += 1;
         let account = state.account.clone();
         let identity = if cfg!(target_os = "macos") || account.is_none() {
@@ -728,54 +625,20 @@ impl Telemetry {
         self.identify_if_needed(&mut state, identity.as_deref());
         let distinct_id = match &account {
             Some(account) => account.user_id.clone(),
-            None => format!("desktop:{}", identity.expect("anonymous identity")),
+            None => {
+                let Some(identity) = identity else {
+                    return;
+                };
+                format!("desktop:{identity}")
+            }
         };
-        let timestamp = self.timestamp();
-
-        let mut object = self.base_properties(account.as_ref());
-        object.insert("operation".into(), event.operation.as_str().into());
-        object.insert("outcome".into(), event.outcome.as_str().into());
-        event.add_usage_properties(&mut object);
-        if let Some(count) = event.count {
-            object.insert(
-                "session_count".into(),
-                count.clamp(0, MAX_SESSION_COUNT).into(),
-            );
-        }
-        if let Some(mode) = event.mode {
-            object.insert("sharing_mode".into(), mode.as_str().into());
-        }
-        if let Some(failure) = event.failure {
-            object.insert("error_code".into(), failure.as_str().into());
-        }
-        let mut properties = Value::Object(object);
-        let envelope = |name: &str, properties: &Value| {
-            json!({
-                "event": name,
-                "distinct_id": distinct_id,
-                "timestamp": timestamp,
-                "properties": properties,
-            })
-        };
-        let mut events = vec![envelope("desktop_operation", &properties)];
-        if let (Some(failure), true) = (event.failure, capture_exception) {
-            let (operation, code) = (event.operation.as_str(), failure.as_str());
-            let object = properties.as_object_mut().expect("object");
-            object.insert("$exception_level".into(), "error".into());
-            object.insert(
-                "$exception_fingerprint".into(),
-                format!("desktop:{operation}:{code}").into(),
-            );
-            object.insert(
-                "$exception_list".into(),
-                json!([{
-                    "type": "DesktopOperationError",
-                    "value": format!("{operation}: {code}"),
-                    "mechanism": {"type": "handled", "handled": true, "synthetic": true},
-                }]),
-            );
-            events.push(envelope("$exception", &properties));
-        }
+        let events = envelope::operation_events(
+            event,
+            capture_exception,
+            self.base_properties(account.as_ref()),
+            &distinct_id,
+            &self.timestamp(),
+        );
         for event in events {
             if state.queue.len() < QUEUE_LIMIT {
                 state.queue.push_back(Queued {
@@ -931,35 +794,6 @@ pub(crate) fn platform() -> &'static str {
     } else {
         "linux"
     }
-}
-
-fn read_preferences(path: &Path) -> Map<String, Value> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| match value {
-            Value::Object(map) => Some(map),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    persist_file(path, bytes)?;
-    #[cfg(target_os = "macos")]
-    macos_identity::sync_directory(path.parent().unwrap_or(Path::new(".")))?;
-    Ok(())
-}
-
-fn persist_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut temporary, bytes)?;
-    #[cfg(target_os = "macos")]
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
-    Ok(())
 }
 
 /// A lowercase hyphenated UUID, or `None` for anything else.

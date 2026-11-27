@@ -54,3 +54,54 @@ impl Telemetry {
         properties
     }
 }
+
+pub(super) fn operation_events(
+    event: TelemetryEvent,
+    capture_exception: bool,
+    mut object: Map<String, Value>,
+    distinct_id: &str,
+    timestamp: &str,
+) -> Vec<Value> {
+    object.insert("operation".into(), event.operation.as_str().into());
+    object.insert("outcome".into(), event.outcome.as_str().into());
+    event.add_usage_properties(&mut object);
+    if let Some(count) = event.count {
+        object.insert(
+            "session_count".into(),
+            count.clamp(0, MAX_SESSION_COUNT).into(),
+        );
+    }
+    if let Some(mode) = event.mode {
+        object.insert("sharing_mode".into(), mode.as_str().into());
+    }
+    if let Some(failure) = event.failure {
+        object.insert("error_code".into(), failure.as_str().into());
+    }
+    let envelope = |name: &str, properties: &Map<String, Value>| {
+        json!({
+            "event": name,
+            "distinct_id": distinct_id,
+            "timestamp": timestamp,
+            "properties": properties,
+        })
+    };
+    let mut events = vec![envelope("desktop_operation", &object)];
+    if let (Some(failure), true) = (event.failure, capture_exception) {
+        let (operation, code) = (event.operation.as_str(), failure.as_str());
+        object.insert("$exception_level".into(), "error".into());
+        object.insert(
+            "$exception_fingerprint".into(),
+            format!("desktop:{operation}:{code}").into(),
+        );
+        object.insert(
+            "$exception_list".into(),
+            json!([{
+                "type": "DesktopOperationError",
+                "value": format!("{operation}: {code}"),
+                "mechanism": {"type": "handled", "handled": true, "synthetic": true},
+            }]),
+        );
+        events.push(envelope("$exception", &object));
+    }
+    events
+}

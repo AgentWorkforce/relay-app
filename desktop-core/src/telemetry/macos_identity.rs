@@ -1,6 +1,6 @@
 //! Disk protocol shared with CoreOutageTelemetry.swift.
 use super::{parse_uuid, IDENTITY_FILE, PREFERENCES_FILE};
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -18,7 +18,7 @@ fn directory(path: &Path) -> io::Result<File> {
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
         .open(path)?;
     let info = file.metadata()?;
-    if info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o022 != 0 {
+    if info.uid() != nix::unistd::geteuid().as_raw() || info.mode() & 0o022 != 0 {
         return Err(unsafe_state());
     }
     Ok(file)
@@ -27,16 +27,13 @@ fn directory(path: &Path) -> io::Result<File> {
 pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
     let file = directory(path)?;
     // File::sync_all uses F_FULLFSYNC on macOS. Use fsync for directory entries.
-    if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    nix::unistd::fsync(file.as_raw_fd()).map_err(io::Error::from)
 }
 
 fn check_file(file: &File) -> io::Result<()> {
     let info = file.metadata()?;
     if !info.is_file()
-        || info.uid() != unsafe { libc::geteuid() }
+        || info.uid() != nix::unistd::geteuid().as_raw()
         || info.mode() & 0o022 != 0
         || info.nlink() != 1
     {
@@ -163,6 +160,7 @@ pub(super) fn identity(directory_path: &Path) -> io::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::sync::{Arc, Barrier};
 
