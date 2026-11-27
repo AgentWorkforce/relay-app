@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **One bad session no longer stops all uploads.** On macOS, Linux and Windows, when the secret scrubber fails on a single record of a session, that record is set aside and counted as quarantined, and everything else keeps being stored and uploaded. Before, the failure ended the history collector, which restarted every few seconds and stopped every upload until a fixed version arrived. A set-aside record is never stored or uploaded unscrubbed, and nothing of its content is logged; it is tried again once an Agent Relay update brings a new scrubber.
+
 - **Codex chats kept in a separate database folder are uploaded.** On macOS, Linux and Windows, when `CODEX_SQLITE_HOME` points somewhere other than `CODEX_HOME`, Codex chats that live only in Codex's database there, such as chats from the Codex or ChatGPT desktop app, are now found, listed and uploaded with their prompts. Before, they were not listed at all. Agent Relay reads that setting from its own environment, so a value set only in a shell startup file is not seen yet. Codex in WSL on Windows does not have this yet.
 
 - **Providers distinguish session preparation from sign-in.** On macOS, Linux and Windows, after a verified sign-in, providers show *Preparing sessions* while the initial local history preparation finishes instead of asking you to sign in again. Setup still waits for preparation to finish, and actual account or provider sign-in failures remain visible.

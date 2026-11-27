@@ -586,6 +586,29 @@ pub(super) fn prepare(
         limits.max_batch_records,
         &mut admit,
     )?;
+    // Records an earlier engine panicked on are offered to this one next,
+    // while their session is still a member.
+    if !full {
+        full = filling::retry_quarantined(
+            conn,
+            store,
+            origin,
+            &root.id,
+            selection,
+            limits.max_batch_records,
+            &mut filling,
+            |filling, offered, key| {
+                let record = offered.record();
+                if members
+                    .added(&record.source, record.session_id.as_deref())
+                    .is_none()
+                {
+                    return Ok(true);
+                }
+                admit(filling, offered, key, &mut hold)
+            },
+        )?;
+    }
     while !full
         && scanned < limits.max_scan_records
         && filling.batch.records.len() < limits.max_batch_records
@@ -688,6 +711,7 @@ pub(super) fn prepare(
     }
     drop(consent);
     drop(hold);
+    filling::quarantine(conn, &root.id, origin, &filling, now_ms)?;
     let batch = filling.batch;
     conn.execute("UPDATE delivery_jobs SET journal_cursor=?,suppressed_records=suppressed_records+? WHERE id=?",params![cursor,suppressed,root.id])?;
     let batch_id = if batch.records.is_empty() {

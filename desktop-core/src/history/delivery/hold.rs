@@ -355,7 +355,10 @@ pub(super) fn admit(
         *suppressed += 1;
         return Ok(true);
     }
-    let record = filling.scrubbed(offered)?;
+    // A record the engine panicked on is quarantined: the job moves past it.
+    let Some(record) = filling.scrubbed(offered)? else {
+        return Ok(true);
+    };
     if kept(hold, filling, &record, key)? {
         return Ok(true);
     }

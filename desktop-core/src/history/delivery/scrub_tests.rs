@@ -8,6 +8,9 @@ use crate::history::scrub::{Scrub, ScrubContext, ScrubError, ScrubSurface};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+#[path = "scrub_tests/panics.rs"]
+mod panics;
+
 /// Maps a batch to its JSON, after `marker`, and keeps every body it is
 /// asked to send with the digest it was sent under and the body its own
 /// mapping made of the batch.
