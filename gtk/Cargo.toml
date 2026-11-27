@@ -36,7 +36,11 @@ gtk = ["dep:gtk4", "dep:ksni"]
 
 [dependencies]
 # Relay's public core (AgentWorkforce/relay crates/relay-node), pinned to relay
-# main c818fd3: #2274 (a Codex chat under an app-server nothing can ask, such
+# main caac5fb: #2276 (chats open in the ChatGPT desktop app are seen running
+# through that app's own stdio app-server, which drains their queued
+# messages, so they can receive; queued with the app's bundled codex) and
+# c73ad80: #2278 (the peer note names a delegate approval line as relayed
+# approval), over c818fd3: #2274 (a Codex chat under an app-server nothing can ask, such
 # as the ChatGPT desktop app's private stdio one, is named only when it alone
 # has a pending tool call, in the rollouts that app-server holds open, that
 # asked for the running command), on top of ecb29c8: #2270 (spawn nodes
@@ -53,7 +57,7 @@ gtk = ["dep:gtk4", "dep:ksni"]
 # through mise is found) and b8c5243: #2251 (stricter session caller
 # attribution and verified-note integrity).
 # Move it in desktop-core and gtk together.
-agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "c818fd3f6fbd04b6ba7d5fe17286a25a76023226", default-features = false }
+agent-relay-node = { git = "https://github.com/AgentWorkforce/relay", rev = "caac5fba05261f90a7621e2d1a7a3ff0fe69f19b", default-features = false }
 # Session history's view models (`history::session_model`).
 agent-relay-desktop-core = { path = "../desktop-core" }
 # The session-body scrub engine behind history::scrub. An exact version:

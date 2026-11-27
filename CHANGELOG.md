@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Codex chats in the ChatGPT desktop app receive messages.** On macOS, a Codex chat open in the ChatGPT desktop app is now seen running, so its *Receive messages* switch can be turned on and messages sent to it are delivered: an idle chat runs them as a new turn, and a chat in the middle of a turn gets them through Agent Relay's Codex hook. Before, the switch stayed off and messages waited as "session not running", because the app no longer runs the window router Agent Relay looked for. Windows does not have this yet: Codex chats in the ChatGPT app there still cannot receive. There is no ChatGPT desktop app on Linux.
+
 ## v2026.11.20
 
 - **Agent Relay repairs a background service that macOS will not start, on its own.** On macOS, when the background service does not answer, Agent Relay now fixes its registration itself within about 15 seconds, with no Terminal steps: it reloads a service macOS lists as enabled but never runs, registers again a service still tied to a deleted or replaced copy of the app, drops a backup service setting left behind by an earlier install, and, if macOS still will not start the service, starts it by its full path in Applications. With *Start at Login* off, a service macOS will not run is started by Agent Relay itself for that session; *Start at Login* stays off. Each step gives macOS a few seconds at most, so *Restarting service…* always ends. A service you have not allowed in Login Items is left for you to allow. If nothing works, Agent Relay says what to do: keep only the copy in Applications, empty the Trash and eject any Agent Relay disk image, then open it again.
