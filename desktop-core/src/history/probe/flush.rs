@@ -6,10 +6,18 @@
 //! the deadline passes. It makes no Agent Relay Cloud request, inspects no
 //! legacy scheduler, and never stores a refresh token.
 //!
+//! Capture repeats bounded sweeps until one stops walking (see
+//! [`history::sync_until_settled`]) before delivery starts, so an update a
+//! sweep's cursor passed over is still read by this flush.
+//!
 //! stdout carries exactly one JSON summary line, with no paths, tokens or
-//! content. Exit codes: 0 every record acknowledged; 3 records still queued at
-//! the deadline; 2 a session refused locally or by the receiver; 4 the
-//! generation is blocked or conflicts; 64 invalid arguments; 1 anything else.
+//! content. Delivery (`exit_reason`, `pending_records`) and capture
+//! continuation (`capture`: `incomplete`, or `unknown` while the SDK reports
+//! no explicit continuation) are reported apart. Exit codes: 0 every record
+//! acknowledged; 3 records still queued, or capture unfinished
+//! (`capture_incomplete`), at the deadline; 2 a session refused locally or by
+//! the receiver; 4 the generation is blocked or conflicts; 64 invalid
+//! arguments; 1 anything else.
 use super::{collector, history, private_directory};
 use crate::history::{
     cloud,
@@ -76,6 +84,7 @@ struct PushedSession {
 enum Exit {
     Drained,
     Deadline,
+    CaptureIncomplete,
     InvalidArguments,
     InvalidSession,
     Unauthorized,
@@ -88,7 +97,7 @@ impl Exit {
             Exit::Drained => 0,
             Exit::Failed => 1,
             Exit::InvalidSession | Exit::Unauthorized => 2,
-            Exit::Deadline => 3,
+            Exit::Deadline | Exit::CaptureIncomplete => 3,
             Exit::Blocked => 4,
             Exit::InvalidArguments => 64,
         }
@@ -97,6 +106,7 @@ impl Exit {
         match self {
             Exit::Drained => "drained",
             Exit::Deadline => "deadline",
+            Exit::CaptureIncomplete => "capture_incomplete",
             Exit::InvalidArguments => "invalid_arguments",
             Exit::InvalidSession => "invalid_session",
             Exit::Unauthorized => "unauthorized",
@@ -111,8 +121,16 @@ struct Counts {
     acknowledged_records: AtomicI64,
     pending_records: AtomicI64,
     sessions_captured: AtomicI64,
+    /// `incomplete` from the start of capture until a sweep settles.
+    capture: std::sync::Mutex<Option<&'static str>>,
 }
 impl Counts {
+    fn set_capture(&self, capture: &'static str) {
+        *self
+            .capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(capture);
+    }
     fn of(&self, status: &delivery::DeliveryStatus) {
         self.acknowledged_records
             .store(status.acknowledged_records, Ordering::SeqCst);
@@ -136,6 +154,7 @@ fn emit(exit: Exit, counts: &Counts, started: Instant) {
         "acknowledged_records": counts.acknowledged_records.load(Ordering::SeqCst),
         "pending_records": counts.pending_records.load(Ordering::SeqCst),
         "sessions_captured": counts.sessions_captured.load(Ordering::SeqCst),
+        "capture": counts.capture.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unwrap_or("unknown"),
         "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "exit_reason": exit.reason(),
     })
@@ -528,6 +547,7 @@ fn flush(options: &Flush, deadline: Instant, counts: &Counts) -> Result<Exit> {
     // unqueued records instead of publishing a false zero summary.
     let job_id = job(&db, &account)?;
     let expired = move || Instant::now() >= deadline;
+    counts.set_capture("incomplete");
     match history::sync(
         &db,
         deadline.saturating_duration_since(Instant::now()),
@@ -548,7 +568,12 @@ fn flush(options: &Flush, deadline: Instant, counts: &Counts) -> Result<Exit> {
         }
         Err(error) => return Err(error),
     }
+    let continuation = history::sync_until_settled(&db, expired)?;
+    counts.set_capture(continuation.as_str());
     update_counts(&db, &job_id, counts)?;
+    if continuation == history::CaptureContinuation::Incomplete {
+        return Ok(Exit::CaptureIncomplete);
+    }
 
     let receiver = destination::RelayHistoryReceiver {
         base_url: Some(base_url.clone()),
