@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Signing in can finish when a background history helper keeps an output pipe open.** On macOS, Linux and Windows, Agent Relay closes the completed install helper's event reader after a bounded drain, so local-session preparation can finish or report its actual error instead of waiting indefinitely. Final setup events remain ordered, and cancelling sign-in still reports cancellation.
+
 ## v2026.11.22
 
 - **Codex chats receive direct messages in order.** On macOS, Linux and Windows, a later direct message waits while an earlier message is pending delivery to the same chat.

@@ -390,7 +390,7 @@ impl ProbeRunner for ProcessRunner {
         let (done, finished) = tokio::sync::oneshot::channel();
         let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
-            let reader = tokio::spawn(async move {
+            let mut reader = tokio::spawn(async move {
                 let Some(stdout) = stdout else { return };
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -418,7 +418,15 @@ impl ProbeRunner for ProcessRunner {
             };
             drop(registration);
             // Every event the probe wrote before exiting is delivered first.
-            let _ = tokio::time::timeout(Duration::from_secs(1), reader).await;
+            // A descendant may inherit stdout. Dropping a timed-out JoinHandle
+            // detaches it and leaves the event channel open indefinitely.
+            if tokio::time::timeout(Duration::from_secs(1), &mut reader)
+                .await
+                .is_err()
+            {
+                reader.abort();
+                let _ = reader.await;
+            }
             let stderr = stderr.finish().await;
             let outcome = match status {
                 _ if cancelled => Err(UploaderError::cancelled()),
@@ -2427,3 +2435,7 @@ mod tests {
         assert!(run.finished.await.unwrap().unwrap_err().cancelled);
     }
 }
+
+#[cfg(test)]
+#[path = "uploader/tests/install_stdout.rs"]
+mod install_stdout_tests;
