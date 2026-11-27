@@ -21,6 +21,12 @@ final class LaunchAgentService: CoreService {
         var launchctl: ([String]) -> (success: Bool, output: String)
         var pause: (TimeInterval) -> Void
         var launchctlAsync: (@MainActor ([String]) async throws -> (success: Bool, output: String))? = nil
+        /// The longest self-repair waits for one SMAppService call.
+        var osCallTimeout: TimeInterval = 5
+        /// The longest one self-repair rung may take, all of its calls together.
+        var repairBudget: TimeInterval = 8
+        /// Starts the helper outside launchd.
+        var startCore: (URL, [String]) throws -> DirectCore = LaunchAgentService.startCoreProcess
         // A pending handoff must finish even when its caller is cancelled.
         // The timer suspends the actor without a blocking sleep or detached work.
         var pauseAsync: @MainActor (TimeInterval) async -> Void = { interval in
@@ -45,6 +51,13 @@ final class LaunchAgentService: CoreService {
     }
 
     private let system: System
+    private let repairUnregister: () throws -> Void
+    private let repairRegister: () throws -> Void
+    private let mutationGate: MutationGate
+    /// A Stop is waiting for a change still in flight inside macOS.
+    var hasPendingStop: Bool { mutationGate.hasPendingStop }
+    /// A background service change is still in flight inside macOS.
+    var isChanging: Bool { mutationGate.isBusy }
     private let bundleURL: URL
     private let homeDirectory: URL
     private let bundleIdentifier: String
@@ -59,7 +72,24 @@ final class LaunchAgentService: CoreService {
         self.homeDirectory = homeDirectory
         self.bundleIdentifier = bundleIdentifier
         self.defaults = defaults
-        self.system = system ?? .live()
+        // Every SMAppService change goes through one gate. A call the repair
+        // stopped waiting for can still be running in macOS; until it has
+        // returned, no other change starts, so a late unregister can never
+        // undo a later registration.
+        var gated = system ?? .live()
+        let gate = MutationGate()
+        mutationGate = gate
+        let register = gated.registerBundled, unregister = gated.unregisterBundled
+        gated.registerBundled = { try gate.start { try register() } }
+        // A Stop or Start while a change is still in flight waits for it and
+        // then runs, newest intent first, so a registration a repair started
+        // cannot land after a later Stop.
+        gated.unregisterBundled = { try gate.stop { try unregister() } }
+        // A repair rung never queues behind another change: it is refused.
+        // Its register is not a newer start: it never cancels a pending stop.
+        repairUnregister = { try gate.run { try unregister() } }
+        repairRegister = { try gate.run { try register() } }
+        self.system = gated
     }
 
     private var label: String { Self.plistName.replacingOccurrences(of: ".plist", with: "") }
@@ -287,6 +317,8 @@ final class LaunchAgentService: CoreService {
     }
 
     func unregister() throws {
+        serviceEpoch += 1
+        stopDirectCore()
         guard usesFallback else { try system.unregisterBundled(); return }
         if launchctl("print", "gui/\(getuid())/\(fallbackLabel)").success {
             try bootoutFallback()
@@ -387,6 +419,8 @@ final class LaunchAgentService: CoreService {
     }
 
     @MainActor func unregisterAsync() async throws {
+        serviceEpoch += 1
+        stopDirectCore()
         guard usesFallback else { try system.unregisterBundled(); return }
         if (try await launchctlAsync("print", fallbackTarget)).success {
             try await bootoutFallbackAsync()
@@ -463,7 +497,11 @@ final class LaunchAgentService: CoreService {
               let arguments = source["ProgramArguments"] as? [String],
               !arguments.isEmpty else { throw fallbackError("The bundled core LaunchAgent is invalid.") }
         let helper = bundleURL.appendingPathComponent(program).standardizedFileURL
+        // Contained lexically and after symlinks resolve: a link inside
+        // Contents/Helpers must not lead to a program outside the bundle.
+        let resolvedBundle = bundleURL.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         guard helper.path.hasPrefix(bundleURL.standardizedFileURL.path + "/"),
+              helper.resolvingSymlinksInPath().path.hasPrefix(resolvedBundle),
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw fallbackError("The bundled core helper is missing.")
         }
@@ -487,9 +525,32 @@ final class LaunchAgentService: CoreService {
     }
 
     @MainActor private func launchctlAsync(_ arguments: String...) async throws -> (success: Bool, output: String) {
+        // During a repair every launchctl call is checked against a stop and
+        // the rung's deadline. A read is also cut off at the deadline; a
+        // bootstrap or bootout is never abandoned midway (each is bounded on
+        // its own) and is not started once the rung is stale or out of time.
+        if activeRepairEpoch != nil {
+            try checkRepairCurrent()
+            let remaining = try remainingRepairTime()
+            let result: (success: Bool, output: String)
+            if arguments.first == "print" {
+                result = try await BoundedCall.runAsync("launchctl", timeout: remaining) { [self] in
+                    try await runLaunchctl(arguments)
+                }
+            } else {
+                result = try await runLaunchctl(arguments)
+            }
+            try checkRepairCurrent()
+            return result
+        }
+        return try await runLaunchctl(arguments)
+    }
+
+    @MainActor private func runLaunchctl(_ arguments: [String]) async throws -> (success: Bool, output: String) {
         if let run = system.launchctlAsync { return try await run(arguments) }
         return system.launchctl(arguments)
     }
+
 
     static func runLaunchctl(_ arguments: [String]) -> (success: Bool, output: String) {
         do { return try commandQueue.sync { try runCommand(launchctlExecutable, arguments: arguments, timeout: 2) } }
@@ -554,6 +615,266 @@ final class LaunchAgentService: CoreService {
     private func fallbackError(_ message: String) -> NSError {
         NSError(domain: Self.errorDomain, code: 1,
                 userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    // MARK: Self-repair
+
+    /// Admits one SMAppService change at a time, across threads, for as long
+    /// as macOS takes to return it, and orders the person's intents.
+    ///
+    /// A Stop or Start takes its place in order the moment it is called. If
+    /// no change is in flight it runs at once. Otherwise it becomes the
+    /// waiting intent, replacing any older one, and runs on the thread of the
+    /// change in flight as soon as that returns, still holding the gate. So
+    /// the latest intent always decides, neither blocks the UI, and none is
+    /// stranded: the gate is released only once no intent waits. A repair
+    /// rung's change is not an intent: it is refused while anything is in
+    /// flight or waiting.
+    final class MutationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var inFlight = false
+        private var waiting: (() throws -> Void)?
+
+        static let busyCode = 5
+        var isBusy: Bool { lock.lock(); defer { lock.unlock() }; return inFlight }
+        var hasPendingStop: Bool { lock.lock(); defer { lock.unlock() }; return waitingIsStop && waiting != nil }
+        private var waitingIsStop = false
+
+        /// A repair rung's change: refused while another is in flight.
+        func run<T>(_ work: () throws -> T) throws -> T {
+            lock.lock()
+            guard !inFlight else {
+                lock.unlock()
+                throw NSError(domain: LaunchAgentService.errorDomain, code: Self.busyCode, userInfo: [
+                    NSLocalizedDescriptionKey: "macOS is still finishing an earlier background service change. Try again."
+                ])
+            }
+            inFlight = true
+            lock.unlock()
+            defer { finish() }
+            return try work()
+        }
+
+        func stop(_ work: @escaping () throws -> Void) throws { try intent(isStop: true, work) }
+        func start(_ work: @escaping () throws -> Void) throws { try intent(isStop: false, work) }
+
+        private func intent(isStop: Bool, _ work: @escaping () throws -> Void) throws {
+            lock.lock()
+            if inFlight {
+                waiting = work                 // the newest intent replaces any older one
+                waitingIsStop = isStop
+                lock.unlock()
+                return
+            }
+            inFlight = true
+            lock.unlock()
+            defer { finish() }
+            try work()
+        }
+
+        private func finish() {
+            while true {
+                lock.lock()
+                guard let next = waiting else {
+                    inFlight = false
+                    lock.unlock()
+                    return
+                }
+                waiting = nil
+                lock.unlock()
+                do { try next() } catch {
+                    LaunchAgentService.logger.error("a delayed background service change failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// When the current rung must have finished.
+    private var repairDeadline: Date?
+    /// Moves on whenever the service is stopped or unregistered. A rung that
+    /// started under an earlier value changes nothing more once it resumes.
+    private var serviceEpoch = 0
+    private var activeRepairEpoch: Int?
+
+    private func checkRepairCurrent() throws {
+        guard let activeRepairEpoch else { return }
+        if activeRepairEpoch != serviceEpoch || Task.isCancelled { throw CancellationError() }
+    }
+
+    private func remainingRepairTime() throws -> TimeInterval {
+        guard let repairDeadline else { return system.osCallTimeout }
+        let remaining = repairDeadline.timeIntervalSinceNow
+        guard remaining > 0 else { throw BoundedCall.TimedOut(operation: "the background service repair") }
+        return remaining
+    }
+
+    /// A core this app started itself after its session job would not run.
+    struct DirectCore {
+        var isRunning: () -> Bool
+        var stop: () -> Void
+    }
+    private var directCore: DirectCore?
+
+    /// Stopping the service also stops a core the app started itself.
+    private func stopDirectCore() {
+        directCore?.stop()
+        directCore = nil
+    }
+
+    static func startCoreProcess(_ program: URL, arguments: [String]) throws -> DirectCore {
+        let process = Process()
+        process.executableURL = program
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        return DirectCore(isRunning: { process.isRunning }, stop: { if process.isRunning { process.terminate() } })
+    }
+
+    private var appBundleVersion: String? {
+        Bundle(url: bundleURL)?.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+    }
+
+    private func boundedOS<T>(_ operation: String, _ work: @escaping () throws -> T) async throws -> T {
+        try checkRepairCurrent()
+        let result = try await BoundedCall.run(operation, timeout: min(system.osCallTimeout, try remainingRepairTime()), work)
+        try checkRepairCurrent()
+        return result
+    }
+
+    /// Whether the person must allow the service, read again right before a
+    /// rung changes anything: approval can change while the rung runs.
+    @MainActor private func requiresApprovalNow() async throws -> Bool {
+        let status = system.bundledStatus
+        if try await boundedOS("the background service status", { status() }) == .requiresApproval { return true }
+        guard usesFallback else { return false }
+        let legacy = system.legacyStatus, url = fallbackURL
+        return try await boundedOS("the backup service status") { legacy(url) } == .requiresApproval
+    }
+
+    private static func changesRegistration(_ action: CoreRegistrationRepair.Action) -> Bool {
+        switch action {
+        case .none, .waitForApproval, .moveToApplications, .exhausted: return false
+        case .register, .resetRegistration, .leaveFallback, .useFallback, .reloadSessionJob, .runCoreDirectly: return true
+        }
+    }
+
+    @MainActor func repairObservation() async throws -> CoreRegistrationRepair.Observation {
+        let status = system.bundledStatus
+        let registration = Self.bundledRegistration(try await boundedOS("the background service status") { status() })
+        let legacy = system.legacyStatus
+        let fallbackURL = fallbackURL
+        let fallbackApproval = usesFallback
+            ? try await boundedOS("the backup service status") { legacy(fallbackURL) } : .enabled
+        let bundled = try await launchctlAsync("print", "gui/\(getuid())/\(label)")
+        let fallback = try await launchctlAsync("print", fallbackTarget)
+        var registrationState = registration ?? .notFound
+        if registrationState == .notFound && bundlesPlist { registrationState = .notRegistered }
+        if fallbackApproval == .requiresApproval { registrationState = .requiresApproval }
+        return .init(usesFallback: usesFallback, startsAtLogin: startsAtLogin,
+                     installationProblem: installationProblem != nil, registration: registrationState,
+                     bundledJob: LaunchdJob.parse(success: bundled.success, output: bundled.output),
+                     fallbackJob: LaunchdJob.parse(success: fallback.success, output: fallback.output),
+                     appBundleVersion: appBundleVersion, directCoreRunning: directCore?.isRunning() == true)
+    }
+
+    /// One rung of `CoreRegistrationRepair` for a core that does not answer.
+    /// Every OS call is bounded, so the caller's "Restarting service…" ends.
+    @MainActor func selfRepairAsync(step: Int) async throws -> CoreRegistrationRepair.Action {
+        let epoch = serviceEpoch
+        activeRepairEpoch = epoch
+        repairDeadline = Date().addingTimeInterval(system.repairBudget)
+        defer {
+            if activeRepairEpoch == epoch {
+                activeRepairEpoch = nil
+                repairDeadline = nil
+            }
+        }
+        let observation = try await repairObservation()
+        let action = CoreRegistrationRepair.next(observation, step: step)
+        if Self.changesRegistration(action), try await requiresApprovalNow() { return .waitForApproval }
+        Self.logger.notice("""
+            core self-repair step \(step, privacy: .public): \(action.rawValue, privacy: .public) \
+            (registration \(observation.registration.rawValue, privacy: .public), \
+            fallback \(observation.usesFallback, privacy: .public), \
+            job loaded \(observation.bundledJob.loaded, privacy: .public) \
+            pid \(observation.bundledJob.pid ?? -1, privacy: .public) \
+            exit \(observation.bundledJob.lastExitCode ?? -1, privacy: .public) \
+            version \(observation.bundledJob.parentBundleVersion ?? "-", privacy: .public)/\(observation.appBundleVersion ?? "-", privacy: .public))
+            """)
+        switch action {
+        case .none, .waitForApproval, .moveToApplications, .exhausted:
+            break
+        case .register:
+            let register = repairRegister
+            try await boundedOS("registering the background service") { try register() }
+        case .resetRegistration:
+            try await resetBundledRegistration()
+        case .leaveFallback:
+            // Deleting the app keeps its defaults, so a reinstalled build can
+            // inherit a fallback choice whose job no longer exists.
+            if (try await launchctlAsync("print", fallbackTarget)).success { try await bootoutFallbackAsync() }
+            if FileManager.default.fileExists(atPath: fallbackURL.path) {
+                try FileManager.default.removeItem(at: fallbackURL)
+            }
+            defaults.removeObject(forKey: fallbackKey)
+            defaults.removeObject(forKey: fallbackPolicyKey)
+            try await resetBundledRegistration()
+        case .useFallback:
+            defaults.set(true, forKey: fallbackKey)
+            _ = try await registerFallbackAsync(forceReload: true)
+            let status = system.bundledStatus, unregister = repairUnregister
+            if try await boundedOS("the background service status", { status() }) == .enabled {
+                do { try await boundedOS("removing the broken background service") { try unregister() } } catch {
+                    Self.logger.error("could not remove the broken SMAppService job: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        case .reloadSessionJob:
+            _ = try await registerFallbackAsync(forceReload: true)
+        case .runCoreDirectly:
+            // Startup at login stays off: no login job is registered. The
+            // session plist stays for the next launch to try again.
+            if (try await launchctlAsync("print", fallbackTarget)).success { try await bootoutFallbackAsync() }
+            let plist = try fallbackPlist()
+            guard let program = plist["Program"] as? String,
+                  let arguments = plist["ProgramArguments"] as? [String] else {
+                throw fallbackError("The bundled core LaunchAgent is invalid.")
+            }
+            try checkRepairCurrent()
+            directCore = try system.startCore(URL(fileURLWithPath: program), Array(arguments.dropFirst()))
+        }
+        return action
+    }
+
+    /// `register()` is a no-op for a job macOS already calls enabled, while
+    /// launchd keeps spawning the replaced bundle's record. Only removing the
+    /// registration and submitting it again records the current bundle.
+    @MainActor private func resetBundledRegistration() async throws {
+        let unregister = repairUnregister, register = repairRegister, status = system.bundledStatus
+        // Only a registration macOS reports is removed. A job that is already
+        // gone is not an error; any other refusal (a denial, a busy gate) is.
+        if try await boundedOS("the background service status", { status() }) == .enabled {
+            do { try await boundedOS("removing the background service") { try unregister() } }
+            catch where Self.isAlreadyUnregistered(error) {
+                Self.logger.notice("the background service was already unregistered")
+            }
+        }
+        let target = "gui/\(getuid())/\(label)"
+        // Bounded by the rung's deadline and, outside one, by a count.
+        for _ in 0..<60 {
+            _ = try remainingRepairTime()
+            if !(try await launchctlAsync("print", target)).success { break }
+            await system.pauseAsync(0.1)
+        }
+        try await boundedOS("registering the background service") { try register() }
+    }
+
+    static func isAlreadyUnregistered(_ error: Error) -> Bool {
+        guard !(error is BoundedCall.TimedOut) else { return false }
+        let error = error as NSError
+        return error.domain != errorDomain
+            && (error.code == Int(kSMErrorJobNotFound) || error.code == Int(kSMErrorJobPlistNotFound))
     }
 
     func openSystemSettings() { SMAppService.openSystemSettingsLoginItems() }

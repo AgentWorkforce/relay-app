@@ -11,6 +11,8 @@ public protocol CoreService: AnyObject {
     var diagnostics: CoreServiceDiagnostics { get }
     var spawnFailureEvidence: CoreServiceDiagnostics.SpawnFailure? { get }
     func clearSpawnFailureEvidence()
+    /// One rung of the self-repair ladder for a core that does not answer.
+    @MainActor func selfRepairAsync(step: Int) async throws -> CoreRegistrationRepair.Action
     /// Why this copy of the app must be moved before registering its agent.
     var installationProblem: String? { get }
     /// Identifies the core binary this bundle carries. launchd admits only
@@ -42,6 +44,7 @@ public extension CoreService {
     var diagnostics: CoreServiceDiagnostics { .init() }
     var spawnFailureEvidence: CoreServiceDiagnostics.SpawnFailure? { nil }
     func clearSpawnFailureEvidence() {}
+    @MainActor func selfRepairAsync(step: Int) async throws -> CoreRegistrationRepair.Action { .none }
     @MainActor func setStartsAtLoginAsync(_ enabled: Bool) async throws { try setStartsAtLogin(enabled) }
     @MainActor func registerAsync() async throws { try register() }
     @MainActor func unregisterAsync() async throws { try unregister() }
