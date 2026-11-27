@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Scheduled updates for the macOS headless core.** Use the local installer to opt in to daily checks for newer releases of the installed product and profile. Standard setup leaves scheduling off, and uninstall removes the update job.
+
 - **Codex chats in the ChatGPT desktop app receive messages.** On macOS, a Codex chat open in the ChatGPT desktop app is now seen running, so its *Receive messages* switch can be turned on and messages sent to it are delivered: an idle chat runs them as a new turn, and a chat in the middle of a turn gets them through Agent Relay's Codex hook. Before, the switch stayed off and messages waited as "session not running", because the app no longer runs the window router Agent Relay looked for. Windows does not have this yet: Codex chats in the ChatGPT app there still cannot receive. There is no ChatGPT desktop app on Linux.
 
 ## v2026.11.20

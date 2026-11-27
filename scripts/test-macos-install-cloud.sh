@@ -164,7 +164,10 @@ printf '%s\n' "--- \$url" "\$headers" >> "$root/state/headers.log"
 api=https://site.test/cloud/api/v1/desktop/feed
 answer() { # status [file]
   if [ -n "\${2:-}" ]; then cp "\$2" "\$out"; fi
-  [ -z "\$write" ] || printf '%s' "\$1"
+  case "\$write" in
+    '\n%{http_code}') printf '\n%s' "\$1" ;;
+    '%{http_code}') printf '%s' "\$1" ;;
+  esac
 }
 case "\$method \$url" in
   "GET \$api/manifest?channel=stable")
@@ -376,6 +379,24 @@ grep -A3 -F -- "--- https://site.test/cloud/api/v1/desktop/feed/assets/a_probe" 
 no_credential "the cloud update"
 rm -f "$root/state/no-storage"
 pass "an update without a token uses the core's feed-headers, its feed verify, and the 501 stream fallback"
+
+# A scheduled Cloud check uses the existing signed-in core and gives up if
+# it cannot answer. Use an unchanged release to isolate authentication.
+printf '%s\n' arm64 > "$root/state/native-arch"
+cloud --schedule-enable > "$root/state/out"
+cloud_job="$(find "$HOME/Library/LaunchAgents" -name "$label.update.*.plist")"
+reset_logs
+schedule_tick "$cloud_job" > "$root/state/out" 2>&1 || { cat "$root/state/out"; fail "scheduled Cloud check failed"; }
+grep -qxF 'Authorization: Bearer sh_dfa_core-fixture' "$root/state/headers.log" || fail "scheduled check did not use the core credential"
+no_credential "the scheduled Cloud check"
+rm "$root/state/running"
+reset_logs
+if schedule_tick "$cloud_job" > "$root/state/out" 2>&1; then fail "scheduled Cloud check accepted a stopped core"; fi
+grep -q 'require a running, signed-in core' "$root/state/out" || fail "scheduled Cloud stopped-core guard was not reached"
+[ ! -s "$root/state/curl.log" ] && [ ! -e "$root/state/running" ] || fail "scheduled check contacted Cloud or started the core"
+printf '%s\n' 2026.11.2 > "$root/state/running"
+cloud --schedule-disable > "$root/state/out"
+pass "scheduled Cloud checks use core-held credentials and skip a stopped core"
 
 expected_current=2026.11.2
 echo '{"ok":false,"code":"signature_invalid","message":"x"}' > "$root/state/verify-answer"

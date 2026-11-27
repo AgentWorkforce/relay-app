@@ -131,7 +131,7 @@ EOF
     license) echo "License" > "$tree/agent_relay/LICENSE" ;;
     stray) echo "License" > "$tree/agent_relay/LICENSE"; echo x > "$tree/agent_relay/README" ;;
   esac
-  local asset="$product-$version-macOS-arm64-probe.tar.gz"
+  local asset="$product-$version-macOS-${RELEASE_ARCH:-arm64}-probe.tar.gz"
   tar -czf "$dir/$asset" -C "$tree" agent_relay
   (cd "$dir" && sha256sum "$asset" > "$asset.sha256")
   rm -rf "$tree"
@@ -153,7 +153,7 @@ EOF
 cat > "$root/bin/shasum" <<EOF
 #!/usr/bin/env bash
 [ "\$1 \$2" = "-a 256" ] || exit 2
-exec "$real_sha256" "\$3"
+exec "$real_sha256" "\${@:3}"
 EOF
 # The designated requirement, written out here rather than read from the
 # installer: dropping any constraint (the Apple anchor, the Developer ID
@@ -168,6 +168,7 @@ $stdin_check
 echo "\$*" >> "$root/state/codesign.log"
 [ "\$1 \$2" = "--verify --strict" ] || exit 2
 [ "\$3" = "\$(cat "$root/state/requirement")" ] || { echo "codesign: unexpected requirement: \$3" >&2; exit 3; }
+[ ! -e "$root/state/refuse-signature" ] || exit 1
 grep -q '^# kind: unsigned' "\$4" && { echo "\$4: invalid signature" >&2; exit 1; }
 exit 0
 EOF
@@ -189,7 +190,9 @@ case "\$url" in
     fi ;;
 esac
 case "\$url" in
-  https://api.test/releases/latest) printf '{"tag_name": "v%s"}' "\$(cat "$root/state/latest")" > "\$out" ;;
+  https://api.test/releases/latest|https://api.github.com/repos/AgentWorkforce/relay-desktop-releases/releases/latest) printf '{"tag_name": "v%s"}' "\$(cat "$root/state/latest")" > "\$out" ;;
+  https://github.com/AgentWorkforce/relay-desktop-releases/releases/download/*)
+    cp "$root/releases/\${url#https://github.com/AgentWorkforce/relay-desktop-releases/releases/download/}" "\$out" || exit 22 ;;
   https://releases.test/*) cp "$root/releases/\${url#https://releases.test/}" "\$out" 2>/dev/null || exit 22 ;;
   *) exit 6 ;;
 esac
@@ -256,12 +259,14 @@ print(p["Label"]); print("\n".join(p["ProgramArguments"]))' "\$3")" || exit 5
     name="\${job%%\$'\n'*}"
     [ ! -f "\$state/loaded-\$name" ] || exit 5
     printf '%s\n' "\$3" > "\$state/loaded-\$name"
+    [ "\$name" = "$label" ] || exit 0
     printf '%s\n' "\${job#*\$'\n'}" > "\$state/job-args"
     start ;;
   bootout)
     [ -f "\$state/loaded-\${2##*/}" ] || exit 3
     [ ! -f "\$state/bootout-fails" ] || exit 5
-    rm -f "\$state/loaded-\${2##*/}" "\$state/running" ;;
+    rm -f "\$state/loaded-\${2##*/}"
+    if [ "\${2##*/}" = "$label" ]; then rm -f "\$state/running"; fi ;;
   kickstart)
     [ "\$2" = -k ] || exit 2
     [ -f "\$state/loaded-\${3##*/}" ] || exit 113
@@ -399,7 +404,8 @@ pass "refuses to run anywhere but macOS"
 
 bash "$INSTALL" --help > "$root/state/out" 2>&1 || fail "--help failed"
 grep -q "^Usage: install-macos.sh" "$root/state/out" || fail "--help prints no usage"
-piped "$INSTALL" | bash -s -- -h > "$root/state/out" 2>&1 || fail "-h through a pipe failed"
+# Bash may exit before the producer finishes writing the installer.
+( set +o pipefail; piped "$INSTALL" | bash -s -- -h ) > "$root/state/out" 2>&1 || fail "-h through a pipe failed"
 grep -q "^Usage: install-macos.sh" "$root/state/out" || fail "-h through a pipe prints no usage"
 rc=0; bash "$INSTALL" --frobnicate > "$root/state/out" 2> "$root/state/err" || rc=$?
 [ "$rc" = 2 ] || fail "an unknown option exited $rc, not 2"
@@ -1318,6 +1324,9 @@ grep -Fq "kept settings, sign-in and agent registrations in: $data" "$root/state
 [ ! -s "$root/state/stdin-violations" ] || { cat "$root/state/stdin-violations" >&2; fail "a piped run let a command read the script"; }
 [ "$(sha256sum "$data/injectable-agents.json")" = "$data_sum" ] || fail "the core's data changed"
 pass "curl | bash installs and curl | bash -s -- --uninstall removes it, and no command reads the script"
+
+# shellcheck source=scripts/test-macos-install-schedule.sh
+. "$REPO/scripts/test-macos-install-schedule.sh"
 
 # shellcheck source=scripts/test-macos-install-cloud.sh
 . "$REPO/scripts/test-macos-install-cloud.sh"

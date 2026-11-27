@@ -126,6 +126,46 @@ removes the browser approval step, not macOS's login-session requirement below.
 `scripts/test-macos-install.sh` runs the installer against a fake release
 server and a fake `launchctl`, on Linux too.
 
+### Scheduled headless updates
+
+Normal setup leaves the schedule off. From a trusted, locally saved copy of
+the same installer used for the installed product and profile, run:
+
+```sh
+bash ./install-macos.sh --schedule-enable
+bash ./install-macos.sh --schedule-status
+bash ./install-macos.sh --schedule-disable
+```
+
+Enable and disable also accept `--dry-run`. If you installed with an
+absolute `AGENT_RELAY_PREFIX`, use that same prefix for all three commands
+and uninstall. The per-user LaunchAgent checks every 24 hours while the
+user's login domain is available. Status reports registration. To stop
+checks, disable the job. Uninstall removes the job and its local installer
+copy. If a check holds the installer lock, wait for it to finish and retry.
+Disable and re-enable from a trusted local copy to refresh the job's installer.
+
+Eligibility requires a headless release installed by an installer that records
+the verified release receipt. For an older install, first install a newer
+matching release through the normal verified update. The receipt binds the
+core to its product, feed, profile, feed key, architecture and signature policy.
+Each check re-verifies the installed binary's receipt, Developer ID signature
+and native architecture (using `lipo`). Checks reuse the regular update path
+for verification, history compatibility, restart and health rollback, and
+only apply a newer release. A Cloud check requires the running core's existing
+sign-in. The job uses the system tool path, so a Cloud core should support
+feed verification itself. The job starts with a clean environment and stores
+no install token or enrollment key. The installed job runs a private copy of the local
+installer and downloads release artifacts through the built-in endpoints.
+
+A distribution owner must choose which installer and feed to offer. A site
+feed needs its own configured profile and verification key, and the current
+Developer ID policy still applies to its Mac core. An operator-signed or
+site-signed core under a different Developer ID requires an owner-approved
+trust policy in the release publisher and installer before it can qualify.
+The scheduler provides no signing override and performs no product or profile
+migration.
+
 ## Layout
 
 ```

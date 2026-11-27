@@ -110,6 +110,7 @@ DRY_RUN=0
 ROLLBACK=0
 UPDATE=0
 ACTION=install
+SCHEDULED_BINDING=""
 ENROLLMENT_KEY_FILE="${AGENT_RELAY_ENROLLMENT_KEY_FILE:-}"
 ENROLLMENT_KEY_FILE_EXPLICIT=0
 
@@ -118,12 +119,18 @@ usage() {
 Usage: install-macos.sh [--version X.Y.Z] [--update] [--rollback] [--dry-run]
                          [--enrollment-key-file PATH|-]
        install-macos.sh --status
+       install-macos.sh --schedule-enable [--dry-run]
+       install-macos.sh --schedule-status
+       install-macos.sh --schedule-disable [--dry-run]
        install-macos.sh --uninstall [--dry-run]
 
   --version X.Y.Z  Install this release instead of the latest.
   --update         Update an existing install (fails when there is none).
   --rollback       Switch back to the newest installed version older than
                    the current one.
+  --schedule-enable   Opt in to daily updates from this local installer file.
+  --schedule-status   Show the update job's registration.
+  --schedule-disable  Unload and remove the update job.
   --status         Say what is installed and whether the core answers.
   --uninstall      Stop the core and remove it and its LaunchAgent; settings,
                    sign-in and agents stay in the core's data directory.
@@ -167,8 +174,12 @@ while [ $# -gt 0 ]; do
     --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION="${2#v}"; shift 2 ;;
     --update) UPDATE=1; shift ;;
     --rollback) ROLLBACK=1; shift ;;
-    --status) ACTION=status; shift ;;
-    --uninstall) ACTION=uninstall; shift ;;
+    --status|--uninstall|--schedule-enable|--schedule-status|--schedule-disable)
+      [[ "$ACTION" = install && -z "$SCHEDULED_BINDING" ]] || die "choose one action"
+      ACTION="${1#--}"; shift ;;
+    --scheduled-update)
+      [[ "$ACTION" = install && -z "$SCHEDULED_BINDING" && -n "${2:-}" ]] || die "invalid scheduled update"
+      SCHEDULED_BINDING="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --enrollment-key-file)
       [ $# -ge 2 ] || die "--enrollment-key-file needs a path or -"
@@ -200,6 +211,16 @@ if [ "$ENROLLMENT_KEY_FILE" = - ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
   die "--enrollment-key-file - cannot share stdin with curl | bash; save the key in a private file and pass its path"
 fi
 
+if [ -n "$SCHEDULED_BINDING" ]; then
+  [[ -z "$VERSION" && "$UPDATE$ROLLBACK$DRY_RUN$ENROLLMENT_KEY_FILE_EXPLICIT" = 0000 ]] \
+    || die "a scheduled update takes no installer options"
+  unset AGENT_RELAY_INSTALL_TOKEN AGENT_RELAY_RELEASES_API AGENT_RELAY_DOWNLOAD_BASE
+  RELEASES_API="https://api.github.com/repos/$RELEASES_REPOSITORY/releases"
+  DOWNLOAD_BASE="https://github.com/$RELEASES_REPOSITORY/releases/download"
+  ENROLLMENT_KEY_FILE=""
+  UPDATE=1
+fi
+
 PREFIX="${AGENT_RELAY_PREFIX:-$HOME/.local/lib/agent-relay}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/Agent Relay"
@@ -224,8 +245,18 @@ valid_version() { printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+release_curl() {
+  # A scheduled job uses the built-in release configuration, including when
+  # curl would otherwise load the user's .curlrc from HOME.
+  if [ -n "$SCHEDULED_BINDING" ]; then
+    curl -q "$@"
+  else
+    curl "$@"
+  fi
+}
+
 fetch() { # url dest
-  curl -fsSL --proto '=https' --retry 3 -o "$2" "$1" < /dev/null
+  release_curl -fsSL --proto '=https' --retry 3 -o "$2" "$1" < /dev/null
 }
 
 probe_version() { # binary -> version it reports
@@ -459,6 +490,7 @@ X-Agent-Relay-Profile: $PROFILE_ID"
   if [ -z "$(core_version || true)" ]; then
     [ "$DRY_RUN" = 0 ] \
       || die "the installed core is not running; start it with: launchctl kickstart -k $DOMAIN/$LABEL, or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
+    [ -z "$SCHEDULED_BINDING" ] || die "scheduled updates require a running, signed-in core"
     note "the installed core is not running; starting it"
     ensure_plist
     if ! restart_core || ! healthy "$current_version"; then
@@ -474,20 +506,26 @@ X-Agent-Relay-Profile: $PROFILE_ID"
     || die "the installed core supplied unusable release feed headers"
 }
 
-# cloud_call dest limit url [curl options]: a feed request with the
-# credential; sets status to the HTTP status, or "failed".
+# Feed credentials go to curl on stdin.
+cloud_request() {
+  local limit="$1"
+  shift
+  printf '%s\n' "$cloud_headers" | release_curl -sS --proto '=https' --max-redirs 0 --retry 3 \
+    --max-filesize "$limit" -H @- "$@"
+}
+
+# cloud_call dest limit url [curl options]. Sets the HTTP status or "failed".
 cloud_call() {
   local dest="$1" limit="$2" url="$3"
   shift 3
-  status="$(printf '%s\n' "$cloud_headers" | curl -sS --proto '=https' --max-redirs 0 --retry 3 \
-    --max-filesize "$limit" -H @- -o "$dest" -w '%{http_code}' "$@" "$url")" || status=failed
+  status="$(cloud_request "$limit" -o "$dest" -w '%{http_code}' "$@" "$url")" || status=failed
   if [ -f "$dest" ] && [ "$(wc -c < "$dest")" -gt "$limit" ]; then status=failed; fi
 }
 
 # Says why the feed refused, naming only its error code, never the body.
 cloud_refused() { # what body
   local code
-  code="$(feed_py error "$2" < /dev/null 2>/dev/null || true)"
+  code="$(feed_py error "$2" 2>/dev/null || true)"
   case "$status" in
     401) if [ -z "${AGENT_RELAY_INSTALL_TOKEN:-}" ]; then
            die "the release feed refused the installed core's sign-in (${code:-unauthenticated}); sign in again, or set AGENT_RELAY_INSTALL_TOKEN from your workspace's downloads page"
@@ -546,7 +584,7 @@ cloud_resolve() {
   local selected
   cloud_auth
   cloud_call "$work/envelope.json" "$FEED_LIMIT" "$site/cloud/api/v1/desktop/feed/manifest?channel=stable"
-  [ "$status" = 200 ] || cloud_refused "the release manifest" "$work/envelope.json"
+  [ "$status" = 200 ] || cloud_refused "the release manifest" "$work/envelope.json" < /dev/null
   feed_py envelope "$work/envelope.json" "$PROFILE_ID" "$work/manifest.sig" "$work/manifest.jcs" < /dev/null \
     || die "the release feed's manifest was refused (key_id_refused or schema_invalid)"
   cloud_current=0
@@ -569,23 +607,32 @@ cloud_resolve() {
 
 # Downloads the resolved asset to $work/$1 and checks its size and sha256.
 cloud_download() { # asset
-  local url_json url host
+  local response url_json url host
   [ "$1" = "$cloud_asset" ] || die "the release feed's asset is $cloud_asset, not $1"
   host="${site#https://}"
   note "downloading $1"
-  cloud_call "$work/download-url.json" "$FEED_LIMIT" \
-    "$site/cloud/api/v1/desktop/feed/assets/$cloud_asset_id/download-url" -X POST -d ''
-  url_json="$work/download-url.json"
+  # Keep the signed download address in memory. Append the HTTP status on
+  # its own line so the existing object-storage fallback still works.
+  response="$(cloud_request "$FEED_LIMIT" -o /dev/stdout -w '\n%{http_code}' \
+    "$site/cloud/api/v1/desktop/feed/assets/$cloud_asset_id/download-url" -X POST -d '' \
+    | perl -e '
+        my $limit = $ARGV[0] + 4; # newline and three HTTP status digits
+        my $length = read(STDIN, my $response, $limit + 1);
+        exit 1 if !defined($length) || $length > $limit || $response =~ /\0/;
+        print $response' "$FEED_LIMIT")" \
+    || die "could not read the download address from $site"
+  status="${response##*$'\n'}"
+  url_json="${response%$'\n'*}"
   if [ "$status" = 200 ]; then
-    url="$(feed_py url "$url_json" "$host" "$cloud_hosts" < /dev/null)" || die "the release feed's download address was refused"
+    url="$(printf '%s' "$url_json" | feed_py url - "$host" "$cloud_hosts")" || die "the release feed's download address was refused"
     # A signed address carries its own authorisation: no credential goes to it.
-    status="$(curl -sS --proto '=https' --max-redirs 0 --retry 3 --max-filesize "$cloud_size" \
+    status="$(release_curl -sS --proto '=https' --max-redirs 0 --retry 3 --max-filesize "$cloud_size" \
       -o "$work/$1" -w '%{http_code}' "$url" < /dev/null)" || status=failed
   elif [ "$status" = 501 ]; then
     # No object storage behind this site: the feed streams the asset itself.
     cloud_call "$work/$1" "$cloud_size" "$site/cloud/api/v1/desktop/feed/assets/$cloud_asset_id"
   else
-    cloud_refused "the download address" "$url_json"
+    cloud_refused "the download address" - <<< "$url_json"
   fi
   [ "$status" = 200 ] || die "could not download $1 (HTTP $status)"
   [ "$(wc -c < "$work/$1" | tr -d ' ')" -eq "$cloud_size" ] || die "$1 is not the size the manifest gives"
@@ -769,11 +816,244 @@ lock_installer() {
   done
 }
 
-current_version=""
-if [ -x "$PROBE" ]; then
-  current_version="$(probe_version "$PROBE" || true)"
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# KeepAlive restarts the core when it fails but not when it exits cleanly:
+# a headless core exits 0 to hand over when the app's core job appears, and
+# must then stay down. ThrottleInterval matches the app's own fallback job.
+plist_text() {
+  local probe out err
+  probe="$(xml_escape "$PROBE")"
+  out="$(xml_escape "$LOG_DIR/headless.stdout.log")"
+  err="$(xml_escape "$LOG_DIR/headless.stderr.log")"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$probe</string>
+    <string>relay</string>
+    <string>serve</string>
+    <string>--headless</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>$out</string>
+  <key>StandardErrorPath</key>
+  <string>$err</string>
+</dict>
+</plist>
+EOF
+}
+
+# The version receipt ties the verified binary to the release configuration
+# that installed it. A product name alone cannot distinguish Cloud profiles.
+release_binding() {
+  printf '%s\0' "$ASSET_PREFIX" "$RELEASE_FEED" "$RELEASES_REPOSITORY" "$SITE_URL" \
+    "$PROFILE_ID" "$FEED_PUBLIC_KEY" "$REQUIREMENT" "$ARCH" "$RELEASES_API" "$DOWNLOAD_BASE" | shasum -a 256 | cut -d' ' -f1
+}
+
+release_receipt() {
+  local binding digest
+  binding="$(release_binding)" || return 1
+  digest="$(shasum -a 256 < "$1" | cut -d' ' -f1)" || return 1
+  printf '%s %s\n' "$binding" "$digest"
+}
+
+verify_signature() {
+  codesign --verify --strict "-R=$REQUIREMENT" "$1" < /dev/null 2>/dev/null
+}
+
+verify_native_arch() {
+  local native_arch="$ARCH"
+  [ "$ARCH" != x64 ] || native_arch=x86_64
+  lipo "$1" -verify_arch "$native_arch" < /dev/null >/dev/null 2>&1 \
+    || die "the core does not contain the native $native_arch architecture"
+}
+
+read_installed() {
+  current_version=""
+  if [ -x "$PROBE" ]; then current_version="$(probe_version "$PROBE" || true)"; fi
+  read_current_product
+}
+
+verify_scheduled_core() {
+  local target version receipt expected_receipt
+  [[ -d "$PREFIX" && ! -L "$PREFIX" && ! -L "$PREFIX/versions" ]] \
+    || die "scheduled updates require a regular install prefix"
+  target="$(readlink "$PREFIX/current")" || die "no installed headless release"
+  version="${target#versions/}"
+  if [[ "$target" != "versions/$version" || -L "$PREFIX/$target" || ! -f "$PROBE" || ! -x "$PROBE" || -L "$PROBE" ]] \
+    || ! valid_version "$version"; then
+    die "scheduled updates require an installed headless release"
+  fi
+  [[ -f "$PREFIX/current/product" && ! -L "$PREFIX/current/product" \
+    && "$(cat "$PREFIX/current/product")" = "$ASSET_PREFIX" ]] \
+    || die "the installed product does not match this installer"
+  receipt="$PREFIX/current/release-receipt"
+  expected_receipt="$(release_receipt "$PROBE")" || die "could not verify the installed release receipt"
+  [[ -f "$receipt" && ! -L "$receipt" && "$(cat "$receipt")" = "$expected_receipt" ]] \
+    || die "the installed release has no matching product, profile and binary receipt"
+  verify_signature "$PROBE" || die "the installed core does not meet the release signature policy"
+  verify_native_arch "$PROBE"
+  [[ -f "$PLIST" && ! -L "$PLIST" && "$(cat "$PLIST")" = "$(plist_text)" ]] \
+    || die "the core LaunchAgent does not match this install prefix"
+  read_installed
+  [ "$current_version" = "$version" ] || die "the installed core reports a different release version"
+}
+
+schedule_paths() {
+  # The label is independent of product, so uninstall can remove it.
+  local physical_prefix scope
+  physical_prefix="$(cd -P -- "$PREFIX" 2>/dev/null && pwd -P)" || physical_prefix="$PREFIX"
+  scope="$(printf '%s' "$physical_prefix" | shasum -a 256 | cut -c1-24)"
+  SCHEDULE_LABEL="$LABEL.update.$scope"
+  SCHEDULE_PLIST="$HOME/Library/LaunchAgents/$SCHEDULE_LABEL.plist"
+  SCHEDULE_RUNNER="$PREFIX/.scheduled-update.sh"
+  SCHEDULE_SERVICE="$DOMAIN/$SCHEDULE_LABEL"
+}
+
+schedule_loaded() {
+  launchctl print "$SCHEDULE_SERVICE" < /dev/null >/dev/null 2>&1
+}
+
+schedule_disable() {
+  if schedule_loaded; then
+    run launchctl bootout "$SCHEDULE_SERVICE" || true
+    if [ "$DRY_RUN" = 0 ] && schedule_loaded; then
+      die "launchctl could not unload $SCHEDULE_LABEL"
+    fi
+  fi
+  if [ -e "$SCHEDULE_PLIST" ] || [ -L "$SCHEDULE_PLIST" ]; then run rm -f "$SCHEDULE_PLIST"; fi
+  if [ -e "$SCHEDULE_RUNNER" ] || [ -L "$SCHEDULE_RUNNER" ]; then run rm -f "$SCHEDULE_RUNNER"; fi
+}
+
+schedule_plist_text() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$SCHEDULE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>-i</string>
+    <string>HOME=$(xml_escape "$HOME")</string>
+    <string>AGENT_RELAY_PREFIX=$(xml_escape "$PREFIX")</string>
+    <string>PATH=/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/bin/bash</string>
+    <string>$(xml_escape "$SCHEDULE_RUNNER")</string>
+    <string>--scheduled-update</string>
+    <string>$(release_binding)</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>86400</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
+EOF
+}
+
+rename_path() {
+  perl -e 'rename($ARGV[0], $ARGV[1]) or die "rename: $!\n"' "$@" < /dev/null
+}
+
+schedule_enable() (
+  local source="${BASH_SOURCE[0]:-}" staging runner_stage wanted
+  [[ -n "$source" && -f "$source" ]] || die "save and run a trusted local copy of this installer to enable scheduling"
+  [ -z "${AGENT_RELAY_RELEASES_API+set}${AGENT_RELAY_DOWNLOAD_BASE+set}" ] \
+    || die "scheduled updates require the installer's built-in release endpoints"
+  case "$PREFIX" in
+    /*) ;;
+    *) die "scheduled updates require an absolute install prefix" ;;
+  esac
+  verify_scheduled_core
+  launchctl print "$DOMAIN" < /dev/null >/dev/null 2>&1 || die "no login session in $DOMAIN"
+  wanted="$(schedule_plist_text)"
+  if [ -e "$SCHEDULE_PLIST" ] || [ -L "$SCHEDULE_PLIST" ] || schedule_loaded; then
+    if [[ ! -f "$SCHEDULE_PLIST" || -L "$SCHEDULE_PLIST" || "$(cat "$SCHEDULE_PLIST")" != "$wanted" \
+      || ! -f "$SCHEDULE_RUNNER" || -L "$SCHEDULE_RUNNER" ]] || ! cmp -s "$source" "$SCHEDULE_RUNNER"; then
+      die "disable the existing update schedule before changing it"
+    fi
+    if ! schedule_loaded; then
+      run launchctl bootstrap "$DOMAIN" "$SCHEDULE_PLIST" || die "could not load the update schedule"
+    fi
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then note "would register $SCHEDULE_LABEL for daily updates"; return 0; fi
+  umask 077
+  mkdir -p "$HOME/Library/LaunchAgents"
+  staging="$(mktemp -d "${SCHEDULE_PLIST}.XXXXXXXX")"
+  runner_stage=""
+  trap 'rm -rf "$staging"; [ -z "$runner_stage" ] || rm -rf "$runner_stage"' EXIT
+  runner_stage="$(mktemp -d "$PREFIX/.schedule.XXXXXXXX")"
+  printf '%s\n' "$wanted" > "$staging/job.plist"
+  plutil -lint "$staging/job.plist" < /dev/null >/dev/null
+  install -m 0600 "$source" "$runner_stage/runner"
+  # Rename atomically and refuse directories at either destination.
+  rename_path "$runner_stage/runner" "$SCHEDULE_RUNNER"
+  if ! rename_path "$staging/job.plist" "$SCHEDULE_PLIST"; then
+    rm -f "$SCHEDULE_RUNNER"
+    die "could not save the update schedule"
+  fi
+  if ! run launchctl bootstrap "$DOMAIN" "$SCHEDULE_PLIST"; then
+    schedule_disable
+    die "could not load the update schedule"
+  fi
+)
+
+case "$ACTION" in
+  schedule-*)
+    schedule_paths
+    case "$ACTION" in
+      schedule-status)
+        if schedule_loaded; then note "update schedule: enabled"
+        elif [ -f "$SCHEDULE_PLIST" ]; then note "update schedule: configured, not loaded"
+        else note "update schedule: disabled"; fi ;;
+      schedule-enable)
+        [[ -d "$PREFIX" && ! -L "$PREFIX" ]] || die "no installed headless release"
+        lock_installer
+        schedule_enable
+        [ "$DRY_RUN" = 1 ] || note "update schedule: enabled" ;;
+      schedule-disable)
+        if [ -d "$PREFIX" ]; then lock_installer; fi
+        schedule_disable
+        [ "$DRY_RUN" = 1 ] || note "update schedule: disabled" ;;
+    esac
+    exit 0 ;;
+esac
+
+if [ -n "$SCHEDULED_BINDING" ]; then
+  schedule_paths
+  [[ "${BASH_SOURCE[0]:-}" = "$SCHEDULE_RUNNER" \
+    && "$SCHEDULED_BINDING" = "$(release_binding)" ]] \
+    || die "this invocation does not match the installed update schedule"
+  [[ -d "$PREFIX" && ! -L "$PREFIX" ]] || die "no installed headless release"
+  lock_installer
+  [[ -f "$SCHEDULE_PLIST" && ! -L "$SCHEDULE_PLIST" \
+    && "$(cat "$SCHEDULE_PLIST")" = "$(schedule_plist_text)" ]] \
+    || die "the installed update schedule has changed"
+  verify_scheduled_core
+else
+  read_installed
 fi
-read_current_product
 
 # --- status ---------------------------------------------------------------------
 
@@ -812,6 +1092,8 @@ if [ "$ACTION" = uninstall ]; then
     ""|/|"$HOME"|"$HOME"/) die "refusing to remove the install prefix $PREFIX" ;;
   esac
   if [ -d "$PREFIX" ]; then lock_installer; fi
+  schedule_paths
+  schedule_disable
   core_pid=""
   # The core and its collectors together get STOP_TIMEOUT, not each.
   stop_deadline=$((SECONDS + STOP_TIMEOUT))
@@ -992,12 +1274,10 @@ launchctl print "$DOMAIN" < /dev/null >/dev/null 2>&1 \
 
 # Read the installation again under the lock: another installer may have
 # changed it since the checks above.
-lock_installer
-current_version=""
-if [ -x "$PROBE" ]; then
-  current_version="$(probe_version "$PROBE" || true)"
+if [ -z "$SCHEDULED_BINDING" ]; then
+  lock_installer
+  read_installed
 fi
-read_current_product
 [ "$UPDATE" = 0 ] || [ -n "$current_version" ] || die "--update: nothing is installed in $PREFIX; run without --update to install"
 
 if [ -n "$current_version" ]; then
@@ -1220,50 +1500,6 @@ refuse("could not verify local history compatibility; saved uploads were not cha
 
 # --- the LaunchAgent ------------------------------------------------------------
 
-xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
-
-# KeepAlive restarts the core when it fails but not when it exits cleanly:
-# a headless core exits 0 to hand over when the app's core job appears, and
-# must then stay down. ThrottleInterval matches the app's own fallback job.
-plist_text() {
-  local probe out err
-  probe="$(xml_escape "$PROBE")"
-  out="$(xml_escape "$LOG_DIR/headless.stdout.log")"
-  err="$(xml_escape "$LOG_DIR/headless.stderr.log")"
-  cat <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$probe</string>
-    <string>relay</string>
-    <string>serve</string>
-    <string>--headless</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
-  <key>ProcessType</key>
-  <string>Background</string>
-  <key>StandardOutPath</key>
-  <string>$out</string>
-  <key>StandardErrorPath</key>
-  <string>$err</string>
-</dict>
-</plist>
-EOF
-}
-
 plist_changed=0
 ensure_plist() {
   local wanted
@@ -1310,7 +1546,7 @@ switch_to() { # version
   run rm -f "$link.new"
   run ln -s "versions/$1" "$link.new"
   # rename(2) replaces the old link in one step; BSD mv has no -T.
-  run perl -e 'rename($ARGV[0], $ARGV[1]) or die "rename: $!\n"' "$link.new" "$link"
+  run rename_path "$link.new" "$link"
 }
 
 # Finish setup as a separate command unless the person explicitly supplied a
@@ -1318,7 +1554,7 @@ switch_to() { # version
 # it and deletes that exact private file only after Cloud accepts the key.
 next_steps() {
   [ "$DRY_RUN" = 0 ] || return 0
-  [ -x "$PROBE" ] || return 0
+  [ -x "$PROBE" ] && [ -z "$SCHEDULED_BINDING" ] || return 0
   if [ -n "$ENROLLMENT_KEY_FILE" ]; then
     "$PROBE" setup --help < /dev/null 2>&1 | grep -q -- '--enrollment-key-file' \
       || die "the installed core does not support enrollment keys; install a newer release"
@@ -1412,6 +1648,10 @@ elif [ -z "$VERSION" ]; then
   valid_version "$VERSION" || die "the latest release has no usable version"
 fi
 note "release: $VERSION ($ARCH)"
+if [ -n "$SCHEDULED_BINDING" ] && ! version_older "$current_version" "$VERSION"; then
+  note "no newer release"
+  exit 0
+fi
 
 if [ "$current_version" = "$VERSION" ] && [ "$current_product" != "$ASSET_PREFIX" ]; then
   note "the installed $VERSION is another product's; replacing it with $PRODUCT_NAME's"
@@ -1472,9 +1712,10 @@ if [ "$has_license" = 1 ]; then
     || die "the archive's LICENSE is not a plain file"
 fi
 # The signature is checked before the core is run at all.
-codesign --verify --strict "-R=$REQUIREMENT" "$candidate" < /dev/null 2>/dev/null \
+verify_signature "$candidate" \
   || die "the downloaded core is not signed with $PRODUCT_NAME's Developer ID (team QUJ7SA6X8X)"
 note "signature verified"
+[ -z "$SCHEDULED_BINDING" ] || verify_native_arch "$candidate"
 reported="$(probe_version "$candidate" || true)"
 [ "$reported" = "$VERSION" ] || die "the downloaded core reports ${reported:-nothing}, not $VERSION"
 lock_storage_migrations
@@ -1497,6 +1738,7 @@ else
     install -m 0644 "$work/agent_relay/LICENSE" "$destination.partial/LICENSE"
   fi
   printf '%s\n' "$ASSET_PREFIX" > "$destination.partial/product"
+  release_receipt "$destination.partial/agent-relay-probe" > "$destination.partial/release-receipt"
   # An existing copy of this version (another product's, or one left over)
   # is set aside until the new core answers, and comes back if it does not.
   rm -rf "$destination.replaced"
