@@ -190,7 +190,9 @@ fn a_named_join_is_applied_locally_before_hosted_arguments_are_rewritten() {
     assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
     assert!(output["hookSpecificOutput"].get("updatedInput").is_none());
     input["tool_input"] = json!({"desktop_address":"claude@desktop", "name":"must-not-register"});
-    assert!(hook_request(&input).unwrap().get("registration").is_none());
+    let request = hook_request(&input).unwrap();
+    assert_eq!(request["desktop_address"], "claude@desktop");
+    assert!(request.get("registration").is_none());
     input["tool_input"] = json!({});
     assert!(hook_request(&input).unwrap().get("registration").is_none());
 }

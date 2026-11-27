@@ -155,3 +155,15 @@ fn handoff_retry_guidance_requires_both_status_and_error_code() {
         }
     }
 }
+
+#[test]
+fn stale_desktop_identity_denies_the_call_without_a_proof() {
+    let (output, _) = run(
+        409,
+        json!({"ok": false, "error": {"code": "claude_identity_stale"}}),
+    );
+    assert!(output.status.success());
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(printed["hookSpecificOutput"].get("updatedInput").is_none());
+}

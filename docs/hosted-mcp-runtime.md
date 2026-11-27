@@ -84,7 +84,9 @@ one Cloud adds later, is signed. The core signs only when all of these hold:
   signed-in account and identity-sync generation;
 - the process asking runs inside that Claude Code chat (from its ancestry and
   Claude's own session registry, never from the hook's input alone);
-- that chat is registered on this installation and present;
+- that chat is registered on this installation and present, and Cloud accepted
+  the exact native sender and installation key in an identity sync less than
+  30 minutes ago for the current account, workspace and source;
 - the tool belongs to the hosted `agent-relay` server.
 
 The proof is a compact JWS (`alg: EdDSA`) with protected header
@@ -115,9 +117,13 @@ How the proof reaches Cloud depends on Cloud:
   supplied; a native join also drops `name` and `description`. Auto mode
   refuses these calls.
 
+The core can refresh identities within the hook’s existing four-second socket
+budget. A refresh leaves at least one second for handoff, which can take up to
+three seconds when the identity is already fresh. If the current identity still
+lacks a fresh acceptance, the hook denies the tool and asks for a retry.
 The hook also denies a join it cannot complete. For other calls, when the core
-is unreachable, the chat is unregistered, or signing fails before handoff, the
-hook prints nothing and exits 0; the call proceeds without a proof and Cloud refuses
+is unreachable, the chat is unregistered, or signing otherwise fails before
+handoff, the hook prints nothing and exits 0. Cloud refuses unsigned managed
 actor operations.
 
 Each installation has one Ed25519 key, created by the core in
@@ -131,6 +137,53 @@ names each registered Claude Code chat with
 neither field is sent, the core signs nothing, and Claude Code's setup reports
 **Messaging unavailable**. Deploy the hosted verification before relying on
 this desktop build for Claude messaging.
+
+### Claude aliases and hosted dispatch
+
+Cloud advertises `capabilities.claude_active_alias: 1` alongside
+`claude_session_attestation: 1` after it supports the following contract.
+For a renamed chat, Desktop exports the original address and its own
+credential for existing links, and the current alias and its own credential
+with the sole native Claude SID. Retired aliases still route inbound locally.
+An unrenamed chat still has one identity row. Without the new capability,
+Desktop sends the original row and the existing version 1 proof.
+
+With the capability enabled, Desktop includes `claude_attestation_version: 2`
+in the sync body and both handoff and argument proofs use `v: 2`.
+They add `agent_id`, `link_address`, `workspace_id`, `user_id`, and
+`credential_sha256` to the version 1 payload. `link_address` is the original,
+stable address from the verified local registration. `credential_sha256`
+is the unpadded base64url encoding of SHA-256 over the UTF-8 tool-use ID,
+one zero byte, and the UTF-8 token from the native row. The token itself is
+sent only in identity sync. Desktop uses the PUT receipt’s `synced` count
+and `skipped[].agent_id` to identify accepted rows. The receipt must echo
+`claude_attestation_version: 2` when that version was stored. Desktop checks the
+current binding again before returning a proof and after a successful handoff.
+
+The hosted consumer must store the proof version atomically with the source’s
+identity snapshot. At dispatch, it must reject any version 1 proof for a source
+synced with version 2, even if the older proof has yet to expire. Older Desktop
+sources continue to use version 1. The consumer must compare the signed user
+and workspace to the authenticated request. At tool dispatch it must resolve exactly one native
+row for the signed source and SID and verify the signed agent ID and digest
+against that row’s authenticated credential. This applies to both
+`_agent_relay_attestation` and the proof consumed from handoff. A changed
+row, token, source or owner requires a fresh proof. The handoff must preserve
+this binding until tool use and retain the existing tool and Claude
+`claudecode/toolUseId` matching, expiry and replay checks. A managed join
+may recognize the signed stable address for this same chat, or the verified
+current address. The resolved native credential remains the actor and the
+original address remains available to explicit legacy links.
+
+The Desktop fixture can be exported by setting
+`RELAY_CLAUDE_ALIAS_FIXTURE` to an output file when running the
+`rename_exports_the_stable_link_and_only_the_current_native_credential`
+Rust test. It contains invented chat identities, a disposable public key,
+and proofs for both transports. A consumer test can set its verifier clock
+to the fixture proof’s `iat` and exercise alias rotation between proof and
+dispatch, rejection of a different chat’s address, and continued delivery
+to the original address. Enable the capability after those consumer paths
+are verified.
 
 ## Development Codex control socket
 

@@ -10,8 +10,6 @@ use std::time::Duration;
 /// Includes the core's handoff to Cloud (`HANDOFF_TIMEOUT`), within the
 /// hook's own 5 seconds.
 const TIMEOUT: Duration = Duration::from_secs(4);
-/// A registered join waits for its desktop identity to sync before signing.
-const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Gets the current chat's proof. Once the core has handed it to Cloud the
 /// hook prints nothing, so the call goes out exactly as Claude made it;
@@ -29,13 +27,8 @@ pub fn run(socket: Option<&Path>, development: bool) -> Result<()> {
             // Agent Relay's and Dev's read their own pointer.
             let build = crate::relay_build::hook_build(development);
             let socket = session_hook_socket(socket, &build);
-            let timeout = if is_join(&input) {
-                JOIN_TIMEOUT
-            } else {
-                TIMEOUT
-            };
             output_at(&input, socket.as_deref(), |body| {
-                socket_response(socket.as_deref()?, "POST", super::ROUTE, body, timeout).ok()
+                socket_response(socket.as_deref()?, "POST", super::ROUTE, body, TIMEOUT).ok()
             })
         });
     if let Some(output) = output {
@@ -101,10 +94,18 @@ fn signed_output(
                 "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.",
             )));
         }
+        409 if response["ok"] == false && response["error"]["code"] == "claude_identity_stale" => {
+            return Some(Outcome::Output(denied(
+                "Agent Relay could not confirm this chat's current desktop identity. Wait a moment and retry this tool call.",
+            )));
+        }
         200 | 400 | 403 | 409 => {}
         _ => return None,
     }
-    let Some(proof) = response["data"]["attestation"].as_str().filter(|p| compact_jws(p)) else {
+    let Some(proof) = response["data"]["attestation"]
+        .as_str()
+        .filter(|p| compact_jws(p))
+    else {
         return refused_join(input, socket, &response);
     };
     if request.get("registration").is_some() && response["data"]["native_join"] != true {
