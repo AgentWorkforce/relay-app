@@ -251,7 +251,10 @@ jobs:
           gh api "repos/$RELEASES_REPOSITORY" > repository.json
           jq -e --argjson app "$APP_TOKEN" '.private == false and ($app or .permissions.push == true)' repository.json > /dev/null
           gh api "repos/$RELEASES_REPOSITORY/commits/main" --jq .sha > /dev/null
-          gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp | jq 'add' > releases.json
+          # A retry can resume its own default-product draft.
+          gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp \
+            | jq --arg profile "$PROFILE" --arg title "Desktop release draft from $GITHUB_REPOSITORY run $GITHUB_RUN_ID" \
+              'add // [] | map(select(($profile == "" and .draft == true and .name == $title) | not))' > releases.json
           python3 scripts/release-version.py --releases releases.json --version "$VERSION" --channel "$CHANNEL" >> "$GITHUB_OUTPUT"
           # A tag without a release must not be silently reused either.
           if gh api "repos/$RELEASES_REPOSITORY/git/ref/tags/v$VERSION" > existing-tag.json 2> tag-error.txt; then
@@ -268,6 +271,11 @@ jobs:
           TITLE: ${{ steps.version.outputs.title }}
         run: |
           set -euo pipefail
+          if [ -z "$PROFILE" ]; then
+            python3 scripts/publish-desktop-release.py "$VERSION" "$CHANNEL" "$TITLE" candidate/release-notes.md candidate/assets
+            echo "Published unchanged candidate from source run $CANDIDATE_RUN_ID." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           args=(release create "v$VERSION" --draft --repo "$RELEASES_REPOSITORY" --target main \
             --title "$TITLE" --notes-file candidate/release-notes.md)
           if [ "$CHANNEL" = beta ]; then

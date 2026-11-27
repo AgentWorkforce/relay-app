@@ -361,7 +361,8 @@ esac
             self.assertEqual(gate(context, cancelled), expected, context)
 
     def test_prepare_only_cannot_publish_or_promote_changelog(self):
-        release_step = block(self.publish, '- name: Create the release', 6)
+        release_step = block(self.publish, '- name: Publish the default release with labeled assets', 6)
+        custom_gate = Gate(condition(block(self.publish, '- name: Create the release', 6), 8))
         release_gate = Gate(condition(release_step, 8))
         changelog_gate = Gate(condition(block(self.workflow, 'changelog:', 2), 4))
         for prepare, cancelled, status, channel, event, profile, feed in itertools.product((True, False), (True, False), STATES, ('stable', 'beta'), ('push', 'workflow_dispatch', 'workflow_run'), ('', 'acme-7'), ('', 'github:acme/desktop-releases', 'cloud')):
@@ -369,7 +370,9 @@ esac
                        'needs.version.outputs.channel': channel, 'github.event_name': event,
                        'inputs.profile': profile, 'env.RELEASE_FEED': feed}
             # A cloud feed never creates a GitHub release.
-            self.assertEqual(release_gate(context), not prepare and event != 'workflow_run' and feed != 'cloud')
+            publishes = not prepare and event != 'workflow_run' and feed != 'cloud'
+            self.assertEqual(release_gate(context), publishes and not profile)
+            self.assertEqual(custom_gate(context), publishes and bool(profile))
             # The changelog is the default profile's: a profile's publish never promotes it.
             self.assertEqual(changelog_gate(context, cancelled),
                              not prepare and event != 'workflow_run' and not cancelled and status == 'success' and channel == 'stable' and not profile)
@@ -540,7 +543,8 @@ esac
             env = dict(os.environ, PATH=f'{root}{os.pathsep}' + os.environ['PATH'],
                        TAG_NAME='', INPUT_VERSION='2026.11.1', INPUT_CHANNEL='stable',
                        RELEASES_REPOSITORY='distribution/repo', SOURCE_SHA='a' * 40,
-                       CI_RUN_ID='456', GITHUB_OUTPUT=str(root / 'output'),
+                       CI_RUN_ID='456', GITHUB_RUN_ID='123', GITHUB_REPOSITORY='example/source',
+                       GITHUB_OUTPUT=str(root / 'output'),
                        PROFILE='', ASSET_PREFIX='AgentRelay')
             for event, notes, expected in [
                     ('workflow_run', '## Unreleased\n\n', 0),

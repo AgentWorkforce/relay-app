@@ -291,34 +291,47 @@ def main() -> None:
         return
     base = f"https://github.com/{args.repository}/releases/download/{tag}"
     prefix = macos_release_assets.check_prefix(args.asset_prefix)
+
+    def link(name, label=None):
+        filename = f"{prefix}-{name}"
+        return f"[{label or f'`{filename}`'}]({base}/{filename})"
+
     floor = macos_release_assets.deployment_floor()
     macos = f"macOS {floor} or newer"
-    bridge = ""
+    mac_downloads = f"""**Downloads**
+
+- Apple silicon: {link("macOS-arm64.dmg")} ({macos})
+- Intel: {link("macOS-x64.dmg")} ({macos})"""
+    other_download_heading = ""
     if macos_release_assets.bridges(floor, prefix):
         bridge_version = macos_release_assets.BRIDGE_VERSION
         floor_aware = macos_release_assets.FLOOR_AWARE_VERSION
         arm64, x64 = (macos_release_assets.legacy_name(args.version, arch, prefix) for arch in ("arm64", "x64"))
-        bridge = (
-            f"- Updater bridge: [`{arm64}`]({base}/{arm64}) and [`{x64}`]({base}/{x64}): for updaters older than "
-            f"{floor_aware}; installs {bridge_version}, which then updates itself\n"
-        )
+        mac_downloads = f"""## Download the current macOS release
+
+Choose your Mac's processor. These installers require {macos}.
+
+- {link("macOS-arm64.dmg", "Current installer for Apple silicon")}
+- {link("macOS-x64.dmg", "Current installer for Intel")}
+
+### Compatibility bridge for older macOS updaters
+
+Agent Relay versions older than {floor_aware} use these files to install the bridge build ({bridge_version}, macOS 13 or newer). For a fresh install of this release, use the current installer above.
+
+- Apple silicon bridge: [`{arm64}`]({base}/{arm64})
+- Intel bridge: [`{x64}`]({base}/{x64})"""
+        other_download_heading = "\n## Linux and Windows downloads\n\n"
     # The default profile's notes name the product; another profile's name
     # it by its artifact prefix, the opaque id, never a product name.
     headline = (f"Agent Relay for macOS, Linux and Windows {tag}." if prefix == macos_release_assets.DEFAULT_PREFIX
                 else f"{prefix} {tag} for macOS, Linux and Windows.")
 
-    def link(name):
-        return f"[`{prefix}-{name}`]({base}/{prefix}-{name})"
-
     body = f"""{headline}
 
 **Channel: {'Beta (opt-in)' if '-beta.' in args.version else 'Stable'}** · [Stable releases](https://github.com/{args.repository}/releases?q=prerelease%3Afalse) · [Beta releases](https://github.com/{args.repository}/releases?q=prerelease%3Atrue)
 
-**Downloads**
-
-- Apple silicon: {link("macOS-arm64.dmg")} ({macos})
-- Intel: {link("macOS-x64.dmg")} ({macos})
-{bridge}- Linux x64: {link("Linux-x64.deb")} or {link("Linux-x64.tar.gz")}
+{mac_downloads}
+{other_download_heading}- Linux x64: {link("Linux-x64.deb")} or {link("Linux-x64.tar.gz")}
 - Linux arm64: {link("Linux-arm64.deb")} or {link("Linux-arm64.tar.gz")}
 - Windows x64: {link("Windows-x64-Setup.exe")} or {link("Windows-x64.zip")}
 - Windows arm64: {link("Windows-arm64-Setup.exe")} or {link("Windows-arm64.zip")}

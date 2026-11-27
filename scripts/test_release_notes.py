@@ -66,28 +66,33 @@ class ReleaseNotesTests(unittest.TestCase):
             self.assertIn("releases?q=prerelease%3Afalse", notes)
             self.assertIn("releases?q=prerelease%3Atrue", notes)
             self.assertIn(f"/releases/download/v{version}/", notes)
-            floor = release_notes.macos_release_assets.deployment_floor()
-            self.assertIn(f"AgentRelay-macOS-arm64.dmg) (macOS {floor} or newer)", notes)
-            bridge = (f"[`AgentRelay-{version}-macOS-x64.dmg`](https://github.com/AgentWorkforce/"
-                      f"relay-desktop-releases/releases/download/v{version}/AgentRelay-{version}-macOS-x64.dmg): "
-                      f"for updaters older than 2026.10.65; installs 2026.10.66, which then updates itself\n")
-            if floor > release_notes.macos_release_assets.LEGACY_FLOOR:
-                self.assertIn(bridge, notes)
-            else:
-                self.assertNotIn("for updaters older than", notes)
+
+    def test_floor_13_uses_the_regular_download_section(self):
+        path = self.write()
+        output = self.write("")
+        with patch("sys.argv", ["release-notes.py", "2026.11.1", "--changelog", str(path),
+                                "--probe-version", "2026.11.1", "--output", str(output)]), \
+             patch.object(release_notes.macos_release_assets, "deployment_floor", return_value=13):
+            release_notes.main()
+        notes = output.read_text()
+        self.assertIn("**Downloads**", notes)
+        self.assertNotIn("Compatibility bridge", notes)
+        for arch in ("arm64", "x64"):
+            self.assertIn(f"AgentRelay-macOS-{arch}.dmg) (macOS 13 or newer)", notes)
 
     def test_a_profiles_notes_name_its_artifacts_by_the_opaque_id_and_no_product(self):
         path = self.write()
         output = self.write("")
         with patch("sys.argv", ["release-notes.py", "2026.10.1", "--changelog", str(path),
                                  "--probe-version", "2026.10.1", "--output", str(output),
-                                 "--repository", "acme/desktop-releases", "--asset-prefix", "Desktop-acme-7"]):
+                                 "--repository", "acme/desktop-releases", "--asset-prefix", "Desktop-acme-7"]), \
+             patch.object(release_notes.macos_release_assets, "deployment_floor", return_value=15):
             release_notes.main()
         notes = output.read_text()
         self.assertTrue(notes.startswith("Desktop-acme-7 v2026.10.1 for macOS, Linux and Windows.\n"), notes)
         self.assertNotIn("Agent Relay", notes)
         self.assertNotIn("AgentRelay", notes)
-        self.assertNotIn("for updaters older than", notes)
+        self.assertNotIn("Compatibility bridge", notes)
         self.assertIn("[`Desktop-acme-7-Linux-x64.deb`](https://github.com/acme/desktop-releases/releases/download/v2026.10.1/Desktop-acme-7-Linux-x64.deb)", notes)
         self.assertIn("[`Desktop-acme-7-Windows-arm64-Setup.exe`](https://github.com/acme/desktop-releases/releases/download/v2026.10.1/Desktop-acme-7-Windows-arm64-Setup.exe)", notes)
         self.assertIn("- **First change.**", notes)
@@ -306,6 +311,58 @@ class MacOSReleaseAssetsTests(unittest.TestCase):
             f"{release}/AgentRelay-{assets.BRIDGE_VERSION}-macOS-x64.dmg.sha256",
             f"{release}/AgentRelay-{assets.BRIDGE_VERSION}-macOS-x64.dmg",
         ])
+
+    def test_release_page_links_to_current_images_and_identifies_the_historical_assets(self):
+        version = "2026.11.1"
+        repository = "AgentWorkforce/relay-desktop-releases"
+        releases = f"https://github.com/{repository}/releases"
+        base = f"{releases}/download/v{version}"
+        with tempfile.TemporaryDirectory() as temporary:
+            changelog = Path(temporary, "CHANGELOG.md")
+            changelog.write_text(BASE)
+            output = Path(temporary, "release-notes.md")
+            with patch("sys.argv", ["release-notes.py", version, "--changelog", str(changelog),
+                                    "--probe-version", version, "--output", str(output)]), \
+                 patch.object(assets, "deployment_floor", return_value=15):
+                release_notes.main()
+                notes = output.read_text()
+                release_notes.main()
+                self.assertEqual(output.read_text(), notes)
+
+        heading = "### Compatibility bridge for older macOS updaters"
+        current, compatibility = notes.split(heading)
+        self.assertIn("## Download the current macOS release", current)
+        self.assertIn("require macOS 15 or newer", current)
+        self.assertIn("older than 2026.10.65", compatibility)
+        self.assertIn("2026.10.66, macOS 13 or newer", compatibility)
+        guide = (Path(__file__).resolve().parent.parent / "docs/repository-guide.md").read_text()
+        for arch, processor in (("arm64", "Apple silicon"), ("x64", "Intel")):
+            with self.subTest(arch=arch):
+                bridge_bytes = f"2026.10.66 {arch} bridge".encode()
+                bridge, fetched = self.bridge(image=bridge_bytes)
+                names, directory = self.stage_cli('.macOS("15.0")', arch, bridge)
+                upstream = f"{releases}/download/v2026.10.66/AgentRelay-2026.10.66-macOS-{arch}.dmg"
+                self.assertEqual(fetched, [f"{upstream}.sha256", upstream])
+                # Model the historical client's exact match and the current
+                # client's compatible floored choice in the release asset list.
+                historical = f"AgentRelay-{version}-macOS-{arch}.dmg"
+                modern = f"AgentRelay-{version}-macOS15-{arch}.dmg"
+                stable = f"AgentRelay-macOS-{arch}.dmg"
+                self.assertCountEqual(names, [historical, modern, stable])
+                self.assertIn(f"[Current installer for {processor}]({base}/{stable})", current)
+                self.assertIn(f"{processor} bridge: [`{historical}`]({base}/{historical})", compatibility)
+                self.assertIn(f"{releases}/latest/download/{stable}", guide)
+                # Apply the same checksum step as Desktop Release.
+                for name, expected in ((historical, bridge_bytes), (modern, b"disk image"),
+                                       (stable, b"disk image")):
+                    image = directory / name
+                    self.assertEqual(image.read_bytes(), expected)
+                    sidecar = directory / f"{name}.sha256"
+                    checksum = f"{hashlib.sha256(expected).hexdigest()}  {name}\n"
+                    if name == historical:
+                        self.assertEqual(sidecar.read_text(), checksum)
+                    sidecar.write_text(f"{hashlib.sha256(image.read_bytes()).hexdigest()}  {image.name}\n")
+                    self.assertEqual(sidecar.read_text(), checksum)
 
     def test_a_profile_stages_the_built_image_under_every_name_and_never_bridges(self):
         # A profile has no updaters older than the floor-aware ones, so its

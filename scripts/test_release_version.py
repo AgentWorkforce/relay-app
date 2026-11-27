@@ -56,6 +56,13 @@ class ReleaseVersionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.resolve(["2026.10.2-beta.1"], "2026.10.2-beta.1", "beta")
 
+    def test_exact_version_retry_refuses_existing_drafts_and_published_releases(self):
+        for draft in (True, False):
+            with self.subTest(draft=draft), self.assertRaisesRegex(ValueError, "already exists"):
+                release_version.resolve(
+                    [{"tag_name": "v2026.11.1", "draft": draft}], "2026.11.1", "stable"
+                )
+
     def test_updater_order_matches_the_gtk_and_macos_updaters(self):
         newer = release_version.is_newer
         self.assertFalse(newer("2026.3.1", "v2026.03.2"))

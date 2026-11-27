@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- The default macOS release page links to the current Apple silicon and Intel installers first and labels the current installers and the compatibility bridge for older app versions in the GitHub Assets list.
+
 ## v2026.11.20
 
 - **Agent Relay repairs a background service that macOS will not start, on its own.** On macOS, when the background service does not answer, Agent Relay now fixes its registration itself within about 15 seconds, with no Terminal steps: it reloads a service macOS lists as enabled but never runs, registers again a service still tied to a deleted or replaced copy of the app, drops a backup service setting left behind by an earlier install, and, if macOS still will not start the service, starts it by its full path in Applications. With *Start at Login* off, a service macOS will not run is started by Agent Relay itself for that session; *Start at Login* stays off. Each step gives macOS a few seconds at most, so *Restarting service…* always ends. A service you have not allowed in Login Items is left for you to allow. If nothing works, Agent Relay says what to do: keep only the copy in Applications, empty the Trash and eject any Agent Relay disk image, then open it again.

@@ -76,7 +76,8 @@ class CloudWorkflowTests(unittest.TestCase):
         self.assertNotIn('DESKTOP_FEED_PUBLISHER_TOKEN', self.bridge)
 
     def test_github_publishing_steps_skip_a_cloud_feed(self):
-        for job, names in ((self.publish, ('Check for the releases App', 'Check publishing access', 'Create the release')),
+        for job, names in ((self.publish, ('Check for the releases App', 'Check publishing access', 'Create the release',
+                                               'Publish the default release with labeled assets')),
                            (self.promote_job, ('Check for the releases App', 'Check publishing access and reserve exact version',
                                                'Publish prepared assets'))):
             for name in names:
@@ -86,11 +87,11 @@ class CloudWorkflowTests(unittest.TestCase):
 
     def test_release_publishes_to_the_cloud_feed_only_when_github_would_publish(self):
         cloud = Gate(condition(block(self.publish, '- name: Publish to the cloud feed', 6), 8))
-        github = Gate(condition(block(self.publish, '- name: Create the release', 6), 8))
+        github = Gate(condition(block(self.publish, '- name: Publish the default release with labeled assets', 6), 8))
         prepare = Gate(condition(block(self.publish, '- name: Prepare verified release candidate', 6), 8))
         for done, event, feed in itertools.product((True, False), ('push', 'workflow_dispatch', 'workflow_run'),
                                                    ('', 'github:acme/desktop-releases', 'cloud')):
-            context = {'inputs.prepare-only': done, 'github.event_name': event, 'env.RELEASE_FEED': feed}
+            context = {'inputs.prepare-only': done, 'github.event_name': event, 'env.RELEASE_FEED': feed, 'inputs.profile': ''}
             publishes = not done and event != 'workflow_run'
             self.assertEqual(cloud(context), publishes and feed == 'cloud', context)
             self.assertEqual(github(context), publishes and feed != 'cloud', context)

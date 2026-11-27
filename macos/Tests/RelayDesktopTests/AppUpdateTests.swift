@@ -249,6 +249,33 @@ final class AppUpdateTests: XCTestCase {
         }
     }
 
+    func testReleasePageCopyDoesNotAffectUpdaterDownloads() throws {
+        let version = "2026.11.1"
+        let base = "https://github.com/AgentWorkforce/relay-desktop-releases/releases/download/v\(version)"
+        let architectures: [AppUpdateArchitecture] = [.arm64, .x64]
+        let names = architectures.flatMap { architecture in
+            let arch = architecture.rawValue
+            return ["AgentRelay-\(version)-macOS-\(arch).dmg",
+                    "AgentRelay-\(version)-macOS15-\(arch).dmg", "AgentRelay-macOS-\(arch).dmg"]
+        }
+        let assets = names.flatMap { [$0, "\($0).sha256"] }.map { name in
+            ["name": name, "browser_download_url": "\(base)/\(name)"]
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "tag_name": "v\(version)", "draft": false, "prerelease": false,
+            "assets": assets,
+            "body": "## Download the current macOS release\n### Compatibility bridge for older macOS updaters"
+        ])
+        for architecture in architectures {
+            for (os, floor) in [(13, ""), (15, "15")] {
+                let release = try AppUpdateMetadata.release(from: data, architecture: architecture, macOSMajorVersion: os)
+                let url = "\(base)/AgentRelay-\(version)-macOS\(floor)-\(architecture.rawValue).dmg"
+                XCTAssertEqual(release.downloadURL.absoluteString, url)
+                XCTAssertEqual(release.checksumURL?.absoluteString, "\(url).sha256")
+            }
+        }
+    }
+
     func testUpdaterExplainsAnUpdateThisMacCannotRun() async throws {
         let floor = AppUpdateMetadata.currentMacOSMajorVersion + 1
         let arch = AppUpdateArchitecture.current.rawValue

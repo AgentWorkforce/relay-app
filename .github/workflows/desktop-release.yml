@@ -356,8 +356,10 @@ jobs:
               notes_args+=(--feed cloud --feed-listing feed-listing.json)
             fi
           else
+            # A retry can resume its own default-product draft.
             gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --slurp \
-              | jq 'add' > releases.json
+              | jq --arg profile "$PROFILE" --arg title "Desktop release draft from $GITHUB_REPOSITORY run $GITHUB_RUN_ID" \
+                'add // [] | map(select(($profile == "" and .draft == true and .name == $title) | not))' > releases.json
             args=(--releases releases.json)
             if [ "$EVENT_NAME" != "push" ]; then
               args+=(--version "$INPUT_VERSION" --channel "$INPUT_CHANNEL")
@@ -2148,8 +2150,17 @@ jobs:
             --channel "$CHANNEL" --notes candidate/release-notes.md --directory candidate/assets \
             --assets cloud-assets.txt
 
+      - name: Publish the default release with labeled assets
+        if: ${{ github.event_name != 'workflow_run' && !inputs.prepare-only && env.RELEASE_FEED != 'cloud' && !inputs.profile }}
+        env:
+          GH_TOKEN: ${{ steps.releases-token.outputs.token || secrets.RELEASES_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          TITLE: ${{ needs.version.outputs.title }}
+        run: python3 scripts/publish-desktop-release.py "$VERSION" "$CHANNEL" "$TITLE" release-notes.md release-assets
+
       - name: Create the release
-        if: ${{ github.event_name != 'workflow_run' && !inputs.prepare-only && env.RELEASE_FEED != 'cloud' }}
+        if: ${{ github.event_name != 'workflow_run' && !inputs.prepare-only && env.RELEASE_FEED != 'cloud' && inputs.profile }}
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # The profile's repository, and the App token minted for it (or
