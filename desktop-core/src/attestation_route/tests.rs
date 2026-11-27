@@ -12,6 +12,7 @@ use base64::Engine;
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 pub(crate) const WORKSPACE: &str = "50587328-441d-4acb-b8f3-dbe1b3c5de99";
 pub(crate) const CAST: &str = "https://cast.agentrelay.com";
@@ -32,6 +33,9 @@ pub(crate) struct FakeCloud {
     offline: std::sync::atomic::AtomicBool,
     pub(crate) failure: Mutex<Option<CloudError>>,
     pub(crate) delay_ms: std::sync::atomic::AtomicU64,
+    put_response: Mutex<Option<Value>>,
+    pub(crate) next_put_gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    post_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl CloudAccess for FakeCloud {
@@ -57,6 +61,8 @@ impl CloudAccess for FakeCloud {
         path: String,
         body: Option<Value>,
     ) -> BoxFuture<'_, Result<Value, CloudError>> {
+        let count = body.as_ref().and_then(|body| body["identities"].as_array()).map(Vec::len);
+        let version = body.as_ref().and_then(|body| body.get("claude_attestation_version")).cloned();
         self.calls.lock().unwrap().push((method.into(), path, body));
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Box::pin(async { Err(CloudError::Unreachable) });
@@ -64,11 +70,34 @@ impl CloudAccess for FakeCloud {
         if let Some(error) = self.failure.lock().unwrap().clone() {
             return Box::pin(async move { Err(error) });
         }
-        let delay = self.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let delay = if method == "POST" {
+            self.post_delay_ms.load(std::sync::atomic::Ordering::SeqCst)
+        } else {
+            self.delay_ms.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        let put_response = self.put_response.lock().unwrap().clone();
         let capabilities = self.capabilities.lock().unwrap().clone();
+        let gate = if method == "PUT" {
+            self.next_put_gate.lock().unwrap().take()
+        } else {
+            None
+        };
         Box::pin(async move {
+            if let Some((entered, release)) = gate {
+                entered.send(()).expect("test must wait for PUT entry");
+                release.await.expect("test must release the PUT");
+            }
             tokio::time::sleep(Duration::from_millis(delay)).await;
-            Ok(json!({"identities": [], "capabilities": capabilities}))
+            Ok(match method {
+                "PUT" => put_response.unwrap_or_else(|| {
+                    let mut response = json!({"synced": count, "identities": []});
+                    if let Some(version) = version {
+                        response["claude_attestation_version"] = version;
+                    }
+                    response
+                }),
+                _ => json!({"identities": [], "capabilities": capabilities}),
+            })
         })
     }
 }
@@ -543,6 +572,7 @@ async fn after_resume_the_hook_proves_only_the_chat_its_claude_now_holds() {
     assert_eq!(refused.code, OutboundError::not_a_session().code);
 }
 
+mod claude_alias;
 pub(crate) mod copilot;
 
 #[tokio::test]
@@ -595,6 +625,7 @@ async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
     let f = fixture();
     f.negotiate(json!({"claude_session_attestation": 1, "claude_attestation_handoff": 1}))
         .await;
+    Identities::new(f.core.clone()).sync_desktop_identities().await;
     *f.cloud.failure.lock().unwrap() = Some(CloudError::Unreachable);
     let refused = f
         .ask(
@@ -607,7 +638,7 @@ async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
 
     *f.cloud.failure.lock().unwrap() = None;
     f.cloud
-        .delay_ms
+        .post_delay_ms
         .store(5_000, std::sync::atomic::Ordering::SeqCst);
     tokio::time::pause();
     let refused = f

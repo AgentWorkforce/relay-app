@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Renamed Claude Code chats keep their Relay identity.** On macOS, Linux and Windows, with a compatible Agent Relay Cloud, hosted Relay tools use the chat’s current name and replies to its original address still reach it. The hook asks you to retry if Desktop cannot confirm the current identity. A failed background refresh leaves a chat’s current confirmation valid until it expires. Older Cloud versions can still confirm Claude chats using their original proof format.
+
 ## v2026.11.21
 
 - **Codex chats in the ChatGPT desktop app receive messages.** On macOS, a Codex chat open in the ChatGPT desktop app is now seen running, so its *Receive messages* switch can be turned on and messages sent to it are delivered: an idle chat runs them as a new turn, and a chat in the middle of a turn gets them through Agent Relay's Codex hook. Before, the switch stayed off and messages waited as "session not running", because the app no longer runs the window router Agent Relay looked for. Windows does not have this yet: Codex chats in the ChatGPT app there still cannot receive. There is no ChatGPT desktop app on Linux.

@@ -5,7 +5,8 @@ use super::DesktopIdentitySync;
 use super::Identities;
 use agent_relay_node::relay::{
     cloud_session::CloudAccount,
-    store::{SessionKind, Target},
+    store::{Registration, SessionKind, Target},
+    workspace::Secret,
 };
 use serde_json::{json, Value};
 
@@ -19,6 +20,7 @@ pub(super) struct Capability {
     /// Cloud takes Claude proofs ahead of the call (`claude_attestation_handoff`),
     /// so the hook never rewrites a tool call's arguments.
     claude_handoff: bool,
+    claude_active_alias: bool,
     copilot_attestation: bool,
     cursor_attestation: bool,
 }
@@ -29,6 +31,7 @@ pub(super) struct Support {
     pub(super) providers: bool,
     /// Claude Code chats, whose calls carry this installation's proof.
     pub(super) claude: bool,
+    pub(super) claude_active_alias: bool,
     pub(super) copilot: bool,
     /// Cursor chats, named by their conversation id.
     pub(super) cursor: bool,
@@ -59,6 +62,18 @@ impl DesktopIdentitySync {
                     && c.generation == generation
                     && c.claude_attestation
                     && c.claude_handoff
+            })
+    }
+    fn claude_active_alias_supported(&self, account: &CloudAccount, generation: u64) -> bool {
+        self.native_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|c| {
+                c.account == *account
+                    && c.generation == generation
+                    && c.claude_attestation
+                    && c.claude_active_alias
             })
     }
     /// Cloud verifies Claude chat proofs (`claude_session_attestation`).
@@ -138,6 +153,8 @@ impl DesktopIdentitySync {
                 == Some(1),
             claude_handoff: response["capabilities"]["claude_attestation_handoff"].as_u64()
                 == Some(1),
+            claude_active_alias: response["capabilities"]["claude_active_alias"].as_u64()
+                == Some(1),
             cursor_attestation: response["capabilities"]["cursor_session_attestation"].as_u64()
                 == Some(1),
         });
@@ -179,6 +196,8 @@ impl Identities {
             codex: sync.native_supported(account, generation),
             providers: sync.native_providers_supported(account, generation),
             claude: key.is_some() && sync.claude_attestation_supported(account, generation),
+            claude_active_alias: key.is_some()
+                && sync.claude_active_alias_supported(account, generation),
             copilot: key.is_some() && copilot,
             cursor: key.is_some() && cursor && self.cursor_transport_attested(),
         };
@@ -268,6 +287,52 @@ pub(super) fn with_attestation_key(mut body: Value, key: Option<&Value>) -> Valu
     body
 }
 
+pub(super) fn identities(
+    registration: &Registration,
+    own_token: &Secret,
+    prefix: &str,
+    support: Support,
+) -> Vec<Value> {
+    let current = sending_identity(registration, own_token, prefix, support);
+    if active_alias(registration, support) && registration.alias.is_some() {
+        // The original remains linkable. Exactly one row owns the native SID.
+        vec![row(registration, own_token, prefix), current]
+    } else {
+        vec![current]
+    }
+}
+
+fn active_alias(registration: &Registration, support: Support) -> bool {
+    match registration.target.kind {
+        SessionKind::ClaudeTerminal => support.claude && support.claude_active_alias,
+        SessionKind::Copilot => support.copilot,
+        _ => false,
+    }
+}
+
+pub(super) fn sending_identity(
+    registration: &Registration,
+    own_token: &Secret,
+    prefix: &str,
+    support: Support,
+) -> Value {
+    let current = active_alias(registration, support)
+        .then(|| registration.alias_credential())
+        .flatten();
+    let (sender, token) = current
+        .as_ref()
+        .map(|(sender, token)| (sender, token))
+        .unwrap_or((registration, own_token));
+    let mut identity = row(sender, token, prefix);
+    attach(&mut identity, &registration.target, support);
+    identity
+}
+
+fn row(sender: &Registration, token: &Secret, prefix: &str) -> Value {
+    json!({"name":sender.name, "address":sender.direct_address(prefix),
+        "agent_id":sender.agent_id, "token":token})
+}
+
 pub(super) fn attach(identity: &mut Value, target: &Target, support: Support) {
     // These native identifiers come from verified runtime records, never tool
     // arguments. OpenClaw agents and Hermes profiles are not chat identities.
@@ -303,6 +368,7 @@ mod tests {
             codex,
             providers,
             claude: false,
+            claude_active_alias: false,
             copilot: false,
             cursor: false,
         }

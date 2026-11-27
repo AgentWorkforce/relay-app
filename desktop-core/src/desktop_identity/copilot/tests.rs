@@ -1,11 +1,12 @@
 //! Exercise native hooks against failed refreshes and contended sync work.
 use super::*;
+use agent_relay_node::relay::workspace::Secret;
+use serde_json::{json, Value};
 use crate::attestation_route::tests::{
     copilot::{hook_request, registered_copilot, rename::rename},
     Fixture, IN_REGISTERED, REGISTERED,
 };
 use agent_relay_node::relay::{cloud_session::CloudError, outbound::OutboundError};
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 async fn ask(f: &Fixture, tool: &str, budget: Duration) -> Result<Value, OutboundError> {
@@ -129,24 +130,34 @@ async fn a_timed_out_copilot_put_stays_serialized_before_a_newer_sender() {
     let f = registered_copilot().await.unwrap();
     rename(&f);
     let identities = Identities::new(f.core.clone());
-    f.cloud.delay_ms.store(150, Ordering::SeqCst);
-    let error = tokio::time::timeout(
-        Duration::from_millis(100),
-        ask(
-            &f,
-            "agentrelay-list_relay_agents",
-            Duration::from_millis(15),
-        ),
-    )
-    .await
-    .expect("slow PUT must not overrun the hook budget")
-    .unwrap_err();
+    let (entered, put_started) = tokio::sync::oneshot::channel();
+    let (release, wait_for_release) = tokio::sync::oneshot::channel();
+    *f.cloud.next_put_gate.lock().unwrap() = Some((entered, wait_for_release));
+    // The route computes its remaining budget using std::time::Instant.
+    // Allow wall-clock setup, then advance Tokio's timeout with the PUT in flight.
+    let budget = Duration::from_secs(30);
+    let hook = ask(&f, "agentrelay-list_relay_agents", budget);
+    tokio::pin!(hook);
+    tokio::select! {
+        entered = tokio::time::timeout(Duration::from_secs(5), put_started) => {
+            entered
+                .expect("the PUT must start")
+                .expect("PUT entry signal");
+        }
+        result = &mut hook => panic!("hook returned before PUT entry: {result:?}"),
+    }
+    tokio::time::pause();
+    tokio::time::advance(budget).await;
+    let error = tokio::time::timeout(Duration::from_millis(100), hook)
+        .await
+        .expect("slow PUT must not overrun the hook budget")
+        .unwrap_err();
+    tokio::time::resume();
     assert_eq!(error.code, "attestation_unavailable");
     assert!(
         identities.state.lock.try_lock().is_err(),
         "the timed-out PUT must keep its serialization lock"
     );
-    f.cloud.delay_ms.store(0, Ordering::SeqCst);
     f.core
         .store
         .update(|store| {
@@ -162,6 +173,9 @@ async fn a_timed_out_copilot_put_stays_serialized_before_a_newer_sender() {
             alias.token = Secret::new("newer-synthetic-token");
         })
         .unwrap();
+    release
+        .send(())
+        .expect("the old PUT must still be in flight");
     let reply = tokio::time::timeout(
         Duration::from_secs(2),
         ask(&f, "agentrelay-list_relay_agents", Duration::from_secs(1)),
