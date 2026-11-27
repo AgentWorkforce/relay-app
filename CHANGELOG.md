@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Codex chats kept in a separate database folder are uploaded.** On macOS, Linux and Windows, when `CODEX_SQLITE_HOME` points somewhere other than `CODEX_HOME`, Codex chats that live only in Codex's database there, such as chats from the Codex or ChatGPT desktop app, are now found, listed and uploaded with their prompts. Before, they were not listed at all. Agent Relay reads that setting from its own environment, so a value set only in a shell startup file is not seen yet. Codex in WSL on Windows does not have this yet.
+
 ## v2026.11.21
 
 - **Codex chats in the ChatGPT desktop app receive messages.** On macOS, a Codex chat open in the ChatGPT desktop app is now seen running, so its *Receive messages* switch can be turned on and messages sent to it are delivered: an idle chat runs them as a new turn, and a chat in the middle of a turn gets them through Agent Relay's Codex hook. Before, the switch stayed off and messages waited as "session not running", because the app no longer runs the window router Agent Relay looked for. Windows does not have this yet: Codex chats in the ChatGPT app there still cannot receive. There is no ChatGPT desktop app on Linux.
