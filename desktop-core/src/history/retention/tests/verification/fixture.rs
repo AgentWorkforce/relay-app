@@ -124,6 +124,7 @@ impl Fixture {
             .env("W1V_MODE", mode)
             .env(crate::history::cloud::APP_DATA_DIR_VARIABLE, &self.app)
             .env_remove("CODEX_HOME")
+            .env_remove("CODEX_SQLITE_HOME")
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)

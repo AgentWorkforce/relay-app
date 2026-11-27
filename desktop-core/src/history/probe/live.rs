@@ -1055,6 +1055,7 @@ pub(super) mod tests {
             .env("OPENCODE_DB", path.join("opencode.db"))
             .env("XDG_CONFIG_HOME", path.join(".config"))
             .env("APPDATA", path.join("AppData/Roaming"))
+            .env_remove("CODEX_SQLITE_HOME")
             .env_remove("GROK_BOT_USER_DATA")
             .env_remove("XDG_DATA_HOME")
             .env_remove("AGENT_RELAY_HOME")
