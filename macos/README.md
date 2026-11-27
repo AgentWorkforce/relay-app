@@ -1,5 +1,14 @@
 # Agent Relay for macOS (`macos/`)
 
+Codex chats can receive through Agent Relay's installed, trusted Codex hook
+when the running Codex holds the chat's verified writer lock, even without an
+app window router. Messages enter a running turn through the hook. An idle
+chat without another delivery route keeps them pending with **Waiting — start
+a turn in Codex to receive this message** until its next turn. This shared-core
+route applies on macOS, Linux and Windows; no separate Codex host is launched
+for the chat. A host with its own verified delivery route keeps using it.
+
+
 The native window and menu-bar app: a thin SwiftUI client of the relay core
 (`agent-relay-probe serve`, [`docs/relay-core.md`](../docs/relay-core.md)).
 The core owns sign-in, the uploader, agents, delivery and every Relaycast and
