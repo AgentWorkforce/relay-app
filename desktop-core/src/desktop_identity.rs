@@ -15,13 +15,15 @@ use agent_relay_node::relay::workspace::Workspace;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod capability_retry;
+pub(crate) mod claude;
 mod copilot;
 mod failure;
 mod native;
 mod outcome;
+mod payload;
 mod refusal;
 mod synced;
 
@@ -134,6 +136,20 @@ impl Identities {
         self.sync_current_desktop_identities().await;
     }
 
+    async fn sync_before(&self, deadline: Instant) -> Option<()> {
+        let wait = deadline.checked_duration_since(Instant::now())?;
+        // Keep the lock through an in-flight PUT even if the hook stops
+        // waiting. A newer snapshot must not be overwritten by an older PUT.
+        let core = self.core.clone();
+        let sync = tokio::spawn(async move {
+            Identities::new(core).sync_desktop_identities().await;
+        });
+        tokio::time::timeout(wait, sync)
+            .await
+            .ok()?
+            .ok()
+    }
+
     async fn sync_current_desktop_identities(&self) {
         let Some(account) = self.plugins.cloud.account() else {
             return;
@@ -147,15 +163,15 @@ impl Identities {
         if !self.read_capability_before_sync(&account, generation).await {
             return;
         }
-        let Some(body) = self.sync_body(&account, generation) else {
+        let Some(payload) = self.sync_payload(&account, generation, None) else {
             return;
         };
-        if self.state.already_synced(&account, generation, &body) {
+        if self.state.already_synced(&account, generation, &payload) {
             return;
         }
         if let Some(unsupported) = self
             .state
-            .wait_for_refusal_retry(&account, generation, &body)
+            .wait_for_refusal_retry(&account, generation, &payload.body)
         {
             // A site without the identity route is no failed sync on a
             // backoff pass either (`failure::identity_sync_unsupported`).
@@ -166,7 +182,7 @@ impl Identities {
         match self
             .plugins
             .cloud
-            .request("PUT", path(&account.workspace_id), Some(body.clone()))
+            .request("PUT", path(&account.workspace_id), Some(payload.body.clone()))
             .await
         {
             Ok(response) => {
@@ -175,104 +191,15 @@ impl Identities {
                 {
                     return;
                 }
-                outcome::log(&body, &response);
+                outcome::log(&payload.body, &response);
                 self.state.forget_refusal();
                 self.state
-                    .remember_synced(account.clone(), generation, body);
+                    .remember_synced(account.clone(), generation, payload, &response);
                 self.note_identity_sync(Some(true));
                 self.apply_mcp_links(&account.workspace_id, &clears, &response);
             }
-            Err(error) => self.sync_failed(account, generation, body, error),
+            Err(error) => self.sync_failed(account, generation, payload.body, error),
         }
-    }
-
-    /// The complete identity set this desktop syncs for the account, or
-    /// `None` when there is nothing it may send now.
-    fn sync_body(&self, account: &CloudAccount, generation: u64) -> Option<Value> {
-        // Agent tokens go only with a session confirmed as this person's.
-        let (support, attestation_key) = self.native_support(account, generation);
-        let active_workspace = self.workspace();
-        let active_status = self.status().workspace;
-        self.store.read(|store| {
-            let source_id = store.desktop_sync_source_id.clone()?;
-            let cloud = store.cloud.as_ref()?;
-            if cloud.account_workspace_id.as_deref() != Some(account.workspace_id.as_str()) {
-                return None;
-            }
-            // Relaycast can issue multiple keys for one workspace. Accept an
-            // active local key only after Relaycast verified its workspace
-            // id against the account binding; key equality remains the safe
-            // path before verification completes.
-            let active_is_account_workspace = verified_as_account_workspace(
-                active_workspace.as_ref(),
-                &active_status,
-                cloud.workspace_id.as_ref(),
-            );
-            let unresolved_active_key = active_workspace.as_ref().is_some_and(|workspace| {
-                workspace.base_url == cloud.base_url
-                    && workspace.key != cloud.key
-                    && matches!(
-                        active_status.verification,
-                        Verification::Pending | Verification::Unreachable
-                    )
-                    && store.registrations.iter().any(|registration| {
-                        store.tokens.contains_key(&registration.name)
-                            && registration.base_url == workspace.base_url
-                            && registration
-                                .workspace_key
-                                .as_ref()
-                                .is_none_or(|key| key == &workspace.key)
-                    })
-            });
-            // Do not briefly delete a valid alternate-key set while its
-            // workspace lookup is still pending or retryable. A rejected
-            // key is resolved (and therefore safely excluded).
-            if unresolved_active_key {
-                return None;
-            }
-            // An absent registration's token stays on this computer: Cloud
-            // acts as the identities it holds, and an ended session's agent
-            // must not look present anywhere until the session runs again.
-            let identities: Vec<Value> = store
-                .registrations
-                .iter()
-                .filter(|registration| registration.missing_since.is_none())
-                // A token on this computer is not permission to transfer the
-                // agent when a different person signs in: an agent recorded
-                // for someone else (or another workspace) stays here. Legacy
-                // and spawned registrations have no local owner record; they
-                // sync as before, and Cloud checks each agent's owner itself.
-                .filter(|registration| {
-                    store
-                        .agent_owners
-                        .get(&registration.agent_id)
-                        .is_none_or(|owner| owner_matches(owner, account))
-                })
-                // Native spawns are Cloud-created worker identities, not
-                // desktop-session identities. Their Relaycast metadata and
-                // ownership come from the audited spawn invocation, so the
-                // desktop must not try to re-admit them through this route.
-                .filter(|registration| registration.spawn.is_none())
-                .filter_map(|registration| {
-                    let token = store.tokens.get(&registration.name)?;
-                    let key = registration.workspace_key.as_ref().or_else(|| {
-                        active_workspace
-                            .as_ref()
-                            .filter(|workspace| workspace.base_url == registration.base_url)
-                            .map(|workspace| &workspace.key)
-                    });
-                    let key_matches = key == Some(&cloud.key)
-                        || (active_is_account_workspace
-                            && key == active_workspace.as_ref().map(|workspace| &workspace.key));
-                    (registration.base_url == cloud.base_url && key_matches).then(|| {
-                        copilot::identities(registration, token, &self.machine_prefix, support)
-                    })
-                })
-                .flatten()
-                .collect();
-            let body = json!({"source_id": source_id, "identities": identities});
-            Some(native::with_attestation_key(body, attestation_key.as_ref()))
-        })
     }
 
     /// Reads which of this desktop's synced identities a hosted MCP session

@@ -1,11 +1,12 @@
 //! Exercise native hooks against failed refreshes and contended sync work.
 use super::*;
+use agent_relay_node::relay::workspace::Secret;
+use serde_json::{json, Value};
 use crate::attestation_route::tests::{
     copilot::{hook_request, registered_copilot, rename::rename},
     Fixture, IN_REGISTERED, REGISTERED,
 };
 use agent_relay_node::relay::{cloud_session::CloudError, outbound::OutboundError};
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 async fn ask(f: &Fixture, tool: &str, budget: Duration) -> Result<Value, OutboundError> {
@@ -129,7 +130,9 @@ async fn a_timed_out_copilot_put_stays_serialized_before_a_newer_sender() {
     let f = registered_copilot().await.unwrap();
     rename(&f);
     let identities = Identities::new(f.core.clone());
-    f.cloud.delay_ms.store(150, Ordering::SeqCst);
+    tokio::time::pause();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    *f.cloud.next_put_gate.lock().unwrap() = Some(gate);
     let error = tokio::time::timeout(
         Duration::from_millis(100),
         ask(
@@ -143,10 +146,13 @@ async fn a_timed_out_copilot_put_stays_serialized_before_a_newer_sender() {
     .unwrap_err();
     assert_eq!(error.code, "attestation_unavailable");
     assert!(
+        f.cloud.next_put_gate.lock().unwrap().is_none(),
+        "the PUT started"
+    );
+    assert!(
         identities.state.lock.try_lock().is_err(),
         "the timed-out PUT must keep its serialization lock"
     );
-    f.cloud.delay_ms.store(0, Ordering::SeqCst);
     f.core
         .store
         .update(|store| {
@@ -162,6 +168,9 @@ async fn a_timed_out_copilot_put_stays_serialized_before_a_newer_sender() {
             alias.token = Secret::new("newer-synthetic-token");
         })
         .unwrap();
+    release
+        .send(())
+        .expect("the old PUT must still be in flight");
     let reply = tokio::time::timeout(
         Duration::from_secs(2),
         ask(&f, "agentrelay-list_relay_agents", Duration::from_secs(1)),
