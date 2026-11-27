@@ -128,26 +128,7 @@ pub(super) async fn run(
     account.verify_external_connections(&mut report, binding_for_external.as_ref(), force_external).await;
     account.verify_native_connections(&mut report, binding_for_external.as_ref(), force_external).await;
     crate::mcp_settings::derive_host_connections(&mut report.tools, report.account_health.as_deref());
-    // This changes a read-only status report, never an installer binding,
-    // credential refresh, connection probe or action authorization.
-    if let Some(preparation) = preparation {
-        let still_preparing = preparing_report_binding(&account.status()).is_some_and(|current| {
-            current.site_url == preparation.site_url
-                && current.workspace_id == preparation.workspace_id
-                && current.account_id == preparation.account_id
-        });
-        if still_preparing && !final_installer.provider_login_required(&preparation) {
-            for tool in &mut report.tools {
-                if tool.supported && tool.state == "signed_out" {
-                    tool.state = "preparing".into();
-                    tool.status_label = "Preparing sessions".into();
-                    tool.detail = "You’re signed in. Agent Relay is preparing your local sessions. Provider setup will continue when that finishes.".into();
-                    tool.can_install = false;
-                    tool.can_repair = false;
-                }
-            }
-        }
-    }
+    show_preparing_status(account, &final_installer, preparation, &mut report);
     report.workspace_error = workspace_error;
     Ok(report)
 }
@@ -220,6 +201,34 @@ mod tests {
             vec!["grok", "paseo"]
         );
         assert!(requested_providers(&installer, "disable", &[], "paseo").is_empty());
+    }
+}
+
+fn show_preparing_status(
+    account: &Account,
+    installer: &Installer,
+    preparation: Option<Binding>,
+    report: &mut ToolsReport,
+) {
+    // This changes a read-only status report, never an installer binding,
+    // credential refresh, connection probe or action authorization.
+    if let Some(preparation) = preparation {
+        let still_preparing = preparing_report_binding(&account.status()).is_some_and(|current| {
+            current.site_url == preparation.site_url
+                && current.workspace_id == preparation.workspace_id
+                && current.account_id == preparation.account_id
+        });
+        if still_preparing && !installer.provider_login_required(&preparation) {
+            for tool in &mut report.tools {
+                if tool.supported && tool.state == "signed_out" {
+                    tool.state = "preparing".into();
+                    tool.status_label = "Preparing sessions".into();
+                    tool.detail = "You’re signed in. Agent Relay is preparing your local sessions. Provider setup will continue when that finishes.".into();
+                    tool.can_install = false;
+                    tool.can_repair = false;
+                }
+            }
+        }
     }
 }
 
