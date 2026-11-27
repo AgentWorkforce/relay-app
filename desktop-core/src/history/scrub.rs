@@ -12,8 +12,15 @@
 //! never sent raw, and never retried with the raw bytes. Scrubbing a body
 //! again before it is sent is allowed, so an engine must accept its own
 //! output.
+//!
+//! An engine that panics is contained here, at the seam: the panic becomes a
+//! [`ScrubError`] that [`ScrubError::panicked`] tells apart from a refusal,
+//! and the panic's own message, which a slicing panic fills with the text it
+//! was slicing, is never printed. Call sites quarantine the one record
+//! rather than let one bad session take the whole collector down.
+use std::cell::Cell;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 /// Where a scrubbed body is going next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,21 +68,42 @@ impl<'a> ScrubContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScrubError {
     reason: String,
+    panicked: bool,
 }
 
 /// The status code a path records for a body its engine refused, where the
 /// path has no failure kind of its own.
 pub const SCRUB_FAILED: &str = "scrub_failed";
 
+/// The reason a [`ScrubError`] carries when the engine panicked.
+pub const ENGINE_PANICKED: &str = "engine_panicked";
+
 impl ScrubError {
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            panicked: false,
+        }
+    }
+
+    /// The engine panicked on the body. A refusal is the engine's verdict on
+    /// the body; a panic is the engine's own fault, which a later engine may
+    /// not share, so call sites quarantine the body for that engine instead
+    /// of treating it as refused.
+    pub fn engine_panicked() -> Self {
+        Self {
+            reason: ENGINE_PANICKED.into(),
+            panicked: true,
         }
     }
 
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    /// Whether the engine panicked rather than refused.
+    pub fn panicked(&self) -> bool {
+        self.panicked
     }
 }
 
@@ -115,8 +143,11 @@ impl ScrubEngine {
         self.0.name()
     }
 
+    /// `body` through the engine. A panic inside the engine is caught and
+    /// returned as [`ScrubError::engine_panicked`] with its message withheld
+    /// (see [`contained`]), so no engine bug unwinds into the caller.
     pub fn scrub(&self, body: &[u8], context: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
-        self.0.scrub(body, context)
+        contained(|| self.0.scrub(body, context))
     }
 
     /// [`Self::scrub`] for a UTF-8 body: output that is not UTF-8 is a
@@ -150,6 +181,47 @@ impl fmt::Debug for ScrubEngine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("ScrubEngine").field(&self.name()).finish()
     }
+}
+
+thread_local! {
+    /// Set while this thread runs an engine, for [`withhold_engine_panics`].
+    static SCRUBBING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `scrub` with a panic in it caught and turned into
+/// [`ScrubError::engine_panicked`]. The engine is pure over its input, so
+/// nothing it could leave half-done outlives the unwind.
+fn contained(scrub: impl FnOnce() -> Result<Vec<u8>, ScrubError>) -> Result<Vec<u8>, ScrubError> {
+    withhold_engine_panics();
+    let outer = SCRUBBING.with(|flag| flag.replace(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(scrub));
+    SCRUBBING.with(|flag| flag.set(outer));
+    result.unwrap_or_else(|_| Err(ScrubError::engine_panicked()))
+}
+
+/// Installs, once per process, a panic hook in front of the one already set:
+/// a panic on a thread inside [`contained`] prints one fixed line with the
+/// panic's location and never its message, because a string-slicing panic
+/// quotes the session text it was slicing. Every other panic reaches the
+/// previous hook unchanged.
+fn withhold_engine_panics() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if SCRUBBING.with(Cell::get) {
+                let location = info
+                    .location()
+                    .map(|at| format!("{}:{}", at.file(), at.line()))
+                    .unwrap_or_default();
+                eprintln!(
+                    "scrub engine panicked reason={ENGINE_PANICKED} location={location} (message withheld)"
+                );
+            } else {
+                previous(info);
+            }
+        }));
+    });
 }
 
 /// The name [`ScrubEngine::default_engine`] reports, and the engine name
@@ -255,6 +327,49 @@ pub(crate) mod testing {
     pub fn refuse() -> (ScrubEngine, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         (ScrubEngine::new(Refuse(calls.clone())), calls)
+    }
+
+    /// Panics on every body that contains `trigger`, slicing a byte range
+    /// that starts one past its end as relayscrubber 0.5.0-alpha.10 did, and
+    /// scrubs any other body by replacing `from` with `to`. Named `name`, so
+    /// a test can stand in a later engine version.
+    pub struct PanicOn {
+        pub name: &'static str,
+        pub trigger: &'static str,
+        pub from: &'static str,
+        pub to: &'static str,
+    }
+
+    impl Scrub for PanicOn {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn scrub(&self, body: &[u8], _context: &ScrubContext<'_>) -> Result<Vec<u8>, ScrubError> {
+            let text = std::str::from_utf8(body).map_err(|_| ScrubError::new("not UTF-8"))?;
+            if text.contains(self.trigger) {
+                let end = std::hint::black_box(text.len() - 1);
+                let start = end + 1;
+                let _ = &text[start..end];
+                // A message that quotes the body, as a slicing panic can.
+                panic!("engine failed on {text}");
+            }
+            Ok(text.replace(self.from, self.to).into_bytes())
+        }
+    }
+
+    pub fn panic_on(
+        name: &'static str,
+        trigger: &'static str,
+        from: &'static str,
+        to: &'static str,
+    ) -> ScrubEngine {
+        ScrubEngine::new(PanicOn {
+            name,
+            trigger,
+            from,
+            to,
+        })
     }
 }
 
@@ -457,6 +572,22 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().starts_with(SCRUB_FAILED));
         assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn an_engine_panic_is_contained_as_a_panicked_failure_without_its_content() {
+        let engine = panic_on("test-panic-on", "poison", "a", "a");
+        let context = ScrubContext::new(ScrubSurface::LocalStore);
+        let error = engine
+            .scrub_json(&serde_json::json!({"text": "poison here"}), &context)
+            .unwrap_err();
+        assert!(error.panicked());
+        assert_eq!(error.reason(), ENGINE_PANICKED);
+        assert!(!error.to_string().contains("poison"));
+        // The engine still serves the next body, and a refusal is no panic.
+        assert_eq!(engine.scrub_text("fine", &context).unwrap(), "fine");
+        let (refusing, _) = refuse();
+        assert!(!refusing.scrub_text("x", &context).unwrap_err().panicked());
     }
 
     #[test]

@@ -1167,22 +1167,23 @@ fn prepare(
     }
     let limits = job.config.limits.clone();
     let mut consent = Consent::new(&tx, &job.id, &job.config.selection)?;
-    let mut changes = store.changes_since(
-        origin.position(job.cursor),
-        feed::query(&job.config.selection)?.batch(limits.max_scan_records),
-    )?;
     let mut scanned = 0;
     let mut suppressed = 0;
     // Copies whose sessions have finished go first, so a session's records
     // leave in order; a batch they fill leaves the feed for the next one.
+    // Records an earlier engine panicked on are offered to this one next.
     let (mut hold, released_full) = hold::release_to_feed(
-        &tx,
+        (&tx, store, &origin),
         job_id,
         &job.config,
         (oops_window_ms, now_ms),
         &mut filling,
         &mut consent,
         &mut suppressed,
+    )?;
+    let mut changes = store.changes_since(
+        origin.position(job.cursor),
+        feed::query(&job.config.selection)?.batch(limits.max_scan_records),
     )?;
     while !released_full
         && scanned < limits.max_scan_records
@@ -1210,14 +1211,8 @@ fn prepare(
     }
     drop(consent);
     drop(hold);
-    let batch = filling.batch;
     tx.execute("UPDATE delivery_jobs SET journal_cursor=?,bootstrap_done=?,suppressed_records=suppressed_records+? WHERE id=?",params![job.cursor,job.caught_up,suppressed,job_id])?;
-    let batch_id = if batch.records.is_empty() {
-        None
-    } else {
-        insert_batch(&tx, &batch, job.cursor, now_ms)?;
-        Some(batch.batch_id)
-    };
+    let batch_id = filling::seal(&tx, job_id, &origin, filling, job.cursor, now_ms)?;
     tx.commit()?;
     Ok(PrepareResult {
         batch_id,

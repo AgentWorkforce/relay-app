@@ -24,7 +24,7 @@
 use super::*;
 use ai_hist::{ChangeKind, ChangeQuery, SessionQuery, SessionRef, SessionStore, Source};
 mod held;
-use held::{held_elsewhere, unaccounted};
+use held::{held_elsewhere, retry_members, unaccounted};
 
 /// Create an initially empty, deny-by-default session job. The configuration
 /// describes allowed kinds; membership is changed only through `set_job_session`.
@@ -586,6 +586,8 @@ pub(super) fn prepare(
         limits.max_batch_records,
         &mut admit,
     )?;
+    // Records an earlier engine panicked on are offered to this one next.
+    full = retry_members(full, (conn, store, origin), root, &members, &mut filling, &mut hold, &mut admit)?;
     while !full
         && scanned < limits.max_scan_records
         && filling.batch.records.len() < limits.max_batch_records
@@ -688,14 +690,8 @@ pub(super) fn prepare(
     }
     drop(consent);
     drop(hold);
-    let batch = filling.batch;
     conn.execute("UPDATE delivery_jobs SET journal_cursor=?,suppressed_records=suppressed_records+? WHERE id=?",params![cursor,suppressed,root.id])?;
-    let batch_id = if batch.records.is_empty() {
-        None
-    } else {
-        insert_batch(conn, &batch, cursor, now_ms)?;
-        Some(batch.batch_id)
-    };
+    let batch_id = filling::seal(conn, &root.id, origin, filling, cursor, now_ms)?;
     Ok(PrepareResult {
         batch_id,
         scanned_records: scanned,

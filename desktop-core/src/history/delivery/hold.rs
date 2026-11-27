@@ -312,9 +312,11 @@ pub(super) fn release_due<'a>(
 
 /// Opens an all-sources job's hold under `(window_ms, now_ms)` and releases
 /// its due copies into the batch before the feed (see [`release_due`]): the
-/// hold, and whether the batch filled.
+/// hold, and whether the batch filled. When it did not, the records an
+/// earlier engine panicked on are offered next, read again from `store`'s
+/// feed under `origin` (see [`filling::retry_quarantined`]).
 pub(super) fn release_to_feed<'a>(
-    conn: &'a Connection,
+    (conn, store, origin): (&'a Connection, &ai_hist::SessionStore, &feed::Origin),
     job_id: &'a str,
     config: &DeliveryJobConfig,
     (window_ms, now_ms): (Option<i64>, i64),
@@ -323,11 +325,28 @@ pub(super) fn release_to_feed<'a>(
     suppressed: &mut i64,
 ) -> Result<(Option<Hold<'a>>, bool)> {
     let mut hold = Hold::new(conn, job_id, window_ms, now_ms)?;
+    let max_batch_records = config.limits.max_batch_records;
     let full = release_due(
         &mut hold,
         filling,
-        config.limits.max_batch_records,
+        max_batch_records,
         |filling, copy, key, _| admit(filling, copy, key, config, consent, &mut None, suppressed),
+    )?;
+    if full {
+        return Ok((hold, true));
+    }
+    let retry = |filling: &mut Filling, offered, key: &[serde_json::Value]| {
+        admit(
+            filling, offered, key, config, consent, &mut hold, suppressed,
+        )
+    };
+    let full = filling::retry_quarantined(
+        (conn, store, origin),
+        job_id,
+        &config.selection,
+        max_batch_records,
+        filling,
+        retry,
     )?;
     Ok((hold, full))
 }
@@ -355,7 +374,10 @@ pub(super) fn admit(
         *suppressed += 1;
         return Ok(true);
     }
-    let record = filling.scrubbed(offered)?;
+    // A record the engine panicked on is quarantined: the job moves past it.
+    let Some(record) = filling.scrubbed(offered)? else {
+        return Ok(true);
+    };
     if kept(hold, filling, &record, key)? {
         return Ok(true);
     }
