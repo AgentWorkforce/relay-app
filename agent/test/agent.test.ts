@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { DELEGATION_KIT_FILES, EC2_USER_DATA_ENCODED_LIMIT, ISSUE_WATCH_KIT_FILES, RELAY_SESSIONS_KIT_FILES, STEWARDSHIP_KIT_FILES, WORKER_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64 } from "@agentworkforce/layered-agent";
+import { EC2_USER_DATA_ENCODED_LIMIT, HOT_UPDATE_LANE_FILES, OPTIONAL_KIT_FILES, fileReader, hostTemplate, networkParams, userDataBase64 } from "@agentworkforce/layered-agent";
 import agent from "../agent.config.ts";
 import { LANE_SCRIPTS, LANE_SCRIPTS_SHA_FILE, laneScriptsSha } from "../lane-scripts.ts";
 
@@ -28,16 +28,12 @@ test("user data: under EC2's limit, every kit and lane file, no secret values", 
   const encoded = userDataBase64(agent, read);
   assert.ok(encoded.length < EC2_USER_DATA_ENCODED_LIMIT, `user data is ${encoded.length} bytes encoded`);
   const script = gunzipSync(Buffer.from(encoded, "base64")).toString("utf8");
-  // Since 0.1.10 the optional kit files travel over SSM after first boot, not in
-  // user data; skip exactly the ones the kit's OPTIONAL_KIT_FILES (src/spec.ts) lists.
-  // 0.1.25 lists headless.py, delegation.md, orchestration.md and the issue-watch files too, 0.1.27 the
-  // delegation validator and its schema (DELEGATION_KIT_FILES), 0.1.28 ledger.py and 0.1.29 the stewardship
-  // files (STEWARDSHIP_KIT_FILES); it still does not export the constant.
-  const optional: readonly string[] = ["headless.py", "ledger.py", "delegation.md", "orchestration.md", ...DELEGATION_KIT_FILES, ...WORKER_KIT_FILES, ...RELAY_SESSIONS_KIT_FILES, ...ISSUE_WATCH_KIT_FILES, ...STEWARDSHIP_KIT_FILES];
+  // The optional kit files and the lane's prompt ride the hot update, never user data (the kit exports both lists since 0.1.40).
+  const optional: readonly string[] = [...OPTIONAL_KIT_FILES, ...HOT_UPDATE_LANE_FILES];
   for (const f of agent.files) {
     const shipped = script.includes(`cat > /opt/agent-host/${f.name} <<'`);
     // Generated files (0.1.29: stewardship.json and its issue-watch.json) arrive by hot update too.
-    if (f.source === "generated" || (f.source === "kit" && optional.includes(f.name))) assert.ok(!shipped, `${f.name} is not in user data`);
+    if (f.source === "generated" || optional.includes(f.name)) assert.ok(!shipped, `${f.name} is not in user data`);
     else assert.ok(shipped, f.name);
   }
   assert.doesNotMatch(script, /sk-ant-|ghp_|ghs_|gho_|BEGIN [A-Z ]*PRIVATE KEY/);
