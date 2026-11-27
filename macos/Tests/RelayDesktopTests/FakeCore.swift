@@ -295,6 +295,21 @@ final class FakeService: CoreService {
 
     init(status: CoreServiceStatus) { self.status = status }
 
+    /// The self-repair ladder's answer per step (`.none` past the end), how
+    /// long each rung takes, and the steps asked for.
+    var repairActions: [CoreRegistrationRepair.Action] = []
+    var repairDelay: UInt64 = 0
+    private(set) var repairSteps: [Int] = []
+    private(set) var repairsInFlight = 0
+
+    @MainActor func selfRepairAsync(step: Int) async throws -> CoreRegistrationRepair.Action {
+        repairSteps.append(step)
+        repairsInFlight += 1
+        defer { repairsInFlight -= 1 }
+        if repairDelay > 0 { try? await Task.sleep(nanoseconds: repairDelay) }
+        return step < repairActions.count ? repairActions[step] : .none
+    }
+
     func setStartsAtLogin(_ enabled: Bool) throws {
         if let startupError { throw startupError }
         startsAtLogin = enabled

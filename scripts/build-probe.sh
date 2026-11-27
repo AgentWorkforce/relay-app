@@ -110,6 +110,11 @@ fi
 # check then fails the build on a site or scheme it could not trust.
 built_in_from "$SITE_URL" "$URL_SCHEME" || die "--site-url or --url-scheme refused"
 
+# Whatever builds the core, a personal or malformed analytics key never
+# gets compiled in. The check never prints the key.
+if [ -n "${AGENT_RELAY_POSTHOG_API_KEY:-}" ]; then
+  bash "$SCRIPT_DIR/check-telemetry-key.sh" source || die "refusing to compile the analytics key"
+fi
 note "building agent-relay-probe $VERSION for $CARGO_TARGET"
 AGENT_RELAY_PROBE_VERSION="$VERSION" cargo "${BUILD[@]}" \
   --manifest-path "$MANIFEST" \

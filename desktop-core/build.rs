@@ -65,9 +65,9 @@ fn main() {
     windows_resources::embed(&version, &product, &format!("{product} Helper"));
 }
 
-/// A build for its own site refuses a PostHog host or key
-/// (`build_site_telemetry`), on every target. The error names the variables,
-/// never their values.
+/// A build for its own site refuses a PostHog host or key, and every build
+/// refuses a key that is not a PostHog project token (`build_site_telemetry`),
+/// on every target. The error names the variables, never their values.
 fn site_telemetry() {
     println!("cargo:rerun-if-changed=build_site_telemetry.rs");
     for name in [
@@ -83,6 +83,11 @@ fn site_telemetry() {
         read("AGENT_RELAY_POSTHOG_HOST").as_deref(),
         read("AGENT_RELAY_POSTHOG_API_KEY").as_deref(),
     ) {
+        panic!("{error}");
+    }
+    if let Some(error) =
+        build_site_telemetry::refused_posthog_key(read("AGENT_RELAY_POSTHOG_API_KEY").as_deref())
+    {
         panic!("{error}");
     }
 }

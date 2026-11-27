@@ -298,6 +298,34 @@ pub(super) mod tests {
 
     const SITE: &str = "https://site.example";
 
+    /// The build's key rule (`build_site_telemetry::refused_posthog_key`) is
+    /// this collector's: every key a build accepts, the collector accepts.
+    #[test]
+    fn every_key_the_build_accepts_the_collector_accepts() {
+        use crate::site_build::build_site_telemetry::refused_posthog_key;
+        let long = format!("phc_{}", "A".repeat(251));
+        let too_long = format!("phc_{}", "A".repeat(252));
+        for key in [
+            "phc_A",
+            "phc_a_b",
+            &long,
+            &too_long,
+            "phc_a-b",
+            "phc_",
+            "phx_abcdef",
+            "phc_x y",
+            "PHC_abc",
+        ] {
+            let built = refused_posthog_key(Some(key)).is_none();
+            let collected = PostHogProject::new(key, "https://i.agentrelay.com").is_some();
+            assert!(
+                !built || collected,
+                "the build accepts {} characters the collector refuses",
+                key.len()
+            );
+        }
+    }
+
     fn host(project: Option<PostHogProject>) -> Option<String> {
         project.map(|project| project.host().to_string())
     }
