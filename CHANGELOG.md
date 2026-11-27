@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Providers distinguish session preparation from sign-in.** On macOS, Linux and Windows, after a verified sign-in, providers show *Preparing sessions* while the initial local history preparation finishes instead of asking you to sign in again. Setup still waits for preparation to finish, and actual account or provider sign-in failures remain visible.
+
 - **Windows finds Claude Code installed with WinGet.** Agent Relay detects WinGet's per-user installation even when its background service has an older PATH, so the computer can accept agent spawns. On macOS, Linux and Windows, Claude detection also searches absolute PATH directories after standard install locations.
 
 - **Open Codex chats can receive through Agent Relay's trusted hook.** On macOS, Linux and Windows, a chat whose running Codex holds its verified writer lock can receive even without an app window-router connection, when the hook is enabled and trusted. Messages enter a running turn through the hook; an idle chat without another delivery route waits for its next turn. Messages waiting for that turn can recover after a transient claim-release error and helper restart.

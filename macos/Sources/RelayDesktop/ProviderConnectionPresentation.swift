@@ -24,6 +24,13 @@ struct ProviderConnectionPresentation {
     /// `workspaceError` is the report's reason this computer could not join
     /// the account's workspace, shown when `health` is `workspace_unavailable`.
     init(_ provider: ToolIntegration, health: String?, workspaceError: String? = nil) {
+        if provider.state == "preparing", health == nil || health == "ready" {
+            status = provider.statusLabel
+            summary = provider.detail
+            action = nil
+            actionTitle = nil
+            return
+        }
         if ["capy", "grok-bot", "dot"].contains(provider.id) || provider.selected,
            ["capy", "grok-bot", "dot", "conductor", "paseo"].contains(provider.id), provider.state == "configured" {
             status = health == "ready" ? "Connected" : "Connection not verified"

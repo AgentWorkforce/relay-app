@@ -75,7 +75,11 @@ pub(super) async fn run(
             account.refresh_provider_credentials(requested, false).await;
         }
     }
-    let status = Some(account.status());
+    let snapshot = account.status();
+    let preparation = (action == "status")
+        .then(|| preparing_report_binding(&snapshot))
+        .flatten();
+    let status = Some(snapshot);
     let health = status.as_ref().and_then(|s| s.auth_health.clone());
     let workspace_error = status
         .as_ref()
@@ -111,9 +115,10 @@ pub(super) async fn run(
             .refresh_provider_credentials(Vec::new(), retry_removals)
             .await;
     }
+    let refreshed_installer = final_installer.clone();
     let mut report = if changed_selection && result.is_ok() {
         tokio::task::spawn_blocking(move || {
-            final_installer.report(final_binding.as_ref(), final_health)
+            refreshed_installer.report(final_binding.as_ref(), final_health)
         })
         .await
         .map_err(|_| RpcError::invalid_params("Provider integration check could not complete."))?
@@ -123,6 +128,7 @@ pub(super) async fn run(
     account.verify_external_connections(&mut report, binding_for_external.as_ref(), force_external).await;
     account.verify_native_connections(&mut report, binding_for_external.as_ref(), force_external).await;
     crate::mcp_settings::derive_host_connections(&mut report.tools, report.account_health.as_deref());
+    show_preparing_status(account, &final_installer, preparation, &mut report);
     report.workspace_error = workspace_error;
     Ok(report)
 }
@@ -197,3 +203,64 @@ mod tests {
         assert!(requested_providers(&installer, "disable", &[], "paseo").is_empty());
     }
 }
+
+fn show_preparing_status(
+    account: &Account,
+    installer: &Installer,
+    preparation: Option<Binding>,
+    report: &mut ToolsReport,
+) {
+    // This changes a read-only status report, never an installer binding,
+    // credential refresh, connection probe or action authorization.
+    if let Some(preparation) = preparation {
+        let still_preparing = preparing_report_binding(&account.status()).is_some_and(|current| {
+            current.site_url == preparation.site_url
+                && current.workspace_id == preparation.workspace_id
+                && current.account_id == preparation.account_id
+        });
+        if still_preparing && !installer.provider_login_required(&preparation) {
+            for tool in &mut report.tools {
+                if tool.supported && tool.state == "signed_out" {
+                    tool.state = "preparing".into();
+                    tool.status_label = "Preparing sessions".into();
+                    tool.detail = "You’re signed in. Agent Relay is preparing your local sessions. Provider setup will continue when that finishes.".into();
+                    tool.can_install = false;
+                    tool.can_repair = false;
+                }
+            }
+        }
+    }
+}
+
+/// A report-only witness: this never authorizes provider setup while the
+/// account is still preparing. This phase is entered only after Cloud has
+/// verified the person and attached their workspace.
+fn preparing_report_binding(
+    status: &agent_relay_node::relay::state::AccountStatus,
+) -> Option<Binding> {
+    use agent_relay_node::relay::state::SignInState;
+    if status.state != SignInState::Preparing
+        || status.phase.as_deref() != Some("preparing_local_sessions")
+        || status.error.is_some()
+        || status.action.is_some()
+        || status.auth_error.is_some()
+        || !matches!(status.auth_health.as_deref(), None | Some("ready"))
+    {
+        return None;
+    }
+    let site_url =
+        agent_relay_node::relay::workspace::validated_base_url(status.site_url.as_deref()?)?;
+    let workspace_id = status.workspace_id.as_ref()?;
+    let account_id = status.person.as_ref()?.id.as_ref()?;
+    if !crate::cloud_api::is_workspace_uuid(workspace_id) || account_id.trim().is_empty() {
+        return None;
+    }
+    Some(Binding {
+        site_url,
+        workspace_id: workspace_id.clone(),
+        account_id: account_id.clone(),
+    })
+}
+
+#[cfg(test)]
+mod preparing_tests;
