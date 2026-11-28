@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long the hook waits for the core, handoff to Cloud included. It sits
 /// between the core's own budget (`attestation_route::ROUTE_BUDGET`) and the
@@ -15,13 +15,37 @@ use std::time::{Duration, Instant};
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(18);
 
 /// What the core said when asked for a proof, or why it said nothing.
+#[derive(Debug)]
 pub(crate) enum Reply {
     Answer(u16, Vec<u8>),
-    /// No core to ask: no socket, or none listening on it. Nothing was sent.
+    /// No core to ask: no socket, none listening on it, or one served by
+    /// another user. The request was never sent.
     Unavailable,
-    /// The core took the request and did not answer in time. It may still be
-    /// handing the proof to Cloud, so the call must not go out without it.
+    /// The request may have reached the core and no answer came: the wait
+    /// ran out, or the connection failed or closed after it was accepted.
+    /// The core may still be handing the proof to Cloud, so the call must
+    /// not go out without it.
     Late,
+}
+
+/// The only failures `socket_response` reports before writing the request
+/// (agent-relay-node `relay::cli::socket_response_with`): nothing was sent.
+/// Any other failure is ambiguous and treated as [`Reply::Late`].
+const NOT_SENT: &[&str] = &[
+    "Agent Relay's session socket is unavailable.",
+    "The session socket is not served by your own Agent Relay core.",
+];
+
+/// Asks the core at `socket` for this call's proof, waiting up to `timeout`.
+pub(crate) fn ask_core(socket: Option<&Path>, body: &[u8], timeout: Duration) -> Reply {
+    let Some(socket) = socket else {
+        return Reply::Unavailable;
+    };
+    match socket_response(socket, "POST", super::ROUTE, body, timeout) {
+        Ok((status, body)) => Reply::Answer(status, body),
+        Err(error) if NOT_SENT.contains(&error.to_string().as_str()) => Reply::Unavailable,
+        Err(_) => Reply::Late,
+    }
 }
 
 /// Gets the current chat's proof. Once the core has handed it to Cloud the
@@ -41,17 +65,7 @@ pub fn run(socket: Option<&Path>, development: bool) -> Result<()> {
             let build = crate::relay_build::hook_build(development);
             let socket = session_hook_socket(socket, &build);
             output_at(&input, socket.as_deref(), |body| {
-                let Some(socket) = socket.as_deref() else {
-                    return Reply::Unavailable;
-                };
-                let asked = Instant::now();
-                match socket_response(socket, "POST", super::ROUTE, body, TIMEOUT) {
-                    Ok((status, body)) => Reply::Answer(status, body),
-                    // A missing or refused socket fails at once; only a core
-                    // that took the request runs out the whole wait.
-                    Err(_) if asked.elapsed() >= TIMEOUT => Reply::Late,
-                    Err(_) => Reply::Unavailable,
-                }
+                ask_core(socket.as_deref(), body, TIMEOUT)
             })
         });
     if let Some(output) = output {

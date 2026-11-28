@@ -15,6 +15,7 @@ whose `## Unreleased` section has no bullet stops before building.
 ## Unreleased
 
 - **Hosted Relay tools in Claude Code chats no longer ask you to retry when Agent Relay Cloud is slow.** On macOS, Linux and Windows, Agent Relay now waits for Cloud to store the chat's proof before a hosted Relay tool call goes out. Before, it waited only 3 seconds. Cloud often takes longer than that, so calls were refused with "could not deliver this chat's proof" and worked on an immediate retry. A call that Desktop has not finished proving is now refused with retry guidance. Before, such a call could go out without the chat's identity and be refused by Cloud.
+
 ## v2026.11.22
 
 - **Codex chats receive direct messages in order.** On macOS, Linux and Windows, a later direct message waits while an earlier message is pending delivery to the same chat.

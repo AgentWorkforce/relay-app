@@ -411,3 +411,67 @@ fn tools_that_never_act_as_the_chat_are_not_signed() {
         assert!(hook_request(&input).is_some(), "{tool}");
     }
 }
+
+/// A core at a real socket that takes one request and then does `then`.
+#[cfg(unix)]
+fn core_that(then: fn(std::os::unix::net::UnixStream)) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::io::Read;
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("relay.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // Read the whole request: its headers end the first blank line and
+        // the body follows, short enough to arrive in the same reads.
+        let mut seen = Vec::new();
+        let mut chunk = [0; 4096];
+        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "the hook closed before sending its request");
+            seen.extend_from_slice(&chunk[..read]);
+        }
+        then(stream);
+    });
+    (root, socket)
+}
+
+#[cfg(unix)]
+#[test]
+fn only_a_request_never_sent_counts_as_no_core() {
+    let body = br#"{"session_id":"s","tool_name":"t","tool_use_id":"u"}"#;
+    let wait = std::time::Duration::from_millis(400);
+
+    // Absent: no socket file at all.
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("relay.sock");
+    assert!(matches!(hook::ask_core(Some(&missing), body, wait), hook::Reply::Unavailable));
+    assert!(matches!(hook::ask_core(None, body, wait), hook::Reply::Unavailable));
+
+    // Absent: a socket file nothing listens on (a stopped core).
+    let stale = root.path().join("stale.sock");
+    drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+    assert!(matches!(hook::ask_core(Some(&stale), body, wait), hook::Reply::Unavailable));
+
+    // Ambiguous: the core took the request and closed without answering.
+    let (_root, socket) = core_that(drop);
+    let reply = hook::ask_core(Some(&socket), body, wait);
+    assert!(matches!(reply, hook::Reply::Late), "{reply:?}");
+
+    // Late: the core took the request and is still working on it.
+    let (_root, socket) = core_that(|stream| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        drop(stream);
+    });
+    let reply = hook::ask_core(Some(&socket), body, wait);
+    assert!(matches!(reply, hook::Reply::Late), "{reply:?}");
+
+    // Answered.
+    let (_root, socket) = core_that(|mut stream| {
+        use std::io::Write;
+        let payload = br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).unwrap();
+        stream.write_all(payload).unwrap();
+    });
+    let reply = hook::ask_core(Some(&socket), body, wait);
+    assert!(matches!(reply, hook::Reply::Answer(200, _)), "{reply:?}");
+}
