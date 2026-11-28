@@ -16,6 +16,7 @@
 //! one or the local pass it rides, and a connector whose last listing failed
 //! is left alone until the next listing is due.
 mod claude_cloud;
+pub(crate) mod sign_in_reasons;
 mod claude_records;
 #[cfg(test)]
 mod cursor_tests;
@@ -161,6 +162,9 @@ fn reach(host: &Host, connector: &str) -> Reach {
                 claude_cloud::Login::Expired => Reach::Unusable(claude_cloud::EXPIRED),
                 claude_cloud::Login::Unreadable => Reach::Unusable(claude_cloud::UNREADABLE),
                 claude_cloud::Login::Missing => Reach::Unusable(claude_cloud::NOT_SIGNED_IN),
+                claude_cloud::Login::DesktopAppInstalled => {
+                    Reach::Unusable(claude_cloud::DESKTOP_APP_NOT_ENOUGH)
+                }
             }
         }
         _ => {
@@ -1855,6 +1859,43 @@ pub(crate) mod tests {
         let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
         assert_eq!((claude.state.as_str(), claude.sessions), ("listed", 1));
         assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+    }
+
+    /// A computer with Claude's desktop app installed but no Claude Code
+    /// login says the desktop app alone is not enough, without reading
+    /// anything of the desktop app's, and a Claude Code login made
+    /// afterwards is listed on the next pass.
+    #[test]
+    fn the_desktop_app_alone_says_how_to_sign_in_to_claude_code() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = ClaudeStub::start(false);
+        let (home, _env) = bare_home();
+        let _base = EnvGuard::set("RELAYHISTORY_CLAUDE_API_BASE_URL", api.url());
+        let installed = crate::claude_desktop::install_for_test(home.path());
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let keychain = FakeKeychain::holding(None);
+        let host = host(home.path(), &db, &keychain);
+
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!(claude.state, "unavailable");
+        assert_eq!(
+            claude.reason.as_deref(),
+            Some(if installed {
+                claude_cloud::DESKTOP_APP_NOT_ENOUGH
+            } else {
+                claude_cloud::NOT_SIGNED_IN
+            })
+        );
+        assert_eq!(keychain.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/.credentials.json"), fresh_login()).unwrap();
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!((claude.state.as_str(), claude.sessions), ("listed", 1));
     }
 
     #[test]
