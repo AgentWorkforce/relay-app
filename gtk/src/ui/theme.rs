@@ -273,6 +273,11 @@ picture.chat-inline-image { border-radius: 8px; border: 1px solid $border; }
 button.chat-jump { border-radius: 999px; min-width: 36px; min-height: 36px; padding: 0; background-color: $card; border: 1px solid $border; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
 label.chat-unread { background-color: $accent; color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 700; min-width: 8px; }
 .relay-turn { border-left: 3px solid $accent; padding-left: 10px; }
+.skip-task { background-color: $card; border: 1px solid $border; border-radius: 10px; padding: 12px; }
+label.skip-task-title { font-weight: 600; }
+label.skip-task-fact { font-size: 11px; font-weight: 600; color: $secondary; }
+.skip-task-agent { border-top: 1px solid $border; padding-top: 6px; }
+label.skip-task-agent-name { font-weight: 600; }
 label.relay-marker { font-size: 11px; font-weight: 600; color: $accent; }
 .chat-working { padding: 4px 2px; }
 .chat-composer { background-color: $card; border: 1px solid $border; border-radius: 20px 20px 20px 3px; padding: 6px 6px 6px 14px; }

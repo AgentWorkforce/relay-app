@@ -1893,6 +1893,57 @@ fn receive_messages_retires_reads_before_acknowledgement(runtime: &tokio::runtim
 /// naming the file the core saved, and so does one another agent sends it.
 /// Chat draws each picture under its message, not the line, and the
 /// window's pixels show both.
+fn chat_lists_the_skip_lead_and_draws_its_task_card(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    let mut agents = roster();
+    // The cloud Skip lead is someone else's agent: listed all the same.
+    agents["agents"].as_array_mut().unwrap().push(roster_agent(
+        "skip",
+        "skip@cloud",
+        "cloud",
+        "live",
+        Value::Null,
+        "h-skip",
+        false,
+    ));
+    case.answer("roster.list", agents);
+    let task = r#"SKIP_APP_TASK {"version":1,"taskId":"T12","title":"Ship unified chat","state":"in_progress","owner":"khaliq","nextAction":"Review the GTK slice","observedAt":"2026-11-27T10:00:00Z","agents":[{"name":"gtk-dev","machine":"linuyc","model":"opus","harness":"claude","lifecycle":"offline"}],"agentsOmitted":1}"#;
+    case.answer(
+        "messages.history",
+        json!({"identity": "ada", "messages": [
+            {"id": "s1", "sender": "skip", "sender_id": null, "sender_address": "skip@cloud",
+             "text": format!("T12 is on track.\n\n{task}"), "created_at": "2026-11-27T10:00:00Z",
+             "thread_id": null, "mine": false},
+        ]}),
+    );
+    case.sign_in();
+    let shell = case.app.shell().unwrap();
+    case.app.show_chat_page(None);
+    let page = &shell.pages.chat;
+    // Listed without a search, at the head of the agents elsewhere.
+    case.pump(|_| labels(&page.root).contains(&"skip".into()));
+    let listed = labels(&page.root);
+    let at = |name: &str| listed.iter().position(|label| label == name).unwrap();
+    assert!(at("Agents elsewhere") < at("skip") && at("skip") < at("remote"));
+    case.app.show_chat_page(Some("elsewhere:skip@cloud"));
+    let messages = &page.thread.messages;
+    case.pump(|_| labels(messages).contains(&"Ship unified chat".into()));
+    let shown = labels(messages);
+    assert!(shown.contains(&"T12 is on track.".into()), "{shown:?}");
+    assert!(shown.contains(&"Review the GTK slice".into()), "{shown:?}");
+    assert!(shown.contains(&"AGENTS · 2".into()), "{shown:?}");
+    assert!(
+        shown
+            .iter()
+            .any(|label| label == "linuyc · opus · claude · Age unknown"),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|label| label.contains("SKIP_APP_TASK")),
+        "the task line is not shown: {shown:?}"
+    );
+}
+
 fn chat_draws_an_image_posted_over_relay(runtime: &tokio::runtime::Runtime) {
     let data = tempfile::tempdir().unwrap();
     // Put back the caller's data folder even when an assertion fails.
@@ -3310,6 +3361,10 @@ pub const TESTS: &[(&str, Test)] = &[
     (
         "chat_draws_an_image_posted_over_relay",
         chat_draws_an_image_posted_over_relay,
+    ),
+    (
+        "chat_lists_the_skip_lead_and_draws_its_task_card",
+        chat_lists_the_skip_lead_and_draws_its_task_card,
     ),
     (
         "conversations_follow_latest_and_leave_scrollback_in_place",

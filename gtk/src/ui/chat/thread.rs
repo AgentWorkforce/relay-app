@@ -16,8 +16,9 @@ use super::sources::{entry_source, read_page, DIRECT};
 use crate::models::{
     chat_attached_images, chat_pasted_images, chat_relay_incoming, chat_relay_marker,
     chat_relay_outgoing, chat_relay_sent_marker, chat_turn_open, chat_user_text,
-    transcript_entry_visible, ChatAgent, ChatPlace, SpawnHandover, CHAT_DELIVERED, CHAT_EARLIER,
-    CHAT_JUMP_LATEST, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
+    transcript_entry_visible, ChatAgent, ChatPlace, SkipTask, SpawnHandover, CHAT_DELIVERED,
+    CHAT_EARLIER, CHAT_JUMP_LATEST, CHAT_LOADING, CHAT_NO_MESSAGES, CHAT_SENDING, CHAT_WORKING,
+    SKIP_LEAD,
 };
 use agent_relay_node::relay::contract::transcript::{LocalTranscriptCursor, LocalTranscriptEntry};
 use gtk::{glib, prelude::*};
@@ -314,6 +315,7 @@ impl Thread {
                 author: person.to_string(),
                 relay,
                 from_person,
+                task: None,
             });
         }
         let (sender, body) = chat_user_text(&entry.text);
@@ -334,18 +336,33 @@ impl Thread {
             author,
             relay,
             from_person,
+            task: None,
         })
     }
 
     /// A direct message with an agent elsewhere: yours read by it, or its
     /// to you. Drawn once even when its transcript also shows it.
-    fn direct_turn(&self, entry: LocalTranscriptEntry, source: &str, person: &str) -> Option<Turn> {
+    fn direct_turn(
+        &self,
+        mut entry: LocalTranscriptEntry,
+        source: &str,
+        person: &str,
+    ) -> Option<Turn> {
         let mine = entry.role == "user";
         let key = format!("{}{}", if mine { "in:" } else { "out:" }, entry.text.trim());
         if !self.first_sighting(key, entry.timestamp_ms) {
             return None;
         }
+        // The Skip lead ends a reply about a task with the task's details.
+        let task = if !mine && source.eq_ignore_ascii_case(SKIP_LEAD) {
+            let (message, task) = SkipTask::parse_reply(&entry.text);
+            entry.text = message;
+            task
+        } else {
+            None
+        };
         Some(Turn {
+            task,
             images: Vec::new(),
             relay: Some(chat_relay_marker(Some(if mine { person } else { source }))),
             author: if mine {
@@ -382,6 +399,7 @@ impl Thread {
                     author,
                     relay: Some(chat_relay_marker(incoming.sender.as_deref())),
                     from_person: false,
+                    task: None,
                 },
             )
         } else if let Some(outgoing) = (entry.kind != "tool_result")
@@ -396,6 +414,7 @@ impl Thread {
                     author: person.to_string(),
                     relay: Some(chat_relay_sent_marker(outgoing.recipient.as_deref())),
                     from_person: false,
+                    task: None,
                 },
             )
         } else {
@@ -442,6 +461,17 @@ impl Thread {
         super::images::expand_attachments(&widget);
         if !is_tool(&turn.entry) {
             self.group.borrow_mut().take();
+            let widget = match &turn.task {
+                Some(task) => {
+                    let body = vbox(8, &[]);
+                    if !turn.entry.text.trim().is_empty() {
+                        body.append(&widget);
+                    }
+                    body.append(&super::task_card::task_card(task));
+                    body.upcast()
+                }
+                None => widget,
+            };
             match &turn.relay {
                 Some(marker) => self.messages.append(&relay_turn(&widget, marker)),
                 None => self.messages.append(&widget),
@@ -498,6 +528,8 @@ struct Turn {
     relay: Option<String>,
     /// The person's own turn (theirs or one sent to the agent).
     from_person: bool,
+    /// The task the Skip lead's reply describes, drawn as a card under it.
+    task: Option<SkipTask>,
 }
 
 /// A message that came through the relay: its marker over it, and an

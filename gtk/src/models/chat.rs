@@ -471,7 +471,8 @@ fn elsewhere_activity(agent: &RosterAgent) -> ChatActivity {
 /// row of the sessions list (`rows`) already shows.
 ///
 /// Other people's agents in the workspace are many: one is listed only when
-/// `others` admits it (a search that matches it, or the one shown).
+/// `others` admits it (a search that matches it, or the one shown). The
+/// cloud Skip lead is always listed, first.
 pub fn chat_elsewhere_agents(
     roster: &[RosterAgent],
     rows: &[LocalSessionRow],
@@ -503,9 +504,11 @@ pub fn chat_elsewhere_agents(
                 .map(|at| at.min(now_ms)),
             place: ChatPlace::Elsewhere(agent.clone()),
         })
-        .filter(|agent| agent.is_yours() || others(agent))
+        .filter(|agent| agent.is_yours() || agent.is_skip_lead() || others(agent))
         .collect();
     sort_agents(&mut agents);
+    // The Skip lead heads your agents elsewhere.
+    agents.sort_by_key(|agent| !agent.is_skip_lead());
     agents
 }
 
@@ -575,12 +578,14 @@ mod inbox;
 mod order;
 mod pasted;
 mod relay_lines;
+mod skip_task;
 pub use agent::chat_row_names;
 pub use copies::ChatCopies;
 pub use inbox::{ChatInbox, ChatNotice, Unread};
 pub use order::{chat_sort_elsewhere, chat_sorts_before};
 pub use pasted::{chat_attached_images, chat_attachment_lines, chat_pasted_images};
 pub use relay_lines::{chat_relay_incoming, chat_relay_outgoing, RelayIncoming, RelayOutgoing};
+pub use skip_task::{SkipTask, SkipTaskAgent, SKIP_LEAD};
 
 #[cfg(test)]
 mod tests;

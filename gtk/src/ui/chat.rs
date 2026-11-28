@@ -28,6 +28,7 @@ mod list;
 pub(in crate::ui) use inbox::with_unread;
 mod send;
 mod sources;
+mod task_card;
 mod thread;
 
 use controls::Controls;

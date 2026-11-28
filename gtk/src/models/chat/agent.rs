@@ -219,6 +219,15 @@ impl ChatAgent {
 
     /// Whether the agent is yours: every agent on this computer is, and an
     /// agent elsewhere when the relay says so.
+    /// Whether it is the cloud Skip lead, which coordinates the team's
+    /// tasks.
+    pub fn is_skip_lead(&self) -> bool {
+        matches!(
+            &self.place,
+            ChatPlace::Elsewhere(remote) if remote.name.eq_ignore_ascii_case(SKIP_LEAD)
+        )
+    }
+
     pub fn is_yours(&self) -> bool {
         match &self.place {
             ChatPlace::Elsewhere(remote) => remote.is_self,
