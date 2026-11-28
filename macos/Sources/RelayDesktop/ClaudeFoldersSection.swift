@@ -128,6 +128,13 @@ struct ClaudeFoldersSection: View {
                         Text(ClaudeCloudHealthCopy.detail(health))
                             .zoomFont(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        if ClaudeCloudHealthCopy.offersSignIn(health) {
+                            Button(ClaudeCloudHealthCopy.signInLabel) {
+                                Task { error = await model.signInToClaudeCode() }
+                            }
+                            .help(ClaudeCloudHealthCopy.signInHelp)
+                            .zoomPadding(.top, 4)
+                        }
                     }
                 }
                 Spacer(minLength: 12)

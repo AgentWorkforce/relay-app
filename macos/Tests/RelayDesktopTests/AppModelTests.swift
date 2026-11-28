@@ -4649,6 +4649,18 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.lastError)
     }
 
+    func testClaudeCodeSignInAsksTheCoreAndReturnsItsRefusal() async {
+        core.on("claude_cloud.sign_in") { _ in [:] }
+        let model = model()
+        let opened = await model.signInToClaudeCode()
+        XCTAssertNil(opened)
+        XCTAssertEqual(core.callCount("claude_cloud.sign_in"), 1)
+        core.on("claude_cloud.sign_in") { _ in throw FakeCore.Failure(kind: "refused", message: "No claude command was found.") }
+        let refused = await model.signInToClaudeCode()
+        XCTAssertEqual(refused, "No claude command was found.")
+        model.shutdown()
+    }
+
     func testTheTeammatesToggleSendsItsValueExplicitly() async {
         let model = model()
         _ = await model.setSetting(SettingsChange(spawnAllowTeammates: false))

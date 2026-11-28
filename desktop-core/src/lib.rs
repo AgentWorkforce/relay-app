@@ -7,6 +7,8 @@ pub mod account_methods;
 pub mod browser_login;
 mod attestation_route;
 pub mod claude_attestation;
+pub mod claude_desktop;
+pub mod claude_sign_in;
 pub mod claude_keychain;
 pub mod client_telemetry;
 pub mod cloud_api;
