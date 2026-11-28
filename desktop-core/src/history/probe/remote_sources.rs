@@ -161,8 +161,8 @@ fn reach(host: &Host, connector: &str) -> Reach {
                 claude_cloud::Login::Expired => Reach::Unusable(claude_cloud::EXPIRED),
                 claude_cloud::Login::Unreadable => Reach::Unusable(claude_cloud::UNREADABLE),
                 claude_cloud::Login::Missing => Reach::Unusable(claude_cloud::NOT_SIGNED_IN),
-                claude_cloud::Login::DesktopAppOnly => {
-                    Reach::Unusable(claude_cloud::DESKTOP_APP_ONLY)
+                claude_cloud::Login::DesktopAppInstalled => {
+                    Reach::Unusable(claude_cloud::DESKTOP_APP_NOT_ENOUGH)
                 }
             }
         }
@@ -240,14 +240,14 @@ pub fn keychain_not_ready(error: &anyhow::Error) -> bool {
 
 /// Whether Claude Code's own sign-in would resume cloud sessions after a
 /// listing gave `reason`: Claude Code is not signed in here, with or
-/// without Claude's desktop app signed in.
+/// without Claude's desktop app installed.
 pub(crate) fn claude_sign_in_helps(reason: &str) -> bool {
     CLAUDE_SIGN_IN_REASONS.contains(&reason)
 }
 
 /// The listing reasons [`claude_sign_in_helps`] accepts.
 pub(crate) const CLAUDE_SIGN_IN_REASONS: [&str; 2] =
-    [claude_cloud::NOT_SIGNED_IN, claude_cloud::DESKTOP_APP_ONLY];
+    [claude_cloud::NOT_SIGNED_IN, claude_cloud::DESKTOP_APP_NOT_ENOUGH];
 
 /// The error a hydration returns while Claude's Keychain read waits.
 #[cfg(test)]
@@ -779,8 +779,6 @@ pub(crate) mod tests {
             EnvGuard::remove(agent_relay_node::relay::claude_dirs::DIRS_ENV),
             EnvGuard::set("XDG_DATA_HOME", home.path().join("data")),
             EnvGuard::set("XDG_CONFIG_HOME", home.path().join("config")),
-            // Claude's desktop app on Windows keeps its sign-in here.
-            EnvGuard::set("APPDATA", home.path().join("appdata")),
             EnvGuard::remove("AGENT_RELAY_HOME"),
             // The upload consent check reads `$HOME`'s Claude choices.
             EnvGuard::set("HOME", home.path()),
@@ -1873,22 +1871,17 @@ pub(crate) mod tests {
         assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
     }
 
-    /// A Mac with only Claude's desktop app signed in says so, without
-    /// touching the desktop app's sign-in, and a Claude Code login made
+    /// A computer with Claude's desktop app installed but no Claude Code
+    /// login says the desktop app alone is not enough, without reading
+    /// anything of the desktop app's, and a Claude Code login made
     /// afterwards is listed on the next pass.
     #[test]
-    fn a_desktop_app_only_sign_in_says_how_to_sign_in_to_claude_code() {
+    fn the_desktop_app_alone_says_how_to_sign_in_to_claude_code() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = ClaudeStub::start(false);
         let (home, _env) = bare_home();
         let _base = EnvGuard::set("RELAYHISTORY_CLAUDE_API_BASE_URL", api.url());
-        let app = crate::claude_desktop::app_dir(home.path());
-        std::fs::create_dir_all(&app).unwrap();
-        std::fs::write(
-            app.join("config.json"),
-            r#"{"oauth:tokenCacheV2":"djEwAAAA"}"#,
-        )
-        .unwrap();
+        let installed = crate::claude_desktop::install_for_test(home.path());
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("history.db");
         let keychain = FakeKeychain::holding(None);
@@ -1899,7 +1892,11 @@ pub(crate) mod tests {
         assert_eq!(claude.state, "unavailable");
         assert_eq!(
             claude.reason.as_deref(),
-            Some(claude_cloud::DESKTOP_APP_ONLY)
+            Some(if installed {
+                claude_cloud::DESKTOP_APP_NOT_ENOUGH
+            } else {
+                claude_cloud::NOT_SIGNED_IN
+            })
         );
         assert_eq!(keychain.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);

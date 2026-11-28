@@ -2,7 +2,7 @@ use super::*;
 
 /// Whether listing is due for `host`: the interval passed, or a connector
 /// the last listing could not use because Claude Code was not signed in
-/// (with or without Claude's desktop app signed in) or its folder was not
+/// (with or without Claude's desktop app installed) or its folder was not
 /// shared can be used now. A person who signs in, or shares the folder,
 /// then sees their cloud sessions on the next pass instead of after the
 /// interval. Only those reasons: an expired or
@@ -20,7 +20,7 @@ pub(super) fn due_for(host: &Host, db: &Path) -> bool {
             match connector.reason.as_deref() {
                 Some(
                     claude_cloud::NOT_SIGNED_IN
-                    | claude_cloud::DESKTOP_APP_ONLY
+                    | claude_cloud::DESKTOP_APP_NOT_ENOUGH
                     | claude_cloud::FOLDER_NOT_SHARED,
                 ) => ready(),
                 Some(reason)

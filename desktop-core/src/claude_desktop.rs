@@ -1,113 +1,102 @@
-//! Whether Claude's desktop app (Claude.app) is signed in here, so a
-//! missing Claude Code login can say what to do on a Mac (or Windows PC)
-//! that has only the desktop app.
+//! Whether Claude's desktop app (Claude.app) is installed here, so a missing
+//! Claude Code login can say that signing in to the desktop app alone is
+//! not enough for cloud sessions.
 //!
-//! The desktop app's sign-in is never used. It keeps its claude.ai OAuth
-//! token in `config.json`, encrypted with Electron's safe storage, whose key
-//! is the app's own Keychain item (`Claude Safe Storage`) on macOS. Reading
-//! that key would raise macOS's "allow access" prompt for another app's
-//! item and, once allowed, hand Agent Relay the key to everything the
-//! desktop app encrypts (its claude.ai cookies included), for a private
-//! format Anthropic does not offer to other apps. Refreshing that token
-//! would also rotate the desktop app's own login. So only the presence of
-//! the app's token cache is read here: never its value, never the Keychain.
-//! Claude Code's own sign-in (`claude auth login`, with the Claude Code the
-//! desktop app includes or one installed separately) is what cloud sessions
-//! use.
-use serde_json::Value;
+//! The desktop app's sign-in is never read. Nothing here opens the app's
+//! `config.json`, token cache, cookies or Keychain items, or anything else
+//! in its data folder that holds its sign-in: only whether the app itself
+//! is installed, by the existence of its bundle (macOS) or install folder
+//! (Windows). Claude Code's own sign-in (`claude auth login`, with the
+//! Claude Code the desktop app includes or one installed separately) is
+//! what cloud sessions use; whether the desktop app is signed in does not
+//! change what the person has to do.
 use std::path::{Path, PathBuf};
 
-/// The desktop app's token cache entries in its `config.json`, newest first.
-const TOKEN_CACHE_KEYS: [&str; 2] = ["oauth:tokenCacheV2", "oauth:tokenCache"];
-
-/// A `config.json` larger than this is not the desktop app's settings file.
-const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
-
-/// The desktop app's data folder for the person whose home is `home`:
-/// `~/Library/Application Support/Claude` on macOS, `%APPDATA%\Claude` on
-/// Windows, and `$XDG_CONFIG_HOME/Claude` (else `~/.config/Claude`) where
-/// Linux builds of the app keep it.
+/// The desktop app's data folder on macOS for the person whose home is
+/// `home`: `~/Library/Application Support/Claude`. Only its `claude-code`
+/// folder, the copies of Claude Code the app keeps for its Code tab, is
+/// ever looked at ([`crate::claude_sign_in::desktop_app_copy`]).
 pub fn app_dir(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/Claude")
+}
+
+/// Where the desktop app is installed when it is, for the person whose home
+/// is `home`: `/Applications/Claude.app` or `~/Applications/Claude.app` on
+/// macOS, `%LOCALAPPDATA%\AnthropicClaude` on Windows. Linux has no build
+/// of the desktop app, so nothing is listed there. Tests look only under
+/// `home` (no system `/Applications`, no `%LOCALAPPDATA%`), so they never
+/// see this computer's app.
+pub fn install_locations(home: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Claude")
+        let mut locations = vec![home.join("Applications/Claude.app")];
+        if !cfg!(test) {
+            locations.insert(0, PathBuf::from("/Applications/Claude.app"));
+        }
+        locations
     }
     #[cfg(windows)]
     {
-        std::env::var_os("APPDATA")
-            .filter(|dir| !dir.is_empty())
+        vec![std::env::var_os("LOCALAPPDATA")
+            .filter(|dir| !dir.is_empty() && !cfg!(test))
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
-            .join("Claude")
+            .unwrap_or_else(|| home.join("AppData").join("Local"))
+            .join("AnthropicClaude")]
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"))
-            .join("Claude")
+        let _ = home;
+        Vec::new()
     }
 }
 
-/// Whether the desktop app under `app_dir` holds a sign-in: its
-/// `config.json` carries a token cache. Reads only whether the entry is
-/// there; the (encrypted) value is never kept, decoded or logged.
-pub fn signed_in(app_dir: &Path) -> bool {
-    let path = app_dir.join("config.json");
-    if std::fs::metadata(&path).map_or(true, |meta| meta.len() > MAX_CONFIG_BYTES) {
-        return false;
+/// Whether Claude's desktop app is installed for the person whose home is
+/// `home`. Only checks that its bundle or install folder exists.
+pub fn installed(home: &Path) -> bool {
+    install_locations(home)
+        .iter()
+        .any(|location| std::fs::metadata(location).is_ok_and(|meta| meta.is_dir()))
+}
+
+/// Makes this platform's desktop app install under `home`, as a test sees
+/// it; `false` on Linux, which has none.
+#[cfg(test)]
+pub(crate) fn install_for_test(home: &Path) -> bool {
+    match install_locations(home).pop() {
+        Some(location) => {
+            std::fs::create_dir_all(location).unwrap();
+            true
+        }
+        None => false,
     }
-    let Ok(bytes) = std::fs::read(&path) else {
-        return false;
-    };
-    let Ok(Value::Object(config)) = serde_json::from_slice::<Value>(&bytes) else {
-        return false;
-    };
-    TOKEN_CACHE_KEYS.iter().any(|key| {
-        config
-            .get(*key)
-            .and_then(Value::as_str)
-            .is_some_and(|cache| !cache.trim().is_empty())
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn app_with(config: &str) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), config).unwrap();
-        dir
-    }
-
-    #[test]
-    fn a_token_cache_is_a_sign_in() {
-        let app = app_with(r#"{"locale":"en-US","oauth:tokenCacheV2":"djEwAAAA"}"#);
-        assert!(signed_in(app.path()));
-        let legacy = app_with(r#"{"oauth:tokenCache":"djEwAAAA"}"#);
-        assert!(signed_in(legacy.path()));
-    }
-
-    #[test]
-    fn no_token_cache_is_no_sign_in() {
-        let signed_out = app_with(r#"{"locale":"en-US","lastKnownAccountUuid":"x"}"#);
-        assert!(!signed_in(signed_out.path()));
-        let emptied = app_with(r#"{"oauth:tokenCacheV2":""}"#);
-        assert!(!signed_in(emptied.path()));
-        let not_json = app_with("not json");
-        assert!(!signed_in(not_json.path()));
-        let absent = tempfile::tempdir().unwrap();
-        assert!(!signed_in(absent.path()));
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
-    fn the_mac_app_keeps_its_data_in_application_support() {
+    fn the_mac_app_is_found_by_its_bundle_alone() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(!installed(home.path()));
+        // The app's data folder, sign-in or not, is not an install.
+        std::fs::create_dir_all(app_dir(home.path())).unwrap();
+        std::fs::write(app_dir(home.path()).join("config.json"), "{}").unwrap();
+        assert!(!installed(home.path()));
+        std::fs::create_dir_all(home.path().join("Applications/Claude.app/Contents")).unwrap();
+        assert!(installed(home.path()));
         assert_eq!(
             app_dir(Path::new("/Users/me")),
             Path::new("/Users/me/Library/Application Support/Claude")
         );
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    fn linux_has_no_desktop_app() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(install_locations(home.path()).is_empty());
+        assert!(!installed(home.path()));
     }
 }
