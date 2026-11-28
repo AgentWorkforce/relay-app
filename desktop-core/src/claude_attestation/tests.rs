@@ -498,6 +498,22 @@ fn an_answer_that_cannot_be_read_denies_the_call() {
             .unwrap()
             .contains("retry this tool call"));
     }
+    // A join keeps its own guidance, which also rules out a hosted identity.
+    for arguments in [json!({"name": "claude-assistant"}), json!({})] {
+        let mut input = pre_tool_use(arguments);
+        input["tool_name"] = json!("mcp__agent-relay__join_relay");
+        let full = br#"{"ok":true,"data":{"attestation":"h.p.s","native_join":true,"handoff":true}}"#;
+        for body in [full[..full.len() / 2].to_vec(), Vec::new()] {
+            let output = hook::output_at(&input, None, |_| hook::Reply::Answer(200, body.clone()))
+                .unwrap_or_else(|| panic!("a join with {body:?} went out unsigned"));
+            let decision = &output["hookSpecificOutput"];
+            assert_eq!(decision["permissionDecision"], "deny");
+            assert!(decision.get("updatedInput").is_none());
+            let reason = decision["permissionDecisionReason"].as_str().unwrap();
+            assert!(reason.contains("retry this join"), "{reason}");
+            assert!(reason.contains("Do not substitute a hosted account identity"), "{reason}");
+        }
+    }
     // An explicit refusal the core sent in full still leaves the call as
     // it was: the core said it signed nothing.
     let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
