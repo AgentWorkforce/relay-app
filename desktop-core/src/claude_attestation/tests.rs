@@ -236,7 +236,7 @@ fn a_named_join_gives_a_quoted_local_command_without_running_it() {
     let mut input = pre_tool_use(json!({"name":"claude-assistant"}));
     input["tool_name"] = json!("mcp__agent-relay__join_relay");
     let output = hook::output_at(&input, Some(Path::new("/tmp/Agent Relay/relay.sock")), |_| {
-        Some((403, br#"{"ok":false,"error":{"code":"registration_required"}}"#.to_vec()))
+        hook::Reply::Answer(403, br#"{"ok":false,"error":{"code":"registration_required"}}"#.to_vec())
     }).unwrap();
     assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
     let reason = output["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap();
@@ -352,6 +352,36 @@ fn a_handed_off_proof_leaves_the_call_unchanged() {
         )
     });
     assert!(output.is_none());
+}
+
+#[test]
+fn a_core_still_answering_when_the_hook_stops_waiting_denies_the_call() {
+    // #2283: the core took the request and was still handing the proof to
+    // Cloud when the hook's wait ran out. Sent unsigned, the call reached
+    // Cloud before its proof, so Cloud ran it without the chat's identity.
+    // It is denied with retry guidance instead.
+    for tool in ["send_relay_message", "join_relay", "spawn_relay_agent"] {
+        let mut input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+        input["tool_name"] = json!(format!("mcp__agent-relay__{tool}"));
+        let output = hook::output_at(&input, None, |_| hook::Reply::Late).unwrap();
+        let decision = &output["hookSpecificOutput"];
+        assert_eq!(decision["permissionDecision"], "deny", "{tool}");
+        assert!(decision.get("updatedInput").is_none(), "{tool}");
+        assert!(
+            decision["permissionDecisionReason"]
+                .as_str()
+                .unwrap()
+                .contains("retry this tool call"),
+            "{tool}"
+        );
+    }
+    // With no core to ask, nothing was sent and nothing is on its way.
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    assert!(hook::output_at(&input, None, |_| hook::Reply::Unavailable).is_none());
+    // A tool that never acts as the chat is never held back.
+    let mut input = pre_tool_use(json!({}));
+    input["tool_name"] = json!("mcp__agent-relay__list_relay_agents");
+    assert!(hook::output_at(&input, None, |_| panic!("the core is not asked")).is_none());
 }
 
 #[test]

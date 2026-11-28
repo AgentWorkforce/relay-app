@@ -5,11 +5,24 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Includes the core's handoff to Cloud (`HANDOFF_TIMEOUT`), within the
-/// hook's own 5 seconds.
-const TIMEOUT: Duration = Duration::from_secs(4);
+/// How long the hook waits for the core, handoff to Cloud included. It sits
+/// between the core's own budget (`attestation_route::ROUTE_BUDGET`) and the
+/// time Claude gives the hook (`mcp_settings::claude_hook`), so the core
+/// answers before the hook stops listening, and the hook answers before Claude
+/// stops waiting for it.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(18);
+
+/// What the core said when asked for a proof, or why it said nothing.
+pub(crate) enum Reply {
+    Answer(u16, Vec<u8>),
+    /// No core to ask: no socket, or none listening on it. Nothing was sent.
+    Unavailable,
+    /// The core took the request and did not answer in time. It may still be
+    /// handing the proof to Cloud, so the call must not go out without it.
+    Late,
+}
 
 /// Gets the current chat's proof. Once the core has handed it to Cloud the
 /// hook prints nothing, so the call goes out exactly as Claude made it;
@@ -28,7 +41,17 @@ pub fn run(socket: Option<&Path>, development: bool) -> Result<()> {
             let build = crate::relay_build::hook_build(development);
             let socket = session_hook_socket(socket, &build);
             output_at(&input, socket.as_deref(), |body| {
-                socket_response(socket.as_deref()?, "POST", super::ROUTE, body, TIMEOUT).ok()
+                let Some(socket) = socket.as_deref() else {
+                    return Reply::Unavailable;
+                };
+                let asked = Instant::now();
+                match socket_response(socket, "POST", super::ROUTE, body, TIMEOUT) {
+                    Ok((status, body)) => Reply::Answer(status, body),
+                    // A missing or refused socket fails at once; only a core
+                    // that took the request runs out the whole wait.
+                    Err(_) if asked.elapsed() >= TIMEOUT => Reply::Late,
+                    Err(_) => Reply::Unavailable,
+                }
             })
         });
     if let Some(output) = output {
@@ -51,17 +74,22 @@ fn denied(reason: impl Into<String>) -> Value {
     }})
 }
 
+const HANDOFF_RETRY: &str = "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.";
+
 const RETRY: &str = "Agent Relay could not verify this chat's desktop identity. Keep the Agent Relay desktop app open and retry this join. Do not substitute a hosted account identity or report that this chat has joined.";
 
 #[cfg(test)]
 pub(crate) fn output(input: &Value, ask: impl FnOnce(&[u8]) -> Option<Vec<u8>>) -> Option<Value> {
-    output_at(input, None, |body| ask(body).map(|reply| (200, reply)))
+    output_at(input, None, |body| match ask(body) {
+        Some(reply) => Reply::Answer(200, reply),
+        None => Reply::Unavailable,
+    })
 }
 
 pub(crate) fn output_at(
     input: &Value,
     socket: Option<&Path>,
-    ask: impl FnOnce(&[u8]) -> Option<(u16, Vec<u8>)>,
+    ask: impl FnOnce(&[u8]) -> Reply,
 ) -> Option<Value> {
     match signed_output(input, socket, ask).unwrap_or(Outcome::Unsigned) {
         Outcome::HandedOff => None,
@@ -76,23 +104,27 @@ enum Outcome {
     HandedOff,
     /// A denial, or the arguments with the proof for a Cloud without the handoff.
     Output(Value),
-    /// No proof: a join is denied, any other call goes out unsigned.
+    /// No proof, and none on its way: a join is denied, any other call goes
+    /// out unsigned.
     Unsigned,
 }
 
 fn signed_output(
     input: &Value,
     socket: Option<&Path>,
-    ask: impl FnOnce(&[u8]) -> Option<(u16, Vec<u8>)>,
+    ask: impl FnOnce(&[u8]) -> Reply,
 ) -> Option<Outcome> {
     let request = super::hook_request(input)?;
-    let (status, body) = ask(&serde_json::to_vec(&request).ok()?)?;
+    let (status, body) = match ask(&serde_json::to_vec(&request).ok()?) {
+        Reply::Answer(status, body) => (status, body),
+        Reply::Unavailable => return None,
+        // Sent unsigned, the call could reach Cloud before its proof does.
+        Reply::Late => return Some(Outcome::Output(denied(HANDOFF_RETRY))),
+    };
     let response: Value = serde_json::from_slice(&body).ok()?;
     match status {
         503 if response["ok"] == false && response["error"]["code"] == "handoff_failed" => {
-            return Some(Outcome::Output(denied(
-                "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.",
-            )));
+            return Some(Outcome::Output(denied(HANDOFF_RETRY)));
         }
         409 if response["ok"] == false && response["error"]["code"] == "claude_identity_stale" => {
             return Some(Outcome::Output(denied(

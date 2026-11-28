@@ -495,7 +495,9 @@ async fn a_slow_identity_refresh_cannot_hold_the_hook_past_its_budget() {
     let f = fixture();
     rename(&f);
     f.negotiate(capabilities(true)).await;
-    f.cloud.delay_ms.store(5_000, Ordering::SeqCst);
+    f.cloud
+        .delay_ms
+        .store(ROUTE_BUDGET.as_millis() as u64, Ordering::SeqCst);
     tokio::time::pause();
     let start = tokio::time::Instant::now();
     let result = f.ask(IN_REGISTERED, call(REGISTERED, SEND)).await;
@@ -503,4 +505,22 @@ async fn a_slow_identity_refresh_cannot_hold_the_hook_past_its_budget() {
     assert!(start.elapsed() < ROUTE_BUDGET);
     assert!(methods(&f).iter().any(|m| m == "PUT"));
     assert!(!methods(&f).iter().any(|m| m == "POST"));
+}
+
+#[tokio::test]
+async fn a_refresh_leaves_a_slow_handoff_time_to_land() {
+    // #2283: a refresh took most of the core's budget and left the handoff
+    // one second, so a Cloud answering in two denied the call.
+    let f = fixture();
+    rename(&f);
+    f.negotiate(capabilities(true)).await;
+    f.cloud.delay_ms.store(3_000, Ordering::SeqCst);
+    f.cloud.post_delay_ms.store(5_000, Ordering::SeqCst);
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let answer = f.ask(IN_REGISTERED, call(REGISTERED, SEND)).await.unwrap();
+    assert_eq!(answer["handoff"], true);
+    assert_eq!(f.cloud.posts_stored.load(Ordering::SeqCst), 1);
+    assert!(start.elapsed() >= std::time::Duration::from_secs(8));
+    assert!(start.elapsed() < ROUTE_BUDGET);
 }
