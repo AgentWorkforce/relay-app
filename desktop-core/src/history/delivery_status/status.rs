@@ -1,7 +1,7 @@
 //! The uploader status the desktop shows, read from the install directory
 //! and its store in a few constant-time reads.
 use super::*;
-use crate::history::{acquisition, delivery};
+use crate::history::{acquisition, delivery, probe::remote_sources::sign_in_reasons};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -78,12 +78,18 @@ fn claude_cloud_health(directory: &Path) -> Value {
         let code = reason.split_once("Keychain error ")?.1;
         code.split_once(')')?.0.parse::<i32>().ok()
     });
+    // Claude Code's own sign-in would fix it, and this computer can open
+    // it: Settings offers "Sign in to Claude Code".
+    let claude_code_sign_in = reason.is_some_and(sign_in_reasons::claude_sign_in_helps)
+        && agent_relay_node::relay::paths::home()
+            .is_ok_and(|home| crate::claude_sign_in::available(&home));
     json!({
         "state": state,
         "reason": reason,
         "at_ms": at_ms,
         "last_success_ms": connector["last_success_ms"].as_i64(),
         "keychain_error_code": keychain_error_code,
+        "claude_code_sign_in": claude_code_sign_in,
     })
 }
 
@@ -427,6 +433,40 @@ pub(crate) mod tests {
             .as_str()
             .unwrap()
             .contains("choose Always Allow"));
+        // Signing in again does not fix a refused Keychain read.
+        assert_eq!(health["claude_code_sign_in"], false);
+
+        // Not signed in: the sign-in is offered wherever this computer can
+        // open it.
+        for reason in sign_in_reasons::CLAUDE_SIGN_IN_REASONS {
+            assert!(sign_in_reasons::claude_sign_in_helps(reason));
+            fs::write(
+                directory.path().join("history.remote-enumerated"),
+                serde_json::to_vec(&json!({"connectors": [{
+                    "connector": "claude-web",
+                    "state": "unavailable",
+                    "reason": reason,
+                }]}))
+                .unwrap(),
+            )
+            .unwrap();
+            let health = status(directory.path(), false).unwrap()["claude_cloud"].clone();
+            let offered = agent_relay_node::relay::paths::home()
+                .is_ok_and(|home| crate::claude_sign_in::available(&home));
+            assert_eq!(health["claude_code_sign_in"], offered);
+        }
+        fs::write(
+            directory.path().join("history.remote-enumerated"),
+            serde_json::to_vec(&json!({"connectors": [{
+                "connector": "claude-web",
+                "state": "unavailable",
+                "reason": "Agent Relay is blocked from reading Claude Code's credential (Keychain error -25337). Turn Claude Code cloud sessions off and on again in Settings, then choose Always Allow",
+                "at_ms": 1_800_000_060_000_i64,
+                "last_success_ms": 1_800_000_000_000_i64
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
 
         // A listing that worked, with a session download that has not
         // recovered: the download's reason, kept in the pacing state by the

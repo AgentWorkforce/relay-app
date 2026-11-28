@@ -57,6 +57,11 @@ pub const UNREADABLE: &str =
     "Claude Code's sign-in could not be read. Open Claude Code and sign in again";
 pub const NOT_SIGNED_IN: &str =
     "Claude Code is not signed in. Open Claude Code and sign in to resume cloud sessions";
+/// Claude Code has no login here, and Claude's desktop app is installed.
+/// The desktop app's sign-in is never read and is not one Agent Relay may
+/// use ([`claude_desktop`](crate::claude_desktop)), so this says plainly
+/// that it is not enough and how to give Claude Code its own.
+pub const DESKTOP_APP_NOT_ENOUGH: &str = "Claude Code is not signed in. Signing in to Claude's desktop app alone is not enough: Claude Code cloud sessions need Claude Code's own sign-in. Run claude auth login in Terminal once (install Claude Code first if there is no claude command) to resume cloud sessions";
 pub const FOLDER_NOT_SHARED: &str = "Claude Code cloud sessions are on, but ~/.claude is not shared. Share that folder in Settings to resume them";
 pub const KEYCHAIN_DENIED: &str = "Agent Relay is blocked from reading Claude Code's credential (Keychain error -25337). Turn Claude Code cloud sessions off and on again in Settings, then choose Always Allow";
 /// A read refused with OSStatus -25293 (`errSecAuthFailed`) that the
@@ -431,6 +436,9 @@ pub enum Login {
     Unreadable,
     /// Claude Code is not signed in here.
     Missing,
+    /// Claude Code is not signed in here, and Claude's desktop app is
+    /// installed (whether it is signed in is never read).
+    DesktopAppInstalled,
 }
 
 /// Whether credentials JSON holds a usable token at `now_ms`: `None` when it
@@ -464,6 +472,7 @@ pub fn choose(home: &Path, keychain: &dyn KeychainSource, now_ms: i64) -> Login 
         _ if keychain_allowed && keychain.present() => Login::Keychain,
         Some(Some(false)) => Login::Expired,
         Some(None) => Login::Unreadable,
+        None if crate::claude_desktop::installed(home) => Login::DesktopAppInstalled,
         None => Login::Missing,
     }
 }
@@ -513,6 +522,7 @@ pub fn prepare(
         Login::Expired => Err(EXPIRED.to_string()),
         Login::Unreadable => Err(UNREADABLE.to_string()),
         Login::Missing => Err(NOT_SIGNED_IN.to_string()),
+        Login::DesktopAppInstalled => Err(DESKTOP_APP_NOT_ENOUGH.to_string()),
         Login::Keychain => {
             let mut secret = keychain.read(ask)?;
             let verdict = fresh(&secret, now_ms);
@@ -931,6 +941,50 @@ pub(crate) mod tests {
         // Nothing anywhere.
         let bare = tempfile::tempdir().unwrap();
         assert_eq!(choose(bare.path(), &NoKeychain, NOW), Login::Missing);
+    }
+
+    /// Claude's desktop app installed, Claude Code not signed in: the plain
+    /// reason says the desktop app's sign-in is not enough and names Claude
+    /// Code's own, nothing of the desktop app's is read (its data folder,
+    /// even holding a sign-in, changes nothing), no Keychain item is read,
+    /// and a Claude Code login wins.
+    #[test]
+    fn the_desktop_app_alone_is_not_a_claude_code_login() {
+        use super::super::tests::{EnvGuard, ENV_LOCK};
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _override = EnvGuard::remove(CREDENTIALS_ENV);
+        let app = crate::claude_desktop::app_dir(home.path());
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("config.json"), "{}").unwrap();
+        let keychain = FakeKeychain::holding(None);
+        assert_eq!(choose(home.path(), &*keychain, NOW), Login::Missing);
+        if !crate::claude_desktop::install_for_test(home.path()) {
+            return;
+        }
+        let data = tempfile::tempdir().unwrap();
+        assert_eq!(
+            choose(home.path(), &*keychain, NOW),
+            Login::DesktopAppInstalled
+        );
+        assert_eq!(
+            prepare(
+                home.path(),
+                data.path(),
+                &keychain.keychain(),
+                NOW,
+                Ask::Person
+            )
+            .err(),
+            Some(DESKTOP_APP_NOT_ENOUGH.to_string())
+        );
+        assert!(DESKTOP_APP_NOT_ENOUGH.contains("desktop app alone is not enough"));
+        assert_eq!(keychain.reads.load(Ordering::SeqCst), 0);
+
+        let signed_in = FakeKeychain::holding(Some(&credentials(NOW + 60_000)));
+        assert_eq!(choose(home.path(), &*signed_in, NOW), Login::Keychain);
+        write_file(home.path(), &credentials(NOW + 60_000));
+        assert_eq!(choose(home.path(), &*keychain, NOW), Login::File);
     }
 
     /// The app's Keychain source is the login Keychain; tests only name it

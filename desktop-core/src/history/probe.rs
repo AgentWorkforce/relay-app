@@ -23,7 +23,7 @@ mod output;
 mod priority;
 mod progress;
 mod reclaim;
-mod remote_sources;
+pub(crate) mod remote_sources;
 mod session_metadata;
 mod session_reset;
 mod start;
