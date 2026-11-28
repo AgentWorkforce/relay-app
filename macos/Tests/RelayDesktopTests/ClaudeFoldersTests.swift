@@ -46,6 +46,18 @@ final class ClaudeFoldersTests: XCTestCase {
         XCTAssertTrue(ClaudeCloudHealthCopy.detail(nil).contains("No successful pass"))
     }
 
+    func testTheClaudeCodeSignInIsOfferedOnlyWhenTheCoreSaysSo() throws {
+        let offered = try JSONDecoder().decode(ClaudeCloudHealth.self, from: Data(
+            #"{"state":"needs_attention","reason":"Claude Code is not signed in","claude_code_sign_in":true}"#.utf8))
+        XCTAssertTrue(ClaudeCloudHealthCopy.offersSignIn(offered))
+        let absent = try JSONDecoder().decode(ClaudeCloudHealth.self, from: Data(#"{"state":"blocked"}"#.utf8))
+        XCTAssertFalse(ClaudeCloudHealthCopy.offersSignIn(absent))
+        XCTAssertFalse(ClaudeCloudHealthCopy.offersSignIn(nil))
+        XCTAssertEqual(ClaudeCloudHealthCopy.signInLabel, "Sign in to Claude Code")
+        XCTAssertEqual(ClaudeCloudHealthCopy.signInHelp,
+                       "Opens Claude Code's sign-in (claude auth login) in a terminal window. Agent Relay resumes cloud sessions once it finishes.")
+    }
+
     func testPathsUnderHomeAreShortened() {
         XCTAssertEqual(ClaudeFolders.displayPath("/Users/m/.seclaude", home: "/Users/m"), "~/.seclaude")
         XCTAssertEqual(ClaudeFolders.displayPath("/Users/m", home: "/Users/m"), "~")

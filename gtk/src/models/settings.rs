@@ -431,6 +431,17 @@ pub const CLAUDE_CLOUD_SESSIONS_TITLE: &str = "Claude Code cloud sessions";
 /// its login in a file here, with no Keychain to ask.
 pub const CLAUDE_CLOUD_SESSIONS_DETAIL: &str = "Also upload your claude.ai cloud sessions, read with the Claude Code login in ~/.claude while that folder is shared.";
 
+/// The button that opens Claude Code's own sign-in (`claude_cloud.sign_in`),
+/// offered while the core says it would resume cloud sessions here. Linux
+/// has no such button: its core reports the sign-in unavailable, and the
+/// health line says to run `claude auth login`.
+pub const CLAUDE_CODE_SIGN_IN: &str = "Sign in to Claude Code";
+pub const CLAUDE_CODE_SIGN_IN_HELP: &str = "Opens Claude Code's sign-in (claude auth login) in a terminal window. Agent Relay resumes cloud sessions once it finishes.";
+
+pub fn claude_code_sign_in_offered(health: Option<&ClaudeCloudHealth>) -> bool {
+    health.is_some_and(|health| health.claude_code_sign_in)
+}
+
 pub fn claude_cloud_health_label(health: Option<&ClaudeCloudHealth>) -> &'static str {
     match health.map(|health| health.state) {
         Some(ClaudeCloudHealthState::Working) => "Working",
@@ -894,14 +905,36 @@ mod tests {
             at_ms: Some(1_800_000_060_000),
             last_success_ms: Some(1_800_000_000_000),
             keychain_error_code: Some(-25337),
+            claude_code_sign_in: false,
         };
         assert_eq!(claude_cloud_health_label(Some(&health)), "Blocked");
+        assert!(!claude_code_sign_in_offered(Some(&health)));
+        assert!(!claude_code_sign_in_offered(None));
         let detail = claude_cloud_health_detail(Some(&health), &zone());
         assert!(detail.contains("Keychain error -25337"));
         assert!(detail.contains("choose Always Allow"));
         assert!(detail.contains("Last successful pass:"));
         assert_eq!(claude_cloud_health_label(None), "Checking");
         assert!(claude_cloud_health_detail(None, &zone()).contains("No successful pass"));
+    }
+
+    #[test]
+    fn claude_code_sign_in_is_offered_only_when_the_core_says_so_with_the_macs_words() {
+        let health: ClaudeCloudHealth = serde_json::from_value(serde_json::json!({
+            "state": "needs_attention",
+            "reason": "Claude Code is not signed in",
+            "claude_code_sign_in": true,
+        }))
+        .unwrap();
+        assert!(claude_code_sign_in_offered(Some(&health)));
+        let absent: ClaudeCloudHealth =
+            serde_json::from_value(serde_json::json!({"state": "blocked"})).unwrap();
+        assert!(!claude_code_sign_in_offered(Some(&absent)));
+        assert_eq!(CLAUDE_CODE_SIGN_IN, "Sign in to Claude Code");
+        assert_eq!(
+            CLAUDE_CODE_SIGN_IN_HELP,
+            "Opens Claude Code's sign-in (claude auth login) in a terminal window. Agent Relay resumes cloud sessions once it finishes."
+        );
     }
 }
 
