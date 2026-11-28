@@ -35,10 +35,17 @@ fn unavailable(message: &str) -> OutboundError {
     OutboundError::new(409, "attestation_unavailable", message)
 }
 
-/// The handoff waits at most this long, within the hook's own timeout.
-const HANDOFF_TIMEOUT: Duration = Duration::from_secs(3);
-const HANDOFF_RESERVE: Duration = Duration::from_secs(1);
-const ROUTE_BUDGET: Duration = Duration::from_millis(3_750);
+/// How long the route may take: just inside the hook's socket read
+/// ([`crate::claude_attestation::hook::TIMEOUT`]), so the core always answers
+/// while the hook still listens. A core that answered after the hook stopped
+/// listening left the call to go out with its proof still on the way to
+/// Cloud, where it arrived after the call had looked for it.
+pub(crate) const ROUTE_BUDGET: Duration = Duration::from_secs(17);
+/// What a refresh of the chat's identity leaves of the budget for the
+/// handoff itself. The handoff then waits for Cloud's answer for the rest of
+/// the budget, not a fixed few seconds: Cloud's storing the proof is the event
+/// the call waits on, and Cloud regularly takes 2 to 6 seconds to answer.
+const HANDOFF_RESERVE: Duration = Duration::from_secs(10);
 
 fn identity_stale() -> OutboundError {
     OutboundError::new(
@@ -187,10 +194,9 @@ impl Binding {
             agent_relay_node::relay::cloud_session::segment(&self.account.workspace_id),
             attestation::HANDOFF_PATH
         );
+        let started = Instant::now();
         let sent = tokio::time::timeout(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(HANDOFF_TIMEOUT),
+            deadline.saturating_duration_since(started),
             self.identities.plugins.cloud.request(
                 "POST",
                 path,
@@ -205,7 +211,8 @@ impl Binding {
         };
         if let Some(failure) = failure {
             agent_relay_node::relay::diagnostics::write(format_args!(
-                "Claude proof handoff {failure}"
+                "Claude proof handoff {failure} after {} ms",
+                started.elapsed().as_millis()
             ));
             return Err(handoff_failed());
         }

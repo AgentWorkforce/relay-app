@@ -27,7 +27,7 @@ fn the_hook_matches_both_server_forms_and_keeps_other_hooks() {
         .unwrap()
         .push(json!({
             "matcher": MATCHER,
-            "hooks": [{"type": "command", "command": OURS, "timeout": 5}],
+            "hooks": [{"type": "command", "command": OURS, "timeout": 20}],
         }));
     assert_eq!(installed, expected);
     assert!(current(&installed, OURS));
@@ -80,7 +80,7 @@ fn an_older_copy_is_replaced_and_one_sharing_a_group_leaves_its_neighbor() {
         repaired["hooks"]["PreToolUse"],
         json!([
             {"matcher": "mcp__agent-relay__.*", "hooks": [{"type": "command", "command": "keep-me"}]},
-            {"matcher": MATCHER, "hooks": [{"type": "command", "command": OURS, "timeout": 5}]},
+            {"matcher": MATCHER, "hooks": [{"type": "command", "command": OURS, "timeout": 20}]},
         ])
     );
     assert!(current(&repaired, OURS));
@@ -212,4 +212,39 @@ fn the_teammate_context_hook_and_the_identity_hook_never_touch_each_other() {
     let only_team = parse(&render(&both.to_string(), None).unwrap());
     assert!(current_kind(&only_team, TEAM, &build, Kind::TeammateContext));
     assert!(!present(&only_team));
+}
+
+#[test]
+fn an_installed_hook_with_the_old_five_second_timeout_is_rewritten() {
+    // Before #2283 Claude gave the hook 5 seconds, less than Cloud can take
+    // to store a proof. That hook is not current and is replaced in place.
+    let mut old = others();
+    old["hooks"]["PreToolUse"].as_array_mut().unwrap().push(json!({
+        "matcher": MATCHER,
+        "hooks": [{"type": "command", "command": OURS, "timeout": 5}],
+    }));
+    assert!(!current(&old, OURS));
+    let installed = parse(&render(&old.to_string(), Some(OURS)).unwrap());
+    assert!(current(&installed, OURS));
+    let ours: Vec<_> = installed["hooks"]["PreToolUse"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|group| group["matcher"] == MATCHER)
+        .collect();
+    assert_eq!(ours.len(), 1);
+    assert_eq!(ours[0]["hooks"][0]["timeout"], 20);
+}
+
+#[test]
+fn claude_outwaits_the_hook_and_the_hook_outwaits_the_core() {
+    // Each side must still be listening when the one it asked answers: the
+    // core's handoff ends inside the hook's wait, and the hook's inside
+    // Claude's. A core answering after the hook gave up sent the call out
+    // while its proof was still on the way to Cloud.
+    let claude = std::time::Duration::from_secs(Kind::Attestation.timeout_secs());
+    let hook = crate::claude_attestation::hook::TIMEOUT;
+    let core = crate::attestation_route::ROUTE_BUDGET;
+    assert!(core + std::time::Duration::from_millis(500) <= hook, "{core:?} {hook:?}");
+    assert!(hook + std::time::Duration::from_secs(1) <= claude, "{hook:?} {claude:?}");
 }
