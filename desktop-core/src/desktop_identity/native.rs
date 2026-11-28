@@ -20,6 +20,9 @@ pub(super) struct Capability {
     /// Cloud takes Claude proofs ahead of the call (`claude_attestation_handoff`),
     /// so the hook never rewrites a tool call's arguments.
     claude_handoff: bool,
+    /// Cloud waits briefly for a proof handed off after its call left
+    /// (`claude_attestation_async_handoff`), so the hook need not wait.
+    claude_async_handoff: bool,
     claude_active_alias: bool,
     copilot_attestation: bool,
     cursor_attestation: bool,
@@ -62,6 +65,25 @@ impl DesktopIdentitySync {
                     && c.generation == generation
                     && c.claude_attestation
                     && c.claude_handoff
+            })
+    }
+    /// Cloud also waits for a proof handed off after its call
+    /// (`claude_attestation_async_handoff`), for a login that declared it.
+    pub(super) fn claude_async_handoff_supported(
+        &self,
+        account: &CloudAccount,
+        generation: u64,
+    ) -> bool {
+        self.native_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|c| {
+                c.account == *account
+                    && c.generation == generation
+                    && c.claude_attestation
+                    && c.claude_handoff
+                    && c.claude_async_handoff
             })
     }
     fn claude_active_alias_supported(&self, account: &CloudAccount, generation: u64) -> bool {
@@ -152,6 +174,9 @@ impl DesktopIdentitySync {
             claude_attestation: response["capabilities"]["claude_session_attestation"].as_u64()
                 == Some(1),
             claude_handoff: response["capabilities"]["claude_attestation_handoff"].as_u64()
+                == Some(1),
+            claude_async_handoff: response["capabilities"]["claude_attestation_async_handoff"]
+                .as_u64()
                 == Some(1),
             claude_active_alias: response["capabilities"]["claude_active_alias"].as_u64()
                 == Some(1),

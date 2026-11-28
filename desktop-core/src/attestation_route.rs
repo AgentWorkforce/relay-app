@@ -13,10 +13,17 @@
 //! proof is handed to Cloud before this answers, and `handoff` tells the hook
 //! to leave the call unchanged. A failed handoff is an error, never a
 //! fallback to the arguments: Claude's auto mode refuses a rewritten call.
+//!
+//! When Cloud also waits for a proof that arrives after its call
+//! (`claude_attestation_async_handoff`, declared by this login in
+//! [`crate::desktop_identity::async_handoff`]), the route answers at once
+//! with `pending` and hands the proof off in the background. A slow Cloud
+//! then delays the call instead of failing the hook. A call from this chat
+//! that gets no proof gets a marker instead, so Cloud stops waiting for it.
 
 use crate::claude_attestation::{self as attestation, Claims};
-use crate::desktop_identity::{claude::ClaudeIdentity, Identities};
-use agent_relay_node::relay::cloud_session::CloudAccount;
+use crate::desktop_identity::{async_handoff::handoff_path, claude::ClaudeIdentity, Identities};
+use agent_relay_node::relay::cloud_session::{CloudAccount, CloudError};
 use agent_relay_node::relay::outbound::{payload, Outbound, OutboundError, Purpose, Request};
 use agent_relay_node::relay::store::{SessionKind, Target};
 use serde_json::{json, Map, Value};
@@ -39,6 +46,13 @@ fn unavailable(message: &str) -> OutboundError {
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(3);
 const HANDOFF_RESERVE: Duration = Duration::from_secs(1);
 const ROUTE_BUDGET: Duration = Duration::from_millis(3_750);
+/// A background handoff (proof or marker) keeps retrying for this long:
+/// less than the 10 seconds Cloud waits for it.
+const BACKGROUND_BUDGET: Duration = Duration::from_secs(9);
+/// One background request waits at most this long before it is retried.
+const BACKGROUND_ATTEMPT: Duration = Duration::from_secs(5);
+/// The pause before a background request is retried.
+const BACKGROUND_RETRY: Duration = Duration::from_millis(250);
 
 fn identity_stale() -> OutboundError {
     OutboundError::new(
@@ -182,18 +196,13 @@ impl Binding {
         if !self.handoff {
             return Ok(());
         }
-        let path = format!(
-            "/workspaces/{}/{}",
-            agent_relay_node::relay::cloud_session::segment(&self.account.workspace_id),
-            attestation::HANDOFF_PATH
-        );
         let sent = tokio::time::timeout(
             deadline
                 .saturating_duration_since(Instant::now())
                 .min(HANDOFF_TIMEOUT),
             self.identities.plugins.cloud.request(
                 "POST",
-                path,
+                handoff_path(&self.account),
                 Some(json!({ "attestation": proof })),
             ),
         )
@@ -211,6 +220,95 @@ impl Binding {
         }
         self.current().then_some(()).ok_or_else(identity_stale)
     }
+
+    /// The async handoff, after the hook was answered: the proof once it is
+    /// signed (syncing this chat's identity first if Cloud lacks it), or a
+    /// marker when it cannot be.
+    async fn hand_off_in_background(
+        self,
+        key: Arc<attestation::Key>,
+        tool: String,
+        tool_use_id: String,
+    ) {
+        let deadline = Instant::now() + BACKGROUND_BUDGET;
+        let marker = json!({ "unattested": tool_use_id });
+        let mut outcome = match self.proof(&key, &tool, &tool_use_id, deadline).await {
+            Ok(proof) => {
+                let body = json!({ "attestation": proof });
+                deposit(&self.identities, &self.account, body, deadline).await
+            }
+            Err(_) => deposit(&self.identities, &self.account, marker.clone(), deadline).await,
+        };
+        if outcome == Some("refused") {
+            // Cloud will not take this proof: a marker spares the call the
+            // wait for it. One already stored for the call is left alone.
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "Claude proof background handoff refused"
+            ));
+            outcome = deposit(&self.identities, &self.account, marker, deadline).await;
+        }
+        if let Some(failure) = outcome {
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "Claude proof background handoff {failure}"
+            ));
+        }
+    }
+}
+
+/// POSTs one handoff body until Cloud answers, a refusal, or `deadline`.
+/// Returns why it gave up, if it did.
+async fn deposit(
+    identities: &Identities,
+    account: &CloudAccount,
+    body: Value,
+    deadline: Instant,
+) -> Option<&'static str> {
+    let mut failure = "timed out";
+    while Instant::now() < deadline {
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(BACKGROUND_ATTEMPT);
+        let sent = tokio::time::timeout(
+            wait,
+            identities
+                .plugins
+                .cloud
+                .request("POST", handoff_path(account), Some(body.clone())),
+        )
+        .await;
+        match sent {
+            Ok(Ok(_)) => return None,
+            // A refusal comes again: the proof, or a marker, is not wanted.
+            Ok(Err(CloudError::Status { status, .. }))
+                if !matches!(status, 408 | 429 | 500..=599) =>
+            {
+                return Some("refused");
+            }
+            Ok(Err(CloudError::Rejected | CloudError::SignedOut | CloudError::GateOnly { .. })) => {
+                return Some("refused");
+            }
+            Ok(Err(_)) => failure = "failed",
+            Err(_) => failure = "timed out",
+        }
+        tokio::time::sleep(
+            BACKGROUND_RETRY.min(deadline.saturating_duration_since(Instant::now())),
+        )
+        .await;
+    }
+    Some(failure)
+}
+
+/// In the background, tells Cloud that no proof is coming for this call.
+fn spawn_marker(identities: Identities, account: CloudAccount, tool_use_id: String) {
+    tokio::spawn(async move {
+        let deadline = Instant::now() + BACKGROUND_BUDGET;
+        let body = json!({ "unattested": tool_use_id });
+        if let Some(failure) = deposit(&identities, &account, body, deadline).await {
+            agent_relay_node::relay::diagnostics::write(format_args!(
+                "Claude proof marker {failure}"
+            ));
+        }
+    });
 }
 
 /// Signs a proof for the hook in chat `pid`, for a tool on `server`: the
@@ -253,25 +351,59 @@ pub(crate) async fn route(
     if caller.target.kind != target.kind || !caller.target.id.eq_ignore_ascii_case(&target.id) {
         return Err(OutboundError::not_a_session());
     }
-    let requested_name = requested_name(&fields, tool)?;
-    check_registration(outbound, &target, requested_name.as_deref())?;
-    let identity = identities
-        .current_claude_identity(&account, generation, &target)
-        .ok_or_else(identity_stale)?;
-    let native_join = check_join(&identity, &fields, tool, requested_name.as_deref())?;
-    let key = key.ok_or_else(|| unavailable("The attestation key is unavailable."))?;
+    // From here the caller is this chat. While Cloud may wait on this
+    // login's calls, a call of this chat that gets no proof gets a marker.
+    let markers = identities.claude_markers_expected();
+    let marked = |error: OutboundError, identities: Identities| {
+        if markers {
+            spawn_marker(identities, account.clone(), tool_use_id.to_string());
+        }
+        error
+    };
+    let prepared = (|| {
+        let requested_name = requested_name(&fields, tool)?;
+        check_registration(outbound, &target, requested_name.as_deref())?;
+        let identity = identities
+            .current_claude_identity(&account, generation, &target)
+            .ok_or_else(identity_stale)?;
+        let native_join = check_join(&identity, &fields, tool, requested_name.as_deref())?;
+        let key = key.ok_or_else(|| unavailable("The attestation key is unavailable."))?;
+        Ok((identity, native_join, key))
+    })();
+    let (identity, native_join, key) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => return Err(marked(error, identities)),
+    };
     let handoff = identities.claude_attestation_handoff();
+    let background = handoff && identities.claude_async_handoff();
     let binding = Binding {
         identities,
-        account,
+        account: account.clone(),
         generation,
         target,
         identity,
         handoff,
     };
-    let proof = binding.proof(&key, tool, tool_use_id, deadline).await?;
-    binding.dispatch(&proof, deadline).await?;
-    Ok(json!({ "attestation": proof, "native_join": native_join, "handoff": handoff }))
+    if background {
+        tokio::spawn(binding.hand_off_in_background(
+            key,
+            tool.to_string(),
+            tool_use_id.to_string(),
+        ));
+        return Ok(json!({
+            "attestation": null, "native_join": native_join, "handoff": true, "pending": true,
+        }));
+    }
+    let signed = match binding.proof(&key, tool, tool_use_id, deadline).await {
+        Ok(proof) => binding.dispatch(&proof, deadline).await.map(|()| proof),
+        Err(error) => Err(error),
+    };
+    match signed {
+        Ok(proof) => {
+            Ok(json!({ "attestation": proof, "native_join": native_join, "handoff": handoff }))
+        }
+        Err(error) => Err(marked(error, binding.identities)),
+    }
 }
 
 fn check_registration(

@@ -111,6 +111,25 @@ How the proof reaches Cloud depends on Cloud:
   with `handoff_failed`, the hook denies the call and asks Claude to retry. Claude
   Code's auto mode refuses any call whose input a hook changed, so with the
   handoff every hosted tool works in auto mode.
+- **Async handoff** (Cloud also advertises
+  `capabilities.claude_attestation_async_handoff: 1`): this app login first
+  declares it with `POST …/attestations {"async_handoff": true}`. Cloud keeps
+  the declaration for its token family for 2 hours, and the core renews it
+  every 30 minutes from the account's maintenance pass. While the last
+  declaration is under 90 minutes old, the core answers the hook at once with
+  `{"handoff": true, "pending": true, "attestation": null, "native_join"}`.
+  The hook prints nothing, as with the handoff. The core then, in the
+  background, syncs the chat's identity if Cloud lacks it, signs, and POSTs the
+  proof, retrying an unreachable or failing Cloud for up to 9 seconds. When the
+  call reaches Cloud before its proof, Cloud waits up to 10 seconds for it,
+  but only for tools that act as the chat and only for a login that declared.
+  When a call from a verified chat cannot be signed (the chat is not
+  registered, its identity is stale, no key), the core POSTs
+  `{"unattested": "<tool_use_id>"}` instead, so Cloud stops waiting and runs
+  the call without the chat's identity. Markers are sent while a declaration
+  might still be in force at Cloud (up to 2 h 15 min after it). A slow Cloud
+  therefore delays a call rather than denying it in the hook's 5 seconds.
+  Without a recent declaration the core keeps the synchronous handoff.
 - **In the arguments** (an older Cloud without the handoff): the hook returns
   `hookSpecificOutput.updatedInput`, the call's own arguments with
   `_agent_relay_attestation` set to the proof, replacing any value the model
