@@ -2866,6 +2866,17 @@ final class AppModel {
         }
     }
 
+    /// Opens Claude Code's own sign-in (`claude_cloud.sign_in`) in a terminal
+    /// window; a refusal is returned as the core worded it.
+    func signInToClaudeCode() async -> String? {
+        do {
+            try await client.claudeCloudSignIn()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     /// Whether the person's OpenClaw agents can use Agent Relay's tools
     /// (`openclaw.relay_tools.status`); a failed read says why, as the core
     /// worded it.

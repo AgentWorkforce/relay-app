@@ -199,6 +199,9 @@ impl MethodExtension for AccountMethods {
             if let Some(answer) = contractor_answer {
                 return Some(answer);
             }
+            if let Some(answer) = claude_sign_in_call(core, context, method, raw.clone()).await {
+                return Some(answer);
+            }
             if let Some(answer) = login_item_call(core, method, raw.clone()).await {
                 return Some(answer);
             }
@@ -214,6 +217,37 @@ impl MethodExtension for AccountMethods {
     fn connection_closed(&self, context: &CallContext) {
         self.0.service_callers.callers.connection_closed(context);
     }
+}
+
+/// `claude_cloud.sign_in`: opens Claude Code's own sign-in for the person.
+/// An agent session on this computer is refused, as for the person's other
+/// controls: the person asks for it in Settings.
+async fn claude_sign_in_call(
+    core: &Arc<Core>,
+    context: &CallContext,
+    method: &str,
+    raw: Value,
+) -> Option<Result<Value, RpcError>> {
+    use agent_relay_node::relay::protocol::ErrorKind;
+    if method != method::ClaudeCloudSignIn::NAME {
+        return None;
+    }
+    if let Err(refused) =
+        agent_relay_node::relay::person_guard::admit_person_control(core, context).await
+    {
+        return Some(Err(refused));
+    }
+    let home = core.config().home.clone();
+    Some(
+        answer::<method::ClaudeCloudSignIn, _>(raw, |_| async move {
+            tokio::task::spawn_blocking(move || crate::claude_sign_in::start(&home))
+                .await
+                .unwrap_or_else(|_| Err(crate::claude_sign_in::NOT_STARTED.to_string()))
+                .map(|()| Done {})
+                .map_err(|reason| RpcError::new(ErrorKind::Refused, reason))
+        })
+        .await,
+    )
 }
 
 async fn login_item_call(

@@ -9,16 +9,18 @@ use super::widgets::{
     LabelStyle, Tone,
 };
 use crate::models::{
-    claude_cloud_health_detail, claude_cloud_health_label, claude_folder_detail,
-    claude_folder_display_path, claude_folder_removable, claude_folders_adding,
-    claude_folders_removing, CLAUDE_CLOUD_SESSIONS_DETAIL, CLAUDE_CLOUD_SESSIONS_TITLE,
-    CLAUDE_FOLDERS_ADD, CLAUDE_FOLDERS_ADD_HELP, CLAUDE_FOLDERS_DETAIL, CLAUDE_FOLDERS_NOT_SHARED,
+    claude_cloud_health_detail, claude_cloud_health_label, claude_code_sign_in_offered,
+    claude_folder_detail, claude_folder_display_path, claude_folder_removable,
+    claude_folders_adding, claude_folders_removing, CLAUDE_CLOUD_SESSIONS_DETAIL,
+    CLAUDE_CLOUD_SESSIONS_TITLE, CLAUDE_CODE_SIGN_IN, CLAUDE_CODE_SIGN_IN_HELP, CLAUDE_FOLDERS_ADD,
+    CLAUDE_FOLDERS_ADD_HELP, CLAUDE_FOLDERS_DETAIL, CLAUDE_FOLDERS_NOT_SHARED,
     CLAUDE_FOLDERS_REMOVE, CLAUDE_FOLDERS_SHARE_HELP, CLAUDE_FOLDERS_TITLE,
 };
 use agent_relay_desktop_core::contract::account::ClaudeCloudHealth;
 use agent_relay_node::relay::contract::agents::{
     ClaudeConfigDir, ClaudeConfigDirChange, SettingsChange,
 };
+use agent_relay_node::relay::contract::NoParams;
 use gtk::{gio, prelude::*};
 use gtk4 as gtk;
 
@@ -28,6 +30,13 @@ const FOLDERS_KEY: &str = "provider.claude.folders";
 /// The widget name of the Claude cloud-session health line, which an
 /// uploader update compares before drawing Claude's page again.
 const CLAUDE_CLOUD_HEALTH_NAME: &str = "claude-cloud-health";
+/// The widget name of "Sign in to Claude Code", whose coming or going an
+/// uploader update also redraws for.
+const CLAUDE_CODE_SIGN_IN_NAME: &str = "claude-code-sign-in";
+
+/// What Claude's page shows under cloud sessions: the health line, and
+/// whether "Sign in to Claude Code" is offered.
+type ClaudeCloudShown = (String, bool);
 
 /// The health line under Claude Code cloud sessions: its state, then why and
 /// when it last worked.
@@ -52,10 +61,10 @@ fn claude_folders_summary(folders: &[ClaudeConfigDir]) -> String {
 }
 
 impl App {
-    /// The health line Claude's page should show now; `None` while cloud
-    /// sessions are off or the folders are not reported yet, when no line is
-    /// drawn.
-    fn claude_cloud_health_wanted(&self) -> Option<String> {
+    /// The health line Claude's page should show now, and whether it offers
+    /// Claude Code's sign-in; `None` while cloud sessions are off or the
+    /// folders are not reported yet, when no line is drawn.
+    fn claude_cloud_health_wanted(&self) -> Option<ClaudeCloudShown> {
         self.with_state(|state| {
             let settings = state.settings.as_ref()?;
             settings.claude_config_dirs.as_ref()?;
@@ -64,14 +73,17 @@ impl App {
                 .status
                 .as_ref()
                 .and_then(|status| status.claude_cloud.clone());
-            Some(claude_cloud_health_line(health.as_ref()))
+            Some((
+                claude_cloud_health_line(health.as_ref()),
+                claude_code_sign_in_offered(health.as_ref()),
+            ))
         })
     }
 
     /// Draws Claude's provider page again after an uploader update only when
-    /// the Claude cloud-session health line no longer matches, so an update
-    /// that changes nothing there leaves the page, and any field being edited
-    /// in it, as it is.
+    /// the Claude cloud-session health line, or whether it offers Claude
+    /// Code's sign-in, no longer matches, so an update that changes nothing
+    /// there leaves the page, and any field being edited in it, as it is.
     pub(in crate::ui) fn refresh_claude_cloud_health(&self) {
         let claude = self.page() == Page::Settings(Pane::Tools)
             && self.with_state(|state| {
@@ -84,12 +96,16 @@ impl App {
         let Some(shell) = self.shell() else {
             return;
         };
-        let mut shown = None;
+        let mut line = None;
+        let mut sign_in = false;
         widgets::walk(shell.settings.column.upcast_ref(), &mut |widget| {
             if widget.widget_name() == CLAUDE_CLOUD_HEALTH_NAME {
-                shown = widget.tooltip_text().map(|line| line.to_string());
+                line = widget.tooltip_text().map(|line| line.to_string());
+            } else if widget.widget_name() == CLAUDE_CODE_SIGN_IN_NAME {
+                sign_in = true;
             }
         });
+        let shown = line.map(|line| (line, sign_in));
         if shown != self.claude_cloud_health_wanted() {
             self.render_settings();
         }
@@ -235,25 +251,34 @@ impl App {
             }
         });
         let health_label = claude_cloud_health_label(health);
-        let extra: Vec<gtk::Widget> = cloud
-            .then(|| {
-                let line = claude_cloud_health_line(health);
-                let shown = notice(
-                    &line,
-                    if health_label == "Working" {
-                        Tone::Ok
-                    } else if health_label == "Checking" {
-                        Tone::Neutral
-                    } else {
-                        Tone::Warn
-                    },
+        let mut extra: Vec<gtk::Widget> = Vec::new();
+        if cloud {
+            let line = claude_cloud_health_line(health);
+            let shown = notice(
+                &line,
+                if health_label == "Working" {
+                    Tone::Ok
+                } else if health_label == "Checking" {
+                    Tone::Neutral
+                } else {
+                    Tone::Warn
+                },
+            );
+            shown.set_widget_name(CLAUDE_CLOUD_HEALTH_NAME);
+            shown.set_tooltip_text(Some(&line));
+            extra.push(shown.upcast());
+            if claude_code_sign_in_offered(health) {
+                let sign_in = button(
+                    CLAUDE_CODE_SIGN_IN,
+                    &[],
+                    self.on(|app| app.sign_in_to_claude_code()),
                 );
-                shown.set_widget_name(CLAUDE_CLOUD_HEALTH_NAME);
-                shown.set_tooltip_text(Some(&line));
-                shown
-            })
-            .into_iter()
-            .collect();
+                sign_in.set_widget_name(CLAUDE_CODE_SIGN_IN_NAME);
+                sign_in.set_tooltip_text(Some(CLAUDE_CODE_SIGN_IN_HELP));
+                sign_in.set_halign(gtk::Align::Start);
+                extra.push(sign_in.upcast());
+            }
+        }
         settings_row(
             CLAUDE_CLOUD_SESSIONS_TITLE,
             CLAUDE_CLOUD_SESSIONS_DETAIL,
@@ -302,6 +327,19 @@ impl App {
                 ..SettingsChange::default()
             },
             SettingRow::ClaudeFolders,
+        );
+    }
+
+    /// Opens Claude Code's own sign-in (`claude_cloud.sign_in`) in a terminal
+    /// window; a refusal shows under the section, as the core worded it.
+    pub fn sign_in_to_claude_code(&self) {
+        self.call::<agent_relay_desktop_core::contract::method::ClaudeCloudSignIn>(
+            NoParams {},
+            |app, result| {
+                let error = result.err().map(|error| error.message);
+                app.update_state(|state| state.claude_folders_error = error);
+                app.render_settings();
+            },
         );
     }
 
