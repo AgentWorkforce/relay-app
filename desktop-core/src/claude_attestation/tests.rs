@@ -355,6 +355,34 @@ fn a_handed_off_proof_leaves_the_call_unchanged() {
 }
 
 #[test]
+fn a_pending_handoff_leaves_the_call_unchanged_without_waiting_for_a_proof() {
+    // The core hands the proof off in the background: no proof comes back,
+    // and the call goes out unchanged.
+    let pending = br#"{"ok":true,"data":{"attestation":null,"native_join":false,"handoff":true,"pending":true}}"#;
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    assert!(hook::output(&input, |_| Some(pending.to_vec())).is_none());
+
+    // A join is never pending: without its proof it is denied, even with
+    // the core's native-name confirmation.
+    let mut join = pre_tool_use(json!({"name":"claude-assistant"}));
+    join["tool_name"] = json!("mcp__agent-relay__join_relay");
+    let denied = hook::output(&join, |_| Some(pending.to_vec())).unwrap();
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+    let confirmed = br#"{"ok":true,"data":{"attestation":null,"native_join":true,"handoff":true,"pending":true}}"#;
+    let denied = hook::output(&join, |_| Some(confirmed.to_vec())).unwrap();
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+    let mut bare = pre_tool_use(json!({}));
+    bare["tool_name"] = json!("mcp__agent-relay__join_relay");
+    let denied = hook::output(&bare, |_| Some(pending.to_vec())).unwrap();
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    // `pending` without `handoff` is not a handoff: without a proof, a join is denied.
+    let unhanded = br#"{"ok":true,"data":{"attestation":null,"native_join":true,"pending":true}}"#;
+    let denied = hook::output(&join, |_| Some(unhanded.to_vec())).unwrap();
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+}
+
+#[test]
 fn tools_that_never_act_as_the_chat_are_not_signed() {
     for tool in [
         "mcp__agent-relay__list_relay_agents",

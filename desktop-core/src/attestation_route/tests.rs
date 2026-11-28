@@ -572,6 +572,7 @@ async fn after_resume_the_hook_proves_only_the_chat_its_claude_now_holds() {
     assert_eq!(refused.code, OutboundError::not_a_session().code);
 }
 
+mod async_handoff;
 mod claude_alias;
 pub(crate) mod copilot;
 
