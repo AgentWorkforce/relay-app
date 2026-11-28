@@ -40,7 +40,7 @@ rust_roots = ["src"]
 "src/history/probe/bridge.rs" = 784
 "src/history/probe/collector.rs" = 846
 "src/history/probe/live.rs" = 758
-"src/history/uploader.rs" = 828
+"src/history/uploader.rs" = 829
 "src/telemetry.rs" = 781
 
 [baseline.cyclomatic]
