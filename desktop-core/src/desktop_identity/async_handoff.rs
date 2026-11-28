@@ -27,6 +27,20 @@ pub(super) struct Declared {
     account: CloudAccount,
     generation: u64,
     at: Instant,
+    /// How much older a test made this declaration. An `Instant` cannot be
+    /// moved back past the clock's origin (on Windows, the boot, so a fresh
+    /// host would panic), so tests add to its age instead.
+    #[cfg(test)]
+    aged: Duration,
+}
+
+impl Declared {
+    fn age(&self) -> Duration {
+        let age = self.at.elapsed();
+        #[cfg(test)]
+        let age = age.saturating_add(self.aged);
+        age
+    }
 }
 
 impl DesktopIdentitySync {
@@ -38,7 +52,7 @@ impl DesktopIdentitySync {
             .is_some_and(|declared| {
                 declared.account == *account
                     && declared.generation == generation
-                    && declared.at.elapsed() < within
+                    && declared.age() < within
             })
     }
 
@@ -50,6 +64,8 @@ impl DesktopIdentitySync {
             account,
             generation,
             at: Instant::now(),
+            #[cfg(test)]
+            aged: Duration::ZERO,
         });
     }
 
@@ -61,7 +77,7 @@ impl DesktopIdentitySync {
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
         {
-            declared.at -= by;
+            declared.aged = declared.aged.saturating_add(by);
         }
     }
 }

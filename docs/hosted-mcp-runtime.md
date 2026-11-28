@@ -130,6 +130,10 @@ How the proof reaches Cloud depends on Cloud:
   might still be in force at Cloud (up to 2 h 15 min after it). A slow Cloud
   therefore delays a call rather than denying it in the hook's 5 seconds.
   Without a recent declaration the core keeps the synchronous handoff.
+  `join_relay` always keeps it: a join goes out only after Cloud took its
+  proof, and the hook denies a join that has none. A background proof or
+  marker is dropped, not sent, once the account or its sync generation
+  changes (sign-out, another account or workspace).
 - **In the arguments** (an older Cloud without the handoff): the hook returns
   `hookSpecificOutput.updatedInput`, the call's own arguments with
   `_agent_relay_attestation` set to the proof, replacing any value the model

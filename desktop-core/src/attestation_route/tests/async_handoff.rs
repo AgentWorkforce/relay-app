@@ -203,3 +203,5 @@ async fn a_refused_background_proof_is_followed_by_a_marker_not_retried() {
         .count();
     assert_eq!(proofs, 1, "a refused proof is not sent again");
 }
+
+mod guards;

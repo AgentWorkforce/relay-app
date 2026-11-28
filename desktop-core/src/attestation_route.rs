@@ -20,6 +20,8 @@
 //! with `pending` and hands the proof off in the background. A slow Cloud
 //! then delays the call instead of failing the hook. A call from this chat
 //! that gets no proof gets a marker instead, so Cloud stops waiting for it.
+//! `join_relay` keeps the synchronous handoff: it is denied without a proof.
+//! A background attempt is dropped once the account or its generation changes.
 
 use crate::claude_attestation::{self as attestation, Claims};
 use crate::desktop_identity::{async_handoff::handoff_path, claude::ClaudeIdentity, Identities};
@@ -235,9 +237,9 @@ impl Binding {
         let mut outcome = match self.proof(&key, &tool, &tool_use_id, deadline).await {
             Ok(proof) => {
                 let body = json!({ "attestation": proof });
-                deposit(&self.identities, &self.account, body, deadline).await
+                self.deposit(body, deadline).await
             }
-            Err(_) => deposit(&self.identities, &self.account, marker.clone(), deadline).await,
+            Err(_) => self.deposit(marker.clone(), deadline).await,
         };
         if outcome == Some("refused") {
             // Cloud will not take this proof: a marker spares the call the
@@ -245,7 +247,7 @@ impl Binding {
             agent_relay_node::relay::diagnostics::write(format_args!(
                 "Claude proof background handoff refused"
             ));
-            outcome = deposit(&self.identities, &self.account, marker, deadline).await;
+            outcome = self.deposit(marker, deadline).await;
         }
         if let Some(failure) = outcome {
             agent_relay_node::relay::diagnostics::write(format_args!(
@@ -253,18 +255,30 @@ impl Binding {
             ));
         }
     }
+
+    async fn deposit(&self, body: Value, deadline: Instant) -> Option<&'static str> {
+        deposit(&self.identities, &self.account, self.generation, body, deadline).await
+    }
 }
 
 /// POSTs one handoff body until Cloud answers, a refusal, or `deadline`.
-/// Returns why it gave up, if it did.
+/// Returns why it gave up, if it did. Each attempt is for the account
+/// generation the call was made in: after a sign-out, an account switch or a
+/// new generation, the body is dropped instead of sent.
 async fn deposit(
     identities: &Identities,
     account: &CloudAccount,
+    generation: u64,
     body: Value,
     deadline: Instant,
 ) -> Option<&'static str> {
     let mut failure = "timed out";
     while Instant::now() < deadline {
+        let cloud = &identities.plugins.cloud;
+        if cloud.account().as_ref() != Some(account) || cloud.identity_sync_generation() != generation
+        {
+            return Some("dropped");
+        }
         let wait = deadline
             .saturating_duration_since(Instant::now())
             .min(BACKGROUND_ATTEMPT);
@@ -299,11 +313,16 @@ async fn deposit(
 }
 
 /// In the background, tells Cloud that no proof is coming for this call.
-fn spawn_marker(identities: Identities, account: CloudAccount, tool_use_id: String) {
+fn spawn_marker(
+    identities: Identities,
+    account: CloudAccount,
+    generation: u64,
+    tool_use_id: String,
+) {
     tokio::spawn(async move {
         let deadline = Instant::now() + BACKGROUND_BUDGET;
         let body = json!({ "unattested": tool_use_id });
-        if let Some(failure) = deposit(&identities, &account, body, deadline).await {
+        if let Some(failure) = deposit(&identities, &account, generation, body, deadline).await {
             agent_relay_node::relay::diagnostics::write(format_args!(
                 "Claude proof marker {failure}"
             ));
@@ -356,7 +375,7 @@ pub(crate) async fn route(
     let markers = identities.claude_markers_expected();
     let marked = |error: OutboundError, identities: Identities| {
         if markers {
-            spawn_marker(identities, account.clone(), tool_use_id.to_string());
+            spawn_marker(identities, account.clone(), generation, tool_use_id.to_string());
         }
         error
     };
@@ -375,7 +394,10 @@ pub(crate) async fn route(
         Err(error) => return Err(marked(error, identities)),
     };
     let handoff = identities.claude_attestation_handoff();
-    let background = handoff && identities.claude_async_handoff();
+    // A join stays synchronous: it registers this chat's identity at Cloud,
+    // so it never goes out before its proof is in, and a proof that fails
+    // denies it rather than letting it run without the chat's identity.
+    let background = handoff && tool != "join_relay" && identities.claude_async_handoff();
     let binding = Binding {
         identities,
         account: account.clone(),
