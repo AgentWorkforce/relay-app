@@ -36,6 +36,24 @@ import RelayDesktopCore
         XCTAssertEqual(state.activityStatus, "Finished")
     }
 
+    func testActiveAntigravityChatShowsActiveInsteadOfFinished() {
+        let defaults = UserDefaults(suiteName: "session-row-state-ag-\(UUID())")!
+        let model = AppModel(manageSystemServices: false, defaults: defaults)
+        let relay = RelayModel(client: CoreClient(socketPath: "/tmp/session-row-state-ag-unused.sock"))
+        let uuid = "7f657d11-b145-477f-a76b-28408ec8cbb1"
+        let upload = UploadSession(cwd: nil, included: true, isAgent: false, lastActivityMs: 200,
+                                   sessionId: uuid, source: "antigravity", status: .uploading,
+                                   title: "Fixing Antigravity Conversation Display")
+        let live = LocalSession(directory: "/Users/dev/agentworkforce", host: "Antigravity", live: true,
+                                project: "agentworkforce", running: true, suggestedName: "antigravity-agentworkforce",
+                                target: Target(id: uuid, kind: .antigravity), title: "Fixing Antigravity Conversation Display")
+        let rows = LocalSessionRow.merge(uploads: [upload], sessions: [live])
+        XCTAssertEqual(rows.count, 1)
+        let state = SessionRowIndex(model: model, relay: relay).state(for: rows[0])
+        XCTAssertEqual(state.activityStatus, "Active")
+        XCTAssertEqual(state.row.project, "agentworkforce")
+    }
+
     // relay#2239: a session not seen running says why, with what to do next.
     func testNotRunningReasonNamesTheNextStep() {
         XCTAssertEqual(RelayModel.notRunningMessage(for: .codex),

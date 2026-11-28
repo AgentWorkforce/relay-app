@@ -62,10 +62,8 @@ public struct LocalSessionRow: Identifiable, Equatable {
     }
     public var sessionID: String { upload?.sessionId ?? relay?.target.id ?? id }
     public var project: String {
-        if let resolved = upload?.project {
-            return resolved.isEmpty ? relay?.projectName ?? "" : resolved
-        }
-        return upload?.legacyProject ?? relay?.projectName ?? ""
+        let uploadProject = upload?.displayProject ?? ""
+        return uploadProject.isEmpty ? relay?.projectName ?? "" : uploadProject
     }
     public var updatedAt: Date? { upload?.lastActivity ?? relay?.updatedAt }
     public var directory: String { upload?.cwd ?? relay?.directory ?? "" }

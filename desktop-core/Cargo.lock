@@ -68,7 +68,7 @@ dependencies = [
 [[package]]
 name = "agent-relay-node"
 version = "0.1.0"
-source = "git+https://github.com/AgentWorkforce/relay?rev=b7a15c4d4b2ca38000fba59753f3aff62b61cf82#b7a15c4d4b2ca38000fba59753f3aff62b61cf82"
+source = "git+https://github.com/AgentWorkforce/relay?rev=dfce93e8d2713987b2cb85d0e94db0b8dede36ee#dfce93e8d2713987b2cb85d0e94db0b8dede36ee"
 dependencies = [
  "anyhow",
  "atomicwrites",

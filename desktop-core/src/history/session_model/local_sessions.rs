@@ -523,6 +523,26 @@ mod tests {
         );
     }
     #[test]
+    fn antigravity_history_and_live_discovery_merge_into_one_active_row() {
+        let uuid = "7f657d11-b145-477f-a76b-28408ec8cbb1";
+        let mut history = upload("antigravity", uuid);
+        history.cwd = None;
+        history.project = None;
+        let mut live = local("antigravity", uuid);
+        live.project = Some("agentworkforce".into());
+        live.directory = Some("/Users/dev/agentworkforce".into());
+        live.running = Some(true);
+        let rows = merge_local_sessions(&[history], &[live.clone()]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key(), format!("antigravity:{uuid}"));
+        assert_eq!(rows[0].relay.as_ref(), Some(&live));
+        assert_eq!(rows[0].project(), "agentworkforce");
+        assert!(super::super::session_is_active(
+            rows[0].relay.as_ref().unwrap(),
+            1_800_000_000_000
+        ));
+    }
+    #[test]
     fn execution_details_omit_unknown_settings() {
         let mut session = upload("codex", "a");
         session.models = Some(vec!["gpt-6".into()]);

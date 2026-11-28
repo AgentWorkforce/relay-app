@@ -64,6 +64,25 @@ final class LocalSessionListTests: XCTestCase {
         XCTAssertEqual(LocalSessionRow.retiredHiddenID("cursor-cli:\(id)"), row.id)
     }
 
+    func testAntigravityHistoryAndRelayDiscoveryJoinIntoOneActiveRow() throws {
+        let uuid = "7f657d11-b145-477f-a76b-28408ec8cbb1"
+        let live = LocalSession(directory: "/Users/dev/agentworkforce", host: "Antigravity", live: true,
+                                project: "agentworkforce", running: true, suggestedName: "antigravity-agentworkforce",
+                                target: Target(id: uuid, kind: .antigravity), title: "Fixing Antigravity Conversation Display")
+        let history = UploadSession(cwd: nil, included: true, isAgent: false, lastActivityMs: 200,
+                                    sessionId: uuid, source: "antigravity", status: .uploading,
+                                    title: "Fixing Antigravity Conversation Display")
+        XCTAssertEqual(live.uploadKey, "antigravity:\(uuid)")
+        let rows = LocalSessionRow.merge(uploads: [history], sessions: [live])
+        XCTAssertEqual(rows.count, 1)
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.id, "antigravity:\(uuid)")
+        XCTAssertEqual(row.upload, history)
+        XCTAssertEqual(row.relay, live)
+        XCTAssertEqual(row.project, "agentworkforce")
+        XCTAssertEqual(LocalSessionRow.relaySession(for: row.id, in: [live]), live)
+    }
+
     func testClaudeWebHistoryAndRelayDiscoveryAreOneRow() {
         let id = "cse_019a7SvoqfvBg4Z6zbjanBat"
         let targetID = "session_019a7SvoqfvBg4Z6zbjanBat"
