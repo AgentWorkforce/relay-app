@@ -16,7 +16,7 @@ whose `## Unreleased` section has no bullet stops before building.
 
 - **Signing in can finish when a background history helper keeps an output pipe open.** On macOS, Linux and Windows, Agent Relay closes the completed install helper's event reader after a bounded drain, so local-session preparation can finish or report its actual error instead of waiting indefinitely. Final setup events remain ordered, and cancelling sign-in still reports cancellation.
 
-- **Hosted Relay tools in Claude Code chats no longer ask you to retry when Agent Relay Cloud is slow.** On macOS, Linux and Windows, Agent Relay now waits for Cloud to store the chat's proof before a hosted Relay tool call goes out. Before, it waited only 3 seconds. Cloud often takes longer than that, so calls were refused with "could not deliver this chat's proof" and worked on an immediate retry. A call that Desktop has not finished proving is now refused with retry guidance. Before, such a call could go out without the chat's identity and be refused by Cloud.
+- **Hosted Relay tools in Claude Code chats no longer ask you to retry when Agent Relay Cloud is slow.** On macOS, Linux and Windows, Agent Relay now waits for Cloud to store the chat's proof before a hosted Relay tool call goes out. Before, it waited only 3 seconds. Cloud often takes longer than that, so calls were refused with "could not deliver this chat's proof" and worked on an immediate retry. If Desktop is still delivering a chat's proof when the hook stops waiting, the call is now refused with guidance to retry it. Before, that call went out without the chat's identity and Cloud refused it.
 
 ## v2026.11.22
 
