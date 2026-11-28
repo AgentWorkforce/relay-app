@@ -414,7 +414,9 @@ fn tools_that_never_act_as_the_chat_are_not_signed() {
 
 /// A core at a real socket that takes one request and then does `then`.
 #[cfg(unix)]
-fn core_that(then: fn(std::os::unix::net::UnixStream)) -> (tempfile::TempDir, std::path::PathBuf) {
+fn core_that(
+    then: impl FnOnce(std::os::unix::net::UnixStream) + Send + 'static,
+) -> (tempfile::TempDir, std::path::PathBuf) {
     use std::io::Read;
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("relay.sock");
@@ -439,7 +441,13 @@ fn core_that(then: fn(std::os::unix::net::UnixStream)) -> (tempfile::TempDir, st
 #[test]
 fn only_a_request_never_sent_counts_as_no_core() {
     let body = br#"{"session_id":"s","tool_name":"t","tool_use_id":"u"}"#;
-    let wait = std::time::Duration::from_millis(400);
+    // Every case but the late one ends on its own (at once, at the core's
+    // close, or at its answer), so its wait is generous: a loaded runner
+    // cannot turn an answer into Late. Only the late case runs out its wait,
+    // and that core holds the request until the test lets it go, so it can
+    // never answer first.
+    let wait = std::time::Duration::from_secs(30);
+    let short = std::time::Duration::from_millis(200);
 
     // Absent: no socket file at all.
     let root = tempfile::tempdir().unwrap();
@@ -458,11 +466,13 @@ fn only_a_request_never_sent_counts_as_no_core() {
     assert!(matches!(reply, hook::Reply::Late), "{reply:?}");
 
     // Late: the core took the request and is still working on it.
-    let (_root, socket) = core_that(|stream| {
-        std::thread::sleep(std::time::Duration::from_secs(2));
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (_root, socket) = core_that(move |stream| {
+        let _ = held.recv();
         drop(stream);
     });
-    let reply = hook::ask_core(Some(&socket), body, wait);
+    let reply = hook::ask_core(Some(&socket), body, short);
+    drop(release);
     assert!(matches!(reply, hook::Reply::Late), "{reply:?}");
 
     // Answered.
@@ -526,7 +536,8 @@ fn a_reply_cut_short_on_the_socket_denies_the_call() {
     });
     let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
     let output = hook::output_at(&input, Some(&socket), |body| {
-        hook::ask_core(Some(&socket), body, std::time::Duration::from_secs(2))
+        // Ends at the core's close; the wait only bounds a broken fixture.
+        hook::ask_core(Some(&socket), body, std::time::Duration::from_secs(30))
     })
     .expect("a truncated reply must not send the call unsigned");
     assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
