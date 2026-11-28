@@ -97,12 +97,14 @@ impl ChatStatusFilter {
     }
 }
 
-/// The list's filters: a status, and optionally one harness and one project.
+/// The list's filters: a status, and optionally one harness, one project
+/// and one machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatFilters {
     pub status: ChatStatusFilter,
     pub harness: Option<String>,
     pub project: Option<String>,
+    pub machine: Option<String>,
     pub query: String,
 }
 
@@ -112,6 +114,7 @@ impl Default for ChatFilters {
             status: ChatStatusFilter::Running,
             harness: None,
             project: None,
+            machine: None,
             query: String::new(),
         }
     }
@@ -128,6 +131,10 @@ impl ChatFilters {
                 .project
                 .as_ref()
                 .is_none_or(|project| *project == agent.project())
+            && self
+                .machine
+                .as_ref()
+                .is_none_or(|machine| *machine == agent.machine())
             && agent.matches(&self.query)
     }
 }
@@ -209,6 +216,9 @@ pub const CHAT_SUBTITLE: &str = "Every agent on this computer.";
 pub const CHAT_SEARCH: &str = "Search agents and summaries";
 pub const CHAT_ANY_HARNESS: &str = "Any harness";
 pub const CHAT_ANY_PROJECT: &str = "Any project";
+pub const CHAT_ANY_MACHINE: &str = "Any machine";
+/// The machine filter's name for the computer the app runs on.
+pub const CHAT_THIS_COMPUTER: &str = "This computer";
 pub const CHAT_EMPTY_TITLE: &str = "Chat with any agent on this computer";
 pub const CHAT_EMPTY_DETAIL: &str =
     "Pick an agent on the left. Its conversation follows live, and what you send arrives as a message in that session.";
@@ -499,19 +509,23 @@ pub fn chat_elsewhere_agents(
     agents
 }
 
-/// The harnesses and projects the filters offer, sorted.
-pub fn chat_filter_choices(agents: &[ChatAgent]) -> (Vec<String>, Vec<String>) {
+/// The harnesses, projects and machines the filters offer: harnesses and
+/// projects sorted, machines with this computer first, then the others
+/// sorted, Cloud among them.
+pub fn chat_filter_choices(agents: &[ChatAgent]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut harnesses: Vec<String> = agents.iter().map(ChatAgent::provider).collect();
     let mut projects: Vec<String> = agents
         .iter()
         .map(ChatAgent::project)
         .filter(|project| !project.is_empty())
         .collect();
-    for list in [&mut harnesses, &mut projects] {
+    let mut machines: Vec<String> = agents.iter().map(ChatAgent::machine).collect();
+    for list in [&mut harnesses, &mut projects, &mut machines] {
         list.sort_by_key(|value| value.to_lowercase());
         list.dedup();
     }
-    (harnesses, projects)
+    machines.sort_by_key(|machine| machine != CHAT_THIS_COMPUTER);
+    (harnesses, projects, machines)
 }
 
 /// A user turn as the person wrote it: a relay message's attribution,

@@ -351,8 +351,8 @@ impl App {
         };
         let page = &shell.pages.chat;
         let agents = self.chat_agents();
-        let (harnesses, projects) = chat_filter_choices(&agents);
-        page.filters.offer(&harnesses, &projects);
+        let (harnesses, projects, machines) = chat_filter_choices(&agents);
+        page.filters.offer(&harnesses, &projects, &machines);
         let filters = page.filters.read();
         let mut shown: Vec<&ChatAgent> = agents
             .iter()

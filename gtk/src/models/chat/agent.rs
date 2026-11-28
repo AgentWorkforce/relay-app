@@ -94,6 +94,19 @@ impl ChatAgent {
         }
     }
 
+    /// The machine it runs on: this computer, the desktop it named itself
+    /// as elsewhere, or Cloud.
+    pub fn machine(&self) -> String {
+        match &self.place {
+            ChatPlace::Local { .. } | ChatPlace::History(_) => CHAT_THIS_COMPUTER.into(),
+            ChatPlace::Elsewhere(agent) => agent
+                .host
+                .clone()
+                .filter(|host| !host.is_empty())
+                .unwrap_or_else(|| CHAT_CLOUD.into()),
+        }
+    }
+
     /// The exact address it is messaged at, once it is on the relay.
     /// Every name the agent goes by on the relay, for matching a direct
     /// conversation's peer: its name, its registered name and alias, and

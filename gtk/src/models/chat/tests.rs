@@ -135,9 +135,20 @@ fn filters_by_status_harness_project_and_text() {
         ..ChatFilters::default()
     };
     assert!(project.admits(&working));
-    let (harnesses, projects) = chat_filter_choices(&[working.clone(), ended]);
+    let here = ChatFilters {
+        machine: Some(CHAT_THIS_COMPUTER.into()),
+        ..ChatFilters::default()
+    };
+    assert!(here.admits(&working));
+    let away = ChatFilters {
+        machine: Some("studio-mac".into()),
+        ..ChatFilters::default()
+    };
+    assert!(!away.admits(&working));
+    let (harnesses, projects, machines) = chat_filter_choices(&[working.clone(), ended]);
     assert_eq!(projects, ["relay-app"]);
     assert_eq!(harnesses.len(), 1);
+    assert_eq!(machines, [CHAT_THIS_COMPUTER]);
 }
 
 #[test]
