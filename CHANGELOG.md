@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Sign in to Claude Code is also offered when Claude Code's sign-in has expired or cannot be read.** On macOS and Windows, Settings › Providers › Claude Code › Sharing now shows *Sign in to Claude Code* when the cloud sessions status says Claude Code's sign-in has expired or could not be read, not only when Claude Code is not signed in, since signing in again replaces the login in each case. Before, a computer whose stored Claude Code login was not usable showed the status without the button.
+
 ## v2026.11.23
 
 - **Signing in can finish when a background history helper keeps an output pipe open.** On macOS, Linux and Windows, Agent Relay closes the completed install helper's event reader after a bounded drain, so local-session preparation can finish or report its actual error instead of waiting indefinitely. Final setup events remain ordered, and cancelling sign-in still reports cancellation.
