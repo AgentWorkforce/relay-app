@@ -423,13 +423,26 @@ fn core_that(
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        // Read the whole request: its headers end the first blank line and
-        // the body follows, short enough to arrive in the same reads.
+        // Read the whole request, body included, as the core does. Closing a
+        // Unix socket with unread data resets the connection on Linux, so the
+        // hook would read an error instead of the reply the fixture sent.
         let mut seen = Vec::new();
         let mut chunk = [0; 4096];
-        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+        let complete = |seen: &[u8]| {
+            let end = seen.windows(4).position(|w| w == b"\r\n\r\n")?;
+            let headers = std::str::from_utf8(&seen[..end]).ok()?;
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().ok())?
+                })
+                .unwrap_or(0);
+            (seen.len() >= end + 4 + length).then_some(())
+        };
+        while complete(&seen).is_none() {
             let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "the hook closed before sending its request");
+            assert!(read > 0, "the hook closed before sending its whole request");
             seen.extend_from_slice(&chunk[..read]);
         }
         then(stream);
