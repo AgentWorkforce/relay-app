@@ -359,9 +359,9 @@ impl AccountPlugin for Plugin {
     fn maintain(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             if let Some(core) = self.0.core() {
-                crate::desktop_identity::Identities::new(core)
-                    .refresh_mcp_links()
-                    .await;
+                let identities = crate::desktop_identity::Identities::new(core);
+                identities.refresh_mcp_links().await;
+                identities.maintain_async_handoff().await;
             }
             self.0.refresh_provider_credentials(Vec::new(), false).await;
             // At startup (the first pass) and whenever an install attaches,

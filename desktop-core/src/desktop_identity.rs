@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub(crate) mod async_handoff;
 mod capability_retry;
 pub(crate) mod claude;
 mod copilot;
@@ -39,6 +40,8 @@ pub struct DesktopIdentitySync {
     synced: Mutex<Option<synced::SyncedSnapshot>>,
     native_capability: Mutex<Option<native::Capability>>,
     capability_read_failed: Mutex<Option<capability_retry::FailedRead>>,
+    /// This login's last async handoff declaration Cloud took.
+    async_declared: Mutex<Option<async_handoff::Declared>>,
 }
 
 /// Link times by agent id, for the account workspace that reported them

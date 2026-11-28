@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **Hosted Relay tools no longer fail when Agent Relay Cloud is slow.** On macOS, Linux and Windows, with a compatible Agent Relay Cloud, a Claude Code chat's calls that act as its own agent, such as sending a message or `relay_status`, no longer stop with "could not deliver this chat's proof" when Cloud takes more than a few seconds to answer. Agent Relay now sends the chat's proof alongside the call instead of holding the call until Cloud confirms it, and Cloud waits briefly for the proof. A slow Cloud now makes the call slower instead of making it fail. Calls still go out as the chat's own agent and never as another identity. With an older Cloud, calls work as before.
+
 ## v2026.11.23
 
 - **Signing in can finish when a background history helper keeps an output pipe open.** On macOS, Linux and Windows, Agent Relay closes the completed install helper's event reader after a bounded drain, so local-session preparation can finish or report its actual error instead of waiting indefinitely. Final setup events remain ordered, and cancelling sign-in still reports cancellation.

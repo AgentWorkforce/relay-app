@@ -102,6 +102,15 @@ fn signed_output(
         200 | 400 | 403 | 409 => {}
         _ => return None,
     }
+    if status == 200 && response["data"]["handoff"] == true && response["data"]["pending"] == true {
+        // The async handoff: the core hands the proof to Cloud in the
+        // background, and Cloud waits for it, so the call goes out unchanged
+        // now. A join keeps the same native-name check as a signed one.
+        if request.get("registration").is_some() && response["data"]["native_join"] != true {
+            return None;
+        }
+        return Some(Outcome::HandedOff);
+    }
     let Some(proof) = response["data"]["attestation"]
         .as_str()
         .filter(|p| compact_jws(p))
