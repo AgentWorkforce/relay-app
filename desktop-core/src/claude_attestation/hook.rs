@@ -90,6 +90,12 @@ fn denied(reason: impl Into<String>) -> Value {
 
 const HANDOFF_RETRY: &str = "Agent Relay could not deliver this chat's proof to the hosted service. Wait a moment and retry this tool call.";
 
+/// The denial for a call whose proof may be on its way to Cloud: a join
+/// keeps its own guidance, which also rules out a hosted identity.
+fn undelivered(input: &Value) -> Value {
+    denied(if is_join(input) { RETRY } else { HANDOFF_RETRY })
+}
+
 const RETRY: &str = "Agent Relay could not verify this chat's desktop identity. Keep the Agent Relay desktop app open and retry this join. Do not substitute a hosted account identity or report that this chat has joined.";
 
 #[cfg(test)]
@@ -133,9 +139,14 @@ fn signed_output(
         Reply::Answer(status, body) => (status, body),
         Reply::Unavailable => return None,
         // Sent unsigned, the call could reach Cloud before its proof does.
-        Reply::Late => return Some(Outcome::Output(denied(HANDOFF_RETRY))),
+        Reply::Late => return Some(Outcome::Output(undelivered(input))),
     };
-    let response: Value = serde_json::from_slice(&body).ok()?;
+    // The core answered, but not with a reply that can be read, such as one
+    // cut short when the connection closed mid-body. Whether it started a
+    // handoff is unknown, so the call is not sent ahead of a possible proof.
+    let Ok(response) = serde_json::from_slice::<Value>(&body) else {
+        return Some(Outcome::Output(undelivered(input)));
+    };
     match status {
         503 if response["ok"] == false && response["error"]["code"] == "handoff_failed" => {
             return Some(Outcome::Output(denied(HANDOFF_RETRY)));

@@ -216,7 +216,6 @@ fn the_hook_is_silent_without_a_proof() {
         &br#"{"ok":false,"error":{"code":"not_registered"}}"#[..],
         br#"{"ok":true,"data":{}}"#,
         br#"{"ok":true,"data":{"attestation":7}}"#,
-        b"not json",
     ] {
         assert!(hook::output(&input, |_| Some(body.to_vec())).is_none());
     }
@@ -367,11 +366,12 @@ fn a_core_still_answering_when_the_hook_stops_waiting_denies_the_call() {
         let decision = &output["hookSpecificOutput"];
         assert_eq!(decision["permissionDecision"], "deny", "{tool}");
         assert!(decision.get("updatedInput").is_none(), "{tool}");
+        let retry = if tool == "join_relay" { "retry this join" } else { "retry this tool call" };
         assert!(
             decision["permissionDecisionReason"]
                 .as_str()
                 .unwrap()
-                .contains("retry this tool call"),
+                .contains(retry),
             "{tool}"
         );
     }
@@ -474,4 +474,60 @@ fn only_a_request_never_sent_counts_as_no_core() {
     });
     let reply = hook::ask_core(Some(&socket), body, wait);
     assert!(matches!(reply, hook::Reply::Answer(200, _)), "{reply:?}");
+}
+
+#[test]
+fn an_answer_that_cannot_be_read_denies_the_call() {
+    // #2283 review: the core's reply was cut short (or garbled), so whether
+    // it started a handoff is unknown. The call is refused, not sent unsigned.
+    let full = br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#;
+    for (status, body) in [
+        (200, full[..full.len() / 2].to_vec()),
+        (200, Vec::new()),
+        (503, br#"{"ok":false,"error":{"co"#.to_vec()),
+        (500, b"not json".to_vec()),
+    ] {
+        let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+        let output = hook::output_at(&input, None, |_| hook::Reply::Answer(status, body.clone()))
+            .unwrap_or_else(|| panic!("{status} {body:?} went out unsigned"));
+        let decision = &output["hookSpecificOutput"];
+        assert_eq!(decision["permissionDecision"], "deny");
+        assert!(decision.get("updatedInput").is_none());
+        assert!(decision["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("retry this tool call"));
+    }
+    // An explicit refusal the core sent in full still leaves the call as
+    // it was: the core said it signed nothing.
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    for (status, body) in [
+        (409, &br#"{"ok":false,"error":{"code":"attestation_unavailable"}}"#[..]),
+        (403, br#"{"ok":false,"error":{"code":"not_registered"}}"#),
+        (500, br#"{"ok":false,"error":{"code":"internal"}}"#),
+    ] {
+        assert!(
+            hook::output_at(&input, None, |_| hook::Reply::Answer(status, body.to_vec())).is_none(),
+            "{status}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reply_cut_short_on_the_socket_denies_the_call() {
+    // The pinned socket client reads to the close and returns whatever body
+    // arrived, so a reply truncated mid-body comes back as an answer.
+    let (_root, socket) = core_that(|mut stream| {
+        use std::io::Write;
+        let payload = br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).unwrap();
+        stream.write_all(&payload[..20]).unwrap();
+    });
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    let output = hook::output_at(&input, Some(&socket), |body| {
+        hook::ask_core(Some(&socket), body, std::time::Duration::from_secs(2))
+    })
+    .expect("a truncated reply must not send the call unsigned");
+    assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
 }
