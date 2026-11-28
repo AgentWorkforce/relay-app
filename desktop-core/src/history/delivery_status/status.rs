@@ -1,7 +1,7 @@
 //! The uploader status the desktop shows, read from the install directory
 //! and its store in a few constant-time reads.
 use super::*;
-use crate::history::{acquisition, delivery};
+use crate::history::{acquisition, delivery, probe::remote_sources::sign_in_reasons};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -80,7 +80,7 @@ fn claude_cloud_health(directory: &Path) -> Value {
     });
     // Claude Code's own sign-in would fix it, and this computer can open
     // it: Settings offers "Sign in to Claude Code".
-    let claude_code_sign_in = reason.is_some_and(crate::history::probe::claude_sign_in_helps)
+    let claude_code_sign_in = reason.is_some_and(sign_in_reasons::claude_sign_in_helps)
         && agent_relay_node::relay::paths::home()
             .is_ok_and(|home| crate::claude_sign_in::available(&home));
     json!({
@@ -438,8 +438,8 @@ pub(crate) mod tests {
 
         // Not signed in: the sign-in is offered wherever this computer can
         // open it.
-        for reason in crate::history::probe::CLAUDE_SIGN_IN_REASONS {
-            assert!(crate::history::probe::claude_sign_in_helps(reason));
+        for reason in sign_in_reasons::CLAUDE_SIGN_IN_REASONS {
+            assert!(sign_in_reasons::claude_sign_in_helps(reason));
             fs::write(
                 directory.path().join("history.remote-enumerated"),
                 serde_json::to_vec(&json!({"connectors": [{

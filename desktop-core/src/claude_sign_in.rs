@@ -180,7 +180,7 @@ fn owned_privately(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let uid = unsafe { libc::getuid() };
+        let uid = nix::unistd::getuid().as_raw();
         std::fs::symlink_metadata(path)
             .is_ok_and(|m| (m.uid() == uid || m.uid() == 0) && m.mode() & 0o022 == 0)
     }

@@ -16,6 +16,7 @@
 //! one or the local pass it rides, and a connector whose last listing failed
 //! is left alone until the next listing is due.
 mod claude_cloud;
+pub(crate) mod sign_in_reasons;
 mod claude_records;
 #[cfg(test)]
 mod cursor_tests;
@@ -237,17 +238,6 @@ pub fn keychain_not_ready(error: &anyhow::Error) -> bool {
         )
     })
 }
-
-/// Whether Claude Code's own sign-in would resume cloud sessions after a
-/// listing gave `reason`: Claude Code is not signed in here, with or
-/// without Claude's desktop app installed.
-pub(crate) fn claude_sign_in_helps(reason: &str) -> bool {
-    CLAUDE_SIGN_IN_REASONS.contains(&reason)
-}
-
-/// The listing reasons [`claude_sign_in_helps`] accepts.
-pub(crate) const CLAUDE_SIGN_IN_REASONS: [&str; 2] =
-    [claude_cloud::NOT_SIGNED_IN, claude_cloud::DESKTOP_APP_NOT_ENOUGH];
 
 /// The error a hydration returns while Claude's Keychain read waits.
 #[cfg(test)]
