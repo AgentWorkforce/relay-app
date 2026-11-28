@@ -216,7 +216,6 @@ fn the_hook_is_silent_without_a_proof() {
         &br#"{"ok":false,"error":{"code":"not_registered"}}"#[..],
         br#"{"ok":true,"data":{}}"#,
         br#"{"ok":true,"data":{"attestation":7}}"#,
-        b"not json",
     ] {
         assert!(hook::output(&input, |_| Some(body.to_vec())).is_none());
     }
@@ -236,7 +235,7 @@ fn a_named_join_gives_a_quoted_local_command_without_running_it() {
     let mut input = pre_tool_use(json!({"name":"claude-assistant"}));
     input["tool_name"] = json!("mcp__agent-relay__join_relay");
     let output = hook::output_at(&input, Some(Path::new("/tmp/Agent Relay/relay.sock")), |_| {
-        Some((403, br#"{"ok":false,"error":{"code":"registration_required"}}"#.to_vec()))
+        hook::Reply::Answer(403, br#"{"ok":false,"error":{"code":"registration_required"}}"#.to_vec())
     }).unwrap();
     assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
     let reason = output["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap();
@@ -355,6 +354,37 @@ fn a_handed_off_proof_leaves_the_call_unchanged() {
 }
 
 #[test]
+fn a_core_still_answering_when_the_hook_stops_waiting_denies_the_call() {
+    // #2283: the core took the request and was still handing the proof to
+    // Cloud when the hook's wait ran out. Sent unsigned, the call reached
+    // Cloud before its proof, so Cloud ran it without the chat's identity.
+    // It is denied with retry guidance instead.
+    for tool in ["send_relay_message", "join_relay", "spawn_relay_agent"] {
+        let mut input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+        input["tool_name"] = json!(format!("mcp__agent-relay__{tool}"));
+        let output = hook::output_at(&input, None, |_| hook::Reply::Late).unwrap();
+        let decision = &output["hookSpecificOutput"];
+        assert_eq!(decision["permissionDecision"], "deny", "{tool}");
+        assert!(decision.get("updatedInput").is_none(), "{tool}");
+        let retry = if tool == "join_relay" { "retry this join" } else { "retry this tool call" };
+        assert!(
+            decision["permissionDecisionReason"]
+                .as_str()
+                .unwrap()
+                .contains(retry),
+            "{tool}"
+        );
+    }
+    // With no core to ask, nothing was sent and nothing is on its way.
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    assert!(hook::output_at(&input, None, |_| hook::Reply::Unavailable).is_none());
+    // A tool that never acts as the chat is never held back.
+    let mut input = pre_tool_use(json!({}));
+    input["tool_name"] = json!("mcp__agent-relay__list_relay_agents");
+    assert!(hook::output_at(&input, None, |_| panic!("the core is not asked")).is_none());
+}
+
+#[test]
 fn tools_that_never_act_as_the_chat_are_not_signed() {
     for tool in [
         "mcp__agent-relay__list_relay_agents",
@@ -380,4 +410,124 @@ fn tools_that_never_act_as_the_chat_are_not_signed() {
         input["tool_name"] = json!(tool);
         assert!(hook_request(&input).is_some(), "{tool}");
     }
+}
+
+/// A core at a real socket that takes one request and then does `then`.
+#[cfg(unix)]
+fn core_that(then: fn(std::os::unix::net::UnixStream)) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::io::Read;
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("relay.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // Read the whole request: its headers end the first blank line and
+        // the body follows, short enough to arrive in the same reads.
+        let mut seen = Vec::new();
+        let mut chunk = [0; 4096];
+        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "the hook closed before sending its request");
+            seen.extend_from_slice(&chunk[..read]);
+        }
+        then(stream);
+    });
+    (root, socket)
+}
+
+#[cfg(unix)]
+#[test]
+fn only_a_request_never_sent_counts_as_no_core() {
+    let body = br#"{"session_id":"s","tool_name":"t","tool_use_id":"u"}"#;
+    let wait = std::time::Duration::from_millis(400);
+
+    // Absent: no socket file at all.
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("relay.sock");
+    assert!(matches!(hook::ask_core(Some(&missing), body, wait), hook::Reply::Unavailable));
+    assert!(matches!(hook::ask_core(None, body, wait), hook::Reply::Unavailable));
+
+    // Absent: a socket file nothing listens on (a stopped core).
+    let stale = root.path().join("stale.sock");
+    drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+    assert!(matches!(hook::ask_core(Some(&stale), body, wait), hook::Reply::Unavailable));
+
+    // Ambiguous: the core took the request and closed without answering.
+    let (_root, socket) = core_that(drop);
+    let reply = hook::ask_core(Some(&socket), body, wait);
+    assert!(matches!(reply, hook::Reply::Late), "{reply:?}");
+
+    // Late: the core took the request and is still working on it.
+    let (_root, socket) = core_that(|stream| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        drop(stream);
+    });
+    let reply = hook::ask_core(Some(&socket), body, wait);
+    assert!(matches!(reply, hook::Reply::Late), "{reply:?}");
+
+    // Answered.
+    let (_root, socket) = core_that(|mut stream| {
+        use std::io::Write;
+        let payload = br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).unwrap();
+        stream.write_all(payload).unwrap();
+    });
+    let reply = hook::ask_core(Some(&socket), body, wait);
+    assert!(matches!(reply, hook::Reply::Answer(200, _)), "{reply:?}");
+}
+
+#[test]
+fn an_answer_that_cannot_be_read_denies_the_call() {
+    // #2283 review: the core's reply was cut short (or garbled), so whether
+    // it started a handoff is unknown. The call is refused, not sent unsigned.
+    let full = br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#;
+    for (status, body) in [
+        (200, full[..full.len() / 2].to_vec()),
+        (200, Vec::new()),
+        (503, br#"{"ok":false,"error":{"co"#.to_vec()),
+        (500, b"not json".to_vec()),
+    ] {
+        let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+        let output = hook::output_at(&input, None, |_| hook::Reply::Answer(status, body.clone()))
+            .unwrap_or_else(|| panic!("{status} {body:?} went out unsigned"));
+        let decision = &output["hookSpecificOutput"];
+        assert_eq!(decision["permissionDecision"], "deny");
+        assert!(decision.get("updatedInput").is_none());
+        assert!(decision["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("retry this tool call"));
+    }
+    // An explicit refusal the core sent in full still leaves the call as
+    // it was: the core said it signed nothing.
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    for (status, body) in [
+        (409, &br#"{"ok":false,"error":{"code":"attestation_unavailable"}}"#[..]),
+        (403, br#"{"ok":false,"error":{"code":"not_registered"}}"#),
+        (500, br#"{"ok":false,"error":{"code":"internal"}}"#),
+    ] {
+        assert!(
+            hook::output_at(&input, None, |_| hook::Reply::Answer(status, body.to_vec())).is_none(),
+            "{status}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reply_cut_short_on_the_socket_denies_the_call() {
+    // The pinned socket client reads to the close and returns whatever body
+    // arrived, so a reply truncated mid-body comes back as an answer.
+    let (_root, socket) = core_that(|mut stream| {
+        use std::io::Write;
+        let payload = br#"{"ok":true,"data":{"attestation":"h.p.s","handoff":true}}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).unwrap();
+        stream.write_all(&payload[..20]).unwrap();
+    });
+    let input = pre_tool_use(json!({"to": "alice", "text": "hi"}));
+    let output = hook::output_at(&input, Some(&socket), |body| {
+        hook::ask_core(Some(&socket), body, std::time::Duration::from_secs(2))
+    })
+    .expect("a truncated reply must not send the call unsigned");
+    assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
 }

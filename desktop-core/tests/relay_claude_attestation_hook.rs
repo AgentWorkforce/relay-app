@@ -167,3 +167,31 @@ fn stale_desktop_identity_denies_the_call_without_a_proof() {
     assert_eq!(printed["hookSpecificOutput"]["permissionDecision"], "deny");
     assert!(printed["hookSpecificOutput"].get("updatedInput").is_none());
 }
+
+#[test]
+fn a_core_that_closes_after_taking_the_request_denies_the_call() {
+    // #2283: the request may have started a handoff, so the call must not
+    // go out unsigned ahead of its proof.
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("relay.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "POST /claude/attestation HTTP/1.1");
+        // Closed without an answer.
+    });
+    let output = invoke(&socket, &hook_input());
+    server.join().unwrap();
+    assert!(output.status.success());
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let decision = &printed["hookSpecificOutput"];
+    assert_eq!(decision["permissionDecision"], "deny");
+    assert!(decision.get("updatedInput").is_none());
+    assert!(decision["permissionDecisionReason"]
+        .as_str()
+        .unwrap()
+        .contains("retry this tool call"));
+}
