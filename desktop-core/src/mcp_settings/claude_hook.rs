@@ -39,6 +39,17 @@ impl Kind {
         }
     }
 
+    /// Seconds Claude waits for the hook before running the call without
+    /// it. The proof hook's own wait for the core
+    /// ([`crate::claude_attestation::hook::TIMEOUT`]) is shorter, so it is
+    /// never cut off while the core is still handing the proof to Cloud.
+    fn timeout_secs(self) -> u64 {
+        match self {
+            Kind::Attestation => 20,
+            Kind::TeammateContext => 5,
+        }
+    }
+
     pub(crate) fn subcommand(self) -> &'static str {
         match self {
             Kind::Attestation => SUBCOMMAND,
@@ -51,9 +62,6 @@ impl Kind {
 /// Claude chat proofs for the signed-in account and its identity-sync
 /// generation: the same check the signing route makes.
 pub type Verified = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
-/// Seconds Claude waits for the hook. The hook's own socket read is shorter.
-const TIMEOUT_SECS: u64 = 5;
-
 /// The hook's shell command for `executable`; `--dev` asks Agent Relay Dev,
 /// and `--socket` a site profile build's own session socket.
 pub(super) fn command(
@@ -130,7 +138,7 @@ fn ours(hook: &Value) -> bool {
 }
 
 fn entry(command: &str, build: &Build, kind: Kind) -> Value {
-    let hooks = json!([{"type": "command", "command": command, "timeout": TIMEOUT_SECS}]);
+    let hooks = json!([{"type": "command", "command": command, "timeout": kind.timeout_secs()}]);
     match kind {
         Kind::Attestation => json!({"matcher": build.matcher, "hooks": hooks}),
         // Every session start: a new chat, a resumed one, after /clear and

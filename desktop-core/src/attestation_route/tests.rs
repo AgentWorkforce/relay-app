@@ -36,6 +36,8 @@ pub(crate) struct FakeCloud {
     put_response: Mutex<Option<Value>>,
     pub(crate) next_put_gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     post_delay_ms: std::sync::atomic::AtomicU64,
+    /// Handoffs Cloud finished storing (its 204 sent).
+    pub(crate) posts_stored: std::sync::atomic::AtomicUsize,
 }
 
 impl CloudAccess for FakeCloud {
@@ -88,6 +90,10 @@ impl CloudAccess for FakeCloud {
                 release.await.expect("test must release the PUT");
             }
             tokio::time::sleep(Duration::from_millis(delay)).await;
+            if method == "POST" {
+                self.posts_stored
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(match method {
                 "PUT" => put_response.unwrap_or_else(|| {
                     let mut response = json!({"synced": count, "identities": []});
@@ -636,11 +642,15 @@ async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
         .unwrap_err();
     assert_eq!(refused.code, "handoff_failed");
 
+    // Cloud never answers within the hook's wait: refused while the hook
+    // still listens, so the hook denies the call rather than sending it.
     *f.cloud.failure.lock().unwrap() = None;
-    f.cloud
-        .post_delay_ms
-        .store(5_000, std::sync::atomic::Ordering::SeqCst);
+    f.cloud.post_delay_ms.store(
+        (ROUTE_BUDGET + Duration::from_secs(5)).as_millis() as u64,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     tokio::time::pause();
+    let start = tokio::time::Instant::now();
     let refused = f
         .ask(
             IN_REGISTERED,
@@ -649,4 +659,48 @@ async fn a_failed_or_slow_handoff_is_an_error_never_a_rewrite() {
         .await
         .unwrap_err();
     assert_eq!(refused.code, "handoff_failed");
+    // Answered while the hook still listens (timers round to the millisecond).
+    assert!(
+        start.elapsed() < crate::claude_attestation::hook::TIMEOUT,
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+/// #2283: Cloud took longer than the core's fixed three seconds to store a
+/// proof (2.4 to 2.9 seconds was usual on the reporting Mac, and its other
+/// calls took up to 6). The core gave up, the hook denied the call, and an
+/// immediate retry, finding Cloud quicker, worked. The handoff now waits for
+/// Cloud's answer, and the hook answers only once the proof is stored.
+#[tokio::test]
+async fn a_handoff_cloud_answers_slowly_still_lands_before_the_call() {
+    let f = fixture();
+    f.negotiate(json!({"claude_session_attestation": 1, "claude_attestation_handoff": 1}))
+        .await;
+    Identities::new(f.core.clone()).sync_desktop_identities().await;
+    tokio::time::pause();
+    for cloud_ms in [3_500, 6_000, 9_000] {
+        f.cloud
+            .post_delay_ms
+            .store(cloud_ms, std::sync::atomic::Ordering::SeqCst);
+        let stored = f.cloud.posts_stored.load(std::sync::atomic::Ordering::SeqCst);
+        let start = tokio::time::Instant::now();
+        let answer = f
+            .ask(
+                IN_REGISTERED,
+                call(REGISTERED, "mcp__agent-relay__send_relay_message"),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{cloud_ms} ms: {}", error.code));
+        assert_eq!(answer["handoff"], true, "{cloud_ms} ms");
+        // The hook is told to let the call go only after Cloud holds the
+        // proof the call will look for.
+        assert_eq!(
+            f.cloud.posts_stored.load(std::sync::atomic::Ordering::SeqCst),
+            stored + 1,
+            "{cloud_ms} ms"
+        );
+        assert!(start.elapsed() >= Duration::from_millis(cloud_ms));
+        assert!(start.elapsed() < ROUTE_BUDGET);
+    }
 }
