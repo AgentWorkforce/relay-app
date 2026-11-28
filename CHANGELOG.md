@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+## v2026.11.22
+
 - **Codex chats receive direct messages in order.** On macOS, Linux and Windows, a later direct message waits while an earlier message is pending delivery to the same chat.
 
 - **One bad session no longer stops all uploads.** On macOS, Linux and Windows, when the secret scrubber fails on a single record of a session, that record is set aside and counted as quarantined, and everything else keeps being stored and uploaded. Before, the failure ended the history collector, which restarted every few seconds and stopped every upload until a fixed version arrived. A set-aside record is never stored or uploaded unscrubbed, and nothing of its content is logged; it is tried again once an Agent Relay update brings a new scrubber.
