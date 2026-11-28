@@ -417,7 +417,7 @@ fn a_coexisting_profiles_entry_on_the_shared_copy_moves_to_its_own() {
     // Claude: the stock app's hook and this build's on the shared copy.
     let hook_group = |command: String, matcher: String| {
         serde_json::json!({"matcher": matcher, "hooks": [
-            {"type": "command", "command": command, "timeout": 5}
+            {"type": "command", "command": command, "timeout": 20}
         ]})
     };
     let stock_hook = hook_group(

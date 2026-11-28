@@ -495,7 +495,9 @@ async fn a_slow_identity_refresh_cannot_hold_the_hook_past_its_budget() {
     let f = fixture();
     rename(&f);
     f.negotiate(capabilities(true)).await;
-    f.cloud.delay_ms.store(5_000, Ordering::SeqCst);
+    f.cloud
+        .delay_ms
+        .store(ROUTE_BUDGET.as_millis() as u64, Ordering::SeqCst);
     tokio::time::pause();
     let start = tokio::time::Instant::now();
     let result = f.ask(IN_REGISTERED, call(REGISTERED, SEND)).await;
@@ -503,4 +505,49 @@ async fn a_slow_identity_refresh_cannot_hold_the_hook_past_its_budget() {
     assert!(start.elapsed() < ROUTE_BUDGET);
     assert!(methods(&f).iter().any(|m| m == "PUT"));
     assert!(!methods(&f).iter().any(|m| m == "POST"));
+}
+
+#[tokio::test]
+async fn a_refresh_leaves_a_slow_handoff_time_to_land() {
+    // #2283: a refresh took most of the core's budget and left the handoff
+    // one second, so a Cloud answering in two denied the call.
+    let f = fixture();
+    rename(&f);
+    f.negotiate(capabilities(true)).await;
+    f.cloud.delay_ms.store(3_000, Ordering::SeqCst);
+    f.cloud.post_delay_ms.store(5_000, Ordering::SeqCst);
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let answer = f.ask(IN_REGISTERED, call(REGISTERED, SEND)).await.unwrap();
+    assert_eq!(answer["handoff"], true);
+    assert_eq!(f.cloud.posts_stored.load(Ordering::SeqCst), 1);
+    assert!(start.elapsed() >= std::time::Duration::from_secs(8));
+    assert!(start.elapsed() < ROUTE_BUDGET);
+}
+
+#[tokio::test]
+async fn a_refresh_using_all_its_time_still_leaves_the_handoff_ten_seconds() {
+    // The handoff's share is pinned: at least 10 seconds of the budget stay
+    // for Cloud to store the proof, however long the refresh before it took.
+    assert!(HANDOFF_RESERVE >= std::time::Duration::from_secs(10));
+    assert!(HANDOFF_RESERVE < ROUTE_BUDGET);
+    let f = fixture();
+    rename(&f);
+    f.negotiate(capabilities(true)).await;
+    // The refresh ends just inside its allowance; Cloud then takes just
+    // under the reserve to store the proof.
+    let refresh = ROUTE_BUDGET - HANDOFF_RESERVE - std::time::Duration::from_millis(100);
+    f.cloud
+        .delay_ms
+        .store(refresh.as_millis() as u64, Ordering::SeqCst);
+    f.cloud.post_delay_ms.store(
+        (HANDOFF_RESERVE - std::time::Duration::from_millis(100)).as_millis() as u64,
+        Ordering::SeqCst,
+    );
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let answer = f.ask(IN_REGISTERED, call(REGISTERED, SEND)).await.unwrap();
+    assert_eq!(answer["handoff"], true);
+    assert_eq!(f.cloud.posts_stored.load(Ordering::SeqCst), 1);
+    assert!(start.elapsed() < crate::claude_attestation::hook::TIMEOUT);
 }

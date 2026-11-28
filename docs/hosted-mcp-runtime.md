@@ -64,7 +64,7 @@ entry in each shared Claude login's `settings.json`:
 
 ```json
 {"matcher": "^(mcp__agent-relay__.+|mcp__plugin_.+_agent-relay__.+)$",
- "hooks": [{"type": "command", "command": "<probe> claude-attestation-hook", "timeout": 5}]}
+ "hooks": [{"type": "command", "command": "<probe> claude-attestation-hook", "timeout": 20}]}
 ```
 
 The matcher covers the user-scope `agent-relay` server and the same server
@@ -102,8 +102,8 @@ How the proof reaches Cloud depends on Cloud:
 - **Handoff** (Cloud advertises `capabilities.claude_attestation_handoff: 1`):
   before answering the hook, the core sends the proof to
   `POST /workspaces/{workspace}/messaging/desktop-identities/attestations` as
-  `{"attestation": "<proof>"}`, signed in as the person, and waits up to 3
-  seconds for a 2xx. The hook then prints nothing, so the call goes out exactly
+  `{"attestation": "<proof>"}`, signed in as the person, and waits for Cloud's
+  2xx for the rest of its budget (below). The hook then prints nothing, so the call goes out exactly
   as Claude made it. Cloud matches the stored proof to the call by
   `params._meta["claudecode/toolUseId"]`, which Claude Code sets and the model
   cannot. A native `join_relay` keeps the name the model passed; Cloud accepts
@@ -117,12 +117,18 @@ How the proof reaches Cloud depends on Cloud:
   supplied; a native join also drops `name` and `description`. Auto mode
   refuses these calls.
 
-The core can refresh identities within the hook’s existing four-second socket
-budget. A refresh leaves at least one second for handoff, which can take up to
-three seconds when the identity is already fresh. If the current identity still
-lacks a fresh acceptance, the hook denies the tool and asks for a retry.
-The hook also denies a join it cannot complete. For other calls, when the core
-is unreachable, the chat is unregistered, or signing otherwise fails before
+The call waits for Cloud to store its proof, because Cloud looks for the proof
+when the call arrives. The three waits are nested so each side is still
+listening when the side it asked answers: the core answers within 17 seconds,
+the hook waits 18 seconds for it, and Claude Code gives the hook 20. A refresh
+of the chat's identity may use at most 7 of the core's seconds, leaving the
+handoff at least 10. Cloud usually stores a proof in under 3 seconds and has
+taken up to 6. A core that still has not answered when the hook stops waiting
+may still be handing the proof to Cloud, so the hook denies the call and asks
+for a retry instead of sending it on ahead of its proof. If the current identity
+still lacks a fresh acceptance, the hook also denies the tool and asks for a
+retry. The hook also denies a join it cannot complete. For other calls, when no
+core is listening, the chat is unregistered, or signing otherwise fails before
 handoff, the hook prints nothing and exits 0. Cloud refuses unsigned managed
 actor operations.
 
