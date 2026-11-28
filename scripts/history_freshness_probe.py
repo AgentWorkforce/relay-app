@@ -17,6 +17,8 @@ Summary calls also receive summary_kind=short|long. Commands never use a shell;
 credentials belong in the adapter's existing auth mechanism, never argv/config
 or stdout. Response JSON is validated at 64 KiB; subprocess buffering itself is
 not a hard byte bound. Stderr and raw response bodies never enter the report.
+Adapters must not detach child work into another session. Timeout cleanup kills
+only the owned adapter process group, with at most 500 ms cleanup grace.
 
 Upload response: accepted=true, source/session_id, echoed clock_id,
 first_attempt_ns, ack_ns, attempt_anchor=http_request_start|upload_command_start,
@@ -58,6 +60,7 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 import uuid
@@ -118,6 +121,32 @@ class CommandAdapter:
             if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
                 raise ValueError("commands must be nonempty argv arrays, never shell text")
 
+    @staticmethod
+    def _stop(process):
+        # Only the new adapter process group, never a pre-existing
+        # uploader/core. Cleanup has at most 500 ms grace beyond the deadline.
+        if process.returncode is None:  # The child PID has not been reaped/reused.
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            process.communicate(timeout=0.25)
+        except (subprocess.TimeoutExpired, UnicodeError, OSError):
+            for stream in (process.stdin, process.stdout):
+                if stream:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+
     def call(self, operation, phase, clock_id, timeout):
         command = "summary" if operation in ("short_summary", "long_summary") else operation
         request = {"operation": command, "phase": asdict(phase), "clock_id": clock_id,
@@ -125,18 +154,25 @@ class CommandAdapter:
         if command == "summary":
             request["summary_kind"] = operation.removesuffix("_summary")
         try:
-            result = subprocess.run(self.commands[command], input=json.dumps(request),
-                                    capture_output=True, text=True, timeout=timeout, check=False)
-        except subprocess.TimeoutExpired:
-            raise ProbeError("command_timeout") from None
+            process = subprocess.Popen(self.commands[command], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       text=True, start_new_session=os.name == "posix")
         except OSError:
             raise ProbeError("command_unavailable") from None
-        if result.returncode:
+        try:
+            stdout, _ = process.communicate(json.dumps(request), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._stop(process)
+            raise ProbeError("command_timeout") from None
+        except (UnicodeError, OSError):
+            self._stop(process)
+            raise ProbeError("invalid_response") from None
+        if process.returncode:
             raise ProbeError("command_failed")
-        if len(result.stdout.encode()) > 65536:
+        if len(stdout.encode()) > 65536:
             raise ProbeError("response_too_large")
         try:
-            body = json.loads(result.stdout)
+            body = json.loads(stdout)
         except (ValueError, TypeError):
             raise ProbeError("invalid_json") from None
         if not isinstance(body, dict):

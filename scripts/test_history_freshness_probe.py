@@ -1,6 +1,7 @@
 import hashlib
 import http.server
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 from history_freshness_probe import CommandAdapter, Phase, Probe, ProbeError
 
@@ -264,6 +266,28 @@ class ProbeTests(unittest.TestCase):
         adapter = CommandAdapter({"upload": [sys.executable, "-c", "import sys;print('Bearer synthetic-secret');sys.exit(1)"]})
         with self.assertRaisesRegex(ProbeError, "^command_failed$"):
             adapter.call("upload", phase(), "clock", 1)
+
+    @unittest.skipUnless(os.name == "posix", "owned process-group cleanup is POSIX-specific")
+    def test_timeout_stops_descendants_holding_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child_pid = Path(directory) / "child.pid"
+            script = ("import subprocess,sys,time;from pathlib import Path;"
+                      "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);"
+                      "Path(sys.argv[1]).write_text(str(child.pid));time.sleep(10)")
+            adapter = CommandAdapter({"upload": [sys.executable, "-c", script, str(child_pid)]})
+            started = time.monotonic()
+            with self.assertRaisesRegex(ProbeError, "^command_timeout$"):
+                adapter.call("upload", phase(), "clock", 1)
+            self.assertTrue(child_pid.exists(), "the regression must actually spawn a descendant")
+            self.assertLess(time.monotonic() - started, 2)
+
+    def test_cleanup_never_signals_an_already_reaped_pid(self):
+        process = Mock(returncode=0, pid=1)
+        process.communicate.return_value = ("", None)
+        with patch("history_freshness_probe.os.killpg", create=True) as kill_group:
+            CommandAdapter._stop(process)
+        kill_group.assert_not_called()
+        process.kill.assert_not_called()
 
 
 class OfflineHttpTests(unittest.TestCase):
