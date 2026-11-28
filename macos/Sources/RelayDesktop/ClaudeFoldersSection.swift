@@ -30,7 +30,7 @@ struct ClaudeFoldersSection: View {
                 disclosureRow
                 if isExpanded { folderRows }
                 cloudRow
-                if let error {
+                if let error = error ?? model.claudeSignInError {
                     SettingsDivider()
                     Label(error, systemImage: "exclamationmark.circle.fill")
                         .zoomFont(.footnote).foregroundStyle(.red)
@@ -130,6 +130,7 @@ struct ClaudeFoldersSection: View {
                             .fixedSize(horizontal: false, vertical: true)
                         if ClaudeCloudHealthCopy.offersSignIn(health) {
                             Button(ClaudeCloudHealthCopy.signInLabel) {
+                                model.claudeSignInError = nil
                                 Task { error = await model.signInToClaudeCode() }
                             }
                             .help(ClaudeCloudHealthCopy.signInHelp)

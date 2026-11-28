@@ -3,6 +3,7 @@
 //! notifications.
 
 use agent_relay_desktop_core::install::windows::{self as tree, registry};
+use super::AppNotice;
 use agent_relay_node::relay::contract::connection::CoreNotification;
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
@@ -18,23 +19,32 @@ const DOCUMENTS: [&str; 6] = ["log", "txt", "json", "jsonl", "md", "csv"];
 /// are not opened from the app.
 const SCHEMES: [&str; 7] = ["http", "https", "mailto", "codex", "agentrelay", "capy", "grokbot"];
 
-/// A clicked notification: its link, else `None` for the window.
-pub type Activations = mpsc::UnboundedSender<Option<String>>;
+/// A clicked notification: its link, else `None` for the window, or the
+/// app action an [`AppNotice`] named.
+pub enum Activation {
+    Link(Option<String>),
+    Action(String),
+}
+
+pub type Activations = mpsc::UnboundedSender<Activation>;
 
 /// Delivers notification clicks, which Windows reports on a thread of its
-/// own, to `application`'s `open-link` and `show` actions on the main
-/// thread.
+/// own, to `application`'s `open-link` and `show` actions, or the action an
+/// [`AppNotice`] named, on the main thread.
 pub fn activations(application: &gtk::Application) -> Activations {
-    let (sender, mut clicked) = mpsc::unbounded_channel::<Option<String>>();
+    let (sender, mut clicked) = mpsc::unbounded_channel::<Activation>();
     let application = application.downgrade();
     glib::spawn_future_local(async move {
-        while let Some(link) = clicked.recv().await {
+        while let Some(activation) = clicked.recv().await {
             let Some(application) = application.upgrade() else {
                 return;
             };
-            match link {
-                Some(link) => application.activate_action("open-link", Some(&link.to_variant())),
-                None => application.activate_action("show", None),
+            match activation {
+                Activation::Link(Some(link)) => {
+                    application.activate_action("open-link", Some(&link.to_variant()))
+                }
+                Activation::Link(None) => application.activate_action("show", None),
+                Activation::Action(action) => application.activate_action(&action, None),
             }
         }
     });
@@ -266,7 +276,29 @@ pub fn notify(activations: &Activations, notification: &CoreNotification) {
     }
     let _ = toast
         .on_activated(move |_| {
-            let _ = clicked.send(link.clone());
+            let _ = clicked.send(Activation::Link(link.clone()));
+            Ok(())
+        })
+        .show();
+}
+
+/// An [`AppNotice`] as a toast: its button reports its own action, and a
+/// click elsewhere the notice's default action, while the app runs.
+pub fn notify_app(activations: &Activations, notice: &AppNotice) {
+    let _ = crate::updates::windows::register_app_user_model();
+    let clicked = activations.clone();
+    let default_action = notice.default_action.clone();
+    let mut toast = tauri_winrt_notification::Toast::new(tree::APP_USER_MODEL_ID)
+        .title(&notice.title)
+        .text1(&notice.body);
+    if let Some((label, action)) = &notice.button {
+        toast = toast.add_button(label, action);
+    }
+    let _ = toast
+        .on_activated(move |action| {
+            let _ = clicked.send(Activation::Action(
+                action.unwrap_or_else(|| default_action.clone()),
+            ));
             Ok(())
         })
         .show();

@@ -169,6 +169,7 @@ pub fn production_discovery_renders_and_native_switch_registers(runtime: &tokio:
                     session_resume_error: RefCell::default(),
                     opened: RefCell::default(),
                     notified: RefCell::default(),
+                    notices: RefCell::default(),
                     asked: RefCell::default(),
                     informed: RefCell::default(),
                     answer: Cell::new(true),

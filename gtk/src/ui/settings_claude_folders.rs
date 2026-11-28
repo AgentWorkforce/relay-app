@@ -2,6 +2,7 @@
 //! computer finds and uploads, and the cloud-sessions opt-in.
 
 use super::app::App;
+use super::desktop::AppNotice;
 use super::settings_page::SettingRow;
 use super::state::{Page, Pane};
 use super::widgets::{
@@ -11,7 +12,9 @@ use super::widgets::{
 use crate::models::{
     claude_cloud_health_detail, claude_cloud_health_label, claude_code_sign_in_offered,
     claude_folder_detail, claude_folder_display_path, claude_folder_removable,
-    claude_folders_adding, claude_folders_removing, CLAUDE_CLOUD_SESSIONS_DETAIL,
+    claude_folders_adding, claude_folders_removing, claude_sign_in_notice,
+    CLAUDE_CLOUD_SESSIONS_DETAIL, CLAUDE_SIGN_IN_NOTICE_ACTION, CLAUDE_SIGN_IN_NOTICE_BODY,
+    CLAUDE_SIGN_IN_NOTICE_TITLE, CLAUDE_SIGN_IN_NOTIFIED_KEY,
     CLAUDE_CLOUD_SESSIONS_TITLE, CLAUDE_CODE_SIGN_IN, CLAUDE_CODE_SIGN_IN_HELP, CLAUDE_FOLDERS_ADD,
     CLAUDE_FOLDERS_ADD_HELP, CLAUDE_FOLDERS_DETAIL, CLAUDE_FOLDERS_NOT_SHARED,
     CLAUDE_FOLDERS_REMOVE, CLAUDE_FOLDERS_SHARE_HELP, CLAUDE_FOLDERS_TITLE,
@@ -25,6 +28,10 @@ use gtk::{gio, prelude::*};
 use gtk4 as gtk;
 
 const CLAUDE_SHARING_TITLE: &str = "Sharing";
+/// The app actions the Claude Code sign-in notification's button and body
+/// run.
+const CLAUDE_SIGN_IN_ACTION: &str = "claude-code-sign-in";
+const CLAUDE_SETTINGS_ACTION: &str = "claude-code-settings";
 const FOLDERS_KEY: &str = "provider.claude.folders";
 
 /// The widget name of the Claude cloud-session health line, which an
@@ -333,14 +340,78 @@ impl App {
     /// Opens Claude Code's own sign-in (`claude_cloud.sign_in`) in a terminal
     /// window; a refusal shows under the section, as the core worded it.
     pub fn sign_in_to_claude_code(&self) {
+        self.claude_code_sign_in(false);
+    }
+
+    /// The sign-in, from Settings or, with `reveal`, from the notification,
+    /// whose refusal opens Claude Code's page to show it.
+    fn claude_code_sign_in(&self, reveal: bool) {
         self.call::<agent_relay_desktop_core::contract::method::ClaudeCloudSignIn>(
             NoParams {},
-            |app, result| {
+            move |app, result| {
                 let error = result.err().map(|error| error.message);
+                let refused = error.is_some();
                 app.update_state(|state| state.claude_folders_error = error);
-                app.render_settings();
+                if reveal && refused {
+                    app.open_provider("claude");
+                } else {
+                    app.render_settings();
+                }
             },
         );
+    }
+
+    /// Posts the one notification of a Claude Code sign-in episode when the
+    /// core first offers the sign-in; the preference that says it was posted
+    /// outlives a relaunch. Matches the Mac's `ClaudeSignInNotice`.
+    pub(in crate::ui) fn note_claude_cloud_health(&self, health: Option<&ClaudeCloudHealth>) {
+        let notified = self
+            .prefs()
+            .get(CLAUDE_SIGN_IN_NOTIFIED_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let decision = claude_sign_in_notice(health, notified);
+        if decision.notified != notified {
+            let _ = self
+                .inner
+                .prefs
+                .borrow_mut()
+                .set(CLAUDE_SIGN_IN_NOTIFIED_KEY, decision.notified.into());
+        }
+        if decision.notify {
+            self.inner.desktop.notify_app(&AppNotice {
+                id: CLAUDE_SIGN_IN_ACTION.into(),
+                title: CLAUDE_SIGN_IN_NOTICE_TITLE.into(),
+                body: CLAUDE_SIGN_IN_NOTICE_BODY.into(),
+                default_action: CLAUDE_SETTINGS_ACTION.into(),
+                button: Some((CLAUDE_SIGN_IN_NOTICE_ACTION.into(), CLAUDE_SIGN_IN_ACTION.into())),
+            });
+        }
+    }
+
+    /// The app actions the sign-in notification's button and body run.
+    pub fn install_claude_sign_in_actions(&self, application: &gtk::Application) {
+        for (name, sign_in) in [(CLAUDE_SIGN_IN_ACTION, true), (CLAUDE_SETTINGS_ACTION, false)] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = self.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(app) = weak.upgrade() {
+                    app.claude_sign_in_notice_answered(sign_in);
+                }
+            });
+            application.add_action(&action);
+        }
+    }
+
+    /// The sign-in notification was answered: its Sign in button runs the
+    /// same sign-in as Settings' button; a click on the notification itself
+    /// opens Claude Code's page, where Sharing is.
+    pub fn claude_sign_in_notice_answered(&self, sign_in: bool) {
+        if sign_in {
+            self.claude_code_sign_in(true);
+        } else {
+            self.open_provider("claude");
+        }
     }
 
     pub fn set_claude_cloud_sessions(&self, on: bool) {

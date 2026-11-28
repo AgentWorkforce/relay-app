@@ -255,6 +255,7 @@ fn start(application: &gtk::Application, runtime: &tokio::runtime::Handle) -> an
         window: window.upcast(),
     });
     app.install_actions(application);
+    app.install_claude_sign_in_actions(application);
     let weak = app.downgrade();
     glib::spawn_future_local(async move {
         while let Some(action) = chosen.recv().await {

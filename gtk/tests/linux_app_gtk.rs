@@ -20,7 +20,7 @@ use agent_relay_app::models::{
 };
 use agent_relay_app::prefs::{Appearance, Preferences};
 use agent_relay_app::service::{ServiceStart, ServiceState, UserService};
-use agent_relay_app::ui::desktop::{Asked, Confirmation, Desktop, Response};
+use agent_relay_app::ui::desktop::{AppNotice, Asked, Confirmation, Desktop, Response};
 use agent_relay_app::ui::settings_page::SettingRow;
 use agent_relay_app::ui::state::{Page, Pane, Section, View};
 use agent_relay_app::ui::theme::{self, Theme};
@@ -44,6 +44,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
+#[path = "linux_app_gtk/claude_sign_in_notice.rs"]
+mod claude_sign_in_notice;
 #[path = "linux_app_gtk/cobrand.rs"]
 mod cobrand;
 #[cfg(unix)]
@@ -559,6 +561,7 @@ struct FakeDesktop {
     session_resume_error: RefCell<Option<String>>,
     opened: RefCell<Vec<String>>,
     notified: RefCell<Vec<CoreNotification>>,
+    notices: RefCell<Vec<AppNotice>>,
     asked: RefCell<Vec<Confirmation>>,
     informed: RefCell<Vec<(String, String)>>,
     answer: Cell<bool>,
@@ -613,6 +616,10 @@ impl Desktop for FakeDesktop {
 
     fn notify(&self, notification: &CoreNotification) {
         self.notified.borrow_mut().push(notification.clone());
+    }
+
+    fn notify_app(&self, notice: &AppNotice) {
+        self.notices.borrow_mut().push(notice.clone());
     }
 
     fn ask(&self, _parent: &gtk::Window, confirmation: Confirmation) -> Asked {
@@ -707,6 +714,7 @@ impl Case {
             session_resume_error: RefCell::default(),
             opened: RefCell::default(),
             notified: RefCell::default(),
+            notices: RefCell::default(),
             asked: RefCell::default(),
             informed: RefCell::default(),
             answer: Cell::new(true),
@@ -6386,6 +6394,7 @@ fn main() -> ExitCode {
         .iter()
         .chain(pages::TESTS)
         .chain(cobrand::TESTS)
+        .chain(claude_sign_in_notice::TESTS)
         .chain(session_queries::TESTS)
         .chain(zoom::TESTS)
         .chain(native_tests)

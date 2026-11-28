@@ -26,6 +26,7 @@
 mod agent_settings;
 mod agents;
 mod capy_setup;
+mod claude_sign_in_notice;
 mod cloud_provider_setup;
 mod core_crates;
 mod cursor_hooks;
@@ -66,6 +67,7 @@ pub use agent_relay_desktop_core::history::session_model::*;
 pub use agent_settings::*;
 pub use agents::*;
 pub use capy_setup::*;
+pub use claude_sign_in_notice::*;
 pub use cloud_provider_setup::*;
 pub use core_crates::*;
 pub use cursor_hooks::*;

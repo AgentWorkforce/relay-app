@@ -103,6 +103,9 @@ final class AppModel {
     /// later link is parsed.
     private(set) var linkError: String?
     private(set) var signInError: String?
+    /// Why the sign-in a notification started was refused, shown under
+    /// Settings' *Sign in to Claude Code* until that button is used again.
+    var claudeSignInError: String?
     /// From the sign-in click until the core answers or its snapshot shows
     /// the attempt; no second one starts meanwhile.
     private(set) var startingSignIn = false
@@ -127,6 +130,7 @@ final class AppModel {
             // SessionUploadState reads only the gate; delivery counters
             // reach the footer without rebuilding every search row.
             updateDerivedStatus()
+            if oldValue?.claudeCloud != status?.claudeCloud { noteClaudeCloudHealth() }
         }
     }
     private(set) var sessions: [UploadSession] = [] {
@@ -1714,15 +1718,54 @@ final class AppModel {
 
     private var notificationsAvailable: Bool { manageSystemServices && Bundle.main.bundleIdentifier != nil }
 
-    /// Permission is asked when the first notification arrives, so macOS
-    /// prompts with something to show; later calls answer from the
-    /// person's saved choice without prompting.
     private func show(_ notification: CoreNotification) {
         guard notificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = notification.title
         content.body = notification.body
         if let link = notification.link { content.userInfo = ["link": link] }
+        post(content)
+    }
+
+    /// Posts the one notification of a Claude Code sign-in episode
+    /// (`ClaudeSignInNotice`) when the core first offers the sign-in; the
+    /// flag that says it was posted outlives a relaunch.
+    private func noteClaudeCloudHealth() {
+        guard notificationsAvailable else { return }
+        let notified = defaults.bool(forKey: ClaudeSignInNotice.notifiedKey)
+        let decision = ClaudeSignInNotice.decide(status?.claudeCloud, notified: notified)
+        if decision.notified != notified { defaults.set(decision.notified, forKey: ClaudeSignInNotice.notifiedKey) }
+        guard decision.notify else { return }
+        let content = UNMutableNotificationContent()
+        content.title = ClaudeSignInNotice.title
+        content.body = ClaudeSignInNotice.body
+        content.categoryIdentifier = ClaudeSignInNotice.categoryID
+        post(content)
+    }
+
+    /// The sign-in notification was answered: its Sign in button runs the
+    /// same sign-in as Settings' button, and a refusal shows under that
+    /// button on Claude Code's page; a click on the notification itself
+    /// opens that page.
+    func claudeSignInNoticeAnswered(signIn: Bool) {
+        guard signIn else { showClaudeSharingSettings(); return }
+        Task {
+            guard let error = await signInToClaudeCode() else { return }
+            claudeSignInError = error
+            showClaudeSharingSettings()
+        }
+    }
+
+    /// Settings › Providers › Claude Code, where the Sharing section is.
+    private func showClaudeSharingSettings() {
+        tools.showProvider("claude")
+        showSettingsWindow(.tools)
+    }
+
+    /// Permission is asked when the first notification arrives, so macOS
+    /// prompts with something to show; later calls answer from the
+    /// person's saved choice without prompting.
+    private func post(_ content: UNMutableNotificationContent) {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             if granted { UNUserNotificationCenter.current().add(request) }

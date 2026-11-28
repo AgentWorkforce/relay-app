@@ -54,6 +54,19 @@ impl Confirmation {
     }
 }
 
+/// A notification of the app's own: clicking it runs the app action
+/// `default_action`, and its button, if any, the app action it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppNotice {
+    /// A later notice with the same id replaces this one.
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub default_action: String,
+    /// The button's label and app action.
+    pub button: Option<(String, String)>,
+}
+
 pub type Answer = Pin<Box<dyn Future<Output = bool>>>;
 pub type Asked = Pin<Box<dyn Future<Output = Response>>>;
 pub type SessionOpened =
@@ -81,6 +94,8 @@ pub trait Desktop {
     /// Shows the core's notification; clicking it opens its link, else the
     /// window.
     fn notify(&self, notification: &CoreNotification);
+    /// Shows one of the app's own notifications (`AppNotice`).
+    fn notify_app(&self, notice: &AppNotice);
     /// Asks `confirmation` over `parent`; the button that answered.
     fn ask(&self, parent: &gtk::Window, confirmation: Confirmation) -> Asked;
     /// [`Desktop::ask`], answered by the action or not.
@@ -145,6 +160,10 @@ impl Desktop for System {
 
     fn notify(&self, notification: &CoreNotification) {
         self.platform_notify(notification)
+    }
+
+    fn notify_app(&self, notice: &AppNotice) {
+        self.platform_notify_app(notice)
     }
 
     fn ask(&self, parent: &gtk::Window, confirmation: Confirmation) -> Asked {
@@ -296,6 +315,17 @@ impl System {
         }
         self.application.send_notification(None, &shown);
     }
+
+    fn platform_notify_app(&self, notice: &AppNotice) {
+        let shown = gio::Notification::new(&notice.title);
+        shown.set_body(Some(&notice.body));
+        shown.set_default_action(&format!("app.{}", notice.default_action));
+        if let Some((label, action)) = &notice.button {
+            shown.add_button(label, &format!("app.{action}"));
+        }
+        self.application
+            .send_notification(Some(&notice.id), &shown);
+    }
 }
 
 #[cfg(windows)]
@@ -317,6 +347,10 @@ impl System {
 
     fn platform_notify(&self, notification: &CoreNotification) {
         windows::notify(&self.activations, notification)
+    }
+
+    fn platform_notify_app(&self, notice: &AppNotice) {
+        windows::notify_app(&self.activations, notice)
     }
 }
 

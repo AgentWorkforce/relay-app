@@ -14,6 +14,8 @@ whose `## Unreleased` section has no bullet stops before building.
 
 ## Unreleased
 
+- **A notification says when Claude Code cloud sessions need Claude Code's sign-in.** On macOS and Windows, when Claude Code cloud sessions stop for a reason Claude Code's own sign-in fixes, Agent Relay posts one notification, *Claude Code cloud sessions stopped: Sign in to Claude Code to resume them.* Its *Sign in* button opens the same sign-in as *Sign in to Claude Code* in Settings › Providers › Claude Code › Sharing, and a refusal is shown under that button; clicking the notification itself opens that page. It is posted once each time cloud sessions stop this way, not on every status check and not again after Agent Relay restarts while they stay stopped. Nothing is shown when notifications for Agent Relay are turned off; the button in Settings is still there. On Windows a notification clicked after Agent Relay quit does nothing. Linux has no Claude Code sign-in from Agent Relay, so no notification is posted there.
+
 ## v2026.11.23
 
 - **Signing in can finish when a background history helper keeps an output pipe open.** On macOS, Linux and Windows, Agent Relay closes the completed install helper's event reader after a bounded drain, so local-session preparation can finish or report its actual error instead of waiting indefinitely. Final setup events remain ordered, and cancelling sign-in still reports cancellation.

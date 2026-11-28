@@ -49,7 +49,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         AppAppearance.stored.apply()
-        if Bundle.main.bundleIdentifier != nil { UNUserNotificationCenter.current().delegate = self }
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+            let signIn = UNNotificationAction(identifier: ClaudeSignInNotice.signInActionID,
+                                              title: ClaudeSignInNotice.actionLabel, options: [])
+            UNUserNotificationCenter.current().setNotificationCategories([
+                UNNotificationCategory(identifier: ClaudeSignInNotice.categoryID, actions: [signIn],
+                                       intentIdentifiers: [], options: []),
+            ])
+        }
         logger.info("Agent Relay started")
         Task { await model.bootstrapIfNeeded() }
         automaticUpdateTask = Task { [updater] in await updater.runAutomaticChecks() }
@@ -89,12 +97,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// A `notify` event's link (a provider's connect page, say) opens when
-    /// its notification is clicked.
+    /// its notification is clicked. The Claude Code sign-in notification
+    /// signs in from its button and opens Claude Code's settings otherwise.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let link = response.notification.request.content.userInfo["link"] as? String
+        let content = response.notification.request.content
+        let link = content.userInfo["link"] as? String
+        let claudeSignIn = content.categoryIdentifier == ClaudeSignInNotice.categoryID
+        let action = response.actionIdentifier
         Task { @MainActor in
-            if let link, let url = URL(string: link), ["https", "http"].contains(url.scheme ?? "") {
+            if claudeSignIn {
+                if action != UNNotificationDismissActionIdentifier {
+                    model.claudeSignInNoticeAnswered(signIn: action == ClaudeSignInNotice.signInActionID)
+                }
+            } else if let link, let url = URL(string: link), ["https", "http"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)
             }
             completionHandler()

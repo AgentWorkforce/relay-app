@@ -38,6 +38,7 @@ impl App {
             state.status = Some(crate::models::StatusView::new(status));
             (policy_changed, state.core_answered())
         });
+        self.note_claude_cloud_health(status.claude_cloud.as_ref());
         // Hidden identities are absent from the visible query. Reconcile
         // their saved policy before rendering or replaying an unsent action.
         if policy_changed {
