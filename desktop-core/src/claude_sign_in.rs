@@ -28,12 +28,20 @@ use std::path::{Path, PathBuf};
 /// The designated requirement the desktop app's copy must satisfy.
 pub const ANTHROPIC_REQUIREMENT: &str = "anchor apple generic and identifier \"com.anthropic.claude-code\" and certificate leaf[subject.OU] = \"Q6L2SF6YDW\"";
 
-/// Why the sign-in cannot start, as Settings shows it.
+/// Why the sign-in cannot start, as Settings shows it. macOS names its
+/// Terminal app; Windows and Linux say "a terminal".
+#[cfg(target_os = "macos")]
 pub const NOT_FOUND: &str = "Agent Relay could not find Claude Code on this computer. Install Claude Code, then run claude auth login in Terminal";
+#[cfg(not(target_os = "macos"))]
+pub const NOT_FOUND: &str = "Agent Relay could not find Claude Code on this computer. Install Claude Code, then run claude auth login in a terminal";
 pub const NOT_VERIFIED: &str = "The Claude Code that Claude's desktop app includes could not be verified as Anthropic's, so Agent Relay did not run it. Install Claude Code, then run claude auth login in Terminal";
 pub const UNAVAILABLE: &str = "Starting Claude Code's sign-in from Agent Relay is not available on Linux. Run claude auth login in a terminal";
+#[cfg(target_os = "macos")]
 pub const NOT_STARTED: &str =
     "Agent Relay could not open Claude Code's sign-in. Run claude auth login in Terminal";
+#[cfg(not(target_os = "macos"))]
+pub const NOT_STARTED: &str =
+    "Agent Relay could not open Claude Code's sign-in. Run claude auth login in a terminal";
 
 /// How long, after the sign-in opens, Agent Relay waits for Claude Code's
 /// Keychain item before it stops looking.
@@ -90,7 +98,16 @@ fn locate_with(
 /// `claude` to run. Never checks a signature, so it stays cheap enough for
 /// every status read; [`start`] checks it.
 pub fn available(home: &Path) -> bool {
-    SUPPORTED && locate(home, &|key| std::env::var(key).ok()).is_some()
+    available_with(home, &|key| std::env::var(key).ok(), None)
+}
+
+/// [`available`] with the environment and system install folders given.
+fn available_with(
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+    system: Option<&[PathBuf]>,
+) -> bool {
+    SUPPORTED && locate_with(home, env, system).is_some()
 }
 
 /// A `claude` the person installed: on `PATH`, else where Claude Code's
@@ -139,8 +156,11 @@ fn version(name: &str) -> Option<Vec<u64>> {
 }
 
 /// The newest copy of Claude Code that Claude's desktop app under `app_dir`
-/// keeps and marked verified, owned by this user and writable by no one
-/// else.
+/// keeps and marked verified, where `app_dir` and every folder from it down
+/// to the executable (its `claude-code`, version and copy folders, the
+/// bundle, `Contents`, `Contents/MacOS`) and the executable itself are real
+/// files and folders, not links, owned by this user or root and writable by
+/// no one else.
 pub fn desktop_app_copy(app_dir: &Path) -> Option<Command> {
     let root = app_dir.join("claude-code");
     let mut versions: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(&root)
@@ -161,7 +181,7 @@ pub fn desktop_app_copy(app_dir: &Path) -> Option<Command> {
             .filter_map(|copy| {
                 let bundle = copy.join("claude.app");
                 let executable = bundle.join("Contents/MacOS/claude");
-                (runnable(&executable) && owned_privately(&bundle) && owned_privately(&executable))
+                (runnable(&executable) && chain_owned_privately(app_dir, &executable))
                     .then(|| std::fs::metadata(&copy).and_then(|m| m.modified()).ok())
                     .flatten()
                     .map(|modified| (modified, bundle))
@@ -175,14 +195,33 @@ pub fn desktop_app_copy(app_dir: &Path) -> Option<Command> {
     })
 }
 
-/// Owned by this user or root, and writable by no one else.
+/// [`owned_privately`] for `top` and every path from it down to `leaf`,
+/// which must lie under it.
+fn chain_owned_privately(top: &Path, leaf: &Path) -> bool {
+    let Ok(below) = leaf.strip_prefix(top) else {
+        return false;
+    };
+    let mut path = top.to_path_buf();
+    if !owned_privately(&path) {
+        return false;
+    }
+    below.components().all(|part| {
+        path.push(part);
+        owned_privately(&path)
+    })
+}
+
+/// Not a link, owned by this user or root, and writable by no one else.
 fn owned_privately(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let uid = nix::unistd::getuid().as_raw();
-        std::fs::symlink_metadata(path)
-            .is_ok_and(|m| (m.uid() == uid || m.uid() == 0) && m.mode() & 0o022 == 0)
+        std::fs::symlink_metadata(path).is_ok_and(|m| {
+            !m.file_type().is_symlink()
+                && (m.uid() == uid || m.uid() == 0)
+                && m.mode() & 0o022 == 0
+        })
     }
     #[cfg(not(unix))]
     {
@@ -278,6 +317,23 @@ fn open(executable: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A name no earlier sign-in used: this process, the time and a counter, so
+/// a second click never reuses (or removes) a script Terminal may still be
+/// opening, and `create_new` refuses any file already there.
+#[cfg(target_os = "macos")]
+fn script_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    format!(
+        "Claude Code sign-in {}-{nanos}-{}.command",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// Writes the script, owner-only, in a private folder of this user's
 /// temporary directory.
 #[cfg(target_os = "macos")]
@@ -287,11 +343,7 @@ fn write_script(executable: &Path) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join("agent-relay-claude-sign-in");
     private_fs::create_private_dir_all(&dir)?;
     private_fs::set_mode(&dir, 0o700)?;
-    let path = dir.join(format!(
-        "Claude Code sign-in {}.command",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
+    let path = dir.join(script_name());
     let mut file = private_fs::private(std::fs::OpenOptions::new().write(true).create_new(true))
         .open(&path)?;
     file.write_all(script(executable).as_bytes())?;
@@ -331,14 +383,22 @@ fn watch_for_login() {
     }
 }
 
+/// `executable auth login` with `CLAUDE_CONFIG_DIR` removed, so the sign-in
+/// is the default `~/.claude` login cloud sessions read, as the macOS
+/// script's `unset` does. Windows runs it in a console of its own.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn login_command(executable: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(executable);
+    command.args(["auth", "login"]).env_remove("CLAUDE_CONFIG_DIR");
+    command
+}
+
 /// A console of its own, so the person sees and answers the sign-in.
 #[cfg(windows)]
 fn open(executable: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    std::process::Command::new(executable)
-        .args(["auth", "login"])
-        .env_remove("CLAUDE_CONFIG_DIR")
+    login_command(executable)
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .map(drop)
@@ -368,7 +428,19 @@ mod tests {
         let folder = app.join("claude-code").join(version).join(hash);
         let bundle = folder.join("claude.app");
         executable(&bundle.join("Contents/MacOS/claude"));
-        std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Whatever the umask, every folder down to the executable is the
+        // person's alone to change.
+        for dir in [
+            app.to_path_buf(),
+            app.join("claude-code"),
+            app.join("claude-code").join(version),
+            folder.clone(),
+            bundle.clone(),
+            bundle.join("Contents"),
+            bundle.join("Contents/MacOS"),
+        ] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         if verified {
             std::fs::write(folder.join(".verified"), "x").unwrap();
         }
@@ -464,6 +536,108 @@ mod tests {
             "if '/Users/me/Library/Application Support/Claude/it'\\''s/claude' auth login; then"
         ));
         assert!(!script.contains("security "));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_in_a_folder_others_can_write_is_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        for writable in [
+            "claude-code",
+            "claude-code/2.1.2",
+            "claude-code/2.1.2/b",
+            "claude-code/2.1.2/b/claude.app",
+            "claude-code/2.1.2/b/claude.app/Contents",
+            "claude-code/2.1.2/b/claude.app/Contents/MacOS",
+        ] {
+            let app = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(app.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let shared = copy(app.path(), "2.1.2", "b", true);
+            std::fs::set_permissions(
+                app.path().join(writable),
+                std::fs::Permissions::from_mode(0o777),
+            )
+            .unwrap();
+            assert_eq!(desktop_app_copy(app.path()), None, "{writable}");
+            std::fs::set_permissions(
+                app.path().join(writable),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert_eq!(
+                desktop_app_copy(app.path()).map(|found| found.origin),
+                Some(Origin::DesktopApp { bundle: shared }),
+                "{writable}"
+            );
+        }
+        // The app's own data folder counts too.
+        let app = tempfile::tempdir().unwrap();
+        copy(app.path(), "2.1.2", "b", true);
+        std::fs::set_permissions(app.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(desktop_app_copy(app.path()), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_copy_is_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let app = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(app.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let real = copy(elsewhere.path(), "2.1.2", "b", true);
+        let folder = app.path().join("claude-code/2.1.2/b");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".verified"), "x").unwrap();
+        std::os::unix::fs::symlink(&real, folder.join("claude.app")).unwrap();
+        assert_eq!(desktop_app_copy(app.path()), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sign_in_is_available_only_with_a_claude_to_run() {
+        let home = tempfile::tempdir().unwrap();
+        let none = |_: &str| None;
+        assert!(!available_with(home.path(), &none, Some(&[])));
+        let bin = home.path().join("bin");
+        executable(&bin.join("claude"));
+        let path = bin.to_string_lossy().to_string();
+        let env = |key: &str| (key == "PATH").then(|| path.clone());
+        // Linux has a claude to run but no terminal to open it in.
+        assert_eq!(available_with(home.path(), &env, Some(&[])), SUPPORTED);
+    }
+
+    #[test]
+    fn the_login_command_clears_claude_config_dir() {
+        let command = login_command(Path::new("claude"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [std::ffi::OsStr::new("auth"), std::ffi::OsStr::new("login")]
+        );
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "CLAUDE_CONFIG_DIR" && value.is_none()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_sign_in_writes_a_script_of_its_own() {
+        let first = write_script(Path::new("/usr/bin/true")).unwrap();
+        let second = write_script(Path::new("/usr/bin/true")).unwrap();
+        assert_ne!(first, second);
+        assert!(first.is_file() && second.is_file());
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+
+    #[test]
+    fn refusals_name_the_terminal_this_platform_has() {
+        for refusal in [NOT_FOUND, NOT_STARTED] {
+            if cfg!(target_os = "macos") {
+                assert!(refusal.ends_with("in Terminal"), "{refusal}");
+            } else {
+                assert!(refusal.ends_with("in a terminal"), "{refusal}");
+            }
+        }
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]

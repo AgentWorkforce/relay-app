@@ -572,6 +572,72 @@ mod tests {
         assert_eq!(server, "agent-relay-devaws");
     }
 
+    /// A process the session directory cannot rule out as an agent
+    /// session's.
+    struct AgentCaller;
+
+    impl agent_relay_node::relay::sessions::SessionDirectory for AgentCaller {
+        fn sessions(&self) -> Vec<agent_relay_node::relay::sessions::DiscoveredSession> {
+            Vec::new()
+        }
+
+        fn caller(
+            &self,
+            _pid: i32,
+        ) -> Result<
+            agent_relay_node::relay::sessions::DiscoveredSession,
+            agent_relay_node::relay::sessions::CallerMiss,
+        > {
+            Err(agent_relay_node::relay::sessions::CallerMiss::Unattributed)
+        }
+    }
+
+    /// `claude_cloud.sign_in` from inside an agent session is refused by the
+    /// person guard before anything is located or opened: the person asks
+    /// for it in Settings.
+    #[tokio::test]
+    async fn an_agent_session_cannot_open_claude_code_sign_in() {
+        use agent_relay_node::relay::daemon::Plugins;
+        use agent_relay_node::relay::protocol::ErrorKind;
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_path_buf();
+        let config = Config {
+            paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
+            home: home.clone(),
+            app_data_dir: home.join("app-data"),
+            env: Default::default(),
+            version: "test".into(),
+            host_name: "test".into(),
+            rediscover_every: std::time::Duration::from_secs(3600),
+            push_timing: Default::default(),
+            delivery_timing: Default::default(),
+        };
+        let plugins = Plugins {
+            sessions: Arc::new(AgentCaller),
+            ..Plugins::default()
+        };
+        let (core, _signals) =
+            agent_relay_node::relay::daemon::Core::with_plugins(config, plugins);
+        let context = CallContext {
+            peer_pid: Some(4105),
+            connection_id: Some(1),
+        };
+        let refused = claude_sign_in_call(
+            &core,
+            &context,
+            method::ClaudeCloudSignIn::NAME,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("claude_cloud.sign_in is answered")
+        .unwrap_err();
+        assert_eq!(refused.data.kind, ErrorKind::Refused);
+        assert!(refused.message.contains("inside an agent session"));
+        assert!(claude_sign_in_call(&core, &context, "uploader.status", serde_json::json!({}))
+            .await
+            .is_none());
+    }
+
     /// Only a build built to coexist copies its executable to run as its
     /// own probe; any other runs the shared copy, and no executable gives
     /// nothing to copy.

@@ -434,7 +434,7 @@ pub const CLAUDE_CLOUD_SESSIONS_DETAIL: &str = "Also upload your claude.ai cloud
 /// The button that opens Claude Code's own sign-in (`claude_cloud.sign_in`),
 /// offered while the core says it would resume cloud sessions here. Linux
 /// has no such button: its core reports the sign-in unavailable, and the
-/// health line says to run `claude auth login`.
+/// health line says Claude Code is not signed in and to sign in to it.
 pub const CLAUDE_CODE_SIGN_IN: &str = "Sign in to Claude Code";
 pub const CLAUDE_CODE_SIGN_IN_HELP: &str = "Opens Claude Code's sign-in (claude auth login) in a terminal window. Agent Relay resumes cloud sessions once it finishes.";
 

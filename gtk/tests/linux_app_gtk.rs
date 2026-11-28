@@ -3903,6 +3903,70 @@ fn relay_redraws_for_claude_cloud_health_only_when_it_changes(runtime: &tokio::r
     assert!(line(&health().unwrap()).contains("choose Always Allow"));
 }
 
+/// "Sign in to Claude Code" comes and goes with the core's offer even when
+/// the health line stays the same, and asks the core to open the sign-in.
+fn claude_code_sign_in_redraws_when_only_its_offer_changes(runtime: &tokio::runtime::Runtime) {
+    use agent_relay_app::models::CLAUDE_CODE_SIGN_IN;
+    let case = Case::with(runtime, |core| tools::answers(core, true));
+    case.answer("claude_cloud.sign_in", json!({}));
+    let mut values = settings();
+    values["claude_cloud_sessions"] = json!(true);
+    case.answer("settings.get", check::<method::SettingsGet>(values));
+    let mut status = uploader();
+    let offer = |status: &mut Value, offered: bool| {
+        status["claude_cloud"] = json!({
+            "state": "needs_attention",
+            "reason": "Claude Code is not signed in. Open Claude Code and sign in to resume cloud sessions",
+            "claude_code_sign_in": offered,
+        });
+    };
+    offer(&mut status, false);
+    case.answer(
+        "uploader.status",
+        check::<agent_relay_desktop_core::contract::method::UploaderStatus>(status.clone()),
+    );
+    case.sign_in();
+    tools::open_claude(&case);
+    let health = || {
+        let mut found = None;
+        walk(
+            case.app.shell().unwrap().settings.column.upcast_ref(),
+            &mut |widget| {
+                if widget.widget_name() == "claude-cloud-health" {
+                    found = widget.tooltip_text().map(|line| line.to_string());
+                }
+            },
+        );
+        found
+    };
+    let sign_in = || buttons(&case.app.shell().unwrap().settings.column, CLAUDE_CODE_SIGN_IN);
+    case.pump(|_| health().is_some_and(|line| line.contains("not signed in")));
+    case.settle();
+    assert!(sign_in().is_empty(), "offered without the core's offer");
+    let line = health().unwrap();
+
+    let refresh = |status: &Value| {
+        case.answer(
+            "uploader.status",
+            check::<agent_relay_desktop_core::contract::method::UploaderStatus>(status.clone()),
+        );
+        let before = case.called("uploader.status").len();
+        case.emit("invalidated", json!({"what": "uploader"}));
+        case.pump(|case| case.called("uploader.status").len() > before);
+    };
+    offer(&mut status, true);
+    refresh(&status);
+    case.pump(|_| !sign_in().is_empty());
+    assert_eq!(health().as_deref(), Some(line.as_str()));
+    sign_in()[0].emit_clicked();
+    case.pump(|case| !case.called("claude_cloud.sign_in").is_empty());
+
+    offer(&mut status, false);
+    refresh(&status);
+    case.pump(|_| sign_in().is_empty());
+    assert_eq!(health().as_deref(), Some(line.as_str()));
+}
+
 fn spawned_agents_have_an_optional_cap(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     let mut spawning = settings();
@@ -6201,6 +6265,10 @@ const TESTS: &[(&str, Test)] = &[
     (
         "relay_redraws_for_claude_cloud_health_only_when_it_changes",
         relay_redraws_for_claude_cloud_health_only_when_it_changes,
+    ),
+    (
+        "claude_code_sign_in_redraws_when_only_its_offer_changes",
+        claude_code_sign_in_redraws_when_only_its_offer_changes,
     ),
     (
         "spawned_agents_have_an_optional_cap",
